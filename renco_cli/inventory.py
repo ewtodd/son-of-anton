@@ -200,10 +200,6 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
     )
 
-    moa_row = _moa_provider_row(ctx.current_provider)
-    if moa_row is not None:
-        rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
-
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
         # Desktop chat pickers request the explicit subset without the full
@@ -261,7 +257,7 @@ def build_models_payload(
                     row["total_models"] = len(filtered)
 
     if include_unconfigured:
-        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
+        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
@@ -344,12 +340,6 @@ def build_aux_picker_rows(
     - the active custom endpoint is probed, offline saved ones are not, so
       the picker never blocks on a dead local server
 
-    The virtual ``moa`` row is excluded: auxiliary tasks must not run the
-    MoA reference fan-out, and ``auxiliary_client`` unwraps a ``moa``
-    provider to its aggregator slot anyway (see ``_resolve_auto``), so
-    offering it here would be a choice silently rewritten behind the user's
-    back. Mirrors the same filter in ``renco_cli/moa_cmd.py``.
-
     Rows are the standard ``list_authenticated_providers`` shape. Pair with
     :func:`format_aux_picker_entries` to render them.
     """
@@ -365,7 +355,7 @@ def build_aux_picker_rows(
         probe_current_custom_provider=True,
         max_models=max_models,
     )["providers"]
-    return [r for r in rows if str(r.get("slug") or "").strip().lower() != "moa"]
+    return rows
 
 
 def format_aux_picker_entries(
@@ -682,15 +672,6 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if current_slug and slug == current_slug:
             kept.append(row)
             continue
-        if slug == "moa":
-            # MoA is a virtual routing mode, not an independently configured
-            # provider. Hide it from explicit-only pickers unless it is the
-            # current provider (handled above) or the user explicitly wrote an
-            # enabled MoA preset into config.yaml. Use raw config so the
-            # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
-            if _raw_config_has_enabled_moa_preset():
-                kept.append(row)
-            continue
         if _provider_is_keyless(slug):
             # Keyless providers (opencode-free) require no configuration at
             # all — there is nothing to "explicitly configure", and hiding
@@ -710,50 +691,6 @@ def _provider_is_keyless(slug: str) -> bool:
         return bool(overlay is not None and getattr(overlay, "keyless", False))
     except Exception:
         return False
-
-
-def _raw_config_has_enabled_moa_preset() -> bool:
-    """Return True when the user's raw config explicitly enables MoA.
-
-    ``load_config()`` includes ``DEFAULT_CONFIG["moa"].presets.default`` for
-    everyone. Explicit-only model pickers must not treat that default as a user
-    choice, but they should keep MoA visible once the user has saved at least
-    one enabled preset (or an older flat MoA config) in their own config.yaml.
-    """
-    try:
-        from renco_cli.config import read_raw_config
-
-        raw = read_raw_config()
-    except Exception:
-        return False
-
-    if not isinstance(raw, dict):
-        return False
-    moa = raw.get("moa")
-    if not isinstance(moa, dict):
-        return False
-
-    presets = moa.get("presets")
-    if isinstance(presets, dict):
-        for name, preset in presets.items():
-            if not str(name or "").strip():
-                continue
-            if not isinstance(preset, dict):
-                return True
-            if preset.get("enabled", True):
-                return True
-        return False
-
-    legacy_keys = {
-        "reference_models",
-        "aggregator",
-        "reference_temperature",
-        "aggregator_temperature",
-        "max_tokens",
-        "reference_max_tokens",
-        "fanout",
-    }
-    return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:
@@ -922,34 +859,3 @@ def _apply_pricing(
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
-
-
-def _moa_provider_row(current_provider: str = "") -> dict | None:
-    """Build the virtual ``moa`` provider row for model pickers.
-
-    Shared by the CLI inventory (:func:`build_models_payload`) and the gateway
-    picker path (:func:`renco_cli.model_switch.list_picker_providers`) so the
-    row shape stays in one place. Returns ``None`` when no MoA presets exist.
-    """
-    try:
-        from renco_cli.config import load_config
-        from renco_cli.moa_config import normalize_moa_config
-
-        cfg = normalize_moa_config(load_config().get("moa") or {})
-        models = list(cfg.get("presets", {}).keys())
-        if not models:
-            return None
-        return {
-            "slug": "moa",
-            "name": "Mixture of Agents",
-            "is_current": (current_provider or "").lower() == "moa",
-            "is_user_defined": False,
-            "models": models,
-            "total_models": len(models),
-            "source": "virtual",
-            "authenticated": True,
-            "auth_type": "virtual",
-            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
-        }
-    except Exception:
-        return None

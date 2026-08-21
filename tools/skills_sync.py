@@ -45,7 +45,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except (ValueError, TypeError):
             pass
-from renco_constants import get_bundled_skills_dir, get_renco_home, get_optional_skills_dir
+from renco_constants import get_bundled_skills_dir, get_renco_home
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace, atomic_write_text
@@ -116,7 +116,7 @@ def _get_bundled_dir() -> Path:
 
 def _get_optional_dir() -> Path:
     """Locate the official optional-skills/ directory."""
-    return get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
+    return Path(__file__).parent.parent / "optional-skills"
 
 
 def _build_external_skill_index() -> Set[str]:

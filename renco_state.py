@@ -2155,7 +2155,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         # Without it, this probe sees the DB exactly as a tokenizer-less
         # SessionDB open would (which drops the cjk triggers to keep writes
         # working), so tokenizer absence must never classify as corruption.
-        load_fts5_cjk_extension(conn)
+        False
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
         problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
@@ -2394,7 +2394,7 @@ def _repair_state_db_schema_locked(
         try:
             # The cjk index can only be rebuilt with its tokenizer loaded;
             # best-effort (a tokenizer-less host skips it at the probe below).
-            load_fts5_cjk_extension(conn)
+            False
             for table_name in (
                 "messages_fts", "messages_fts_trigram", "messages_fts_cjk"
             ):
@@ -2600,46 +2600,6 @@ BEGIN
     WHERE new.role <> 'tool';
 END;
 """
-
-def fts5_cjk_so_path() -> Path:
-    """Location of the cjk_unicode61 loadable extension."""
-    env = os.getenv("RENCO_FTS5_CJK_SO")
-    if env:
-        return Path(env).expanduser()
-    return get_renco_home() / "lib" / "libfts5_cjk.so"
-
-
-def _cjk_fts_config_enabled() -> bool:
-    """config.yaml ``sessions.cjk_fts`` (default on), via its env bridge."""
-    return os.getenv("RENCO_CJK_FTS", "1").strip().lower() not in (
-        "0", "false", "off", "no",
-    )
-
-
-def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
-    """Best-effort load of the cjk_unicode61 tokenizer into ``conn``.
-
-    Returns False (never raises) when the .so is absent, the feature is
-    disabled via ``sessions.cjk_fts``, or this Python build has extension
-    loading compiled out — every caller treats False as "behave exactly as
-    before the cjk index existed".
-    """
-    if not _cjk_fts_config_enabled():
-        return False
-    path = fts5_cjk_so_path()
-    if not path.exists():
-        return False
-    try:
-        conn.enable_load_extension(True)
-        try:
-            conn.load_extension(str(path))
-        finally:
-            conn.enable_load_extension(False)
-        return True
-    except Exception:
-        logger.warning("fts5_cjk extension load failed (%s)", path, exc_info=True)
-        return False
-
 
 class CompressionSessionClosedError(RuntimeError):
     """A durable write targeted a parent already closed by compression."""
@@ -3428,7 +3388,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
-                self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
+                self._fts_cjk_loaded = False
                 self._init_schema()
 
             def _connect_and_init_with_lock_patience():
@@ -3592,7 +3552,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # registers the tokenizer in the connection's in-memory
             # registry, not the database file, so mode=ro is fine.
             if self._fts_cjk_loaded:
-                load_fts5_cjk_extension(conn)
+                False
         except sqlite3.Error:
             # A partially-constructed connection — _connect_tracked_db
             # succeeded, the CJK extension load did not — must be closed here.
@@ -4180,7 +4140,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 apply_database_pragmas(new_conn, db_label="state.db")
                 new_conn.execute("PRAGMA foreign_keys=ON")
-                self._fts_cjk_loaded = load_fts5_cjk_extension(new_conn)
+                self._fts_cjk_loaded = False
                 self._init_schema()
         except Exception as exc:
             logger.error(

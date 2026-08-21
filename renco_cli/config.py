@@ -172,7 +172,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #   from one of these on every restart.
 # * ``NODE_OPTIONS`` / ``NODE_PATH`` — Node interpreter; affects npm,
 #   ``renco update``, the TUI build.
-# * ``PATH`` — too broad to allow. The dashboard never needs to rewrite
+# * ``PATH`` — too broad to allow. The env writer never needs to rewrite
 #   the operator's PATH; if a tool can't be found, the fix is to add an
 #   absolute path in the integration config, not to mutate PATH globally.
 # * ``GIT_SSH_COMMAND`` / ``GIT_EXEC_PATH`` — git rewrites that fire
@@ -185,7 +185,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # * ``RENCO_HOME`` / ``RENCO_PROFILE`` / ``RENCO_CONFIG`` /
 #   ``RENCO_ENV`` — Renco runtime location flags. Writing these into
 #   ``.env`` would relocate state in ways the user did not request from
-#   the dashboard. ``config.yaml`` is the supported surface for these.
+#   the env writer. ``config.yaml`` is the supported surface for these.
 #
 # IMPORTANT: ``RENCO_*`` overall is NOT blocked. Many legitimate
 # integration credentials follow that prefix (RENCO_LANGFUSE_PUBLIC_KEY,
@@ -195,7 +195,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #
 # This is enforced on *write* only — values already in ``.env`` (set
 # by the operator out-of-band, or pre-existing) keep working. The
-# point is that the dashboard's writable surface cannot escalate by
+# point is that the env writer's writable surface cannot escalate by
 # planting them.
 _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     # Loader / linker
@@ -211,7 +211,7 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
     # Git
     "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
-    # Renco runtime location — never via dashboard env writer.
+    # Renco runtime location — never via the env writer.
     # NOT a RENCO_* blanket: integration credentials (RENCO_GEMINI_*,
     # RENCO_LANGFUSE_*, RENCO_SPOTIFY_*, ...) ARE allowed.
     "RENCO_HOME", "RENCO_PROFILE", "RENCO_CONFIG", "RENCO_ENV",
@@ -254,7 +254,7 @@ _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # Serializes all config read/write paths. libyaml's C extension is not
 # thread-safe for concurrent safe_load() on the same file, and multiple
-# tool threads (approval.py, browser_tool.py, setup flows) hit
+# tool threads (approval.py, setup flows) hit
 # load_config / read_raw_config / save_config from different threads
 # during long agent runs. RLock (not Lock) because save_config internally
 # calls read_raw_config. Also covers mutation of the module-level cache
@@ -809,7 +809,7 @@ def _secure_dir(path):
 
     Also applies ``RENCO_UID``/``RENCO_GID``-based ownership when those env
     vars are set (#34107 — Docker deployments need this so profile subdirs
-    created at runtime by kanban workers don't land as root:root and block
+    created at runtime by workers don't land as root:root and block
     subsequent uid-mapped workers).
     """
     if is_managed():
@@ -831,7 +831,7 @@ def _is_container() -> bool:
 
     When Renco runs in a container with volume-mounted config files, forcing
     0o600 permissions breaks multi-process setups where the gateway and
-    dashboard run as different UIDs or the volume mount requires broader
+    other processes run as different UIDs or the volume mount requires broader
     permissions.
     """
     # Explicit opt-out
@@ -1992,8 +1992,6 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "mcp_servers",       # MCP server definitions written by setup/tools flows
     # Roots read from the raw user YAML (or written by our own flows) that are
     # intentionally absent from DEFAULT_CONFIG:
-    "image_gen",         # image-generation provider config (agent/image_gen_registry.py)
-    "video_gen",         # video-generation provider config (agent/video_gen_registry.py)
     "plugins",           # plugin enable/disable lists (renco_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (renco_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (renco_cli/setup.py)
@@ -2002,10 +2000,8 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "session_reset",         # top-level form read by gateway/config.py + setup
     "group_sessions_per_user",   # top-level form bridged by gateway/config.py
     "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
-    "stt_echo_transcripts",      # top-level form bridged by gateway/config.py
     "reset_triggers",            # top-level form bridged by gateway/config.py
     "always_log_local",          # top-level form bridged by gateway/config.py
-    "filter_silence_narration",  # top-level form bridged by gateway/config.py
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes
     "platforms",             # top-level per-platform map merged by gateway/config.py
@@ -2054,20 +2050,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [ConfigIssue("error", "Could not load config.yaml", "Run 'renco setup' to create a valid config")]
 
     issues: List[ConfigIssue] = []
-
-    # ── voice.submit_mode: direct | draft ────────────────────────────────
-    voice_cfg = config.get("voice")
-    if isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg:
-        submit_mode = voice_cfg.get("submit_mode")
-        normalized_submit_mode = (
-            submit_mode.strip().lower() if isinstance(submit_mode, str) else None
-        )
-        if normalized_submit_mode not in {"direct", "draft"}:
-            issues.append(ConfigIssue(
-                "error",
-                f"voice.submit_mode must be 'direct' or 'draft', got {submit_mode!r}",
-                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)",
-            ))
 
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
@@ -2581,8 +2563,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base*, preserving nested defaults.
 
     Keys in *override* take precedence. If both values are dicts the merge
-    recurses, so a user who overrides only ``tts.elevenlabs.voice_id`` will
-    keep the default ``tts.elevenlabs.model_id`` intact.
+    recurses, so a user who overrides only one nested subkey will keep the
+    sibling defaults intact.
 
     An empty section key in config.yaml (``terminal:`` with no value) parses
     as YAML ``None``; treating that as an override would replace the entire
@@ -3557,7 +3539,7 @@ def apply_terminal_config_to_env(
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
 
     ``tools.terminal_tool`` is intentionally environment-driven because it also
-    runs in child processes (TUI, dashboard PTY, gateway workers).  This helper
+    runs in child processes (TUI, gateway workers).  This helper
     gives those child-process launch paths the same config bridge as classic
     CLI without importing ``cli.py`` and paying for its startup side effects.
 
@@ -3862,7 +3844,7 @@ def save_config(
     When ``merge_existing`` is True, the on-disk raw config is deep-merged
     under *config* before writing so partial callers (migration steps via
     ``_persist_migration``) cannot drop unrelated sections the caller omitted.
-    Full-document replacement callers (dashboard raw YAML editor, callers that
+    Full-document replacement callers (raw YAML editor, callers that
     already deep-merge) must leave this False so intentional deletions survive.
     """
     with _CONFIG_LOCK:
@@ -4163,7 +4145,7 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
         + "\n".join(f"  {line}" for line in bad_chars[:5])
         + ("\n  ... and more" if len(bad_chars) > 5 else "")
         + "\n\n  The non-ASCII characters have been stripped automatically.\n"
-        "  If authentication fails, re-copy the key from the provider's dashboard.\n",
+        "  If authentication fails, re-copy the key from the provider's portal.\n",
         file=sys.stderr,
     )
     return sanitized

@@ -381,10 +381,10 @@ def _copilot_runtime_api_mode(
         return configured_mode
 
     # Use the model being resolved for this runtime, not the persisted global
-    # default. MoA slots, fallback models, and mid-session model switches all
-    # resolve credentials for a target model that can differ from config.yaml's
+    # default. Fallback models and mid-session model switches all resolve
+    # credentials for a target model that can differ from config.yaml's
     # model.default. If we derive Copilot api_mode from the stale default, a
-    # Claude/Gemini MoA slot can inherit codex_responses from a GPT-5 default and
+    # Claude/Gemini slot can inherit codex_responses from a GPT-5 default and
     # fail with "model ... does not support Responses API".
     model_name = str(target_model or model_cfg.get("default") or "").strip()
     if not model_name:
@@ -1802,16 +1802,6 @@ def resolve_runtime_provider(
                 f"provider {requested_provider!r} is disabled in config "
                 f"(providers.{requested_provider}.enabled: false)"
             )
-
-    if requested_provider == "moa":
-        return {
-            "provider": "moa",
-            "api_mode": "chat_completions",
-            "base_url": "moa://local",
-            "api_key": "moa-virtual-provider",
-            "source": "moa-virtual-provider",
-            "requested_provider": requested_provider,
-        }
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would

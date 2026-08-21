@@ -113,8 +113,8 @@ def provider_catalog() -> list[ProviderDescriptor]:
         OPTIONAL_ENV_VARS = {}
 
     # Renco overlays carry auth_type for providers that have no registry/profile
-    # entry of their own — notably the ``moa`` virtual provider (auth_type
-    # "virtual"), which has no real credential and no network endpoint.
+    # entry of their own (e.g. a "virtual" auth type with no real credential
+    # and no network endpoint).
     try:
         from renco_cli.providers import RENCO_OVERLAYS
     except Exception:
@@ -128,7 +128,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
         overlay = RENCO_OVERLAYS.get(slug)
 
         # auth_type: registry is authoritative; fall back to profile, then the
-        # Renco overlay (e.g. moa → "virtual"), then api_key.
+        # Renco overlay, then api_key.
         auth_type = (
             (getattr(cfg, "auth_type", "") if cfg else "")
             or (getattr(prof, "auth_type", "") if prof else "")

@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from renco_constants import get_renco_home, get_optional_mcps_dir
+from renco_constants import get_renco_home
 from renco_cli._subprocess_compat import noninteractive_git_env
 from renco_cli.colors import Colors, color
 from renco_cli.config import (
@@ -159,9 +159,7 @@ class CatalogError(Exception):
 
 def _catalog_root() -> Path:
     """Return the optional-mcps/ directory shipped with this Renco install."""
-    # Prefer the env-var override / packaged location; fall back to the repo's
-    # optional-mcps/ next to the package (source checkout).
-    return get_optional_mcps_dir(Path(__file__).parent.parent / "optional-mcps")
+    return Path(__file__).parent.parent / "optional-mcps"
 
 
 def _parse_env_spec(raw: Any) -> EnvVarSpec:

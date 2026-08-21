@@ -227,36 +227,6 @@ def get_default_renco_root() -> Path:
     return result
 
 
-def get_optional_skills_dir(default: Path | None = None) -> Path:
-    """Return the optional-skills directory, honoring package-manager wrappers.
-
-    Packaged installs may ship ``optional-skills`` outside the Python package
-    tree and expose it via ``RENCO_OPTIONAL_SKILLS``.
-    """
-    override = os.getenv("RENCO_OPTIONAL_SKILLS", "").strip()
-    if override:
-        return Path(override)
-    if default is not None:
-        return default
-    return get_renco_home() / "optional-skills"
-
-
-def get_optional_mcps_dir(default: Path | None = None) -> Path:
-    """Return the optional-mcps directory, honoring package-manager wrappers.
-
-    Mirrors :func:`get_optional_skills_dir` for the MCP catalog (Nous-approved
-    Model Context Protocol servers shipped with the repo but disabled by
-    default). Packaged installs may ship ``optional-mcps`` outside the Python
-    package tree and expose it via ``RENCO_OPTIONAL_MCPS``.
-    """
-    override = os.getenv("RENCO_OPTIONAL_MCPS", "").strip()
-    if override:
-        return Path(override)
-    if default is not None:
-        return default
-    return get_renco_home() / "optional-mcps"
-
-
 def get_bundled_skills_dir(default: Path | None = None) -> Path:
     """Return the bundled skills directory for source and packaged installs.
 
@@ -1645,7 +1615,6 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 FIRST_PARTY_MODULE_ROOTS = frozenset(
     {
         "agent",
-        "acp_adapter",
         "cli",
         "cron",
         "gateway",

@@ -45,11 +45,6 @@ class RencoOverlay:
 
 
 RENCO_OVERLAYS: Dict[str, RencoOverlay] = {
-    "moa": RencoOverlay(
-        transport="openai_chat",
-        auth_type="virtual",
-        base_url_override="moa://local",
-    ),
     "openrouter": RencoOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -244,7 +239,7 @@ RENCO_OVERLAYS: Dict[str, RencoOverlay] = {
     # agent/vertex_adapter.py, like bedrock's aws_sdk. Without an overlay
     # entry get_provider("vertex") returns None, which makes
     # _preserve_provider_with_base_url() in agent/auxiliary_client.py treat
-    # a Vertex MoA slot's resolved (base_url, api_key) pair as an unknown
+    # a Vertex slot's resolved (base_url, api_key) pair as an unknown
     # custom endpoint instead of "vertex" — losing the provider identity
     # that _refresh_provider_credentials() needs to re-mint an expired
     # OAuth2 token on a 401.
@@ -422,7 +417,6 @@ ALIASES: Dict[str, str] = {
 # not in the catalog.
 
 _LABEL_OVERRIDES: Dict[str, str] = {
-    "moa": "Mixture of Agents",
     "nous": "Nous Portal",
     "openai-codex": "ChatGPT or Codex Subscription",
     "copilot-acp": "GitHub Copilot ACP",

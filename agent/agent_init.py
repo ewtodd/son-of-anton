@@ -104,43 +104,6 @@ def _ra():
     return run_agent
 
 
-def _moa_reference_output_allowed(agent: Any) -> bool:
-    """Keep MoA display events off only the machine-readable ``-Q`` surface."""
-    return not (
-        getattr(agent, "platform", None) == "cli"
-        and getattr(agent, "tool_progress_mode", "all") == "off"
-    )
-
-
-def _relay_moa_reference_event(agent: Any, event: str, **kwargs: Any) -> None:
-    """Relay MoA display events while preserving the ``-Q`` stdout contract."""
-    if not _moa_reference_output_allowed(agent):
-        return
-    cb = getattr(agent, "tool_progress_callback", None)
-    if cb is None:
-        return
-    try:
-        if event == "moa.reference":
-            cb(
-                "moa.reference",
-                str(kwargs.get("label") or ""),
-                str(kwargs.get("text") or ""),
-                None,
-                moa_index=kwargs.get("index"),
-                moa_count=kwargs.get("count"),
-            )
-        elif event == "moa.aggregating":
-            cb(
-                "moa.aggregating",
-                str(kwargs.get("aggregator") or ""),
-                None,
-                None,
-                moa_ref_count=kwargs.get("ref_count"),
-            )
-    except Exception:
-        pass
-
-
 def _normalize_route_base_url(base_url: Any) -> str:
     """Canonicalize an endpoint URL for model-route identity comparisons."""
     return normalize_route_base_url(base_url)
@@ -1109,7 +1072,7 @@ def init_agent(
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
-    # (e.g. CLI voice mode adds a temporary prefix for the live call only).
+    # (e.g. API-local notes added for the live call only).
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
     agent._persist_user_message_timestamp = None
@@ -1212,26 +1175,6 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
-    elif agent.provider == "moa":
-        from agent.moa_loop import build_moa_facade
-        agent.api_mode = "chat_completions"
-
-        # build_moa_facade wires the reference relay that routes
-        # reference-model outputs to the agent's tool_progress_callback so
-        # every surface that already consumes it (CLI spinner/scrollback, TUI,
-        # desktop, gateway) can show each reference's answer as a labelled
-        # block before the aggregator acts. The facade emits "moa.reference",
-        # "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
-        # through the same callback the tool lifecycle uses. Best-effort and
-        # cache-safe — display-only events, they never touch the message
-        # history. The factory is shared with the fallback-restore/recovery
-        # paths so a restored facade keeps emitting these events (#53802).
-        agent.client = build_moa_facade(agent, agent.model)
-        agent._client_kwargs = {}
-        agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = "moa://local"
-        if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.
@@ -1584,17 +1527,6 @@ def init_agent(
                 print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
-
-    # Kanban worker/orchestrator lifecycle guidance is session-static:
-    # the dispatcher decides at spawn time whether this process is a kanban
-    # worker (kanban_show tool is present iff RENCO_KANBAN_TASK is set).
-    # Resolving the ~835-token block once here avoids re-running the
-    # membership test + reference on every system-prompt rebuild
-    # (init + each context compression).
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
-    )
 
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:
@@ -2425,7 +2357,6 @@ def init_agent(
         _custom_provider_candidate = bool(_configured_provider_norm)
         _runtime_first_provider_ids = {
             "auto",
-            "moa",
             "vertex",
             "google-vertex",
             "vertex-ai",

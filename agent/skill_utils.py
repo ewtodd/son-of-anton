@@ -282,54 +282,18 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 # ``--skills``), because an explicit request is explicit consent.
 #
 # Detection is cached for the process lifetime via ``_ENV_DETECT_CACHE``.
-_KNOWN_ENVIRONMENTS = frozenset({"kanban", "docker", "s6"})
+_KNOWN_ENVIRONMENTS = frozenset({"docker", "s6"})
 
 _ENV_DETECT_CACHE: Dict[str, bool] = {}
 
 
 def _detect_environment(env: str) -> bool:
-    """Return True when the named runtime environment is currently active.
-
-    Cached per process, EXCEPT ``kanban``: that verdict is context-dependent
-    (a delegate_task child or an in-process cron job sees the worker's
-    RENCO_KANBAN_* vars without owning them), so caching it process-wide would
-    freeze whichever context asked first and leak it to the others.
-    """
-    if env != "kanban" and env in _ENV_DETECT_CACHE:
+    """Return True when the named runtime environment is currently active."""
+    if env in _ENV_DETECT_CACHE:
         return _ENV_DETECT_CACHE[env]
 
     result = True
-    if env == "kanban":
-        # Kanban is "active" either as a dispatcher-spawned worker (the
-        # dispatcher sets ``RENCO_KANBAN_TASK`` / ``RENCO_KANBAN_BOARD`` in the
-        # worker env) or as an orchestrator profile that has opted into the
-        # kanban toolset. Mirror the same signals the kanban tools themselves
-        # gate on (``tools/kanban_tools.py``) so the offer filter agrees with
-        # tool availability.
-        if os.getenv("RENCO_KANBAN_TASK") or os.getenv("RENCO_KANBAN_BOARD"):
-            # ...but only when this execution actually owns the dispatcher's
-            # task. A delegate_task child or a cron job fired in-process from a
-            # worker sees the worker's vars without being that worker.
-            try:
-                from agent.delegation_context import (
-                    is_dispatcher_owned_worker_context,
-                )
-
-                _owns_dispatcher_task = is_dispatcher_owned_worker_context()
-            except Exception:
-                _owns_dispatcher_task = True
-        else:
-            _owns_dispatcher_task = False
-        if _owns_dispatcher_task:
-            result = True
-        else:
-            try:
-                from tools.kanban_tools import _profile_has_kanban_toolset
-
-                result = bool(_profile_has_kanban_toolset())
-            except Exception:
-                result = False
-    elif env == "docker":
+    if env == "docker":
         try:
             from renco_constants import is_container
 
@@ -354,7 +318,6 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 
     Skills may declare an ``environments`` list in their YAML frontmatter::
 
-        environments: [kanban]        # only relevant when kanban is active
         environments: [s6]            # only relevant inside the s6 Docker image
         environments: [docker]        # only relevant inside any container
 

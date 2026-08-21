@@ -1187,7 +1187,6 @@ class RencoConsoleEngine:
             "login",
             "logout",
             "model",
-            "moa",
             "oneshot",
 
             "proxy",

@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 from renco_cli.config import get_renco_home, get_config_path, load_config, save_config
-from renco_constants import get_optional_skills_dir
 from renco_cli.setup import (
     Colors,
     color,
@@ -34,15 +33,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-_OPENCLAW_SCRIPT = (
-    get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
-    / "migration"
-    / "openclaw-migration"
-    / "scripts"
-    / "openclaw_to_renco.py"
-)
-
-# Fallback: user may have installed the skill from the Hub
+# Installed from the skills hub
 _OPENCLAW_SCRIPT_INSTALLED = (
     get_renco_home()
     / "skills"
@@ -201,7 +192,7 @@ _WORKSPACE_STATE_GLOBS = (
 
 def _find_migration_script() -> Path | None:
     """Find the openclaw_to_renco.py script in known locations."""
-    for candidate in [_OPENCLAW_SCRIPT, _OPENCLAW_SCRIPT_INSTALLED]:
+    for candidate in [_OPENCLAW_SCRIPT_INSTALLED]:
         if candidate.exists():
             return candidate
     return None
@@ -379,7 +370,6 @@ def _cmd_migrate(args):
         print()
         print_error("Migration script not found.")
         print_info("Expected at one of:")
-        print_info(f"  {_OPENCLAW_SCRIPT}")
         print_info(f"  {_OPENCLAW_SCRIPT_INSTALLED}")
         print_info("Make sure the openclaw-migration skill is installed.")
         return

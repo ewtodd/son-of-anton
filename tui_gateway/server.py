@@ -66,8 +66,7 @@ load_renco_dotenv(
 # flushes through the stderr->gateway.stderr event pump. This hook
 # appends every unhandled exception to ~/.renco/logs/tui_gateway_crash.log
 # AND re-emits a one-line summary to stderr so the TUI can surface it in
-# Activity — exactly what was missing when the voice-mode turns started
-# exiting the gateway mid-TTS.
+# Activity.
 _CRASH_LOG = os.path.join(_renco_home, "logs", "tui_gateway_crash.log")
 
 
@@ -169,9 +168,9 @@ except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 
-# When a WebSocket client (the dashboard's embedded-chat tab / desktop app)
-# disconnects, ``tui_gateway.ws`` detaches the transport but intentionally
-# leaves the session parked so a quick reconnect can reattach it (see ws.py).
+# When a WebSocket client disconnects, ``tui_gateway.ws`` detaches the
+# transport but intentionally leaves the session parked so a quick reconnect
+# can reattach it (see ws.py).
 # That park is unbounded, though: a browser refresh spins up a brand-new
 # ``session.create`` (new sid + a fresh _SlashWorker via _deferred_build) and
 # never reattaches the OLD sid, so the old session's slash-worker subprocess
@@ -216,7 +215,6 @@ _LONG_HANDLERS = frozenset(
         "usage.bars",
         "session.usage",
         "billing.step_up",
-        "browser.manage",
         "cli.exec",
         # Completion RPCs run inline on the reader thread by default, but both
         # can block it for seconds: complete.path spawns `git ls-files` and
@@ -274,15 +272,13 @@ _LONG_HANDLERS = frozenset(
         "profiles.get_asset",
         "profiles.list",
         "profiles.set_asset",
-        # image.generate is a multi-second remote API round-trip.
-        "image.generate",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
         "projects.tree",
         "projects.project_sessions",
-        # Setup readiness RPCs are polled by the Desktop frontend on connect
-        # and periodically (use-status-snapshot → evaluateRuntimeReadiness).
+        # Setup readiness RPCs are polled by the frontend on connect and
+        # periodically (use-status-snapshot → evaluateRuntimeReadiness).
         # setup.runtime_check calls resolve_runtime_provider() which reads
         # config, checks auth state, and may probe the provider endpoint;
         # setup.status calls _has_any_provider_configured() which scans
@@ -291,29 +287,8 @@ _LONG_HANDLERS = frozenset(
         # the WS read loop and causing false "needs setup" (#50005 family).
         "setup.runtime_check",
         "setup.status",
-        # Voice RPCs can trigger check_voice_requirements() → STT provider
-        # auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
-        # subprocess with a 300s timeout). Inline they stall the WS reader
-        # loop (handle_ws awaits dispatch before reading the next frame), so
-        # prompt.submit / session.list queued behind a voice.toggle sit
-        # unread and the desktop "send message" appears dead for minutes
-        # (reproduced: voice.toggle → session.list 40s+ timeout). Route them
-        # to the pool so a slow lazy install can't block message handling.
-        "voice.toggle",
-        "voice.record",
-        "voice.tts",
-        # wake.start calls check_wake_word_requirements() → _stt_ready() →
-        # _get_provider() → _try_lazy_install_stt() → ensure("stt.faster_whisper")
-        # (same synchronous subprocess install chain as the voice RPCs above).
-        # It also calls start_listening() → _build_engine() whose constructors
-        # call lazy_deps.ensure("wake.openwakeword" / "wake.sherpa" / …).
-        # wake.status calls check_wake_word_requirements() too and is polled
-        # by the desktop on every gateway-ready, so it can re-trigger the
-        # same block on a fresh launch. Same bug class as #21123 / #50005.
-        "wake.start",
-        "wake.status",
-        # Desktop also polls the in-memory live-session registry every 15s.
-        # The handler is normally cheap, but under heavy agent GIL pressure it
+        # The in-memory live-session registry is polled periodically. The
+        # handler is normally cheap, but under heavy agent GIL pressure it
         # can still stall for tens of seconds. Keep it off the WS reader thread
         # so a delayed status rehydrate cannot block runtime readiness, prompt
         # submission, or interrupts queued behind it on the same socket.
@@ -706,8 +681,8 @@ def _transfer_active_session_slot(
 # TUI backend itself creates ("tui", plus whatever a client passes as its
 # own ``source``) and the CLI's own sessions are NOT gateway-owned.
 _NON_GATEWAY_SOURCES = frozenset({
-    "", "tui", "cli", "webui", "desktop", "cron", "kanban", "subagent", "test",
-    "local", "acp", "webhook", "api_server", "msgraph_webhook",
+    "", "tui", "cli", "webui", "cron", "subagent", "test",
+    "local", "webhook", "api_server", "msgraph_webhook",
 })
 
 
@@ -1175,7 +1150,7 @@ def _close_sessions_for_transport(
     transport, *, end_reason: str = "ws_disconnect"
 ) -> tuple[int, int]:
     """On transport disconnect, reap the sessions that opted into
-    close_on_disconnect (sidecar/dashboard) immediately via the unified
+    close_on_disconnect (sidecar) immediately via the unified
     ``_close_session_by_id`` path, and re-point the rest back to stdio so later
     emits don't hit a dead socket.
 
@@ -1209,10 +1184,6 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
-    try:
-        _release_gateway_wake_owner()
-    except Exception:
-        pass
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
@@ -1513,9 +1484,9 @@ def _db_unavailable_error(rid, *, code: int):
 
 
 # ── per-session profile scoping (global remote mode) ───────────────────────────
-# One dashboard normally serves its launch profile. But the desktop's app-global
-# remote mode points every profile at this single backend, so resume/prompt must
-# be able to act on ANOTHER local profile's state.db + home. The desktop passes
+# One gateway normally serves its launch profile. But the app-global remote
+# mode points every profile at this single backend, so resume/prompt must be
+# able to act on ANOTHER local profile's state.db + home. The client passes
 # ``profile`` on those calls; we open that profile's db and bind its RENCO_HOME
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the
@@ -1616,13 +1587,12 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
 def _launch_configured_cwd() -> str | None:
     """Resolve the launch profile's ``terminal.cwd`` from config.yaml.
 
-    Dashboard ``/chat`` for the launch profile attaches to the dashboard
-    process's in-memory TUI gateway. The Node PTY child receives a bridged
-    ``TERMINAL_CWD`` env var, but this in-memory process does not — so reading
-    the process env alone leaves a fresh chat starting in ``os.getcwd()``
-    (wherever ``renco dashboard`` was launched) instead of the configured
-    ``terminal.cwd``. Read config directly so changing ``terminal.cwd`` affects
-    new in-memory TUI sessions too.
+    In-memory gateway sessions attach to this process's TUI gateway. The Node
+    PTY child receives a bridged ``TERMINAL_CWD`` env var, but this in-memory
+    process does not — so reading the process env alone leaves a fresh chat
+    starting in ``os.getcwd()`` instead of the configured ``terminal.cwd``.
+    Read config directly so changing ``terminal.cwd`` affects new in-memory
+    TUI sessions too.
     """
     try:
         return _configured_cwd_from_cfg(_load_cfg())
@@ -1730,16 +1700,16 @@ def _inside_compute_host_child() -> bool:
 def _turn_isolation_enabled(cfg: dict | None = None) -> bool:
     if _inside_compute_host_child():
         return False
-    isolation_cfg = cfg or _load_dashboard_process_isolation_config()
+    isolation_cfg = cfg or {}
     return bool(isolation_cfg.get("turn_isolation"))
 
 
 def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
     if not _turn_isolation_enabled(cfg):
         return False
-    # Phase 1 routes lazy/dashboard sessions whose live AIAgent has not been
-    # built inside the serving process. Already-built in-process sessions keep
-    # the historical path unless a prior isolated turn marked host ownership.
+    # Phase 1 routes lazy sessions whose live AIAgent has not been built
+    # inside the serving process. Already-built in-process sessions keep the
+    # historical path unless a prior isolated turn marked host ownership.
     return bool(session.get("_compute_host_active")) or (
         session.get("agent") is None and session.get("agent_ready") is not None
     )
@@ -1747,7 +1717,7 @@ def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
 
 def _get_compute_host_supervisor(cfg: dict | None = None):
     global _compute_host_supervisor
-    isolation_cfg = cfg or _load_dashboard_process_isolation_config()
+    isolation_cfg = cfg or {}
     with _compute_host_supervisor_lock:
         if _compute_host_supervisor is None:
             from tui_gateway.host_supervisor import HostSupervisor
@@ -1874,7 +1844,7 @@ def _submit_prompt_to_compute_host(
     queued_prompt_generation: int | None = None,
     display_kind: str | None = None,
 ) -> dict:
-    cfg = _load_dashboard_process_isolation_config()
+    cfg = {}
     frame = _compute_host_turn_frame(
         rid,
         sid,
@@ -2584,10 +2554,10 @@ def _completion_cwd(params: dict | None = None) -> str:
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
         or _profile_configured_cwd(_profile_home(params.get("profile")))
-        # The launch profile's dashboard /chat attaches to the dashboard's
-        # in-memory gateway, which does NOT inherit the PTY child's bridged
-        # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
-        # configured terminal.cwd wins over a stale process env / launch dir.
+        # The launch profile's in-memory gateway does NOT inherit the PTY
+        # child's bridged TERMINAL_CWD. Read the launch profile's config.yaml
+        # directly so a configured terminal.cwd wins over a stale process env
+        # / launch dir.
         or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
@@ -2609,9 +2579,9 @@ def _terminal_task_cwd(session: dict | None) -> str:
     inside the target environment, so an SSH path like /home/user/workspace may
     not exist on the local macOS host but is still the correct execution cwd.
 
-    When ``TERMINAL_ENV`` is unset (dashboard/TUI process) the config's
+    When ``TERMINAL_ENV`` is unset (TUI process) the config's
     ``terminal.backend`` is consulted as a fallback so the non-local cwd
-    resolution path is taken even when the dashboard entrypoint did not call
+    resolution path is taken even when the gateway entrypoint did not call
     ``apply_terminal_config_to_env`` on its own ``os.environ``.
     """
     return _terminal_task_cwd_with_source(session)[0]
@@ -2633,7 +2603,7 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     """
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     if not backend or backend == "local":
-        # Fall back to config when TERMINAL_ENV is unset (dashboard/TUI process
+        # Fall back to config when TERMINAL_ENV is unset (the TUI process
         # never calls apply_terminal_config_to_env on os.environ).
         try:
             terminal_cfg = _load_cfg().get("terminal", {})
@@ -2687,14 +2657,14 @@ def _session_cwd(session: dict | None) -> str:
 # Sources whose launch directory is an artifact of how the app was started, not
 # a workspace the user picked. Everything else is terminal-started: the process
 # runs in a directory the user deliberately cd'd into.
-_LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
+_LAUNCH_CWD_NOT_A_WORKSPACE = set()
 
 
 def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset.
 
-    See :func:`_ensure_session_db_row` for why the launch directory counts as a
-    workspace for terminal sessions but not for the desktop.
+    See :func:`_ensure_session_db_row` for why the launch directory counts as
+    a workspace for terminal sessions.
     """
     if session.get("explicit_cwd"):
         return _session_cwd(session)
@@ -3251,48 +3221,12 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
 # ── Config I/O ────────────────────────────────────────────────────────
 
 
-_DASHBOARD_TURN_ISOLATION_DEFAULT = False
-_DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT = 15
-_DASHBOARD_COMPUTE_HOST_RESPAWN_MAX_DEFAULT = 3
-
-
 def _coerce_int_config_value(value: Any, default: int, *, min_value: int) -> int:
     try:
         coerced = int(value)
     except (TypeError, ValueError):
         return default
     return coerced if coerced >= min_value else default
-
-
-def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[str, Any]:
-    """Return dashboard process-isolation config with read-site defaults.
-
-    ``_load_cfg()`` intentionally returns the user ``config.yaml`` plus the
-    managed overlay and ``${VAR}`` expansion; it does not deep-merge
-    ``renco_cli.config.DEFAULT_CONFIG``. Keep
-    the Phase-0 defaults here so dashboard runtime and the REST editor's
-    DEFAULT_CONFIG-backed schema cannot drift.
-    """
-    root = _load_cfg() if cfg is None else cfg
-    dashboard = root.get("dashboard") if isinstance(root, dict) else {}
-    if not isinstance(dashboard, dict):
-        dashboard = {}
-    return {
-        "turn_isolation": is_truthy_value(
-            dashboard.get("turn_isolation"),
-            default=_DASHBOARD_TURN_ISOLATION_DEFAULT,
-        ),
-        "compute_host_heartbeat_secs": _coerce_int_config_value(
-            dashboard.get("compute_host_heartbeat_secs"),
-            _DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT,
-            min_value=1,
-        ),
-        "compute_host_respawn_max": _coerce_int_config_value(
-            dashboard.get("compute_host_respawn_max"),
-            _DASHBOARD_COMPUTE_HOST_RESPAWN_MAX_DEFAULT,
-            min_value=0,
-        ),
-    }
 
 
 def _load_cfg_raw() -> dict:
@@ -3436,7 +3370,7 @@ def _set_session_context(
         # can read RENCO_SESSION_ID. Without this, set_session_vars leaves the
         # session-id contextvar as "" (explicitly empty), and the subprocess-env
         # bridge treats that as authoritative — NOT falling back to os.environ —
-        # so every command in a dashboard/TUI/web session saw an empty
+        # so every command in a TUI/web session saw an empty
         # RENCO_SESSION_ID even though agent_init set it via
         # set_current_session_id(). Prefer the agent's durable session_id, then
         # fall back to the session_key (matching the id derivation used at
@@ -4007,26 +3941,8 @@ def _resolve_model() -> str:
 def _resolve_session_platform() -> str:
     """Resolve the platform tag for a tui_gateway-routed session.
 
-    The desktop app's chat panel and the standalone TUI both speak to this
-    gateway; without a branch they all get stamped ``platform="tui"``,
-    which makes the agent think it's talking to a terminal user. That
-    mis-tag is the root cause of the desktop chat agent suggesting
-    TUI-only slash commands (``/reload-mcp``, …) to chat-panel users.
-
-    Resolution:
-      * ``RENCO_DESKTOP=1`` and ``RENCO_DESKTOP_TERMINAL`` unset → "desktop"
-        (the chat-panel backend — a graphical React surface, not a terminal).
-      * ``RENCO_DESKTOP_TERMINAL=1`` → "tui"
-        (``renco --tui`` running in the desktop's embedded terminal pane;
-        it IS a TUI, just embedded. The clarifier attached to the tui hint
-        in system_prompt.py tells the agent about the embedding.)
-      * neither set → "tui"
-        (standalone ``renco --tui``.)
+    Sessions routed through this gateway are stamped ``platform="tui"``.
     """
-    if is_truthy_value(os.environ.get("RENCO_DESKTOP")) and not is_truthy_value(
-        os.environ.get("RENCO_DESKTOP_TERMINAL")
-    ):
-        return "desktop"
     return "tui"
 
 
@@ -4054,8 +3970,8 @@ def _config_model_target() -> tuple[str, str]:
     RENCO_INFERENCE_MODEL. Those env vars are a launch-scoped seed
     (`renco --tui -m <model>`, hosted-instance provisioning); if they
     fed the per-turn sync, the seed would be replayed as a /model switch
-    and persisted globally, or would pin the session so dashboard/CLI
-    model changes never reach an open chat.
+    and persisted globally, or would pin the session so CLI model changes
+    never reach an open chat.
     """
     cfg_model = _load_cfg().get("model")
     model = ""
@@ -4621,26 +4537,6 @@ def _load_tool_progress_mode() -> str:
     return mode if mode in {"off", "new", "all", "verbose"} else "all"
 
 
-def _gui_surface_toolsets(platform: str) -> set[str]:
-    """Toolsets that exist because of the CLIENT on the other end, not the host.
-
-    Both entries are deliberately off ``_RENCO_CORE_TOOLS`` — every other
-    platform would carry their schema for nothing — so this resolver is the one
-    gate that exposes them.
-
-    ``platform`` is the SESSION's source (``session.create``'s ``source``
-    field), never a process env var. The desktop app is a client: it can be
-    driving a local, SSH, URL, or cloud backend, and only the local/SSH spawn
-    paths run with ``RENCO_DESKTOP=1``. Keying GUI capability off that env var
-    silently stripped every pane/browser tool from URL and cloud gateways while
-    the same backend told the model it was "chatting inside the Renco desktop
-    app". See the surface-capability rule in AGENTS.md.
-    """
-    surfaces = {"project"}
-    if platform == "desktop":
-        surfaces.add("desktop_ui")
-    return surfaces
-
 
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
@@ -4654,9 +4550,8 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
 
     # Coding posture (base Renco): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
-    # The desktop app and `renco --tui` both land here. See
-    # agent/coding_context.py. No config is loaded yet at this point, so we let
-    # coding_selection() load it lazily (cli.py passes its already-resolved
+    # See agent/coding_context.py. No config is loaded yet at this point, so we
+    # let coding_selection() load it lazily (cli.py passes its already-resolved
     # CLI_CONFIG instead, purely to avoid a redundant read).
     if not explicit:
         try:
@@ -4666,9 +4561,9 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             if selection is not None:
                 # Fold in the client-surface toolsets here too: the focus-mode
                 # coding posture returns before the fallback path that normally
-                # adds them — without this the desktop loses its pane/project
-                # tools exactly when sitting in a repo (see below).
-                return sorted({*selection, *_gui_surface_toolsets(session_platform)})
+                # adds them — without this the client loses its project tools
+                # exactly when sitting in a repo (see below).
+                return sorted(selection)
         except Exception:
             pass
 
@@ -4785,7 +4680,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding them in here is the gate that exposes them on exactly the
         # surface that can answer them.
-        return sorted(enabled | _gui_surface_toolsets(session_platform))
+        return sorted(enabled)
     except Exception:
         if fallback_notice is not None:
             print(
@@ -5618,19 +5513,6 @@ def _current_profile_name() -> str:
         return "default"
 
 
-# Monotonic GUI<->backend contract version. The desktop app refuses to drive a
-# backend reporting less than its required value (or none at all — a pre-GUI
-# checkout), surfacing a one-click "update to align" prompt instead of failing
-# cryptically downstream. Bump whenever the desktop's backend contract changes.
-# v2: adds the file.attach RPC (remote-gateway non-image file upload).
-# v3: adds approvals.mode config RPCs and session.info reconciliation.
-# v4: session.create fast=false is an explicit per-session normal-tier override.
-# v5: uvicorn ws_max_size raised for one-shot base64 file.attach frames (>16 MiB).
-# v6: plugins.manage list rows carry the canonical registry key; toggles are
-#     key-addressed (keyless rows render read-only in Desktop Settings).
-DESKTOP_BACKEND_CONTRACT = 6
-
-
 def _session_usage_snapshot(session: dict | None) -> dict:
     agent = (session or {}).get("agent")
     mirror_usage = _metadata_mirror(session).get("usage")
@@ -5751,7 +5633,6 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "turn_started_at": turn_started_at,
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "stored_session_id": session_key or "",
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "",
         "release_date": "",
         "update_behind": None,
@@ -6099,61 +5980,6 @@ def _on_tool_progress(
         if _session_verbose(sid):
             payload["verbose"] = True
         _emit("reasoning.available", sid, payload)
-        return
-    if event_type == "moa.reference" and name:
-        # MoA reference-model output — relay as a labelled block the Ink/desktop
-        # client renders before the aggregator's response (like a thinking
-        # block, tagged with the source model). `name` is the slot label,
-        # `preview` is the reference text.
-        ref_payload: dict[str, object] = {
-            "label": str(name),
-            "text": str(preview or ""),
-        }
-        if _kwargs.get("moa_index") is not None:
-            ref_payload["index"] = _kwargs.get("moa_index")
-        if _kwargs.get("moa_count") is not None:
-            ref_payload["count"] = _kwargs.get("moa_count")
-        _emit("moa.reference", sid, ref_payload)
-        return
-    if event_type == "moa.aggregating":
-        _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
-        return
-    if event_type == "moa.progress":
-        # Per-reference completion — drives the status-bar progress indicator
-        # (`MOA: 2/3 refs done`) requested in issue #59546. Only emitted when
-        # both counters are present so the client can render deterministically.
-        refs_done = _kwargs.get("moa_refs_done")
-        refs_total = _kwargs.get("moa_refs_total")
-        if refs_done is None or refs_total is None:
-            return
-        _emit(
-            "moa.progress",
-            sid,
-            {
-                "label": str(name or ""),
-                "refs_done": int(refs_done),
-                "refs_total": int(refs_total),
-            },
-        )
-        return
-    if event_type == "moa.phase":
-        # Phase transition — currently only ``phase="aggregator"`` fires once
-        # the fan-out completes and the aggregator is about to act. Tells the
-        # client which phase of the MoA pipeline is currently running so it
-        # can swap status-bar copy accordingly.
-        phase = _kwargs.get("moa_phase")
-        if not phase:
-            return
-        phase_payload: dict[str, object] = {"phase": str(phase)}
-        refs_done = _kwargs.get("moa_refs_done")
-        refs_total = _kwargs.get("moa_refs_total")
-        if refs_done is not None:
-            phase_payload["refs_done"] = int(refs_done)
-        if refs_total is not None:
-            phase_payload["refs_total"] = int(refs_total)
-        if name:
-            phase_payload["aggregator"] = str(name)
-        _emit("moa.phase", sid, phase_payload)
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -7251,7 +7077,7 @@ def _init_session(
             # never leaks into siblings via process-global env vars.
             "model_override": None,
             # Pin async event emissions to whichever transport created the
-            # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
+            # session (stdio for Ink, JSON-RPC WS for other clients).
             "transport": current_transport() or _stdio_transport,
         }
     _init_owns_db = False
@@ -8558,7 +8384,6 @@ def _lazy_resume_info(
         "tools": {},
         "skills": {},
         "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "profile_name": _response_profile_name(profile),
     }
     if provider:
@@ -8830,12 +8655,6 @@ def _fallback_session_info(session: dict) -> dict:
         "model": _resolve_model(),
         "skills": {},
         "tools": {},
-        # A lazy session (agent not built yet) is still served by *this* backend,
-        # so it must advertise the current contract. Desktop feeds this straight
-        # into reportBackendContract(); a missing field is read as contract 0 and
-        # a current backend is falsely flagged "out of date" (#68392). The sibling
-        # session.create shape (_lazy_resume_info) already carries it (#36112).
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 
@@ -9827,20 +9646,11 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
-# Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds too so
-# the cursor advances past them and they can't wedge a later completed/blocked
-# event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = (
-    "completed", "blocked", "gave_up", "crashed", "timed_out",
-    "status", "archived", "unblocked",
-)
-_KANBAN_SILENT_KINDS = frozenset({"archived", "unblocked"})
-_KANBAN_POLL_SECONDS = 5.0
 _LOOP_POLL_SECONDS = 5.0
 
 
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
-    """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session.
+    """Fire a due /loop wakeup for an idle TUI session.
 
     Called from the per-session notification poller thread on a coarse
     cadence. Claims the session under history_lock (running=True) before
@@ -9933,159 +9743,8 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             pass
 
 
-def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
-    """Single-line notification text for one kanban event.
-
-    Wording mirrors the gateway notifier (gateway/kanban_watchers.py) so a
-    task completion reads the same in the TUI as it does on Telegram.
-    Returns None for kinds that are claimed but intentionally silent.
-    """
-    kind = getattr(ev, "kind", "")
-    if not kind or kind in _KANBAN_SILENT_KINDS:
-        return None
-    task_id = sub.get("task_id", "")
-    title = (getattr(task, "title", None) or task_id)[:120]
-    board_tag = f"[{board_slug}] " if board_slug else ""
-    who = getattr(task, "assignee", None) or ""
-    tag = f"@{who} " if who else ""
-    payload = getattr(ev, "payload", None) or {}
-    if kind == "completed":
-        handoff = ""
-        summary = payload.get("summary")
-        if summary:
-            lines = str(summary).strip().splitlines()
-            handoff = f"\n{lines[0][:200]}" if lines else ""
-        elif getattr(task, "result", None):
-            lines = str(task.result).strip().splitlines()
-            handoff = f"\n{lines[0][:160]}" if lines else ""
-        return f"✔ {board_tag}{tag}Kanban {task_id} done — {title}{handoff}"
-    if kind == "blocked":
-        reason = f": {str(payload.get('reason'))[:160]}" if payload.get("reason") else ""
-        return f"⏸ {board_tag}{tag}Kanban {task_id} blocked{reason}"
-    if kind == "gave_up":
-        err = f"\n{str(payload.get('error'))[:200]}" if payload.get("error") else ""
-        return f"✖ {board_tag}{tag}Kanban {task_id} gave up after repeated spawn failures{err}"
-    if kind == "crashed":
-        return f"✖ {board_tag}{tag}Kanban {task_id} worker crashed (pid gone); dispatcher will retry"
-    if kind == "timed_out":
-        limit = 0
-        try:
-            limit = int(payload.get("limit_seconds") or 0)
-        except (TypeError, ValueError):
-            pass
-        return f"⏱ {board_tag}{tag}Kanban {task_id} timed out (max_runtime={limit}s); will retry"
-    if kind == "status":
-        return f"🔄 {board_tag}{tag}Kanban {task_id} → {payload.get('status') or ''}"
-    return None
 
 
-def _collect_kanban_notifications(session: dict) -> list:
-    """Claim unseen terminal kanban events for this TUI session's subscriptions.
-
-    ``kanban_create`` auto-subscribes TUI/desktop sessions with
-    ``platform="tui"`` and ``chat_id=RENCO_SESSION_KEY`` (see
-    tools/kanban_tools.py ``_maybe_auto_subscribe``). The gateway notifier
-    can't deliver those — there is no "tui" messaging adapter — so this
-    poller is the delivery path for them (issue #59890). Uses the same
-    atomic cursor-claim (``claim_unseen_events_for_sub``) as the gateway
-    notifier, so a subscription is delivered exactly once even if a gateway
-    and a TUI poll the same board DB.
-
-    Returns the list of formatted notification texts (may be empty).
-    """
-    session_key = str(session.get("session_key") or "")
-    if not session_key or session.get("_finalized"):
-        return []
-    try:
-        from renco_cli import kanban_db as _kb
-    except Exception:
-        return []
-    texts: list = []
-    try:
-        boards = _kb.list_boards(include_archived=False)
-    except Exception:
-        try:
-            boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-        except Exception:
-            return []
-    # Poll each resolved DB path once — multiple slugs can point at the same
-    # DB when RENCO_KANBAN_DB pins the board path (same guard as the gateway
-    # notifier).
-    seen_db_paths: set = set()
-    for board_meta in boards:
-        slug = (board_meta or {}).get("slug") or _kb.DEFAULT_BOARD
-        db_path = (board_meta or {}).get("db_path")
-        try:
-            resolved = (
-                str(Path(db_path).expanduser().resolve())
-                if db_path else str(_kb.kanban_db_path(slug).resolve())
-            )
-        except Exception:
-            resolved = f"slug:{slug}"
-        if resolved in seen_db_paths:
-            continue
-        seen_db_paths.add(resolved)
-        # A poller runs per live TUI/Desktop session. Avoid opening this board
-        # writable unless it has a subscription owned by this exact session;
-        # subscriptions for gateways or other sessions are not actionable here.
-        try:
-            if _kb.count_notify_subs(
-                board=slug,
-                platform="tui",
-                chat_id=session_key,
-            ) == 0:
-                continue
-        except Exception:
-            # Preserve delivery if the read-only probe cannot inspect a
-            # locked, corrupt, or otherwise unusual database.
-            pass
-        try:
-            conn = _kb.connect(board=slug)
-        except Exception:
-            continue
-        try:
-            try:
-                subs = _kb.list_notify_subs(conn)
-            except Exception:
-                continue
-            for sub in subs:
-                if (sub.get("platform") or "").lower() != "tui":
-                    continue
-                if sub.get("chat_id") != session_key:
-                    continue
-                _old, _new, events = _kb.claim_unseen_events_for_sub(
-                    conn,
-                    task_id=sub["task_id"],
-                    platform=sub["platform"],
-                    chat_id=sub["chat_id"],
-                    thread_id=sub.get("thread_id") or "",
-                    kinds=_KANBAN_NOTIFY_KINDS,
-                )
-                if not events:
-                    continue
-                task = _kb.get_task(conn, sub["task_id"])
-                for ev in events:
-                    text = _format_kanban_event_text(sub, task, ev, slug)
-                    if text:
-                        texts.append(text)
-                # Unsubscribe only on archive. ``done`` is reversible in
-                # review/controller flows, so retaining the subscription lets
-                # a later reopen notify the same originating TUI/Desktop
-                # session. The claimed cursor prevents historical replay.
-                if task and getattr(task, "status", "") == "archived":
-                    try:
-                        _kb.remove_notify_sub(
-                            conn,
-                            task_id=sub["task_id"],
-                            platform=sub["platform"],
-                            chat_id=sub["chat_id"],
-                            thread_id=sub.get("thread_id") or "",
-                        )
-                    except Exception:
-                        pass
-        finally:
-            conn.close()
-    return texts
 
 
 def _notification_poller_loop(
@@ -10097,25 +9756,18 @@ def _notification_poller_loop(
     status.update (kind=process) for user visibility, then chains an
     agent turn via _run_prompt_submit if the session is idle.
 
-    The completion_queue is process-global. In multi-session Desktop each
+    The completion_queue is process-global. In multi-session setups each
     poller requeues events owned by another live session and drops addressed
     events whose owner is gone; ownerless legacy notifications remain global.
-
-    Also polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` for this
-    session's TUI kanban subscriptions and delivers terminal task events the
-    same way (status.update + agent turn) — the delivery path
-    tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
     """
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
-    _last_kanban_poll = 0.0
     _last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         _now = time.monotonic()
         # ── /loop wakeup driver ──────────────────────────────────────
-        # Fire a due /loop tick for THIS session while it's idle. Same
-        # claim-under-lock pattern as the kanban dispatch below. Active
+        # Fire a due /loop tick for THIS session while it's idle. Active
         # non-parked /goal owns the idle boundary and defers the tick.
         if _now - _last_loop_poll >= _LOOP_POLL_SECONDS:
             _last_loop_poll = _now
@@ -10127,44 +9779,6 @@ def _notification_poller_loop(
                     f"{type(_loop_exc).__name__}: {_loop_exc}",
                     file=sys.stderr,
                 )
-        if _now - _last_kanban_poll >= _KANBAN_POLL_SECONDS:
-            _last_kanban_poll = _now
-            try:
-                _kanban_texts = _collect_kanban_notifications(session)
-            except Exception as _kb_exc:
-                print(
-                    f"[tui_gateway] kanban notification poll failed: "
-                    f"{type(_kb_exc).__name__}: {_kb_exc}",
-                    file=sys.stderr,
-                )
-                _kanban_texts = []
-            if _kanban_texts:
-                for _kb_text in _kanban_texts:
-                    _emit("status.update", sid, {"kind": "process", "text": _kb_text})
-                # Events are cursor-claimed (never re-queued), so buffer them
-                # until the session is idle instead of dropping the agent turn.
-                session.setdefault("_kanban_pending", []).extend(_kanban_texts)
-            _pending = session.get("_kanban_pending") or []
-            if _pending:
-                _batch: list = []
-                with session["history_lock"]:
-                    if not session.get("running"):
-                        session["running"] = True
-                        _batch = list(_pending)
-                        session["_kanban_pending"] = []
-                if _batch:
-                    rid = f"__notif__{int(time.time() * 1000)}"
-                    try:
-                        _emit("message.start", sid)
-                        _run_prompt_submit(rid, sid, session, "\n".join(_batch))
-                    except Exception as exc:
-                        print(
-                            f"[tui_gateway] kanban notification dispatch failed: "
-                            f"{type(exc).__name__}: {exc}",
-                            file=sys.stderr,
-                        )
-                        with session["history_lock"]:
-                            session["running"] = False
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
@@ -10419,28 +10033,6 @@ def _wire_agent_terminal_output() -> None:
         process_registry.on_close = _emit_agent_terminal_close
 
 
-_desktop_ui_wired = False
-
-
-def _wire_desktop_ui() -> None:
-    """Bridge desktop-only tools (open_preview, close_preview, focus_pane) to renderer events.
-
-    Idempotent. The tool hands back the turn's ``RENCO_UI_SESSION_ID`` as
-    ``sid`` so the event routes to the window that asked (``_emit`` /
-    ``write_json`` is ``_stdout_lock``-guarded, so calling it from the tool's
-    thread is safe)."""
-    global _desktop_ui_wired
-    if _desktop_ui_wired:
-        return
-    try:
-        from tools import desktop_ui
-    except Exception:
-        return
-
-    desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))
-    _desktop_ui_wired = True
-
-
 # (stop_event, thread) for every poller ever started in this process.
 # Pruned of dead threads on each spawn; consumed by test teardowns to reap
 # leaked pollers (see _start_notification_poller).
@@ -10450,7 +10042,6 @@ _notification_pollers: list = []
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
     _wire_agent_terminal_output()
-    _wire_desktop_ui()
     stop = threading.Event()
     t = threading.Thread(
         target=_notification_poller_loop,
@@ -10733,8 +10324,6 @@ def _run_prompt_submit(
         secret_token = None
         goal_followup = None  # set by the post-turn goal hook below
         result = None  # turn outcome; read after the finally for leftover /steer
-        tts_queue = None  # streaming-TTS feed for this turn (voice mode)
-        thinking_started = False  # ambient thinking sound armed for this turn
         one_turn_restore = session.pop("one_turn_model_restore", None)
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
@@ -10893,58 +10482,6 @@ def _run_prompt_submit(
                 else:
                     run_message = _build_image_ref_message(prompt, images)
 
-            # Streaming TTS: voice-mode replies are spoken sentence-by-sentence
-            # as tokens arrive (CLI parity) instead of after the full turn.
-            # begin() first — it cuts any still-speaking previous turn, and
-            # that cut IS this turn's barge-in, so it must latch before we
-            # consume the latch below.
-            tts_queue = _tts_stream_begin()
-
-            # Full-duplex agent-turn listener: armed at utterance-submit so
-            # the user can interject DURING generation, not just during
-            # playback. _tts_stream_begin arms it too when a pipeline
-            # starts; this covers voice mode without working TTS.
-            if _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):
-                _arm_full_duplex_listener()
-
-            # Ambient "thinking" sound (voice mode only): calm bubble blips
-            # while the agent works with no audio flowing, so long
-            # thinking/tool stretches don't read as a dead session. Per-blip
-            # gate skips while real TTS audio flows or the mic is capturing;
-            # stopped in the finally the instant the turn ends.
-            # voice.thinking_sound config-gates it; macOS TCC handled inside.
-            thinking_started = False
-            if _voice_mode_enabled():
-                try:
-                    from tools.voice_mode import (
-                        is_audio_output_active,
-                        start_thinking_sound,
-                    )
-
-                    def _thinking_should_play() -> bool:
-                        if is_audio_output_active():
-                            return False
-                        try:
-                            from renco_cli.voice import is_continuous_active
-
-                            return not is_continuous_active()
-                        except Exception:
-                            return True
-
-                    thinking_started = start_thinking_sound(
-                        should_play=_thinking_should_play
-                    )
-                except Exception:
-                    thinking_started = False
-
-            # Barged mid-speech? Tell the model (API-message note, same
-            # enrichment channel as attached images) so it can react
-            # ("rude!") instead of being oblivious to its own interruption.
-            from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
-
-            if take_speech_interrupted():
-                run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
-
             # Reactions the user added since the last turn.
             run_message = _prepend_note(run_message, _pending_reaction_notes(session))
 
@@ -10958,8 +10495,6 @@ def _run_prompt_submit(
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
-                if tts_queue is not None and isinstance(delta, str):
-                    tts_queue.put(delta)
                 _emit("message.delta", sid, payload)
 
             # Surface interim assistant text (commentary emitted alongside
@@ -11044,48 +10579,6 @@ def _run_prompt_submit(
                             if display_metadata:
                                 message["display_metadata"] = display_metadata
                             break
-            if "moa_one_shot_restore" in session:
-                _restore = session.pop("moa_one_shot_restore", None)
-                # Restore the model the user was on before the /moa one-shot.
-                # The one-shot did a real in-place agent.switch_model() to MoA
-                # (#53444), so undoing it must go back through the switch path —
-                # resetting session["model_override"] alone would leave the live
-                # agent's client pinned to MoA for the next turn.
-                if isinstance(_restore, dict):
-                    _prev_override = _restore.get("override")
-                    _prev_model = _restore.get("model")
-                    _prev_provider = _restore.get("provider")
-                    if _prev_override is None:
-                        session.pop("model_override", None)
-                    else:
-                        session["model_override"] = _prev_override
-                    if _prev_model:
-                        _raw = (
-                            f"{_prev_model} --provider {_prev_provider}"
-                            if _prev_provider
-                            else _prev_model
-                        )
-                        try:
-                            _apply_model_switch(
-                                sid,
-                                session,
-                                _raw,
-                                confirm_expensive_model=False,
-                                pin_session_override=bool(_prev_override),
-                                # Session-internal restore after the /moa
-                                # one-shot — never persist to config.yaml.
-                                persist_override=False,
-                            )
-                        except Exception as _moa_restore_exc:
-                            logger.warning(
-                                "MoA one-shot model restore failed: %s",
-                                _moa_restore_exc,
-                            )
-                elif _restore is None:
-                    session.pop("model_override", None)
-                else:
-                    session["model_override"] = _restore
-
             last_reasoning = None
             status_note = None
             if isinstance(result, dict):
@@ -11369,28 +10862,6 @@ def _run_prompt_submit(
                     # Transient DB failure — keep pending_title for retry.
                     pass
 
-            # Voice TTS fallback: when the streaming pipeline couldn't start
-            # (no provider / missing deps probed at turn start), speak the
-            # final text whole (cli.py:_voice_speak_response parity). The
-            # streaming path already spoke everything via tts_queue.
-            if (
-                status == "complete"
-                and tts_queue is None
-                and isinstance(raw, str)
-                and raw.strip()
-                and _voice_tts_enabled()
-            ):
-                try:
-                    spoken = raw
-                    # Barge-aware: spoken interruptions must cut this
-                    # fallback playback too, not just the streaming path.
-                    threading.Thread(
-                        target=_speak_text_with_barge, args=(spoken,), daemon=True
-                    ).start()
-                except ImportError:
-                    logger.warning("voice TTS skipped: renco_cli.voice unavailable")
-                except Exception as e:
-                    logger.warning("voice TTS dispatch failed: %s", e)
         except Exception as e:
             import traceback
 
@@ -11446,17 +10917,6 @@ def _run_prompt_submit(
             except Exception:
                 logger.debug("post-turn memory trim failed", exc_info=True)
 
-            if thinking_started:
-                # Kill the ambient thinking sound the moment the turn ends —
-                # error and success paths both land here.
-                try:
-                    from tools.voice_mode import stop_thinking_sound
-
-                    stop_thinking_sound()
-                except Exception:
-                    pass
-            if tts_queue is not None:
-                tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
             if one_turn_restore:
                 try:
                     _restore_agent_model_runtime(agent, one_turn_restore)
@@ -12831,10 +12291,9 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     """A non-git cwd that should stay in flat Recents rather than auto-group.
 
     Unlike discovered git roots, an explicitly selected descendant of
-    RENCO_HOME may be an intentional prose/data workspace. The pre-Projects
-    desktop surfaced every such cwd, so exclude only the broad defaults that
-    would create catch-all projects: RENCO_HOME itself and the dirs in
-    :func:`_non_workspace_dirs`.
+    RENCO_HOME may be an intentional prose/data workspace. Exclude only the
+    broad defaults that would create catch-all projects: RENCO_HOME itself
+    and the dirs in :func:`_non_workspace_dirs`.
     """
     if not cwd:
         return True
@@ -12847,10 +12306,14 @@ def _is_session_cwd_junk(cwd: str) -> bool:
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
-    """Return the effective, profile-local Desktop repository scan policy."""
-    from renco_cli.config import DEFAULT_CONFIG
-
-    defaults = DEFAULT_CONFIG["desktop"]
+    """Return the effective, profile-local repository scan policy."""
+    # Read-site defaults mirror the removed ``desktop.repo_scan_*`` config
+    # section (the scan powers the TUI sidebar's project grouping).
+    defaults = {
+        "repo_scan_enabled": True,
+        "repo_scan_roots": [],
+        "repo_scan_exclude_paths": [],
+    }
     source = raw if isinstance(raw, dict) else (_load_cfg().get("desktop") or {})
     if not isinstance(source, dict):
         source = {}
@@ -12897,10 +12360,8 @@ def _repo_discovery_policy_key(policy: dict) -> str:
 
 
 def _repo_discovery_policy_is_default(policy: dict) -> bool:
-    from renco_cli.config import DEFAULT_CONFIG
-
     return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
-        _repo_discovery_policy(DEFAULT_CONFIG["desktop"])
+        _repo_discovery_policy()
     )
 
 
@@ -13077,11 +12538,10 @@ def _discover_repos_payload(
     return out
 
 
-# Sources excluded from the project tree: cron runs, and kanban dispatcher
-# workers, are not user conversations. Subagent/compression children are
-# already dropped by list_sessions_rich(include_children=False); cron has its
-# own section, and kanban runs are read on the board.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
+# Sources excluded from the project tree: cron dispatcher workers are not
+# user conversations. Subagent/compression children are already dropped by
+# list_sessions_rich(include_children=False); cron has its own section.
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron"]
 
 
 def _project_tree_row(r: dict) -> dict:
@@ -13350,7 +12810,6 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "goal",
         "loop",
         "proactive",
-        "moa",
         "undo",
         "learn",
         "init",
@@ -14071,9 +13530,9 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     if name == "help":
         return _format_live_help_output()
     if name == "clear":
-        return "Screen clear is terminal-only; desktop/TUI chat left unchanged."
+        return "Screen clear is terminal-only; TUI chat left unchanged."
     if name == "models":
-        return "Use /model to view or switch the current model; desktop users can also open the model picker."
+        return "Use /model to view or switch the current model."
     if name == "rename":
         return "Use /title <name> to rename this session."
     if name == "effort":
@@ -14238,1357 +13697,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     return ""
 
 
-# ── Methods: voice ───────────────────────────────────────────────────
-
-
-_voice_sid_lock = threading.Lock()
-_voice_event_sid: str = ""
-_voice_wake_owner: "Optional[Transport]" = None
-
-
-def _voice_emit(event: str, payload: dict | None = None) -> None:
-    """Emit a voice event toward the session that most recently turned the
-    mode on. Voice is process-global (one microphone), so there's only ever
-    one sid to target; the TUI handler treats an empty sid as "active
-    session". Kept separate from _emit to make the lack of per-call sid
-    argument explicit."""
-    with _voice_sid_lock:
-        sid = _voice_event_sid
-    _emit(event, sid, payload)
-
-
-def _resume_voice_wake() -> None:
-    global _voice_wake_owner
-    with _voice_sid_lock:
-        owner, _voice_wake_owner = _voice_wake_owner, None
-    if owner is not None:
-        _wake_resume_if_owner(owner)
-
-
-def _voice_mode_enabled() -> bool:
-    """Current voice-mode flag (runtime-only, CLI parity).
-
-    cli.py initialises ``_voice_mode = False`` at startup and only flips
-    it via ``/voice on``; it never reads a persisted enable bit from
-    config.yaml.  We match that: no config lookup, env var only.  This
-    avoids the TUI auto-starting in REC the next time the user opens it
-    just because they happened to enable voice in a prior session.
-    """
-    return os.environ.get("RENCO_VOICE", "").strip() == "1"
-
-
-def _voice_tts_enabled() -> bool:
-    """Whether agent replies should be spoken back via TTS (runtime only)."""
-    return os.environ.get("RENCO_VOICE_TTS", "").strip() == "1"
-
-
-def _any_session_running() -> bool:
-    """True while any session's agent turn is in flight.
-
-    Registered as the voice busy-probe (``renco_cli.voice.set_voice_busy_probe``)
-    so silent capture cycles during a long agent turn don't count toward the
-    no-speech limit — the user is correctly quiet while the agent works.
-    Voice is process-global (one microphone), so any running session holds.
-    """
-    try:
-        with _sessions_lock:
-            return any(s.get("running") for s in _sessions.values())
-    except Exception:
-        return False
-
-
-# ── Streaming TTS (one active pipeline per process — one speaker) ──────────
-# Token deltas from the running turn feed a sentence-buffering consumer
-# (tools.tts_tool.stream_tts_to_speaker) so speech starts on the first
-# sentence instead of after the full reply. Voice is process-global, so a
-# single slot suffices; starting a new turn's pipeline barges in on the
-# previous one.
-
-_tts_stream_lock = threading.Lock()
-_tts_stream_state: Optional[dict] = None
-
-
-def _tts_stream_begin() -> Optional[queue.Queue]:
-    """Start a per-turn streaming TTS consumer; None when TTS can't stream."""
-    if not _voice_tts_enabled():
-        return None
-    try:
-        from tools.tts_tool import check_tts_requirements, stream_tts_to_speaker
-
-        if not check_tts_requirements():
-            return None
-    except Exception:
-        return None
-
-    _tts_stream_stop()
-    text_queue: queue.Queue = queue.Queue()
-    stop = threading.Event()
-    done = threading.Event()
-    threading.Thread(
-        target=stream_tts_to_speaker, args=(text_queue, stop, done), daemon=True
-    ).start()
-
-    global _tts_stream_state
-    with _tts_stream_lock:
-        _tts_stream_state = {"stop": stop, "done": done}
-
-    if _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):
-        _arm_full_duplex_listener()
-
-    return text_queue
-
-
-def _tts_stream_stop(user_barge: bool = True) -> None:
-    """Cut any in-flight streaming TTS (new turn, interrupt, /voice off).
-
-    *user_barge* latches the interruption for the next turn's model note
-    (``mark_speech_interrupted``) — pass ``False`` for mode changes like
-    ``/voice off`` where the user isn't talking over the reply.
-    """
-    global _tts_stream_state
-    with _tts_stream_lock:
-        state, _tts_stream_state = _tts_stream_state, None
-    if state is None:
-        return
-    if user_barge and not state["done"].is_set():
-        import traceback as _tb
-        logger.debug(
-            "TTS CUT: _tts_stream_stop(user_barge=True) — new turn or "
-            "interrupt cutting in-flight TTS\n%s",
-            "".join(_tb.format_stack()),
-        )
-        from tools.tts_streaming import mark_speech_interrupted
-
-        mark_speech_interrupted()
-    state["stop"].set()
-    try:
-        from tools.voice_mode import stop_playback
-
-        stop_playback()
-    except Exception:
-        pass
-
-
-def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -> None:
-    """Deprecated shim — playback-only monitor replaced by the full-duplex
-    agent-turn listener (see ``_full_duplex_listener``). Kept as a name so
-    stray callers arm the new listener instead of a per-playback mic."""
-    _arm_full_duplex_listener()
-
-
-# ── Full-duplex agent-turn listener (one mic, whole turn) ──────────────────
-# Replaces the per-playback barge monitors: those only opened the mic once
-# TTS playback started (deaf during LLM generation) and calibrated the VAD
-# floor against active speaker bleed (deaf during playback too, in practice).
-# This listener arms at utterance-submit, spans generation AND playback, and
-# disarms when no session is running, no TTS is pending, and no audio flows.
-
-_fd_listener_lock = threading.Lock()
-_fd_listener_active = False
-# (stop, done) pairs for fallback whole-reply speak paths currently active —
-# the listener must cut THEIR private stop events too, and must keep
-# listening while any of them is still speaking.
-_fd_speak_pipelines: "set[tuple[threading.Event, threading.Event]]" = set()
-
-
-def _arm_full_duplex_listener() -> None:
-    """Arm the process-global full-duplex listener (idempotent — one mic)."""
-    global _fd_listener_active
-    with _fd_listener_lock:
-        if _fd_listener_active:
-            return
-        _fd_listener_active = True
-    threading.Thread(
-        target=_full_duplex_listener, daemon=True, name="voice-full-duplex"
-    ).start()
-
-
-def _fd_tts_pending() -> bool:
-    """True while any TTS (streaming pipeline or fallback speak) is unfinished."""
-    with _tts_stream_lock:
-        state = _tts_stream_state
-    if state is not None and not state["done"].is_set():
-        return True
-    with _fd_listener_lock:
-        pipelines = list(_fd_speak_pipelines)
-    return any(not done.is_set() for _stop, done in pipelines)
-
-
-def _full_duplex_listener() -> None:
-    """Mic live from utterance-submit to turn-complete; phase-aware trip.
-
-    * generation phase (no TTS audio flowing): user speech interrupts every
-      running session's agent turn — the same ``agent.interrupt()`` seam
-      ``session.interrupt`` uses — and cuts any pending TTS pipeline so the
-      stale reply never plays. The captured utterance is transcribed and
-      emitted as ``voice.transcript`` (the TUI submits it as the next turn).
-    * playback phase: cuts TTS (streaming pipeline + fallback speak paths +
-      file player) and submits the captured interruption.
-
-    Stop phrase is honored in both phases: mid-generation it interrupts the
-    turn AND ends the voice chat ("stop everything").
-    """
-    global _fd_listener_active
-    try:
-        from tools.tts_streaming import mark_speech_interrupted
-        from tools.voice_mode import (
-            full_duplex_listen,
-            is_audio_output_active,
-            stop_playback,
-            transcribe_recording,
-        )
-
-        cfg = _voice_cfg_dict()
-        try:
-            _mult = float(cfg.get("barge_in_threshold_multiplier", 0) or 0)
-        except (TypeError, ValueError):
-            _mult = 0.0
-        try:
-            _grace_ms = int(float(cfg.get("barge_in_grace_seconds", 0.5)) * 1000)
-        except (TypeError, ValueError):
-            _grace_ms = 500
-
-        def _should_stop() -> bool:
-            if not _voice_mode_enabled():
-                return True
-            if _any_session_running():
-                return False
-            if _fd_tts_pending():
-                return False
-            return not is_audio_output_active()
-
-        tripped = threading.Event()
-
-        def _cut_all_tts() -> None:
-            # Streaming pipeline (private stop event + player).
-            _tts_stream_stop(user_barge=True)
-            # Fallback whole-reply speak paths (their own stop events).
-            with _fd_listener_lock:
-                pipelines = list(_fd_speak_pipelines)
-            for _stop, _done in pipelines:
-                _stop.set()
-            stop_playback()
-
-        def _on_trigger(phase: str) -> None:
-            tripped.set()
-            mark_speech_interrupted()
-            if phase == "playback":
-                logger.debug(
-                    "TTS CUT: full-duplex listener tripped during playback"
-                )
-                _cut_all_tts()
-            else:
-                logger.debug(
-                    "full-duplex listener tripped during generation — "
-                    "interrupting running turn(s)"
-                )
-                # Cut pending TTS FIRST so the stale reply can never speak.
-                _cut_all_tts()
-                # Interrupt every running session's turn — voice is
-                # process-global, and the same seam session.interrupt uses.
-                try:
-                    with _sessions_lock:
-                        running = [
-                            s for s in _sessions.values() if s.get("running")
-                        ]
-                    for s in running:
-                        agent = s.get("agent")
-                        if agent is not None and hasattr(agent, "interrupt"):
-                            try:
-                                agent.interrupt()
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.debug("voice interjection interrupt failed: %s", e)
-            _voice_emit("voice.interrupted")
-
-        wav_path = full_duplex_listen(
-            _should_stop,
-            is_playing=is_audio_output_active,
-            on_trigger=_on_trigger,
-            multiplier=_mult or None,
-            grace_ms=max(0, _grace_ms),
-        )
-        if not (wav_path and tripped.is_set()):
-            return
-        try:
-            result = transcribe_recording(wav_path)
-            text = (result.get("transcript") or "").strip() if result.get("success") else ""
-            if text:
-                # Stop-check must never break transcript delivery — if the
-                # helper is unavailable (stubbed voice_mode in tests, partial
-                # installs), treat as not-a-stop-phrase.
-                try:
-                    from tools.voice_mode import is_voice_stop_phrase
-                    _is_stop = is_voice_stop_phrase(text)
-                except Exception:
-                    _is_stop = False
-
-                if _is_stop:
-                    # Bare stop phrase — in EITHER phase the user means
-                    # "stop everything": the turn was already interrupted /
-                    # TTS cut at trip time; now end the voice chat.
-                    os.environ["RENCO_VOICE"] = "0"
-                    os.environ["RENCO_VOICE_TTS"] = "0"
-                    try:
-                        from renco_cli.voice import stop_continuous
-
-                        stop_continuous()
-                    except Exception:
-                        pass
-                    _voice_emit("voice.transcript", {"stop_phrase": True, "text": text})
-                else:
-                    _voice_emit("voice.transcript", {"text": text})
-        finally:
-            try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
-    except Exception as e:
-        logger.debug("full-duplex listener failed: %s", e)
-    finally:
-        with _fd_listener_lock:
-            _fd_listener_active = False
-
-
-def _speak_text_with_barge(text: str) -> None:
-    """Speak *text* via renco_cli.voice.speak_text with spoken barge-in.
-
-    The fallback whole-reply path (streaming couldn't start) and the
-    ``voice.tts`` RPC previously called ``speak_text`` bare — speech over
-    those paths was UNINTERRUPTIBLE by voice. The full-duplex agent-turn
-    listener covers this path too: the (stop, done) pair is registered in
-    ``_fd_speak_pipelines`` so the listener can cut the private stop event
-    on a playback trip and keeps listening while this speak is pending.
-    """
-    from renco_cli.voice import speak_text
-
-    stop = threading.Event()
-    done = threading.Event()
-    with _fd_listener_lock:
-        _fd_speak_pipelines.add((stop, done))
-
-    def _speak():
-        try:
-            speak_text(text, stop)
-        except TypeError:
-            # Older wrapper without the stop_event parameter.
-            speak_text(text)
-        finally:
-            done.set()
-            with _fd_listener_lock:
-                _fd_speak_pipelines.discard((stop, done))
-
-    threading.Thread(target=_speak, daemon=True).start()
-    if _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):
-        _arm_full_duplex_listener()
-
-
-def _voice_cfg_dict() -> dict:
-    """Shape-safe accessor for the ``voice:`` block in config.yaml.
-
-    ``_load_cfg()`` does not deep-merge DEFAULT_CONFIG, so both the
-    root AND ``voice`` may be any YAML scalar / list / None. A hand-edit
-    like ``voice: true`` or a malformed top-level config that parses to
-    a scalar would otherwise break ``.get("…")`` and take every
-    ``voice.*`` branch down with it (Copilot round-3..7 review on
-    #19835). Coerce through ``isinstance`` at every level so malformed
-    config falls back to an empty dict instead of crashing /voice.
-    """
-    cfg = _load_cfg()
-    voice_cfg = cfg.get("voice") if isinstance(cfg, dict) else None
-
-    return voice_cfg if isinstance(voice_cfg, dict) else {}
-
-
-def _voice_record_key() -> str:
-    """Current ``voice.record_key`` value, documented default on error."""
-    record_key = _voice_cfg_dict().get("record_key")
-
-    return str(record_key) if isinstance(record_key, str) and record_key else "ctrl+b"
-
-
-# ── Wake word ("Hey Renco") ──────────────────────────────────────────────
-# The detector is process-global (one mic), like voice. The first eligible
-# transport to call wake.start owns it until stop, disconnect, or stream failure.
-# On detection we emit wake.detected; the client opens a new session and starts
-# its own voice capture. The detector yields the mic to gateway voice.record
-# (pause/resume below) and to the desktop's browser mic (wake.pause/resume RPCs).
-_wake_lock = threading.Lock()
-_wake_owner_transport: "Optional[Transport]" = None
-_wake_owner_surface = ""
-
-
-def _wake_owner_snapshot():
-    with _wake_lock:
-        return _wake_owner_transport, _wake_owner_surface
-
-
-def _release_wake_for_transport(transport: "Transport") -> bool:
-    """Release the wake lease iff ``transport`` is the current gateway owner."""
-    global _wake_owner_transport, _wake_owner_surface
-    with _wake_lock:
-        if _wake_owner_transport is not transport:
-            return False
-        _wake_owner_transport = None
-        _wake_owner_surface = ""
-    try:
-        from tools.wake_word import stop_listening
-
-        stop_listening(owner=transport)
-    except Exception as e:
-        logger.debug("wake stop failed: %s", e)
-    return True
-
-
-def _release_gateway_wake_owner() -> bool:
-    owner, _surface = _wake_owner_snapshot()
-    return owner is not None and _release_wake_for_transport(owner)
-
-
-_wake_resume_retry_lock = threading.Lock()
-_wake_resume_retry_active = False
-
-
-def _wake_resume_if_owner(owner: "Transport", *, retry_seconds: float = 15.0,
-                          retry_interval: float = 1.0) -> bool:
-    """Resume the wake detector for ``owner``; self-heal a busy microphone.
-
-    Reopening the mic right after a voice turn can fail while the capture
-    device is still being released (browser WebRTC tracks release async).
-    The CLI covers this with its idle watchdog; the gateway had nothing, so
-    one failed resume left the listener silently dead until the user toggled
-    it by hand — despite ``wake_word.enabled: true``. On an exception (mic
-    open failure) we retry in a background thread until it sticks, the lease
-    changes hands, or ``retry_seconds`` elapses. ``False`` from
-    ``resume_listening`` (lease gone / different owner) is final — never
-    retried, so this can't steal another surface's mic.
-    """
-    from tools.wake_word import resume_listening
-
-    try:
-        return resume_listening(owner=owner)
-    except Exception as e:
-        logger.debug("wake resume failed (will retry): %s", e)
-
-    global _wake_resume_retry_active
-    with _wake_resume_retry_lock:
-        if _wake_resume_retry_active:
-            return False
-        _wake_resume_retry_active = True
-
-    def _retry() -> None:
-        global _wake_resume_retry_active
-        deadline = time.monotonic() + retry_seconds
-        try:
-            while time.monotonic() < deadline:
-                time.sleep(retry_interval)
-                try:
-                    if resume_listening(owner=owner):
-                        logger.info("wake: detector resumed after retry")
-                        return
-                except Exception:
-                    continue
-                # False — detector gone or lease moved: stop, don't fight it.
-                return
-            logger.warning(
-                "wake: could not resume detector after voice turn "
-                "(microphone still busy?) — toggle the wake word to re-arm"
-            )
-        finally:
-            with _wake_resume_retry_lock:
-                _wake_resume_retry_active = False
-
-    threading.Thread(target=_retry, daemon=True, name="wake-resume-retry").start()
-    return False
-
-
-def _persist_wake_enabled(enabled: bool) -> bool:
-    """Write ``wake_word.enabled`` to config.yaml.
-
-    Only called for explicit user gestures (the desktop ear toggle, ``/wake
-    on|off``) — never from passive auto-arm paths, so a mic can't become
-    persistently enabled without a deliberate click.
-    """
-    try:
-        from cli import save_config_value
-
-        return bool(save_config_value("wake_word.enabled", enabled))
-    except Exception as e:
-        logger.warning("wake: failed to persist wake_word.enabled=%s: %s", enabled, e)
-        return False
-
-
-@method("wake.start")
-def _(rid, params: dict) -> dict:
-    """Arm the wake-word listener for the calling surface ("tui" | "gui").
-
-    Idempotent and gated: returns ``{started: False, reason}`` when the wake
-    word is disabled, scoped to another surface, or its deps/mic aren't ready.
-
-    ``persist: true`` marks an explicit user gesture (toggle click, /wake on):
-    when the feature is disabled in config, it flips ``wake_word.enabled`` on
-    and saves it before arming, so the choice sticks for future sessions.
-    Passive auto-arm callers omit it and keep getting the config-gated refusal.
-    """
-    surface = str(params.get("surface") or "auto").strip().lower()
-    persist = bool(params.get("persist"))
-    transport = current_transport() or _stdio_transport
-    try:
-        from tools.wake_word import (
-            WakeWordInUse,
-            check_wake_word_requirements,
-            detector_frame_info,
-            load_wake_word_config,
-            owns_listener,
-            resolve_capture_mode,
-            start_listening,
-            wake_phrase,
-            wake_surface_enabled,
-        )
-    except Exception as e:
-        return _err(rid, 5026, f"wake module unavailable: {e}")
-
-    cfg = load_wake_word_config()
-    # Desktop remote (gui) prefers client capture: Mac mic → wake.feed PCM,
-    # while the engine still runs on the backend. CLI/TUI stay local.
-    prefer_client = surface in ("gui", "desktop") or bool(params.get("client_capture"))
-    capture_mode = resolve_capture_mode(cfg, prefer_client=prefer_client)
-    external_audio = capture_mode == "client"
-    # Requirements first: a gesture on an unarmed-able setup (no STT/TTS, no
-    # mic, missing key) must refuse WITHOUT flipping wake_word.enabled — else
-    # config says on while nothing can ever arm, and auto-arm paths churn.
-    # Temporarily stamp capture so the probe matches the arm mode.
-    probe_cfg = dict(cfg)
-    probe_cfg["capture"] = capture_mode
-    reqs = check_wake_word_requirements(probe_cfg)
-    if not reqs["available"]:
-        logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
-        return _ok(rid, {
-            "started": False,
-            "reason": "unavailable",
-            "hint": reqs.get("hint") or "",
-            "capture": capture_mode,
-        })
-    enabled_persisted = False
-    if persist and not cfg.get("enabled"):
-        enabled_persisted = _persist_wake_enabled(True)
-        if enabled_persisted:
-            cfg = dict(cfg)
-            cfg["enabled"] = True
-    if not wake_surface_enabled(surface, cfg):
-        # Distinguish "feature off in config" (reason: disabled — a persist:true
-        # retry can turn it on) from "scoped to a different surface" (reason:
-        # disabled_for_surface — respects an explicit wake_word.surface choice,
-        # which persist does NOT override).
-        reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
-        logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
-                    surface, reason, cfg.get("enabled"), cfg.get("surface"))
-        return _ok(rid, {"started": False, "reason": reason})
-
-    existing_owner, existing_surface = _wake_owner_snapshot()
-    if existing_owner is not None and (
-        _transport_is_dead(existing_owner) or not owns_listener(existing_owner)
-    ):
-        _release_wake_for_transport(existing_owner)
-        existing_owner = None
-        existing_surface = ""
-    if existing_owner is not None and existing_owner is not transport:
-        return _ok(rid, {
-            "started": False,
-            "reason": "owned",
-            "owner_surface": existing_surface,
-        })
-
-    sid = str(params.get("session_id") or "")
-    phrase = wake_phrase(cfg)
-    new_session = bool(cfg.get("start_new_session", True))
-
-    def _on_detect() -> None:
-        from tools.wake_word import get_last_match, owns_listener, pause_listening
-
-        if not pause_listening(owner=transport):
-            return
-        if not owns_listener(transport):
-            return
-        if _transport_is_dead(transport):
-            _release_wake_for_transport(transport)
-            return
-        # Multi-phrase engines report WHICH phrase fired and the profile it
-        # belongs to, so one listener can wake any enrolled profile. Falls
-        # back to the owner's configured phrase / no profile for
-        # single-phrase engines.
-        matched_phrase, matched_profile = get_last_match() or (phrase, "")
-        logger.info("wake.detected: emitting to sid=%r (transport=%s, profile=%r)",
-                    sid, type(transport).__name__, matched_profile)
-        token = bind_transport(transport)
-        try:
-            _emit("wake.detected", sid, {
-                "phrase": matched_phrase or phrase,
-                "profile": matched_profile or None,
-                "start_new_session": new_session,
-            })
-        finally:
-            reset_transport(token)
-
-    try:
-        start_listening(
-            _on_detect,
-            owner=transport,
-            config=cfg,
-            external_audio=external_audio,
-        )
-    except WakeWordInUse:
-        return _ok(rid, {
-            "started": False,
-            "reason": "owned",
-            "owner_surface": existing_surface or None,
-        })
-    except Exception as e:
-        logger.warning("wake.start(%s): failed to start listener: %s", surface, e)
-        return _err(rid, 5026, str(e))
-    global _wake_owner_transport, _wake_owner_surface
-    with _wake_lock:
-        _wake_owner_transport = transport
-        _wake_owner_surface = surface
-    frame = detector_frame_info()
-    logger.info(
-        "wake.start(%s): listening for %r (%s) capture=%s frame=%s",
-        surface, reqs["phrase"], reqs["provider"], capture_mode, frame.get("frame_length"),
-    )
-    return _ok(rid, {
-        "started": True,
-        "phrase": reqs["phrase"],
-        "provider": reqs["provider"],
-        "owner_surface": surface,
-        "enabled_persisted": enabled_persisted,
-        "capture": capture_mode,
-        "sample_rate": frame.get("sample_rate", 16000),
-        "frame_length": frame.get("frame_length", 1280),
-    })
-
-
-@method("wake.stop")
-def _(rid, params: dict) -> dict:
-    """Stop this surface's listener.
-
-    ``persist: true`` (explicit user gesture) also writes
-    ``wake_word.enabled: false`` to config.yaml so auto-arm stays off in
-    future sessions — the toggle is the config, not just the live listener.
-    """
-    transport = current_transport() or _stdio_transport
-    stopped = _release_wake_for_transport(transport)
-    disabled_persisted = False
-    if bool(params.get("persist")):
-        try:
-            from tools.wake_word import load_wake_word_config
-
-            currently_enabled = bool(load_wake_word_config().get("enabled"))
-        except Exception:
-            currently_enabled = True
-        if currently_enabled:
-            disabled_persisted = _persist_wake_enabled(False)
-    return _ok(rid, {
-        "stopped": stopped,
-        "reason": None if stopped else "not_owner",
-        "disabled_persisted": disabled_persisted,
-    })
-
-
-@method("wake.pause")
-def _(rid, params: dict) -> dict:
-    """Release the mic (e.g. while the desktop's browser captures audio)."""
-    transport = current_transport() or _stdio_transport
-    try:
-        from tools.wake_word import pause_listening
-
-        paused = pause_listening(owner=transport)
-        logger.info("wake.pause: detector paused=%s", paused)
-    except Exception as e:
-        logger.debug("wake.pause failed: %s", e)
-        paused = False
-    return _ok(rid, {
-        "paused": paused,
-        "reason": None if paused else "not_owner",
-    })
-
-
-@method("wake.resume")
-def _(rid, params: dict) -> dict:
-    """Reclaim the mic after a pause; no-op if the listener isn't armed."""
-    transport = current_transport() or _stdio_transport
-    resumed = _wake_resume_if_owner(transport)
-    logger.info("wake.resume: detector resumed=%s", resumed)
-    return _ok(rid, {
-        "resumed": resumed,
-        "reason": None if resumed else "not_owner",
-    })
-
-
-@method("wake.status")
-def _(rid, params: dict) -> dict:
-    try:
-        from tools.wake_word import (
-            audio_is_silent,
-            check_wake_word_requirements,
-            detector_frame_info,
-            get_input_device_status,
-            is_listening,
-            load_wake_word_config,
-            owns_listener,
-            resolve_capture_mode,
-            silent_audio_hint,
-        )
-        cfg = load_wake_word_config()
-        # Prefer client when the GUI asks (desktop remote re-arm / status).
-        prefer_client = bool(params.get("client_capture")) or str(
-            params.get("surface") or ""
-        ).strip().lower() in ("gui", "desktop")
-        probe_cfg = dict(cfg)
-        probe_cfg["capture"] = resolve_capture_mode(cfg, prefer_client=prefer_client)
-        reqs = check_wake_word_requirements(probe_cfg)
-        transport = current_transport() or _stdio_transport
-        owner, owner_surface = _wake_owner_snapshot()
-        owned_by_caller = owns_listener(transport)
-        listening = owned_by_caller and is_listening()
-        silent = listening and audio_is_silent()
-        input_device = get_input_device_status(cfg)
-        hint = reqs.get("hint", "")
-        if input_device.get("error") and not hint:
-            hint = f"Wake-word input device could not be resolved: {input_device['error']}"
-        if silent and not hint:
-            hint = silent_audio_hint(input_device)
-        # Effective capture: prefer the *armed* detector over config/auto.
-        # With capture:auto the GUI arms client mode, but a bare status probe
-        # would otherwise report "local" and the desktop would not reattach
-        # the PCM feeder after wake.detected.
-        frame = detector_frame_info()
-        if owned_by_caller and frame.get("external_audio"):
-            capture = "client"
-        elif owned_by_caller and listening:
-            capture = "local"
-        else:
-            capture = probe_cfg.get("capture") or reqs.get("capture") or str(
-                cfg.get("capture") or "auto"
-            )
-        return _ok(rid, {
-            "listening": listening,
-            "owned_by_caller": owned_by_caller,
-            "owner_surface": owner_surface if owner is not None else None,
-            "phrase": reqs["phrase"],
-            "provider": reqs["provider"],
-            "configured_surface": str(cfg.get("surface") or "auto"),
-            "input_device": input_device,
-            "available": reqs["available"],
-            "hint": hint,
-            # Config truth: clients use this to re-arm after a voice turn
-            # ("permanent on") without guessing from runtime listener state.
-            "enabled": bool(cfg.get("enabled")),
-            # Armed but deaf despite an open stream; see platform-specific hint.
-            "audio_silent": silent,
-            "capture": capture,
-            "local_input_available": bool(reqs.get("local_input_available")),
-            "sample_rate": frame.get("sample_rate", 16000),
-            "frame_length": frame.get("frame_length", 1280),
-        })
-    except Exception as e:
-        return _err(rid, 5026, str(e))
-
-
-@method("wake.feed")
-def _(rid, params: dict) -> dict:
-    """Push client-captured PCM into the armed wake detector.
-
-    Params:
-      pcm: base64-encoded int16 mono little-endian samples (preferred), OR
-      pcm_b64: alias of pcm
-    Optional:
-      sample_rate: must be 16000 (ignored if missing; mismatched rates rejected)
-
-    Used when ``wake.start`` returned ``capture: "client"`` so remote backends
-    without a microphone can still run openWakeWord on Mac/desktop audio.
-    """
-    transport = current_transport() or _stdio_transport
-    raw_b64 = params.get("pcm") or params.get("pcm_b64") or ""
-    if not isinstance(raw_b64, str) or not raw_b64.strip():
-        return _err(rid, 4001, "wake.feed requires base64 pcm")
-    try:
-        import base64
-        pcm = base64.b64decode(raw_b64, validate=False)
-    except Exception as e:
-        return _err(rid, 4001, f"invalid base64 pcm: {e}")
-    if not pcm:
-        return _ok(rid, {"fed": False, "reason": "empty"})
-    # Soft size cap: 64000 bytes = 2s of 16 kHz int16 mono
-    if len(pcm) > 64000:
-        return _err(rid, 4001, "pcm frame too large")
-    sr = params.get("sample_rate")
-    if sr is not None and int(sr) not in (0, 16000):
-        return _err(rid, 4001, "wake.feed only accepts 16 kHz PCM")
-    try:
-        from tools.wake_word import feed_audio
-        ok = feed_audio(owner=transport, pcm_int16=pcm)
-    except Exception as e:
-        logger.debug("wake.feed failed: %s", e)
-        return _err(rid, 5026, str(e))
-    return _ok(rid, {"fed": bool(ok), "reason": None if ok else "not_owner"})
-
-
-@method("voice.toggle")
-def _(rid, params: dict) -> dict:
-    """CLI parity for the ``/voice`` slash command.
-
-    Subcommands:
-
-    * ``status`` — report mode + TTS flags (default when action is unknown).
-    * ``on`` / ``off`` — flip voice *mode* (the umbrella bit). Turning it
-      off also tears down any active continuous recording loop. Does NOT
-      start recording on its own; recording is driven by ``voice.record``
-      (Ctrl+B) after mode is on, matching cli.py's enable/Ctrl+B split.
-    * ``tts`` — toggle speech-output of agent replies. Requires mode on
-      (mirrors CLI's _toggle_voice_tts guard).
-    """
-    action = params.get("action", "status")
-
-    if action == "status":
-        # Mirror CLI's _show_voice_status: include STT/TTS provider
-        # availability so the user can tell at a glance *why* voice mode
-        # isn't working ("STT provider: MISSING ..." is the common case).
-        # ``record_key`` mirrors the configured ``voice.record_key`` so the
-        # TUI can both bind it (frontend ``isVoiceToggleKey``) and display
-        # it in /voice status — previously the TUI hardcoded Ctrl+B and
-        # ignored the config (#18994).
-        payload: dict = {
-            "enabled": _voice_mode_enabled(),
-            "record_key": _voice_record_key(),
-            "tts": _voice_tts_enabled(),
-        }
-        try:
-            from tools.voice_mode import check_voice_requirements
-
-            reqs = check_voice_requirements()
-            payload["available"] = bool(reqs.get("available"))
-            payload["audio_available"] = bool(reqs.get("audio_available"))
-            payload["stt_available"] = bool(reqs.get("stt_available"))
-            payload["details"] = reqs.get("details") or ""
-        except Exception as e:
-            # check_voice_requirements pulls optional transcription deps —
-            # swallow so /voice status always returns something useful.
-            logger.warning("voice.toggle status: requirements probe failed: %s", e)
-
-        return _ok(rid, payload)
-
-    if action in {"on", "off"}:
-        enabled = action == "on"
-        # Runtime-only flag (CLI parity) — no _write_config_key, so the
-        # next TUI launch starts with voice OFF instead of auto-REC from a
-        # persisted stale toggle.
-        os.environ["RENCO_VOICE"] = "1" if enabled else "0"
-
-        stop_hint = ""
-        if enabled:
-            # Spoken-stop hint for the client to render on voice-mode start.
-            # Sourced from voice.stop_phrases (custom phrases render
-            # correctly); empty when the feature is disabled.
-            try:
-                from tools.voice_mode import voice_stop_hint
-
-                stop_hint = voice_stop_hint()
-            except Exception:
-                stop_hint = ""
-
-        if not enabled:
-            # Disabling the mode must tear the continuous loop down; the
-            # loop holds the microphone and would otherwise keep running.
-            try:
-                from renco_cli.voice import stop_continuous
-
-                stop_continuous()
-            except ImportError:
-                pass
-            except Exception as e:
-                logger.warning("voice: stop_continuous failed during toggle off: %s", e)
-
-            # Clear TTS so it can be toggled independently after voice is off,
-            # and silence any in-flight streaming speech.
-            os.environ["RENCO_VOICE_TTS"] = "0"
-            _tts_stream_stop(user_barge=False)
-
-        return _ok(
-            rid,
-            {
-                "enabled": enabled,
-                "record_key": _voice_record_key(),
-                "tts": _voice_tts_enabled(),
-                "stop_hint": stop_hint,
-            },
-        )
-
-    if action == "tts":
-        if not _voice_mode_enabled():
-            return _err(rid, 4014, "enable voice mode first: /voice on")
-        new_value = not _voice_tts_enabled()
-        # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
-        os.environ["RENCO_VOICE_TTS"] = "1" if new_value else "0"
-        if not new_value:
-            _tts_stream_stop(user_barge=False)
-        # Include ``record_key`` on every branch so a /voice tts toggle
-        # doesn't reset the TUI's cached shortcut to the default when a
-        # user has a custom binding configured (Copilot review, round 2
-        # on #19835). Keeps parity with the status/on/off branches above.
-        return _ok(
-            rid,
-            {
-                "enabled": True,
-                "record_key": _voice_record_key(),
-                "tts": new_value,
-            },
-        )
-
-    return _err(rid, 4013, f"unknown voice action: {action}")
-
-
-@method("voice.record")
-def _(rid, params: dict) -> dict:
-    """VAD-bounded push-to-talk capture, CLI-parity.
-
-    ``start`` begins one VAD-bounded capture and emits ``voice.transcript``
-    after silence stops the recorder. ``stop`` forces transcription of the
-    active buffer, matching classic CLI push-to-talk. The voice wrapper retains
-    no-speech counts across single-shot starts, so three consecutive silent
-    captures emit ``voice.transcript`` with ``no_speech_limit=True``.
-    """
-    action = params.get("action", "start")
-    wake_paused = False
-
-    if action not in {"start", "stop"}:
-        return _err(rid, 4019, f"unknown voice action: {action}")
-
-    transport = current_transport() or _stdio_transport
-    wake_owner, _surface = _wake_owner_snapshot()
-    if wake_owner is not None and wake_owner is not transport:
-        return _ok(rid, {"status": "busy", "reason": "wake_owned"})
-
-    try:
-        if action == "start":
-            if not _voice_mode_enabled():
-                return _err(rid, 4015, "voice mode is off — enable with /voice on")
-
-            with _voice_sid_lock:
-                global _voice_event_sid, _voice_wake_owner
-                _voice_event_sid = params.get("session_id") or _voice_event_sid
-
-            from renco_cli.voice import start_continuous
-
-            # Register the agent-busy probe so the shared voice wrapper can
-            # hold the no-speech counter during long agent turns (item:
-            # silence must not end the chat while the agent works). Safe to
-            # re-register on every start; older wrappers without the setter
-            # are tolerated.
-            try:
-                from renco_cli.voice import set_voice_busy_probe
-
-                set_voice_busy_probe(_any_session_running)
-            except Exception:
-                pass
-
-            # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
-            # must not crash /voice with a 5025 — fall back to VAD defaults.
-            #
-            # Exclude ``bool`` from the numeric check since Python's bool is
-            # a subclass of int — a hand-edit like ``silence_threshold: true``
-            # would otherwise forward as ``1`` instead of falling back to
-            # the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
-            voice_cfg = _voice_cfg_dict()
-            threshold = voice_cfg.get("silence_threshold")
-            duration = voice_cfg.get("silence_duration")
-            safe_threshold = (
-                threshold
-                if isinstance(threshold, (int, float))
-                and not isinstance(threshold, bool)
-                else 200
-            )
-            safe_duration = (
-                duration
-                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-                else 3.0
-            )
-            # Hand the mic to STT if the wake-word detector holds it; resume
-            # once a terminal capture event fires (one-shot transcript / silence
-            # limit), so wake-triggered and manual captures both coexist.
-            try:
-                from tools.wake_word import pause_listening
-
-                wake_paused = pause_listening(owner=transport)
-            except Exception:
-                wake_paused = False
-            if wake_paused:
-                with _voice_sid_lock:
-                    _voice_wake_owner = transport
-
-            def _on_transcript(t):
-                _voice_emit("voice.transcript", {"text": t})
-                _resume_voice_wake()
-
-            def _on_silent():
-                _voice_emit("voice.transcript", {"no_speech_limit": True})
-                _resume_voice_wake()
-
-            def _on_stop_phrase(t):
-                # Explicit user intent: the user SAID a bare stop phrase
-                # ("stop"). End the voice chat exactly like a manual
-                # /voice off — flip the mode flags and silence any live
-                # streaming TTS — and emit a distinct signal so clients
-                # (TUI, desktop) end the conversation instead of treating
-                # it as a no-speech timeout. The continuous loop has
-                # already halted before this callback fires.
-                os.environ["RENCO_VOICE"] = "0"
-                os.environ["RENCO_VOICE_TTS"] = "0"
-                try:
-                    _tts_stream_stop(user_barge=False)
-                except Exception:
-                    pass
-                _voice_emit("voice.transcript", {"stop_phrase": True, "text": t})
-                _resume_voice_wake()
-
-            def _on_status(state):
-                _voice_emit("voice.status", {"state": state})
-                if state == "idle":
-                    _resume_voice_wake()
-
-            # voice.max_recording_seconds — hard cap on a single recording's
-            # length. Same guard as the silence params: non-numeric / bool /
-            # missing falls back to the documented 120 default, while an
-            # explicit numeric value <= 0 disables the cap (0.0).
-            max_rec = voice_cfg.get("max_recording_seconds")
-            safe_max_rec = (
-                (max_rec if max_rec > 0 else 0.0)
-                if isinstance(max_rec, (int, float)) and not isinstance(max_rec, bool)
-                else 120.0
-            )
-            started = start_continuous(
-                on_transcript=_on_transcript,
-                on_status=_on_status,
-                on_silent_limit=_on_silent,
-                silence_threshold=safe_threshold,
-                silence_duration=safe_duration,
-                auto_restart=False,
-                max_recording_seconds=safe_max_rec,
-                on_stop_phrase=_on_stop_phrase,
-            )
-            if started is False:
-                _resume_voice_wake()
-                return _ok(rid, {"status": "busy"})
-            return _ok(rid, {"status": "recording"})
-
-        # action == "stop"
-        with _voice_sid_lock:
-            _voice_event_sid = params.get("session_id") or _voice_event_sid
-
-        from renco_cli.voice import stop_continuous
-
-        stop_continuous(force_transcribe=True)
-        _resume_voice_wake()
-        return _ok(rid, {"status": "stopped"})
-    except ImportError:
-        if wake_paused or action == "stop":
-            _resume_voice_wake()
-        return _err(
-            rid, 5025, "voice module not available — install audio dependencies"
-        )
-    except Exception as e:
-        if wake_paused or action == "stop":
-            _resume_voice_wake()
-        return _err(rid, 5025, str(e))
-
-
-@method("voice.tts")
-def _(rid, params: dict) -> dict:
-    text = params.get("text", "")
-    if not text:
-        return _err(rid, 4020, "text required")
-    try:
-        # Import check up front so a missing voice module still returns the
-        # documented 5026 instead of failing silently in the thread.
-        import renco_cli.voice  # noqa: F401
-
-        threading.Thread(
-            target=_speak_text_with_barge, args=(text,), daemon=True
-        ).start()
-        return _ok(rid, {"status": "speaking"})
-    except ImportError:
-        return _err(rid, 5026, "voice module not available")
-    except Exception as e:
-        return _err(rid, 5026, str(e))
-
-
 # ── Methods: insights ────────────────────────────────────────────────
 
 
 # ── Methods: rollback ────────────────────────────────────────────────
-
-
-# ── Methods: browser / plugins / cron / skills ───────────────────────
-
-
-def _resolve_browser_cdp_url() -> str:
-    """Return the configured browser CDP override without network I/O.
-
-    ``/browser status`` must be fast — calling
-    ``tools.browser_tool._get_cdp_override`` would invoke
-    ``_resolve_cdp_override``, which performs an HTTP probe to
-    ``.../json/version`` for discovery-style URLs.  That probe has
-    a multi-second timeout and would block the TUI on a slow or
-    unreachable host even though status only needs to report whether
-    an override is set.
-
-    Mirrors the env/config precedence of ``_get_cdp_override`` (env
-    var first, then ``browser.cdp_url`` from config.yaml) without the
-    websocket-resolution step, so the answer reflects user intent
-    even when the configured host is not currently reachable.  The
-    actual WS normalization happens in ``browser_navigate`` on the
-    next tool call.
-    """
-    env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
-    if env_url:
-        return env_url
-    try:
-        from renco_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
-        if isinstance(browser_cfg, dict):
-            return str(browser_cfg.get("cdp_url", "") or "").strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _is_default_local_cdp(parsed) -> bool:
-    """Match the discovery-style local default; never the concrete WS form.
-
-    A user-supplied ``ws://127.0.0.1:9222/devtools/browser/<id>`` is a
-    real, connectable endpoint — collapsing it to bare ``http://...:9222``
-    would strip the path and break the connect.
-    """
-    try:
-        port = parsed.port or 80
-    except ValueError:
-        return False
-
-    discovery_path = parsed.path in {"", "/", "/json", "/json/version"}
-    return (
-        parsed.scheme in {"http", "ws"}
-        and parsed.hostname in {"127.0.0.1", "localhost"}
-        and port == 9222
-        and discovery_path
-    )
-
-
-def _http_ok(url: str, timeout: float) -> bool:
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return 200 <= getattr(resp, "status", 200) < 300
-    except Exception:
-        return False
-
-
-def _probe_urls(parsed) -> list[str]:
-    scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
-    root = f"{scheme}://{parsed.netloc}".rstrip("/")
-    return [f"{root}/json/version", f"{root}/json"]
-
-
-def _normalize_cdp_url(parsed) -> str:
-    # Concrete ``/devtools/browser/<id>`` endpoints (Browserbase et al.)
-    # are connectable as-is. Discovery-style inputs collapse to bare
-    # ``scheme://host:port`` so ``_resolve_cdp_override`` can append
-    # ``/json/version`` later without doubling the path.
-    if parsed.path.startswith("/devtools/browser/"):
-        return parsed.geturl()
-    return parsed._replace(path="", params="", query="", fragment="").geturl()
-
-
-def _failure_messages(url: str, port: int, system: str) -> list[str]:
-    from renco_cli.browser_connect import manual_chrome_debug_command
-
-    command = manual_chrome_debug_command(port, system)
-    hint = (
-        ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
-        if command
-        else [
-            "No supported Chromium-family browser executable was found in this environment.",
-            f"Install one or start a Chromium-family browser with --remote-debugging-port={port}, then retry /browser connect.",
-        ]
-    )
-    return [
-        f"Browser CDP is not reachable at {url}.",
-        *hint,
-        "Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect",
-    ]
-
-
-def _browser_connect(rid, params: dict) -> dict:
-    import platform
-
-    from renco_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
-    from tools.browser_tool import cleanup_all_browsers
-    from urllib.parse import urlparse
-
-    raw_url = params.get("url")
-    if raw_url is not None and not isinstance(raw_url, str):
-        return _err(
-            rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}"
-        )
-    url = (raw_url or "").strip() or DEFAULT_BROWSER_CDP_URL
-
-    sid = params.get("session_id") or ""
-    system = platform.system()
-    messages: list[str] = []
-
-    def announce(message: str, *, level: str = "info") -> None:
-        messages.append(message)
-        # Without a session id the TUI prints `messages` from the
-        # response; emitting an event would double-render. Only stream
-        # progress when there's a real session to scope it to.
-        if sid:
-            _emit("browser.progress", sid, {"message": message, "level": level})
-
-    parsed = urlparse(url if "://" in url else f"http://{url}")
-    if parsed.scheme not in {"http", "https", "ws", "wss"}:
-        return _err(rid, 4015, f"unsupported browser url: {url}")
-    if not parsed.hostname:
-        return _err(rid, 4015, f"missing host in browser url: {url}")
-    try:
-        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
-    except ValueError:
-        return _err(rid, 4015, f"invalid port in browser url: {url}")
-
-    # Always normalize default-local to 127.0.0.1:9222 so downstream
-    # comparisons + messaging match what we'll actually persist.
-    if _is_default_local_cdp(parsed):
-        url = DEFAULT_BROWSER_CDP_URL
-        parsed = urlparse(url)
-        port = parsed.port or 9222
-
-    try:
-        # ws[s]://.../devtools/browser/<id> endpoints (hosted CDP
-        # providers) don't serve the HTTP discovery path; just check
-        # TCP-level reachability and let browser_navigate handshake.
-        if parsed.scheme in {"ws", "wss"} and parsed.path.startswith(
-            "/devtools/browser/"
-        ):
-            import socket
-
-            try:
-                with socket.create_connection((parsed.hostname, port), timeout=2.0):
-                    pass
-            except OSError as e:
-                return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
-        elif _is_default_local_cdp(parsed):
-            from renco_cli.browser_connect import (
-                discover_local_cdp_url,
-                find_free_debug_port,
-                launch_chrome_debug,
-                local_port_in_use,
-            )
-
-            # Dual-stack discovery: when another app (an IDE debugger,
-            # a dev server) squats the IPv4 loopback on the debug port,
-            # a browser asked to bind that port comes up on [::1] only.
-            # An IPv4-only probe misses it AND hangs against squatters
-            # that accept TCP but never answer HTTP — the historic
-            # cause of `browser.manage` RPC timeouts.
-            discovered = discover_local_cdp_url(port, timeout=2.0)
-            launch_port = port
-
-            if discovered is None:
-                if local_port_in_use(port):
-                    launch_port = find_free_debug_port(port)
-                    announce(
-                        f"Port {port} is occupied by another application that "
-                        "isn't a CDP browser (an IDE debugger or dev server may "
-                        f"be using it) — launching a debug browser on port "
-                        f"{launch_port} instead..."
-                    )
-                else:
-                    announce(
-                        "Chromium-family browser isn't running with remote debugging — attempting to launch..."
-                    )
-
-                launch = launch_chrome_debug(launch_port, system)
-                if launch.launched:
-                    # Bounded wait: the whole connect must finish well
-                    # inside the client RPC timeout.
-                    deadline = time.monotonic() + 10.0
-                    while time.monotonic() < deadline:
-                        discovered = discover_local_cdp_url(launch_port, timeout=1.0)
-                        if discovered:
-                            break
-                        time.sleep(0.5)
-
-                if discovered:
-                    announce(
-                        f"Chromium-family browser launched and listening on port {launch_port}"
-                    )
-                else:
-                    hint = launch.hint
-                    if hint:
-                        announce(hint, level="error")
-                    for line in _failure_messages(url, launch_port, system)[1:]:
-                        announce(line, level="error")
-                    return _ok(
-                        rid, {"connected": False, "url": url, "messages": messages}
-                    )
-            else:
-                announce(f"Chromium-family browser is already listening at {discovered}")
-
-            # Adopt whatever loopback/port actually answered (may be
-            # [::1] and/or an alternate port when 9222 was squatted).
-            url = discovered
-            parsed = urlparse(url)
-        else:
-            probes = _probe_urls(parsed)
-            ok = any(_http_ok(p, timeout=2.0) for p in probes)
-            if not ok:
-                return _err(rid, 5031, f"could not reach browser CDP at {url}")
-
-        normalized = _normalize_cdp_url(parsed)
-
-        # Order matters: reap sessions BEFORE publishing the new env
-        # so an in-flight tool call sees the old supervisor closed,
-        # then again AFTER so the default task's cached supervisor
-        # is drained against the new URL.
-        cleanup_all_browsers()
-        os.environ["BROWSER_CDP_URL"] = normalized
-        cleanup_all_browsers()
-    except Exception as e:
-        return _err(rid, 5031, str(e))
-
-    payload: dict[str, object] = {"connected": True, "url": normalized}
-    if messages:
-        payload["messages"] = messages
-    return _ok(rid, payload)
-
-
-def _browser_disconnect(rid) -> dict:
-    # Reap, drop the env override, reap again — closes the same swap
-    # window covered by ``_browser_connect``.
-    def reap() -> None:
-        try:
-            from tools.browser_tool import cleanup_all_browsers
-
-            cleanup_all_browsers()
-        except Exception:
-            pass
-
-    reap()
-    os.environ.pop("BROWSER_CDP_URL", None)
-    reap()
-    return _ok(rid, {"connected": False})
-
 
 
 
@@ -15619,7 +13731,6 @@ def _mcp_summarize_server(name, cfg):  # noqa: E402
 from . import (  # noqa: E402
     methods_complete as _methods_complete,
     methods_config as _methods_config,
-    methods_images as _methods_images,
     methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
@@ -15633,7 +13744,6 @@ for _m in (
     _methods_complete,
     _methods_tools,
     _methods_profiles,
-    _methods_images,
 ):
     _m.register(sys.modules[__name__])
 del _m

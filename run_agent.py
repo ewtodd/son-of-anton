@@ -143,7 +143,6 @@ from model_tools import (
 )
 from tools.terminal_tool import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
@@ -243,8 +242,6 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # persisted and emitted as an interim message (#65919).
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
-    # kanban worker stop-guard: narrated exit without kanban_complete/block
-    "_kanban_stop_synthetic",
     # dropped tool-call re-prompt pair (finish_reason=tool_calls with an
     # empty tool_calls array): the interim narration-only assistant turn
     # and the "issue the actual tool call now" user nudge exist only to
@@ -3993,13 +3990,7 @@ class AIAgent:
     ) -> None:
         """Update the last-activity timestamp and description (thread-safe).
 
-        Also bridges to the kanban board's heartbeat fields when this
-        process is a dispatcher-spawned worker (RENCO_KANBAN_TASK set),
-        so the dispatcher watchdog doesn't reclaim an actively-running
-        worker as stale (#31752). Bridge is rate-limited (60s) and
-        best-effort — it never raises into the agent loop.
-
-        Separately, rate-limits a durable SessionDB activity projection
+        Rate-limits a durable SessionDB activity projection
         (``last_activity_at`` + bounded description/provenance) so
         CLI/Gateway consumers share one observation source (#72016 / #72039).
 
@@ -4019,22 +4010,6 @@ class AIAgent:
         self._last_activity_ts = time.time()
         self._last_activity_desc = bound_activity_description(desc)
         self._last_activity_provenance = normalize_activity_provenance(provenance)
-        if os.environ.get("RENCO_KANBAN_TASK"):
-            try:
-                from tools.kanban_tools import (
-                    heartbeat_current_worker_from_env,
-                    inject_new_comments_from_env,
-                )
-                heartbeat_current_worker_from_env()
-                # Fold any new operator notes into the running turn (OUT-OF-BAND
-                # steer) so the user can talk to a live task without a restart.
-                inject_new_comments_from_env(self)
-            except Exception:
-                # Never let the bridge break the agent loop.  The function
-                # already swallows exceptions internally; this outer guard
-                # covers import-time failures (kanban_tools unavailable,
-                # etc.) on niche deployment surfaces.
-                pass
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
@@ -4477,8 +4452,6 @@ class AIAgent:
         same task_id / session_id, so we must NOT kill:
           - process_registry entries for task_id (user's bg shells)
           - terminal sandbox for task_id (cwd, env, shell state)
-          - browser daemon for task_id (open tabs, cookies)
-          - computer-use backend for task_id (native target and browser refs)
           - memory provider (has its own lifecycle; keeps running)
 
         We DO close:
@@ -4538,8 +4511,6 @@ class AIAgent:
         Cleans up subprocess resources that would otherwise become orphans:
         - Background processes tracked in ProcessRegistry
         - Terminal sandbox environments
-        - Browser daemon sessions
-        - Computer-use backend sessions and target/ref state
         - Active child agents (subagent delegation)
         - OpenAI/httpx client connections
 
@@ -4572,25 +4543,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 3. Clean browser daemon sessions
-        try:
-            cleanup_browser(task_id)
-        except Exception:
-            pass
-
-        # 4. Release the session-owned computer-use backend.  This ends the
-        # exact cua-driver session, drops typed-browser refs/grants, and stops
-        # a private embedded daemon when Renco YOLO selected unrestricted
-        # mode.  The import is lazy so sessions without computer_use retain
-        # the narrow core footprint.
-        try:
-            from tools.computer_use import release_computer_use_session
-
-            release_computer_use_session(task_id)
-        except Exception:
-            pass
-
-        # 5. Close active child agents
+        # 3. Close active child agents
         try:
             with self._active_children_lock:
                 children = list(self._active_children)
@@ -4603,7 +4556,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6. Close the OpenAI/httpx client
+        # 4. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -4612,7 +4565,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6b. Close the cached per-request wire client (reused across
+        # 4b. Close the cached per-request wire client (reused across
         # sequential LLM calls; see _create_request_openai_client).
         try:
             self._close_cached_request_openai_client(reason="agent_close")
@@ -4623,7 +4576,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6c. Close the Codex app-server session. The runtime already drops
+        # 4c. Close the Codex app-server session. The runtime already drops
         # it on turn crash / retirement (agent/codex_runtime.py), but hard
         # teardown had no owner — a /new, /reset, or session expiry left the
         # app-server child process running until interpreter exit. Clear the
@@ -5213,10 +5166,10 @@ class AIAgent:
         #70773 / #67142 / #29507: ``client.close()`` releases the pool's raw
         FDs from the *calling* thread. The shared primary client has no single
         owning thread — worker threads from stale-killed attempts may still be
-        unwinding their SSL BIOs, and the codex-direct / MoA paths stream on
+        unwinding their SSL BIOs, and the codex-direct paths stream on
         the shared client itself. If we release an FD while another thread's
         SSL layer still caches the raw integer fd, the kernel can recycle it
-        into an unrelated ``open()`` (e.g. ``kanban.db``) and the unwinding
+        into an unrelated ``open()`` (e.g. ``state.db``) and the unwinding
         TLS flush then writes an application-data record into that file — the
         SQLite-header corruption documented in #29507/#70773.
 
@@ -5249,17 +5202,7 @@ class AIAgent:
             )
 
     def _build_primary_client_for_active_provider(self, *, reason: str) -> Any:
-        """Build the shared client shape required by the active provider.
-
-        MoA is a virtual provider whose ``client`` is an in-process facade,
-        not an OpenAI SDK client. Generic rebuild paths (credential rotation,
-        timeout application, and dead-connection cleanup) still pass through
-        this helper, so they must preserve that provider/client invariant.
-        """
-        if (getattr(self, "provider", "") or "").strip().lower() == "moa":
-            from agent.moa_loop import build_moa_facade
-
-            return build_moa_facade(self, self.model)
+        """Build the shared client shape required by the active provider."""
         return self._create_openai_client(
             self._client_kwargs,
             reason=reason,
@@ -5381,8 +5324,6 @@ class AIAgent:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa":
-            return primary_client
         if isinstance(primary_client, Mock):
             return primary_client
         with self._openai_client_lock():
@@ -7390,16 +7331,6 @@ class AIAgent:
             return content
 
         summary = _multimodal_text_summary(result)
-        if tool_name == "computer_use":
-            return json.dumps({
-                "error": (
-                    "computer_use returned screenshot/image content, but the active "
-                    "model/provider does not support image input. Switch to a "
-                    "vision-capable model for desktop computer use, or use browser "
-                    "tools for browser tasks."
-                ),
-                "text_summary": summary,
-            })
 
         logger.warning(
             "Tool %s returned image content for non-vision model %s/%s; "
@@ -8490,7 +8421,6 @@ class AIAgent:
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
-        moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -8829,7 +8759,7 @@ class AIAgent:
                 task_started = True
             # Publish the conversation id for ambient Nous Portal tagging. Every
             # LLM call made inside this turn — main loop, compression, vision,
-            # web_extract, session_search, MoA slots, background-review forks
+            # web_extract, session_search, background-review forks
             # (which copy this Context into their thread) — inherits the
             # ``conversation=<root>`` tag with zero per-call-site plumbing.
             token = set_conversation_context(self._conversation_root_id())
@@ -8864,7 +8794,6 @@ class AIAgent:
                         persist_user_timestamp=persist_user_timestamp,
                         persist_user_display_kind=persist_user_display_kind,
                         persist_user_display_metadata=persist_user_display_metadata,
-                        moa_config=moa_config,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

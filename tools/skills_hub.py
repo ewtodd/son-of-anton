@@ -3337,11 +3337,7 @@ class OptionalSkillSource(SkillSource):
     OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
     def __init__(self, auth: Optional[GitHubAuth] = None):
-        from renco_constants import get_optional_skills_dir
-
-        self._optional_dir = get_optional_skills_dir(
-            Path(__file__).parent.parent / "optional-skills"
-        )
+        self._optional_dir = Path(__file__).parent.parent / "optional-skills"
         self._auth = auth
         # Lazily created GitHubSource for the live-repo fallback — only
         # instantiated when a skill is missing from the local checkout.

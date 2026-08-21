@@ -24,7 +24,6 @@ from typing import Optional, Dict, Any
 
 from renco_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from renco_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -2495,7 +2494,8 @@ def _skip_configured_section(
 
 
 _OPENCLAW_SCRIPT = (
-    get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
+    get_renco_home()
+    / "skills"
     / "migration"
     / "openclaw-migration"
     / "scripts"

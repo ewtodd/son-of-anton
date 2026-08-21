@@ -56,10 +56,6 @@ from renco_cli.config import (
 from renco_cli.fallback_config import get_fallback_chain
 from renco_time import now as _renco_now
 from agent.interrupt_compat import request_hard_interrupt
-from agent.delegation_context import (
-    enter_non_dispatcher_owned_context,
-    exit_non_dispatcher_owned_context,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -434,9 +430,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     3. ``None`` on any lookup failure — AIAgent loads the full default set
        (legacy behavior before this change, preserved as the safety net).
 
-    _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
+    _DEFAULT_OFF_TOOLSETS ({homeassistant, rl}) are removed by
     ``_get_platform_tools`` for unconfigured platforms, so fresh installs
-    get cron WITHOUT ``moa`` by default (issue reported by Norbert —
+    get cron without those toolsets by default (issue reported by Norbert —
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
@@ -5175,8 +5171,6 @@ def run_job(
     #     and RENCO_SESSION_CHAT_ID to populate watcher_platform / chat_id,
     #     which would route completion notifications to the origin chat
     #     instead of via RENCO_CRON_AUTO_DELIVER_* below.
-    #   - tools/tts_tool.py: picks Opus vs MP3 based on
-    #     RENCO_SESSION_PLATFORM == "telegram".
     #   - tools/skills_tool.py + agent/prompt_builder.py: per-platform
     #     skill-disable lists and the system-prompt cache key both consume
     #     RENCO_SESSION_PLATFORM.
@@ -5268,7 +5262,6 @@ def run_job(
     # future writers.  Acquire itself can't leak (it either blocks or returns).
     _cron_session_var = _VAR_MAP["RENCO_CRON_SESSION"]
     _cron_session_token = None
-    _non_dispatcher_token = None
     try:
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
@@ -5291,26 +5284,6 @@ def run_job(
         # which would suppress the legacy os.environ fallback used by standalone
         # cron entrypoints and tests.
         _cron_session_token = _cron_session_var.set("1")
-
-        # Mark this job as NOT the dispatcher-owned kanban worker.
-        #
-        # A kanban worker is a normal `renco chat -q` CLI agent whose default
-        # toolset includes `cronjob`, running with RENCO_KANBAN_TASK
-        # legitimately in its own env; `cronjob(action="run")` calls
-        # run_one_job() -> run_job() right here in that process.  Without this
-        # marker the cron agent is misread as that worker: the kanban toolset is
-        # force-added, the worker protocol is injected into its system prompt,
-        # and kanban_complete defaults task_id to $RENCO_KANBAN_TASK -- letting
-        # an unrelated cron job close the worker's task and overwrite real
-        # results.
-        #
-        # A ContextVar, NOT an os.environ clear: the env is process-global and
-        # shared with the worker's own claim heartbeat (run_agent._touch_activity
-        # -> heartbeat_current_worker_from_env, which would starve and let the
-        # dispatcher reclaim a live task), the gateway's kanban watchers, and
-        # concurrent cron jobs on the parallel pool.  contextvars.copy_context()
-        # at the run_conversation hop carries this into the agent thread.
-        _non_dispatcher_token = enter_non_dispatcher_owned_context()
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -6145,8 +6118,6 @@ def run_job(
         clear_session_vars(_ctx_tokens)
         if _cron_session_token is not None:
             _cron_session_var.reset(_cron_session_token)
-        if _non_dispatcher_token is not None:
-            exit_non_dispatcher_owned_context(_non_dispatcher_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

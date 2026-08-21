@@ -176,13 +176,11 @@ def _reload_config_modules() -> None:
     ``renco_cli.config``, and ``renco_cli.config_migrations`` from disk
     so subsequent imports read the UPDATED code.
 
-    It also reloads ``renco_cli._subprocess_compat`` and
-    ``renco_cli.dashboard_procs`` so that post-update dashboard cleanup
-    (``_finish_dashboard_update_cleanup`` → ``_scan_dashboard_processes``)
-    uses the freshly-pulled code. Without this, a new symbol added to
-    ``_subprocess_compat`` (e.g. ``bounded_probe_run``) is invisible to the
-    cached module object, causing ``ImportError`` during the cleanup step
-    that runs later in the same process.
+    It also reloads ``renco_cli._subprocess_compat`` so that
+    post-update cleanup uses the freshly-pulled code. Without this, a new
+    symbol added to ``_subprocess_compat`` (e.g. ``bounded_probe_run``) is
+    invisible to the cached module object, causing ``ImportError`` during
+    the cleanup step that runs later in the same process.
     """
     import importlib
 
@@ -192,7 +190,6 @@ def _reload_config_modules() -> None:
         "renco_cli.config",
         "renco_cli.config_migrations",
         "renco_cli._subprocess_compat",
-        "renco_cli.dashboard_procs",
     ):
         mod = sys.modules.get(mod_name)
         if mod is not None:
@@ -227,16 +224,13 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
 
 
 # Critical files that Renco must be able to import immediately after an
-# update/install. Most are imported on every CLI startup; ``web_server.py``
-# is the desktop/dashboard backend path that a fresh Windows install launches
-# right away. If any of these fail to parse after a pull, the user can be
-# left with a bricked CLI or desktop backend. The post-pull syntax guard
-# validates these and auto-rolls-back on failure.
+# update/install. Most are imported on every CLI startup. If any of these
+# fail to parse after a pull, the user can be left with a bricked CLI.
+# The post-pull syntax guard validates these and auto-rolls-back on failure.
 _UPDATE_CRITICAL_FILES = (
     "renco_cli/main.py",
     "renco_cli/config.py",
     "renco_cli/__init__.py",
-    "renco_cli/web_server.py",
     "cli.py",
     "run_agent.py",
     "model_tools.py",
@@ -495,31 +489,6 @@ def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
         for candidate in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe")
     )
 
-def _web_build_toolchain_ready(*roots: Path) -> bool:
-    """True when ``tsc`` and ``vite`` shims are reachable from any of *roots*.
-
-    Callers must pass every root the build would search; checking only one
-    reports a healthy tree as broken.
-    """
-    bin_dirs = [
-        bin_dir
-        for bin_dir in (root / "node_modules" / ".bin" for root in roots)
-        if bin_dir.is_dir()
-    ]
-    return bool(bin_dirs) and all(
-        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
-        for tool in ("tsc", "vite")
-    )
-
-def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
-    """Roots whose ``node_modules/.bin`` can satisfy the web build.
-
-    ``npm run build`` prepends ``node_modules/.bin`` for the package and each
-    of its ancestors, so shims hoisted to the workspace root and shims nested
-    under a package that owns its lockfile (#42973) are equally valid.
-    """
-    return (web_dir, web_dir.parent)
-
 def _print_curator_first_run_notice() -> None:
     """Print a short heads-up about the skill curator after `renco update`.
 
@@ -756,77 +725,6 @@ def _format_time_ago(iso_ts: str) -> str:
         return f"{secs // 86400}d ago"
     except Exception:
         return "recently"
-
-def _reload_process_scan_modules() -> None:
-    """Force-reload the process-scan modules from disk after an update.
-
-    ``_finish_dashboard_update_cleanup`` runs in the PRE-update Python
-    process, but ``_scan_dashboard_processes`` does a function-level
-    ``from renco_cli._subprocess_compat import bounded_probe_run``. If the
-    update added a new symbol to ``_subprocess_compat`` (as #87134 did with
-    ``bounded_probe_run``), the cached OLD module object doesn't have it and
-    the cleanup step crashes with ImportError — after the code update itself
-    already succeeded. Reload dependency-first so ``dashboard_procs`` binds
-    against the fresh ``_subprocess_compat``.
-
-    Lives here (called from the cleanup entry point) rather than only in
-    ``_reload_config_modules`` so EVERY caller — the git-update path, the
-    Windows ZIP fallback path, and any future one — is covered.
-    """
-    import importlib
-
-    importlib.invalidate_caches()
-    for mod_name in (
-        "renco_cli._subprocess_compat",
-        "renco_cli.dashboard_procs",
-    ):
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            try:
-                importlib.reload(mod)
-            except Exception as exc:
-                # warning, not debug: a failed reload here surfaces seconds
-                # later as an ImportError in the same process — leave a trail.
-                logger.warning(
-                    "Could not reload %s for post-update cleanup: %s",
-                    mod_name,
-                    exc,
-                )
-
-
-def _finish_dashboard_update_cleanup(
-    node_failures: list[str], already_restarted_units: "set[str] | None" = None
-) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update.
-
-    *already_restarted_units* forwards the systemd unit names (no
-    ``.service`` suffix) that the fleet-restart loop already restarted
-    directly, so a Serve-only install's freshly restarted process isn't
-    found and restarted a second time here (review on #83595).
-    """
-    if node_failures:
-        print()
-        print("  ℹ Leaving running dashboard process(es) untouched because the")
-        print("    Node.js dependency refresh did not complete.")
-        return
-
-    # The scan path lazy-imports symbols from _subprocess_compat; make sure
-    # both modules reflect the freshly-updated source before touching them.
-    _reload_process_scan_modules()
-
-    stop_result = _m()._kill_stale_dashboard_processes(
-        restart_managed=True, already_restarted_units=already_restarted_units
-    )
-    if not stop_result.get("unrecovered"):
-        return
-
-    print()
-    print(
-        "⚠ A web dashboard/serve process was stopped during update and could "
-        "not be auto-restarted."
-    )
-    print("  Re-launch it when you want the web UI back:")
-    print("    renco dashboard --port <port>")
 
 def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace directory *dst* with *src* without leaving *dst* half-deleted.
@@ -1110,9 +1008,7 @@ def _print_parked_branch_skip_warning(
 
 
 def _print_update_completion(message: str) -> None:
-    """Print an update outcome plus, when the dashboard launched this run
-    with an action id, a terminal receipt line the Desktop can match after
-    the dashboard restarts (see #47359 / #58764).
+    """Print an update outcome plus an optional terminal receipt line.
 
     The outcome line carries the checkout's actual branch + HEAD short-sha
     so branch drift is visible at a glance (2026-08-17 parked-branch
@@ -1162,28 +1058,18 @@ def _update_complete_message(pre_version: str | None) -> str:
 def _print_update_summary(
     *,
     node_failures: list,
-    desktop_build_ok: bool,
     pre_update_version: str | None,
 ) -> None:
-    """Final update banner. A failed Desktop rebuild is non-fatal for the
-    Python side, but must not print ``✓ Update complete!`` (#88251)."""
+    """Final update banner."""
     print()
-    if node_failures or not desktop_build_ok:
+    if node_failures:
         parts = []
-        if node_failures:
-            parts.append(
-                f"Node.js dependencies for {', '.join(node_failures)} did not refresh"
-            )
-        if not desktop_build_ok:
-            parts.append(
-                "the desktop app was not rebuilt and is still on the previous build"
-            )
+        parts.append(
+            f"Node.js dependencies for {', '.join(node_failures)} did not refresh"
+        )
         print("⚠ Update partially complete — " + "; ".join(parts) + ".")
-        if node_failures:
-            print("  Code and Python deps are updated, but the dashboard/TUI may")
-            print("  be in a mixed state until the Node deps are rebuilt.")
-        if not desktop_build_ok:
-            print("  Run `renco desktop` to retry the desktop rebuild.")
+        print("  Code and Python deps are updated, but the TUI may")
+        print("  be in a mixed state until the Node deps are rebuilt.")
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
 
@@ -1196,13 +1082,13 @@ def _write_gateway_update_exit_code(ok: bool) -> None:
         pass
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(args) -> bool:
     """Update Renco Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
 
-    Returns ``False`` when a Desktop rebuild ran and failed; ``True`` otherwise.
+    Returns ``True`` on success.
     """
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
@@ -1454,11 +1340,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         _m().sys.exit(1)
 
     node_failures = _update_node_dependencies()
-    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    desktop_build_ok = _rebuild_desktop_after_update(
-        _m().PROJECT_ROOT / "apps" / "desktop",
-        had_desktop_app_before_update=had_desktop_app_before_update,
-    )
 
     # Sync skills
     try:
@@ -1562,7 +1443,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
 
     _print_update_summary(
         node_failures=node_failures,
-        desktop_build_ok=desktop_build_ok,
         pre_update_version=pre_update_version,
     )
     try:
@@ -1573,18 +1453,15 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
-    # Don't stop a working dashboard when the Node refresh failed — see the
-    # git-update path for rationale (#30271).
-    _finish_dashboard_update_cleanup(node_failures)
     try:
         from renco_cli.update_receipt import finalize_update_receipt
 
         finalize_update_receipt(
-            "success" if (desktop_build_ok and not node_failures) else "partial"
+            "success" if not node_failures else "partial"
         )
     except Exception as _receipt_exc:
         logger.debug("Update receipt finalize (zip path) failed: %s", _receipt_exc)
-    return desktop_build_ok
+    return True
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(
@@ -1747,10 +1624,10 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
 def _park_stashed_changes(stash_ref: str) -> None:
     """Leave a pre-update autostash parked instead of re-applying it.
 
-    Used by ``renco update --keep-stash`` (the desktop updater's mode): the
-    stash made the update possible on a dirty tree, but local source edits
-    must never be silently re-applied onto the updated code. Nothing is
-    lost — the entry stays in ``git stash`` with printed recovery guidance.
+    Used by ``renco update --keep-stash``: the stash made the update
+    possible on a dirty tree, but local source edits must never be silently
+    re-applied onto the updated code. Nothing is lost — the entry stays in
+    ``git stash`` with printed recovery guidance.
     """
     print()
     print("ℹ️  Local changes were stashed before updating and were NOT re-applied (--keep-stash).")
@@ -2513,44 +2390,6 @@ def _refresh_active_memory_provider_dependencies() -> None:
     except Exception as exc:
         print(f"  ⚠ {provider} dependencies failed to refresh: {exc}")
 
-def _is_android_python() -> bool:
-    return _m().sys.platform == "android"
-
-def _install_psutil_android_compat(
-    install_cmd_prefix: list[str],
-    *,
-    env: dict[str, str] | None = None,
-) -> None:
-    """Install psutil on Android by patching upstream platform detection.
-
-    psutil's setup currently gates Linux sources behind
-    ``sys.platform.startswith('linux')``. On Termux Python reports
-    ``sys.platform == 'android'``, so setup aborts with
-    "platform android is not supported" despite compiling fine when using the
-    Linux source path.
-
-    We patch only the extracted build tree used for this install attempt;
-    nothing is persisted in the repository.
-
-    Stopgap: remove this once https://github.com/giampaolo/psutil/pull/2762
-    merges and ships in a release. The standalone installer script uses the
-    same shared helper and should be removed together.
-    """
-    import tempfile
-    import urllib.request
-    from renco_cli.psutil_android import PSUTIL_URL, prepare_patched_psutil_sdist
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        archive = tmp_path / "psutil.tar.gz"
-        urllib.request.urlretrieve(PSUTIL_URL, archive)
-        src_root = prepare_patched_psutil_sdist(archive, tmp_path)
-
-        _m()._run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
-            env=env,
-        )
-
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     """Best-effort uv bootstrap on Termux for faster update installs.
 
@@ -2599,12 +2438,11 @@ def _npm_manifest_paths() -> tuple[Path, ...]:
     The workspace list is pulled from the root package.json's `workspaces`
     globs (npm's own source of truth) rather than hardcoded, so adding a
     workspace can never silently escape the skip key. Every workspace
-    manifest belongs in the key — desktop included, even though the
-    install only names ui-tui and web — because the single lockfile spans
-    the whole workspace graph, so any manifest edit can put the lockfile
-    out of sync and change what the install must do. Falls back to hashing
-    just root manifests if package.json is unreadable (never skips more
-    than main would have installed).
+    manifest belongs in the key — desktop included — because the single
+    lockfile spans the whole workspace graph, so any manifest edit can put
+    the lockfile out of sync and change what the install must do. Falls
+    back to hashing just root manifests if package.json is unreadable
+    (never skips more than main would have installed).
     """
     root_pkg = _m().PROJECT_ROOT / "package.json"
     paths = [_m().PROJECT_ROOT / "package-lock.json", root_pkg]
@@ -2646,15 +2484,6 @@ def _npm_lockfile_changed(renco_root: Path) -> bool:
     # Also check that node_modules exists; a matching hash with missing
     # node_modules means the cache was recorded by another checkout.
     if not (_m().PROJECT_ROOT / "node_modules").is_dir():
-        return True
-    # A matching lockfile hash over a tree whose web build toolchain never
-    # landed must NOT skip the reinstall — otherwise every later `renco
-    # update` keeps rebuilding against a half-installed tree and serving a
-    # stale dist.
-    web_dir = _m().PROJECT_ROOT / "web"
-    if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
-        *_web_toolchain_roots(web_dir)
-    ):
         return True
     try:
         # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
@@ -2698,10 +2527,6 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
         return
-    # Pair the refresh with the web build like every other
-    # _update_node_dependencies call site; it staleness-checks internally,
-    # so this is a no-op when nothing changed.
-    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     print_completion("✓ Already up to date!")
 
 
@@ -2744,31 +2569,15 @@ def _update_node_dependencies() -> list[str]:
     # shared Renco root rather than rerunning npm once per named profile.
     shared_renco_root = get_default_renco_root()
 
-    # Best-effort: warm npx's cache for agent-browser (#43564). Runs before
-    # the lockfile-unchanged early return below since that's the common
-    # `renco update` case. Synchronous and can block ~11s on a true cold
-    # cache (~0.4s once warm) — print first so that doesn't look like a hang.
-    print("→ Warming npx cache for agent-browser...")
-    try:
-        from tools.browser_tool import warm_agent_browser_npx_cache
-        warm_agent_browser_npx_cache()
-    except Exception:
-        pass
-
     if not _m()._npm_lockfile_changed(shared_renco_root):
         logger.info("npm lockfile unchanged, skipping npm install")
         return []
 
     # Root package.json has no dependencies of its own (agent-browser and
     # @streamdown/math were moved out — see #43564): agent-browser resolves
-    # at runtime via `npx agent-browser` (tools/browser_tool.py), and
-    # @streamdown/math is a desktop-only import now declared in
-    # apps/desktop/package.json. That means a plain workspace-scoped install
-    # can never prune anything root-only, so we only need to name the
-    # workspaces the CLI/TUI/web build actually requires. apps/desktop pulls
-    # in Electron as a devDependency with a ~200MB postinstall download, so
-    # it's deliberately never named here — desktop deps install on demand
-    # (see _desktop_build_needed).
+    # at runtime via `npx agent-browser`. That means a plain workspace-scoped
+    # install can never prune anything root-only, so we only need to name the
+    # workspaces the CLI/TUI build actually requires.
     print("→ Updating Node.js dependencies...")
 
     def _partial_update_failure(*labels: str) -> list[str]:
@@ -2786,7 +2595,7 @@ def _update_node_dependencies() -> list[str]:
         # pruned by this scoped install, same as agent-browser/@streamdown
         # math used to be before they moved out of root entirely (#43564).
         # Unlike those, root's devDependencies have nowhere else to live —
-        # this flag still excludes apps/desktop, which is never named above.
+        # hence this flag.
         "--include-workspace-root",
     ]
 
@@ -2808,7 +2617,7 @@ def _update_node_dependencies() -> list[str]:
     )
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_renco_root)
-        print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
+        print("  ✓ ui-tui, web workspaces installed")
         failures: list[str] = []
     else:
         print("  ⚠ npm install failed")
@@ -3180,64 +2989,6 @@ def _ensure_fhs_path_guard() -> None:
     if wrote_any:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
-def _ensure_acp_launcher() -> None:
-    """Self-heal: install a ``renco-acp`` launcher next to the ``renco`` one.
-
-    Mirrors the launcher block in ``scripts/install.sh`` so existing installs
-    gain the ACP command on ``renco update`` without a reinstall.  ACP hosts
-    (Zed, JetBrains, Buzz Desktop) spawn the agent by resolving the
-    ``renco-acp`` command name against the login-shell PATH; the console
-    script of that name lives inside the install's venv, which is not on that
-    PATH, so those hosts report Renco as not installed even when it is.
-
-    The shim simply delegates to the sibling ``renco`` launcher with the
-    ``acp`` subcommand, which makes it correct for every install layout
-    (venv wrapper, FHS symlink, pipx/pip console script) without having to
-    reconstruct interpreter/entrypoint paths.
-
-    No-op on Windows (install.ps1 copies ``renco.exe`` + ``renco-acp.exe``
-    into ``$InstallDir\bin`` and puts THAT on the user PATH — never the whole
-    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
-    so ``renco-acp.exe`` already resolves) and wherever a ``renco-acp`` is
-    already present next to the ``renco`` command.  Unwritable directories
-    (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
-    """
-    if _m().sys.platform == "win32":
-        return
-    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
-        renco_cmd = bin_dir / "renco"
-        acp_cmd = bin_dir / "renco-acp"
-        try:
-            if not (renco_cmd.is_file() or renco_cmd.is_symlink()):
-                continue
-            # Already present — a console script (pip/pipx install), an
-            # earlier shim, or a symlink. is_symlink() catches broken
-            # symlinks that exists() would miss; never follow-and-overwrite
-            # (the #21454 failure mode).
-            if acp_cmd.exists() or acp_cmd.is_symlink():
-                continue
-            shim = (
-                "#!/usr/bin/env bash\n"
-                "# Renco Agent — ACP launcher (written by `renco update`).\n"
-                "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
-                "# command name on the login-shell PATH.\n"
-                f'exec "{renco_cmd}" acp "$@"\n'
-            )
-            acp_cmd.write_text(shim, encoding="utf-8")
-            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
-        except OSError:
-            continue
-        print(f"  ✓ Installed renco-acp launcher → {acp_cmd}")
-
-_PRE_UPDATE_SNAPSHOT_KEEP = 1
-
-# Per-file size cap for the pre-update quick snapshot. Anything larger is
-# skipped with a warning: the snapshot exists to protect small, hard-to-
-# regenerate state (pairing JSONs, cron jobs, config, auth) — not to copy a
-# multi-GB state.db on every update (observed: a 24 GB state.db added ~60s
-# of wall time and silently ate 24 GB of disk per update).
-_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
-
 def _resolve_pre_update_backup_mode(args) -> str:
     """Resolve the pre-update backup mode: ``"off"``, ``"quick"``, or ``"full"``.
 
@@ -3525,7 +3276,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         # No venv interpreter at all. In a dev checkout that's normal (the
         # dev may run renco from any interpreter), so report healthy to
         # avoid forcing reinstalls. But on a MANAGED install (the Windows
-        # installer / desktop bootstrap stamps `.renco-bootstrap-complete`,
+        # installer stamps `.renco-bootstrap-complete`,
         # and an interrupted update leaves `.update-incomplete`), the venv
         # IS the install — its absence means a repair got interrupted after
         # the old venv was moved aside, and "Already up to date!" would
@@ -3538,7 +3289,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
             return False, f"venv python missing ({venv_python})"
         return True, ""
 
-    # Core web/serve imports plus their newest transitive deps. Import (not
+    # Core web/gateway imports plus their newest transitive deps. Import (not
     # just metadata) — a package can have intact dist-info but a missing
     # module after an interrupted uninstall/install cycle.
     check = (
@@ -3577,15 +3328,13 @@ def _detect_venv_python_processes(
     """Find live processes running from the project venv's interpreter.
 
     The renco.exe shim guard misses the biggest lock-holder class on
-    Windows: the Desktop app's backend (``python.exe -m renco_cli.main
-    serve``) and anything else running straight off ``venv\\Scripts\\python
+    Windows: anything running straight off ``venv\\Scripts\\python
     (w).exe``. Those processes keep native ``.pyd`` extensions mapped, so a
     dependency sync mid-update dies with access-denied and strands the venv
     half-updated (ryanc's brotlicffi/_sodium.pyd incidents, July 2026).
 
-    Killing them from here is pointless — the Desktop app supervises its
-    backend and respawns it within seconds — so the caller should refuse and
-    tell the user to close the app instead. Returns ``(pid, name, cmdline)``
+    The caller should refuse and tell the user to close the remaining Renco
+    processes instead of killing them. Returns ``(pid, name, cmdline)``
     tuples; empty off-Windows / without psutil / when nothing matches. The
     calling process and its ancestors are always excluded (a CLI ``renco
     update`` itself runs from the venv python). Never raises.
@@ -3638,7 +3387,7 @@ def _detect_venv_python_processes(
         cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
 
         # Primary match: the executable itself lives under this venv
-        # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
+        # (venv\Scripts\python(w).exe — the gateway case).
         is_holder = exe_norm.startswith(venv_prefix)
         # Fallback: uv/base-interpreter trampolines run a python whose exe is
         # OUTSIDE the venv but which still imports from it and holds its .pyd
@@ -3849,9 +3598,7 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     for pid, name, cmdline in matches[:6]:
         hint = ""
         low = cmdline.lower()
-        if "serve" in low or "dashboard" in low:
-            hint = "  ← Renco Desktop backend (close the desktop app)"
-        elif "gateway" in low:
+        if "gateway" in low:
             hint = "  ← gateway"
         lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
@@ -3864,7 +3611,7 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
         "  dependency update would fail partway and leave a broken install."
     )
     lines.append(
-        "  Close the Renco desktop app / other Renco terminals, then re-run:"
+        "  Close other Renco terminals / apps, then re-run:"
     )
     lines.append("    renco update")
     lines.append("  (or use `renco update --force-venv` to proceed anyway at your own risk)")
@@ -3982,112 +3729,6 @@ def _leftover_pausable_gateway_pids(
     return pids
 
 
-def _orphaned_desktop_backend_pids(
-    matches: list[tuple[int, str, str]],
-) -> list[int] | None:
-    """PIDs from *matches* when every remaining holder is an ORPHANED backend.
-
-    The venv-holder guard refuses on the Desktop app's ``serve`` backend by
-    design: while the Desktop is open, killing its backend is futile (the app
-    supervises and respawns it within seconds), so the user must close the
-    app. But in the GUI-updater handoff path the Desktop has *already
-    exited* — by contract it tree-kills its backends and waits for the venv
-    shim before spawning renco-setup, and the update-in-progress marker
-    parks any relaunched Desktop from spawning a fresh backend (#50238). A
-    ``serve`` backend still holding the venv at that point is a straggler
-    whose supervisor is gone: SIGTERM raced its spawn, or it belongs to a
-    crashed window. Nothing will respawn it, and refusing on it dead-ends
-    the update with "Renco is still running" while the user stares at zero
-    open windows (ryanc's 2026-08-09 01:59/02:17 failures).
-
-    A holder qualifies only when BOTH hold:
-
-    - its cmdline is a Renco backend (``renco_cli.main`` + ``serve`` /
-      ``dashboard``), and
-    - its supervising parent is demonstrably gone: the parent PID no longer
-      exists, or the PID was reused (parent created *after* the child).
-
-    Tree-aware: the scanner can return an orphaned backend AND one of its
-    managed-runtime descendants (the ``.renco-runtime`` interpreter child)
-    in the same holder set. That descendant has a live parent — the orphaned
-    backend itself — and isn't a ``serve`` cmdline, so per-process rules
-    would refuse a set that is entirely safe to reap. Holders that sit
-    inside an accepted orphan root's tree are therefore folded into that
-    root (only roots are returned; ``taskkill /T`` reaps the descendants).
-
-    Any other live-parent backend (the Desktop is still open), non-backend
-    holder outside an orphan tree, or unprovable case disqualifies the whole
-    set — the guard must keep refusing exactly as before. Returns ``None``
-    in that case, or when psutil is unavailable (can't prove orphanhood →
-    refuse). Never raises.
-    """
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        return None
-
-    def _is_backend(argv_low: str) -> bool:
-        return "renco_cli.main" in argv_low and (
-            " serve" in argv_low or " dashboard" in argv_low
-        )
-
-    # Pass 1: find orphaned backend ROOTS among the holders.
-    roots: list[int] = []
-    remaining: list[tuple[int, str]] = []  # (pid, argv_low) still to justify
-    for pid, _name, cmdline in matches:
-        argv = cmdline
-        try:
-            argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
-        except psutil.NoSuchProcess:
-            # Holder exited between scan and classification — nothing to
-            # reap, nothing blocking. Skip it.
-            continue
-        except Exception:
-            pass
-        low = argv.lower()
-        if not _is_backend(low):
-            remaining.append((int(pid), low))
-            continue
-        try:
-            proc = psutil.Process(int(pid))
-            ppid = proc.ppid()
-            parent = psutil.Process(ppid) if ppid else None
-            if parent is not None and parent.is_running():
-                # PID-reuse check: a "parent" created after its child is a
-                # recycled PID, not the real (dead) supervisor.
-                if parent.create_time() <= proc.create_time():
-                    # Live parent — NOT a root. But it may still be a
-                    # descendant of an orphan root: the venv python.exe is
-                    # a trampoline that re-execs the uv-managed interpreter
-                    # with the SAME backend argv, so the worker half of the
-                    # two-process chain lands here. Defer to pass 2 instead
-                    # of refusing outright.
-                    remaining.append((int(pid), low))
-                    continue
-        except psutil.NoSuchProcess:
-            pass  # parent gone → orphan
-        except Exception:
-            return None
-        roots.append(int(pid))
-
-    # Pass 2: every non-backend holder must be a descendant of an accepted
-    # orphan root — then it dies with the root's tree reap. Anything else
-    # (operator REPL, stray script) keeps the refusal.
-    root_set = set(roots)
-    for pid, _low in remaining:
-        if not root_set:
-            return None
-        try:
-            ancestors = {int(a.pid) for a in psutil.Process(pid).parents()}
-        except psutil.NoSuchProcess:
-            continue  # exited already
-        except Exception:
-            return None
-        if not (ancestors & root_set):
-            return None
-    return roots
-
-
 def _ledger_reapable_backend_pids(
     matches: list[tuple[int, str, str]],
 ) -> list[int]:
@@ -4099,8 +3740,8 @@ def _ledger_reapable_backend_pids(
 
     - its ``(pid, create_time)`` matches a live ledger entry (PID reuse
       cannot forge this pair);
-    - the entry's purpose is a reapable backend kind (serve/dashboard/
-      gateway — never interactive processes);
+    - the entry's purpose is a reapable backend kind (never an interactive
+      process);
     - the entry's recorded SPAWNER is provably dead (``spawner_is_dead``).
 
     Unlike the heuristic rungs, this is safe in ANY update context — no
@@ -4130,77 +3771,6 @@ def _ledger_reapable_backend_pids(
         if spawner_is_dead(entry) is True:
             roots.append(int(pid))
     return roots
-
-
-def _handoff_reapable_backend_pids(
-    matches: list[tuple[int, str, str]],
-) -> list[int] | None:
-    """PIDs of Renco ``serve``/``dashboard`` backends safe to reap during a
-    GUI-updater hand-off, INCLUDING ones with a still-live parent.
-
-    Complements ``_orphaned_desktop_backend_pids``, which only reaps backends
-    whose supervisor is provably dead. That check returns ``None`` (keep
-    refusing) the moment ANY holder still has a live parent — which is exactly
-    the case that produced the field incident this fixes: a Windows Desktop
-    update hand-off (``update --yes --gateway --force``) left a *swarm* of
-    per-profile ``serve`` backends (mr-tester, probe-inherit, turqoise, …)
-    holding ``cryptography\\_rust.pyd``. Several still had a lingering
-    parent (the tearing-down Electron process, or the two-hop venv
-    launcher→worker chain mid-exit), so the orphan check disqualified the
-    WHOLE set and the update dead-ended — the user saw a 12-minute hang, then
-    force-closed, and the half-done state stranded bot sessions.
-
-    The hand-off is the safe signal: when the update-incomplete marker is
-    present (the GUI updater claimed it) AND this is a ``--gateway`` hand-off
-    run AND no live Desktop shim (``renco.exe``) is open, NOTHING legitimate
-    is supervising or respawning a ``serve`` backend from this venv — by the
-    hand-off contract the Desktop tree-kills its backends and parks any
-    relaunch behind the marker (#50238). Any ``serve`` backend still holding
-    the venv here is therefore a leak, live parent or not, and reaping its
-    tree is correct rather than a race.
-
-    Guarded conservatively:
-
-    - Only Renco backends (``renco_cli.main`` + ``serve``/``dashboard``)
-      from THIS install's venv qualify; a non-backend holder (operator REPL,
-      stray script) disqualifies the whole set → ``None`` (keep refusing), so
-      we never widen the blast radius during a hand-off.
-    - Only runs when the CALLER has confirmed the hand-off context
-      (``args.gateway`` AND a claimed update-incomplete marker AND no live
-      ``renco.exe`` shim) — outside that gate this function is never called
-      and the stricter orphan-only path stands.
-    - psutil unavailable → ``None`` (can't re-read argv to classify → refuse).
-
-    Returns the backend root PIDs to tree-reap, or ``None`` to leave the
-    decision to the caller's existing rungs. Never raises.
-    """
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        return None
-
-    def _is_backend(argv_low: str) -> bool:
-        return "renco_cli.main" in argv_low and (
-            " serve" in argv_low or " dashboard" in argv_low
-        )
-
-    roots: list[int] = []
-    for pid, _name, cmdline in matches:
-        argv = cmdline
-        try:
-            argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
-        except psutil.NoSuchProcess:
-            # Exited between scan and classification — nothing to reap.
-            continue
-        except Exception:
-            pass
-        if not _is_backend(argv.lower()):
-            # A non-backend holder during a hand-off is unexpected; refuse the
-            # whole set rather than reap something we cannot justify.
-            return None
-        roots.append(int(pid))
-
-    return roots or None
 
 
 def _stop_process_trees(pids: list[int]) -> None:
@@ -4428,8 +3998,7 @@ def _for_each_systemd_gateway_unit(
     process_unit,
     on_unit_timeout,
 ) -> None:
-    """Process each ``renco-gateway*.service``/``renco-serve*.service`` unit
-    from ``systemctl list-units``.
+    """Process each ``renco-gateway*.service`` unit from ``systemctl list-units``.
 
     ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
     that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
@@ -4443,15 +4012,11 @@ def _for_each_systemd_gateway_unit(
         if not unit.endswith(".service"):
             continue
         # list-units is already pattern-filtered, but keep the name gate so a
-        # stray non-gateway/serve line cannot enter the restart path.
-        # ``unit.startswith("renco-serve")`` alone would also accept the
-        # unrelated ``renco-server.service`` — require the exact base unit
-        # or the hyphenated profile family instead (review on #83595).
+        # stray non-gateway line cannot enter the restart path. Require the
+        # exact base unit or the hyphenated profile family (review on #83595).
         if not (
             unit == "renco-gateway.service"
             or unit.startswith("renco-gateway-")
-            or unit == "renco-serve.service"
-            or unit.startswith("renco-serve-")
         ):
             continue
         svc_name = unit.removesuffix(".service")
@@ -4463,11 +4028,8 @@ def _for_each_systemd_gateway_unit(
 def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
     """Whether *svc_name* wires SIGUSR1 to a graceful drain-then-restart.
 
-    Only ``renco-gateway*`` units run ``gateway/run.py``, which installs the
-    SIGUSR1 handler. ``renco-serve*`` units (#83438) don't, so sending them
-    SIGUSR1 would just invoke the default terminate action and burn the full
-    drain budget waiting for an exit that was never graceful — go straight to
-    the blunt ``systemctl restart`` path for those instead.
+    ``renco-gateway*`` units run ``gateway/run.py``, which installs the
+    SIGUSR1 handler.
 
     Uses the same strict exact/hyphenated shape as the unit-name gate in
     ``_for_each_systemd_gateway_unit`` so a hypothetical near-prefix unit
@@ -4987,88 +4549,6 @@ def _normalize_managed_eol(git_cmd, repo_root):
         pass
 
 
-def _desktop_app_present(desktop_dir: Path) -> bool:
-    """Return whether a packaged or source Desktop build exists."""
-    return (
-        _m()._desktop_packaged_executable(desktop_dir) is not None
-        or _m()._desktop_dist_exists(desktop_dir)
-    )
-
-
-def _rebuild_desktop_after_update(
-    desktop_dir: Path, *, had_desktop_app_before_update: bool
-) -> bool:
-    """Rebuild an installed Desktop app when its source or artifact changed.
-
-    Returns ``False`` only when a rebuild was attempted and failed, so the
-    caller can withhold ``✓ Update complete!`` and (in gateway mode) write
-    a failing ``.update_exit_code`` (#88251). Every other outcome — nothing
-    to rebuild, up to date, build succeeded, Desktop never installed —
-    returns ``True``.
-    """
-    # The release tree is ignored by git and can disappear during an update.
-    # Its pre-update presence is enough to restore it; do not make people who
-    # have never used Desktop pay for an Electron build.
-    has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
-    if not (
-        (desktop_dir / "package.json").exists()
-        and _m()._resolve_node_runtime_npm()
-        and has_desktop_app
-    ):
-        return True
-
-    print("→ Checking if desktop app needs rebuilding...")
-    # Consult the content-hash stamp IN-PROCESS first. The spawned
-    # `renco desktop --build-only` subprocess re-imports the whole CLI stack
-    # (~1-3 s) just to reach the same _m()._desktop_build_needed check; when
-    # the stamp already says "up to date" we can skip the spawn entirely. The
-    # update path never passes --source, so the subprocess would run with
-    # source_mode=False — mirror that here. Any error in the pre-check falls
-    # through to the subprocess.
-    skip_desktop_build = False
-    try:
-        skip_desktop_build = not _m()._desktop_build_needed(
-            desktop_dir, _m().PROJECT_ROOT, source_mode=False
-        )
-    except Exception:
-        skip_desktop_build = False
-    if skip_desktop_build:
-        print("  ✓ Desktop app up to date")
-        return True
-
-    desktop_build_cmd = [sys.executable, "-m", "renco_cli.main", "desktop", "--build-only"]
-    # Capture the (very loud) Electron/vite build output into update.log
-    # instead of streaming it to the terminal. On the rare nonzero exit,
-    # retry once after waiting again for the venv — this covers a
-    # still-settling rebuild window the first wait didn't fully catch — then
-    # surface the captured tail so the failure is debuggable.
-    #
-    # Start the build subprocess with the Renco-managed Node on PATH: when
-    # `renco update` runs inside the desktop updater chain (Desktop →
-    # renco-setup → renco update), the shell PATH customizations are lost,
-    # so a bare-PATH child would fail with `node: not found` before cmd_gui can
-    # self-heal.
-    from renco_constants import with_renco_node_path
-
-    build_env = with_renco_node_path()
-    build_result = _m()._run_logged_subprocess(
-        desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
-    )
-    if build_result.returncode != 0:
-        build_result = _m()._run_logged_subprocess(
-            desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env
-        )
-    if build_result.returncode != 0:
-        print("  ⚠ Desktop build failed (run `renco desktop` to retry)")
-        tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
-        if tail:
-            print(tail)
-        from renco_constants import display_renco_home as _dhh
-
-        print(f"  Full build log: {_dhh()}/logs/update.log")
-        return False
-    print("  ✓ Desktop app up to date")
-    return True
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -5090,16 +4570,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
-    # --keep-stash (desktop updater): stash local changes so the update can
-    # proceed, but never re-apply them afterward — they stay parked in git
-    # stash. Only applies when an update actually landed; abort/no-op paths
-    # still restore, since the tree they restore onto is unchanged.
+    # --keep-stash: stash local changes so the update can proceed, but never
+    # re-apply them afterward — they stay parked in git stash. Only applies
+    # when an update actually landed; abort/no-op paths still restore, since
+    # the tree they restore onto is unchanged.
     keep_stash = bool(getattr(args, "keep_stash", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
-    # only non-interactive updates (desktop/chat app, gateway, `--yes`) consult
-    # the `updates.non_interactive_local_changes` config setting to decide
+    # only non-interactive updates (gateway, `--yes`) consult the
+    # `updates.non_interactive_local_changes` config setting to decide
     # whether to auto-restore stashed local source changes or throw them away.
     _non_interactive_update = (
         gateway_mode
@@ -5192,15 +4672,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
     # With gateways paused, anything still running from the venv interpreter
-    # (most commonly the Desktop app's `renco serve` backend) will keep .pyd
-    # files locked and corrupt the dependency sync below. Refuse rather than
-    # race: killing the desktop backend is futile (the app supervises and
-    # respawns it), so the user must close the app. Deliberately NOT bypassed
-    # by plain --force: the desktop bootstrap updater passes --force to skip
-    # the renco.exe shim guard above, but its lock probe only checks the shim
-    # and app.asar — a non-desktop venv python holding a .pyd would sail
-    # through and corrupt the sync (the exact failure this guard exists for).
-    # --force-venv is the explicit escape hatch.
+    # will keep .pyd files locked and corrupt the dependency sync below.
+    # Refuse rather than race: the user must close the remaining Renco
+    # processes. Deliberately NOT bypassed by plain --force — a venv python
+    # holding a .pyd would sail through and corrupt the sync (the exact
+    # failure this guard exists for). --force-venv is the explicit escape
+    # hatch.
     if _m()._is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
@@ -5243,63 +4720,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
-            _orphan_backends = _m()._orphaned_desktop_backend_pids(_venv_holders)
-            if _orphan_backends:
-                # Every remaining holder is a Desktop `serve` backend whose
-                # supervising app is GONE — the GUI-updater handoff race:
-                # Electron's teardown lost the SIGTERM race, exited, and left
-                # its backend (and any .renco-runtime child) holding the
-                # venv. Nothing will respawn an orphan, so reap the tree and
-                # re-check instead of dead-ending with "Renco is still
-                # running" while no window is open. Backends whose Desktop
-                # is still alive never reach here (_orphaned_desktop_
-                # backend_pids returns None for them) — that path keeps the
-                # refusal, because the app would just respawn what we kill.
-                print(
-                    f"  ⚠ {len(_orphan_backends)} orphaned Desktop backend "
-                    "process(es) still hold the venv; stopping their trees"
-                )
-                _m()._stop_process_trees(_orphan_backends)
-                _time.sleep(1.0)
-                _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
-            # Final rung before the dead-end: a GUI-updater hand-off
-            # (`update --gateway --force` with the update-incomplete marker
-            # claimed) means the Desktop is contractually gone and nothing
-            # legitimate will respawn a `serve` backend from this venv. The
-            # orphan-only reap above bails the instant ANY holder still has a
-            # live parent — which stranded a whole swarm of per-profile
-            # backends (the tearing-down Electron parent / the venv
-            # launcher→worker chain still mid-exit) and hung the update. In
-            # the hand-off context those surviving Renco backends are leaks,
-            # live parent or not — reap them by cmdline instead of dead-ending.
-            _handoff = False
-            try:
-                _handoff = bool(getattr(args, "gateway", False)) and _m()._update_marker_path().exists()
-            except Exception:
-                _handoff = False
-            # Fail closed: if we cannot positively verify the shim state
-            # (scripts dir unresolvable, detection raised), assume a live
-            # shim exists and keep refusing rather than reap.
-            _no_live_shim = False
-            try:
-                _scripts_dir = _m()._venv_scripts_dir()
-                if _scripts_dir is not None:
-                    _no_live_shim = not _m()._detect_concurrent_renco_instances(_scripts_dir)
-            except Exception:
-                _no_live_shim = False
-            if _handoff and _no_live_shim:
-                _handoff_backends = _m()._handoff_reapable_backend_pids(_venv_holders)
-                if _handoff_backends:
-                    print(
-                        f"  ⚠ {len(_handoff_backends)} Renco backend process(es) "
-                        "still hold the venv after the Desktop hand-off; "
-                        "stopping their trees"
-                    )
-                    _m()._stop_process_trees(_handoff_backends)
-                    _time.sleep(1.0)
-                    _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
@@ -5315,11 +4735,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # swap, immediately before the dependency sync — the only phase the lock
     # can actually break — and only when the sync would truly rewrite the
     # loaded distribution.
-
-    # Capture this after every fail-closed venv guard, but before either
-    # update path can remove the ignored release tree.
-    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    had_desktop_app_before_update = _desktop_app_present(desktop_dir)
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
@@ -5383,14 +4798,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         try:
-            desktop_build_ok = _update_via_zip(
-                args,
-                had_desktop_app_before_update=had_desktop_app_before_update,
-            )
+            _update_via_zip(args)
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(True)
         return
 
     # Fetch and pull
@@ -5614,7 +5026,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
-            # where a running gateway/desktop backend keeps .pyd files locked
+            # where a running gateway backend keeps .pyd files locked
             # and uv/pip dies with access-denied, stranding the venv between
             # versions). Probe the venv's core imports and repair if broken —
             # otherwise "Already up to date!" gaslights the user while their
@@ -5817,7 +5229,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         auto_stash_ref,
                     )
                 elif keep_stash:
-                    # --keep-stash (desktop updater): the update landed; leave
+                    # --keep-stash: the update landed; leave
                     # local edits parked in the stash instead of silently
                     # re-applying them onto the updated code.
                     _m()._park_stashed_changes(auto_stash_ref)
@@ -5838,7 +5250,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # report "N new commit(s)" against origin yet still sit on the old
         # commit afterward (the branch-switch step re-detaches to the SHA).
         # Before this guard, ``renco update`` printed "✓ Code updated!" and
-        # reinstalled deps + rebuilt the desktop app against the stale tree —
+        # reinstalled deps against the stale tree —
         # no error, no warning, ``renco doctor`` healthy. Compare pre-pull
         # and post-pull HEAD; if they match, surface the no-op instead of
         # claiming success.
@@ -5938,9 +5350,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
             if not deps_current:
-                if _m()._is_termux_env(uv_env) and _is_android_python():
-                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                    _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
                 _m()._install_python_dependencies_with_optional_fallback(
                     [uv_bin, "pip"], env=uv_env, group=install_group
                 )
@@ -5967,9 +5376,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 install_group = "termux-all"
                 print("  → Termux detected: using curated termux-all optional profile...")
             if not deps_current:
-                if _m()._is_termux_env() and _is_android_python():
-                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                    _install_psutil_android_compat(pip_cmd)
                 _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
@@ -6056,12 +5462,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("    https://renco-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
-        _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-
-        desktop_build_ok = _rebuild_desktop_after_update(
-            desktop_dir,
-            had_desktop_app_before_update=had_desktop_app_before_update,
-        )
 
         print()
         print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -6394,7 +5794,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if response in {"", "y", "yes", "auto"}:
                 print()
                 # Gateway mode, --yes, and non-interactive update contexts
-                # (dashboard / web server actions) cannot prompt for API keys.
+                # cannot prompt for API keys.
                 # Still run the non-interactive migration pass before restarting
                 # so new default config fields and version bumps are written
                 # before the freshly updated gateway validates config at startup.
@@ -6416,10 +5816,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
-        # job (issue #34600). The desktop scheduler can also overwrite with
-        # its own small set, causing partial loss (issue #52144). If the
-        # live file now has fewer jobs than the pre-update snapshot, restore
-        # it and warn loudly.
+        # job (issue #34600). If the live file now has fewer jobs than the
+        # pre-update snapshot, restore it and warn loudly.
         try:
             from renco_cli.backup import restore_cron_jobs_if_emptied
 
@@ -6437,7 +5835,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _print_update_summary(
             node_failures=node_failures,
-            desktop_build_ok=desktop_build_ok,
             pre_update_version=pre_update_version,
         )
 
@@ -6478,57 +5875,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Self-heal the renco-acp launcher for installs that predate it, so
-        # ACP hosts (Zed, JetBrains, Buzz) can resolve Renco on PATH without
-        # a reinstall.  No-op on Windows and when already present.
-        try:
-            _ensure_acp_launcher()
-        except Exception as e:
-            logger.debug("renco-acp launcher self-heal failed: %s", e)
-
-        # Refresh the cua-driver binary used by the Computer Use toolset.
-        # The upstream installer is gated on supported platforms and on the
-        # binary already being on PATH, so this is a no-op for users who
-        # don't have it. Tying the refresh to ``renco update`` gives users a
-        # predictable cadence (matches when they pull new agent code) without
-        # adding startup latency or a per-launch GitHub API call.
-        try:
-            refresh_cua_driver = True
-            try:
-                from renco_cli.config import load_config
-
-                _update_cfg = (load_config() or {}).get("updates", {})
-                if isinstance(_update_cfg, dict):
-                    refresh_cua_driver = bool(
-                        _update_cfg.get("refresh_cua_driver", True)
-                    )
-            except Exception as cfg_exc:
-                logger.debug("Could not read updates.refresh_cua_driver: %s", cfg_exc)
-
-            if (
-                refresh_cua_driver
-                and sys.platform in ("darwin", "win32", "linux")
-                and shutil.which("cua-driver")
-            ):
-                from renco_cli.tools_config import install_cua_driver
-
-                print()
-                print("→ Refreshing cua-driver (Computer Use)...")
-                # require_confirmed_update: only run the (multi-minute,
-                # silent) upstream installer when the driver's native
-                # check-update verb positively reports a newer release.
-                # An indeterminate check (offline, rate-limited, old
-                # driver) keeps the installed version — `renco update`
-                # must stay fast; `renco computer-use install --upgrade`
-                # remains the force path.
-                install_cua_driver(
-                    upgrade=True,
-                    require_confirmed_update=True,
-                    show_installer_progress=False,
-                )
-        except Exception as e:
-            logger.debug("cua-driver refresh failed: %s", e)
-
         # Write exit code *before* the gateway restart attempt.
         # When running as ``renco update --gateway`` (spawned by the gateway's
         # /update command), this process lives inside the gateway's systemd
@@ -6544,11 +5890,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         #
         # Writing the marker here — after git pull + pip install succeed but
         # before we attempt the restart — ensures the new gateway sees it
-        # regardless of how we die. Gated on desktop_build_ok (#88251): a
-        # Desktop rebuild failure must not be reported as "0" — the gateway's
-        # /update watcher (gateway/run.py) polls this file.
+        # regardless of how we die. A partial update must not be reported as
+        # "0" — the gateway's /update watcher (gateway/run.py) polls this file.
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(True)
 
         gateway_fleet_restart_incomplete = False
         # Snapshot of gateways running before we touch anything. Stays empty
@@ -6560,9 +5905,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _pre_restart_gateway_pids: list | None = []
         # Declared outside the restart try/except below (and never reset
         # to None) so it's always safe to read afterwards even if that
-        # block raises before reaching its own restart bookkeeping —
-        # needed to forward already-restarted units to
-        # ``_finish_dashboard_update_cleanup`` (review on #83595).
+        # block raises before reaching its own restart bookkeeping.
         restarted_services: list = []
         # Same outside-the-try treatment: the post-restart fleet version
         # check consults killed_pids to decide whether to wait for
@@ -6767,8 +6110,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _pre_restart_gateway_pids = None
 
             # --- Systemd services (Linux) ---
-            # Discover all renco-gateway* units (default + profiles) plus
-            # renco-serve* units (the Desktop app's backend, #83438).
+            # Discover all renco-gateway* units (default + profiles).
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -6785,7 +6127,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             + [
                                 "list-units",
                                 "renco-gateway*",
-                                "renco-serve*",
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",
@@ -6832,11 +6173,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         # The gateway's SIGUSR1 handler calls
                         # request_restart(via_service=True) → drain →
                         # exit; systemd's Restart=always respawns the unit.
-                        # renco-serve has no such handler (it isn't
-                        # gateway/run.py), so skip straight to the blunt
-                        # restart below rather than sending it an unhandled
-                        # signal and waiting out the drain budget for
-                        # nothing.
                         _main_pid = 0
                         if _service_unit_supports_graceful_sigusr1_restart(svc_name):
                             try:
@@ -7141,8 +6477,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # still sees the exit and relaunches either way.
                 # Announce the drain first: this wait can hold for the full
                 # budget per gateway with no other output, and on surfaces
-                # that stream update progress (the desktop updater most of
-                # all) the silence reads as a hung update (#44515).
+                # that stream update progress the silence reads as a hung
+                # update (#44515).
                 print(
                     f"  → {proc.profile}: draining gateway PID {pid} "
                     f"(up to {int(_drain_budget)}s)..."
@@ -7369,19 +6705,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Restart a managed dashboard through systemd, or stop stale manual
-        # dashboard processes. Raw-killing a systemd-owned dashboard PID makes
-        # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
-        # Preserve the safety rule above: a failed Node refresh leaves the
-        # currently running dashboard untouched.
-        #
-        # Forward the systemd units restarted above (includes renco-serve*,
-        # #83438) so a Serve-only install's freshly restarted process isn't
-        # found and restarted again below (review on #83595).
-        _finish_dashboard_update_cleanup(
-            node_failures, already_restarted_units=set(restarted_services)
-        )
-
         print()
         print("Tip: You can now select a provider and model:")
         print("  renco model              # Select provider and model")
@@ -7432,12 +6755,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
-            desktop_build_ok = _update_via_zip(
-                args,
-                had_desktop_app_before_update=had_desktop_app_before_update,
-            )
+            _update_via_zip(args)
             if gateway_mode:
-                _write_gateway_update_exit_code(desktop_build_ok)
+                _write_gateway_update_exit_code(True)
         else:
             print(f"✗ Update failed: {e}")
             try:

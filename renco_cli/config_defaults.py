@@ -25,10 +25,10 @@ DEFAULT_CONFIG = {
     "runtime": {
         "nofile_soft_limit": 4096,
     },
-    # Global active chat session cap across CLI, TUI/dashboard, and messaging.
+    # Global active chat session cap across CLI, TUI, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
-    # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. When more than
+    # Soft LRU cap on in-memory sessions. When more than
     # this many are live, the gateway evicts the least-recently-active DETACHED
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
@@ -516,59 +516,6 @@ DEFAULT_CONFIG = {
         #           is also excluded from the keyless ring)
         #   unset — auto: keyed when the API key is present, else the ring
         "provider_tier": {},
-    },
-
-    "browser": {
-        # Browser tool implementation.
-        # ""            — DEFAULT: Browser Use mode when the browser-use CLI
-        #                 (or uvx) is available; otherwise the built-in
-        #                 browser tools. Camofox setups always keep the
-        #                 built-in tools (no CDP surface).
-        # "browser-use" — force Browser Use mode: one browser_exec tool
-        #                 driving the Browser Use CLI 3.0 over any CDP
-        #                 backend (local Chrome, cloud browsers)
-        # "off"         — force the built-in browser tools
-        #                 (browser_navigate, browser_click, …)
-        "backend": "",
-        "inactivity_timeout": 120,
-        "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
-        "record_sessions": False,  # Auto-record browser sessions as WebM videos
-        "headed": False,  # Local mode: launch Chromium with a visible window (also skips per-turn cleanup so the window persists between turns; idle reaper still applies)
-        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
-        # Browser engine for local mode.  Passed as ``--engine <value>`` to
-        # agent-browser v0.25.3+.
-        # "auto"       — use Chrome (default, don't pass --engine at all)
-        # "lightpanda" — use Lightpanda (1.3-5.8x faster navigation, no screenshots)
-        # "chrome"     — explicitly request Chrome
-        # Also settable via AGENT_BROWSER_ENGINE env var.
-        "engine": "auto",
-        "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
-        "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
-        "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
-        # CDP supervisor — dialog + frame detection via a persistent WebSocket.
-        # Active only when a CDP-capable backend is attached (Browserbase or
-        # local Chrome via /browser connect). See
-        # website/docs/developer-guide/browser-supervisor.md.
-        "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
-        "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
-        "camofox": {
-            # When true, Renco sends a stable profile-scoped userId to Camofox
-            # so the server maps it to a persistent Firefox profile automatically.
-            # When false (default), each session gets a random userId (ephemeral).
-            "managed_persistence": False,
-            # Optional externally managed Camofox identity. Useful when another
-            # app owns the visible browser and Renco should operate in it.
-            "user_id": "",
-            "session_key": "",
-            # Rehydrate tab_id from Camofox before creating a new tab.
-            "adopt_existing_tab": False,
-            # Docker Camofox opens page URLs from inside the container. Enable
-            # this to rewrite loopback page URLs (localhost/127.0.0.1/::1) to a
-            # host alias while leaving CAMOFOX_URL itself unchanged.
-            "rewrite_loopback_urls": False,
-            "loopback_host_alias": "host.docker.internal",
-        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -1118,47 +1065,9 @@ DEFAULT_CONFIG = {
             "timeout": 8,
             "extra_body": {},
         },
-        "tts_audio_tags": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Triage specifier — flesh out a rough one-liner in the Kanban
-        # Triage column into a concrete spec, then promote it to ``todo``.
-        # Invoked by ``renco kanban specify`` (single id or --all). Set a
-        # cheap, capable model here (gemini-flash works well); the main
-        # model is overkill for short spec expansion.
-        "triage_specifier": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 120,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Kanban decomposer — decomposes a triage task into a graph of
-        # child tasks routed to specialist profiles by description.
-        # Invoked by ``renco kanban decompose`` and the kanban
-        # auto-decompose dispatcher tick. Returns a JSON task graph;
-        # uses more tokens than the specifier so allow more headroom.
-        "kanban_decomposer": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 180,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
         # Profile describer — auto-generates a 1-2 sentence description
         # of what a profile is good at. Invoked by
-        # ``renco profile describe <name> --auto`` and the dashboard's
-        # auto-generate button. Short, cheap call.
+        # ``renco profile describe <name> --auto``. Short, cheap call.
         "profile_describer": {
             "provider": "auto",
             "model": "",
@@ -1232,27 +1141,6 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
-        "moa_reference": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 900,
-            "extra_body": {},
-            # NOTE: no reasoning_effort here by design — MoA reasoning depth is
-            # configured PER SLOT in the MoA preset (moa.presets.<name>.
-            # reference_models[].reasoning_effort / aggregator.reasoning_effort),
-            # not at the auxiliary-task level.
-        },
-        "moa_aggregator": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 900,
-            "extra_body": {},
-            # NOTE: no reasoning_effort here by design — see moa_reference above.
-        },
     },
     
     "display": {
@@ -1298,7 +1186,7 @@ DEFAULT_CONFIG = {
         # When true (default), `renco --tui` drops a one-time hint
         # ("subagents working · /agents to watch live") the first time a turn
         # starts delegating, nudging the user toward the live spawn-tree
-        # dashboard. Set false to suppress the hint.
+        # viewer. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         # Stream the model's reasoning/thinking live before the response.
@@ -1513,323 +1401,10 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # Web dashboard settings
-    "dashboard": {
-        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
-        # Process-isolation rollout controls. Runtime reads these through the
-        # raw config loader, so tui_gateway.server also owns explicit defaults.
-        "turn_isolation": False,
-        "compute_host_heartbeat_secs": 15,
-        "compute_host_respawn_max": 3,
-        # Hide the token/cost analytics surfaces (Analytics page, token bars and
-        # cost figures on the Models page) by default.  The numbers shown there
-        # are a local debug estimate: they only count successful main-agent
-        # responses with a usable ``response.usage``, and silently exclude every
-        # auxiliary call (context compression, title generation, vision,
-        # session search, web extract, smart approval, MCP routing, plugin LLM
-        # access) plus provider-side retries, fallback attempts, and any call
-        # whose usage block didn't come back.  Cache writes are also missing
-        # from the API response.  On models with heavy auxiliary traffic
-        # (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than
-        # the provider bill, which is worse than hiding the numbers entirely
-        # because they look precise enough to compare against the provider.
-        # Set this to True to re-enable the surfaces with the understanding
-        # that the numbers are a local lower-bound estimate, not billing.
-        "show_token_analytics": False,
-        # OAuth gate configuration (engaged when ``--host`` is set and
-        # ``--insecure`` is not). The bundled Nous Portal plugin reads
-        # both keys at startup; they are the canonical surface for these
-        # settings. Each can be overridden by an environment variable —
-        # ``RENCO_DASHBOARD_OAUTH_CLIENT_ID`` and
-        # ``RENCO_DASHBOARD_PORTAL_URL`` respectively — and the env var
-        # wins when set to a non-empty value. The override path is what
-        # Fly.io's platform-secret injection uses to push the per-deploy
-        # client_id at provisioning time without operators needing to
-        # touch config.yaml. Local dev / non-Fly deploys can set either
-        # surface; missing values fall through to the plugin's defaults
-        # (no provider registered when ``client_id`` is empty;
-        # ``portal_url`` defaults to https://portal.nousresearch.com).
-        "oauth": {
-            "client_id": "",  # agent:{instance_id} — Portal provisions this
-            "portal_url": "",  # blank → use plugin default (production Portal)
-        },
-        # Username/password gate configuration — read by the bundled
-        # ``dashboard_auth/basic`` plugin (a self-hosted "just put a
-        # password on my dashboard" provider that needs no OAuth IDP).
-        # The plugin registers a password provider when ``username`` plus
-        # either ``password_hash`` (preferred — no plaintext at rest) or
-        # ``password`` (plaintext, hashed in-memory at load) are set. Each
-        # key is overridable by an env var
-        # (``RENCO_DASHBOARD_BASIC_AUTH_USERNAME`` /
-        # ``_PASSWORD_HASH`` / ``_PASSWORD`` / ``_SECRET`` /
-        # ``_TTL_SECONDS``), env winning when non-empty. Leave ``username``
-        # empty (the default) to keep the plugin a no-op — loopback /
-        # ``--insecure`` operators and OAuth users are unaffected.
-        #
-        # ``secret`` is the HMAC key used to sign the stateless session
-        # tokens this provider mints. When empty, a random per-process key
-        # is generated — fine for a single process, but sessions then
-        # don't survive a restart or span multiple workers. Set an
-        # explicit ``secret`` (32+ random bytes, base64/hex/raw) for
-        # stable multi-worker / restart-surviving sessions. Compute a
-        # ``password_hash`` with
-        # ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"``.
-        "basic_auth": {
-            "username": "",  # blank → plugin no-op (no password provider)
-            "password_hash": "",  # scrypt$... (preferred — no plaintext at rest)
-            "password": "",  # plaintext fallback (hashed in-memory at load)
-            "secret": "",  # token-signing key; blank → random per-process
-            "session_ttl_seconds": 0,  # 0 → plugin default (12h)
-        },
-        # Drain-control service-credential configuration — read by the
-        # bundled ``dashboard_auth/drain`` plugin (the first consumer of the
-        # generic non-interactive token-auth capability). The SECRET itself
-        # is a credential and is NOT configured here: it is provisioned by
-        # nous-account-service at deploy time via the
-        # ``RENCO_DASHBOARD_DRAIN_SECRET`` env var (the .env-is-for-secrets
-        # rule). These are the behavioural knobs only. The plugin is a no-op
-        # unless that env var is set to a >=256-bit secret; a weak secret is
-        # rejected at registration (fail-closed) and the drain endpoint stays
-        # disabled. ``scope`` is the capability label attached to the verified
-        # principal; ``min_secret_chars`` is the entropy bar (url-safe-b64
-        # chars; 43 ~= 256 bits).
-        "drain_auth": {
-            "scope": "drain",
-            "min_secret_chars": 43,
-        },
-        # Public URL override (env: ``RENCO_DASHBOARD_PUBLIC_URL``).
-        # When set, this is the complete authority — scheme + host +
-        # optional path prefix (e.g. ``https://example.com/renco``) —
-        # the OAuth ``redirect_uri`` is built from. Set this for deploys
-        # behind reverse proxies that don't reliably forward
-        # ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` / ``X-Forwarded-Prefix``
-        # (manual nginx setups, on-prem ingresses, custom-domain Fly
-        # deploys without proper proxy headers). When set,
-        # ``X-Forwarded-Prefix`` is IGNORED on the OAuth path because
-        # the operator has declared the public URL — we no longer need
-        # to guess from proxy headers, and stacking the prefix on top
-        # would double-prefix the common case where the prefix is
-        # already baked into ``public_url``. Leave empty to use the
-        # existing proxy-header reconstruction (the default).
-        #
-        # Validation: rejects values without ``http(s)://`` scheme or
-        # without a host, and any string containing quote / angle /
-        # whitespace / control characters. A malformed value silently
-        # falls through to request reconstruction rather than breaking
-        # the login flow.
-        "public_url": "",
-    },
-
-    # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
 
-    # Text-to-speech configuration
-    # Each provider supports an optional `max_text_length:` override for the
-    # per-request input-character cap. Omit it to use the provider's documented
-    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
-    "tts": {
-        # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
-        "provider": "edge",
-        "edge": {
-            "voice": "en-US-AriaNeural",
-            # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
-        },
-        "elevenlabs": {
-            "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
-            "model_id": "eleven_multilingual_v2",
-        },
-        "openai": {
-            "model": "gpt-4o-mini-tts",
-            "voice": "alloy",
-            # Voices: alloy, ash, ballad, cedar, coral, echo, fable, marin,
-            # nova, onyx, sage, shimmer, verse (gpt-4o-mini-tts; the tts-1
-            # era stopped at alloy/echo/fable/onyx/nova/shimmer)
-        },
-        "gemini": {
-            "model": "gemini-2.5-flash-preview-tts",
-            "voice": "Kore",
-            # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
-            # pass to insert freeform square-bracket audio tags into the TTS
-            # script. Visible chat replies are unchanged.
-            "audio_tags": False,
-            # Optional local Markdown/text file with Gemini TTS performance
-            # direction. It may include AUDIO PROFILE, SCENE, DIRECTOR'S NOTES,
-            # SAMPLE CONTEXT, and either a `{transcript}` placeholder or no
-            # transcript section; Renco appends the live transcript when absent.
-            "persona_prompt_file": "",
-        },
-        "xai": {
-            "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
-            "language": "en",  # BCP-47 code ("en", "pt-BR") or "auto"
-            "speed": 1.0,  # 0.7–1.5, playback speed
-            "auto_speech_tags": False,  # insert expressive audio tags via LLM rewrite
-            "optimize_streaming_latency": 0,  # 0–2, trades quality for lower latency
-            "sample_rate": 24000,  # 22050 / 24000 / 44100 / 48000
-            "bit_rate": 128000,  # MP3 bitrate; only applies when codec=mp3
-        },
-        "mistral": {
-            "model": "voxtral-mini-tts-2603",
-            "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
-        },
-        "minimax": {
-            "model": "speech-02-hd",
-            "voice_id": "English_expressive_narrator",
-        },
-        "kittentts": {
-            "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
-            "voice": "Jasper",
-        },
-        "neutts": {
-            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
-            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
-            "device": "cpu",  # cpu, cuda, or mps
-        },
-        "piper": {
-            # Voice name (e.g. "en_US-lessac-medium") downloaded on first
-            # use, OR an absolute path to a pre-downloaded .onnx file.
-            # Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md
-            "voice": "en_US-lessac-medium",
-            # "voices_dir": "",        # Override voice cache dir; default = ~/.renco/cache/piper-voices/
-            # "use_cuda": False,       # Requires onnxruntime-gpu
-            # "length_scale": 1.0,     # 2.0 = twice as slow
-            # "noise_scale": 0.667,
-            # "noise_w_scale": 0.8,
-            # "volume": 1.0,
-            # "normalize_audio": True,
-        },
-        "deepinfra": {
-            "model": "",  # empty = first tts-tagged model from the live catalog
-            "voice": "default",
-            # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
-        },
-    },
-
-    "stt": {
-        "enabled": True,
-        # When true, gateway voice messages are transcribed for the agent and
-        # the raw transcript is also echoed back to the user as a 🎙️ message.
-        # Set false to keep STT for the agent while suppressing that user-facing echo.
-        "echo_transcripts": True,
-        # NOTE: no seeded "provider" key. Strict selection semantics treat a
-        # stored stt.provider as an explicit user pick; seeding "local" here
-        # made a fresh install indistinguishable from a user choice. The
-        # autodetect ladder covers unset. Valid values when set:
-        # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
-        # Global language hint applied to EVERY provider unless a per-provider
-        # language overrides it. Defaults to "en" — Whisper auto-detection
-        # frequently misidentifies short/accented clips, which reads as
-        # "STT transcribed the wrong language". Set to "" to restore
-        # auto-detect, or to your language code ("es", "zh", "uk", ...).
-        "language": "en",
-        # Pre-upload silence trim for cloud providers (groq/openai/mistral/
-        # xai/elevenlabs/deepinfra). Local whisper gets Silero VAD; cloud
-        # endpoints otherwise receive raw audio — silence inflates upload
-        # time, per-audio-minute billing, and hallucination risk. Collapses
-        # pauses with ffmpeg client-side; any failure uploads the original.
-        "cloud_trim_silence": True,
-        "cloud_trim_threshold_db": -40,  # audio quieter than this counts as silence
-        "cloud_trim_keep_ms": 300,  # how much of each pause survives (keeps natural pacing)
-        "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
-            "initial_prompt": "",
-            # Anti-hallucination hardening (faster-whisper decodes junk tokens
-            # from silence/noise without these):
-            "vad": True,  # Silero VAD filter — silence never reaches whisper. false = old raw behavior (music/ambient).
-            "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
-            "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
-            "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
-            "unload_after_idle_seconds": 0,  # 0=never (default); e.g. 300 releases the model after 5min idle
-        },
-        "groq": {
-            "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
-        },
-        "openai": {
-            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
-        },
-        "mistral": {
-            "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
-        },
-        "xai": {
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
-        },
-        "elevenlabs": {
-            "model_id": "scribe_v2",  # scribe_v2, scribe_v1
-            "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
-            "tag_audio_events": False,
-            "diarize": False,
-        },
-        "deepinfra": {
-            "model": "",  # empty = first stt-tagged model from the live catalog
-            # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
-        },
-    },
-
-    "voice": {
-        "record_key": "ctrl+b",
-        "submit_mode": "direct",       # TUI: direct submits immediately; draft leaves an editable transcript
-        "max_recording_seconds": 120,
-        "auto_tts": False,
-        "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
-        "beep_volume": 0.3,           # Beep amplitude multiplier (0.0-1.0, default keeps prior hardcoded value)
-        "thinking_sound": True,       # Calm ambient bubble sound while the agent works in voice chat (volume follows beep_volume)
-        "silence_threshold": 200,     # RMS below this = silence (0-32767)
-        "silence_duration": 3.0,      # Seconds of silence before auto-stop
-        "barge_in": True,             # Interrupt the agent / stop TTS when the user starts talking
-        "barge_in_grace_seconds": 0.5,  # Trip suppression right after TTS playback starts (onset transient); the mic itself is live for the whole turn
-        "barge_in_threshold_multiplier": 3.0,  # Speech trigger = quiet-room floor x this (floor is calibrated BEFORE playback, never against speaker bleed)
-        # Saying EXACTLY one of these phrases (and nothing else) ends the
-        # voice chat instead of being sent to the agent. Case-insensitive,
-        # surrounding punctuation ignored. Set [] to disable.
-        "stop_phrases": ["stop"],
-    },
-
-    # "Hey Renco" hands-free wake word. Always-on, on-device hotword
-    # detection that starts a fresh voice session — the "Hey Siri" pattern.
-    # Off by default; toggle with /wake or `wake_word.enabled: true`.
-    "wake_word": {
-        "enabled": False,
-        "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
-        "input_device": None,          # PortAudio input device index/name; null uses the process default
-        "capture": "auto",            # auto | local | client — where PCM is captured (client = desktop streams mic via wake.feed)
-        "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
-        "phrase": "hey renco",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
-        "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)
-        "confirmation_frames": 3,     # openWakeWord only: consecutive over-threshold frames required to fire (higher = fewer false triggers on ambient speech, slightly more latency; 1 = old single-frame behavior)
-        "start_new_session": True,    # start a fresh session on wake vs. continue the current one
-        "profile_routing": True,      # sherpa only: also listen for every wake-enabled profile's phrase and route the wake to the matching profile
-        "openwakeword": {
-            # "hey_renco" (the bundled, works-out-of-the-box default) OR a
-            # built-in openWakeWord name ("hey_jarvis", "alexa", "hey_mycroft",
-            # ...) OR a path to a custom .onnx/.tflite model for another phrase.
-            # See the wake-word docs for the custom-model training guide.
-            "model": "hey_renco",
-            # "" (auto — tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite".
-            # openWakeWord's onnx backend scores near-zero on macOS ARM64
-            # (dscripka/openWakeWord#336), so auto avoids a listener that arms
-            # but never fires. Set explicitly only to override that choice.
-            "inference_framework": "",
-        },
-        "sherpa": {
-            # Optional path to a sherpa-onnx KWS model directory. Empty =
-            # auto-download the small English zipformer model on first use.
-            "model_dir": "",
-        },
-        "porcupine": {
-            # Built-in keyword ("jarvis", "computer", "bumblebee", ...) or a path
-            # to a custom .ppn from the Picovoice Console.
-            "keyword": "jarvis",
-        },
-    },
-    
     "human_delay": {
         "mode": "off",
         "min_ms": 800,
@@ -1992,43 +1567,6 @@ DEFAULT_CONFIG = {
         "self_paced_ceiling_seconds": 900,
     },
 
-    # Mixture of Agents — named presets used by /moa. A preset is an execution
-    # mode around the main model, not a provider/model itself: references +
-    # aggregator synthesize private guidance before each main-model iteration.
-    "moa": {
-        "default_preset": "default",
-        "active_preset": "",
-        # When true, every MoA turn that runs the reference fan-out writes the
-        # FULL turn (each reference's exact input messages + output + usage/cost,
-        # and the aggregator's exact input + output) to a JSONL file at
-        # <renco_home>/moa-traces/<session_id>.jsonl. Off by default — turn it
-        # on to audit / improve MoA behavior from real runs. Set trace_dir to
-        # override the output directory.
-        "save_traces": False,
-        "trace_dir": "",
-        # Privacy redaction filter for advisor (reference) outputs. Advisors
-        # can echo PII from the conversation (emails, formatted phone numbers)
-        # and credential shapes into reference blocks, traces, and the
-        # aggregator prompt. Modes ('' = off, the default):
-        #   "display" — redact user-visible surfaces only (reference blocks
-        #               shown in the UI + saved MoA trace records); the
-        #               aggregator still sees raw advisor text.
-        #   "full"    — additionally redact the advisor text injected into
-        #               the aggregator prompt (issue #59959).
-        "privacy_filter": "",
-        "presets": {
-            "default": {
-                "reference_models": [
-                    {"provider": "openai-codex", "model": "gpt-5.5"},
-                    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
-                ],
-                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-                "max_tokens": 4096,
-                "enabled": True,
-            }
-        },
-    },
-
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.renco/skills/.
@@ -2089,7 +1627,7 @@ DEFAULT_CONFIG = {
         #                     instead of committing (a SKILL.md is too large to
         #                     review inline, so skills always stage rather than
         #                     prompt). List with /skills pending, inspect with
-        #                     /skills diff <id> (full diff — CLI/dashboard/file,
+        #                     /skills diff <id> (full diff — CLI/file,
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
@@ -2580,106 +2118,6 @@ DEFAULT_CONFIG = {
         "media_send_timeout_seconds": 300,
     },
 
-    # Kanban multi-agent coordination — controls the dispatcher loop that
-    # spawns workers for ready tasks. The dispatcher ticks every N seconds
-    # (default 60), reclaims stale claims, promotes dependency-satisfied
-    # todos to ready, and fires `renco -p <assignee> chat -q ...` for
-    # each claimable ready task. One dispatcher per profile is sufficient;
-    # running more than one on the same kanban.db will race for claims.
-    "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to task
-        # completion + block events when ``kanban_create`` is called from
-        # inside a session that has a persistent delivery channel. The
-        # agent that dispatched the task will get notified automatically
-        # instead of having to poll. Disable to mirror pre-feature
-        # behaviour — e.g. for a profile that prefers explicit
-        # ``kanban_notify-subscribe`` calls per task.
-        "auto_subscribe_on_create": True,
-        # Run the dispatcher inside the gateway process. On by default —
-        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
-        # and gateway is the supervisor users already have. Set to false
-        # only if you run the dispatcher as a separate systemd unit or
-        # don't want the gateway to spawn workers.
-        "dispatch_in_gateway": True,
-        # Automatically claim tasks in the first-class review column and spawn
-        # the assigned profile with the bundled sdlc-review skill. Disable for
-        # boards where every review is performed manually from the dashboard.
-        "review_dispatch": True,
-        # Seconds between dispatcher ticks (idle or not). Lower = snappier
-        # pickup of newly-ready tasks; higher = less SQL pressure.
-        "dispatch_interval_seconds": 60,
-        # Auto-block after this many consecutive non-success attempts for the
-        # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
-        # resets the streak for the new profile.
-        "failure_limit": 2,
-        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
-        # the historical 2 MiB + one-backup behavior; long-running workers can
-        # raise these to keep more early failure evidence.
-        "worker_log_rotate_bytes": 2 * 1024 * 1024,
-        "worker_log_backup_count": 1,
-        # Profile assigned to the root/orchestration task after Triage
-        # decomposition. When unset, falls back to the default profile (the
-        # one `renco` launches with no -p flag). This does not control the
-        # decomposer prompt, model, or skills; configure that LLM path under
-        # auxiliary.kanban_decomposer.
-        "orchestrator_profile": "",
-        # Where a child task lands if the orchestrator can't match an
-        # assignee to any installed profile. When unset, falls back to the
-        # default profile. A task never ends up with assignee=None.
-        "default_assignee": "",
-        # Global concurrency cap (#33488): when set to a positive int, the
-        # HOST never has more than N tasks in 'running' at once — counted
-        # across every active board and across both the ready and review
-        # dispatch lanes (workers are OS processes sharing one machine's
-        # memory, so the cap bounds the machine, not each board; OOF-30).
-        # Unset (None) means
-        # "derive from system memory" (OOF-30/OOF-77): the dispatcher caps
-        # concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] —
-        # e.g. 2 workers on a 1 GiB VM. On hosts where total memory can't
-        # be read (macOS/Windows), unset falls back to no cap. Set an
-        # explicit value to override the derived default in either
-        # direction.
-        "max_in_progress": None,
-        # Per-profile concurrency cap (#21582). When set to a positive int,
-        # no single profile can have more than N workers running at once,
-        # even if the global max_in_progress / max_spawn caps would allow
-        # it. Tasks blocked this way defer to the next dispatcher tick.
-        # Unset (None) means "no per-profile cap" — backward-compatible
-        # with existing installs. Useful for fan-out workflows that would
-        # otherwise saturate one profile's local model / API quota /
-        # browser pool while leaving other profiles idle.
-        "max_in_progress_per_profile": None,
-        # When true, the kanban dispatcher auto-runs the decomposer on
-        # tasks that land in Triage (every dispatcher tick). When false,
-        # decomposition is manual via `renco kanban decompose <id>` or
-        # the dashboard's Decompose button.
-        "auto_decompose": True,
-        # Max triage tasks to decompose per dispatcher tick. Prevents a
-        # large bulk-load of triage tasks from spending a burst of aux
-        # LLM calls in one tick. Excess tasks defer to the next tick.
-        "auto_decompose_per_tick": 3,
-        # Stale detection: running tasks that have exceeded this many
-        # seconds without a heartbeat (since ``last_heartbeat_at``) are
-        # auto-reclaimed to ``ready`` on the next dispatcher tick. The
-        # worker process (if still running host-locally) is terminated
-        # before the reclaim.  0 disables stale detection entirely.
-        "dispatch_stale_timeout_seconds": 14400,
-        # Orphaned-card reconciliation: each dispatcher tick, requeue
-        # 'running' cards whose claim bookkeeping is broken (claim_lock or
-        # claim_expires NULL with a dead/gone worker) — zombies invisible
-        # to the TTL/crash/stale recovery paths. Set false to keep orphans
-        # frozen for manual forensics.
-        "reconcile_orphans": True,
-        # Notify subscriptions survive a task reaching ``done`` (completion
-        # is reversible — controllers reopen done work for review
-        # corrections), and are normally removed on archive. On boards that
-        # never archive, the notifier GC purges subscriptions for tasks
-        # that have been ``done`` with no new activity for this many days,
-        # so stale rows don't accumulate and get scanned on every notifier
-        # tick forever. Set 0 to disable the sweep.
-        "done_sub_retention_days": 30,
-    },
-
     # execute_code settings — controls the tool used for programmatic tool calls.
     "code_execution": {
         # Execution mode:
@@ -2835,44 +2273,6 @@ DEFAULT_CONFIG = {
         # Python tries AAAA records first and hangs for the full TCP timeout
         # before falling back to IPv4.  Set to true to skip IPv6 entirely.
         "force_ipv4": False,
-    },
-
-    # Gateway monitoring — Service Health Monitoring plus redacted Operational
-    # Diagnostics for the gateway daemon, exported over OTLP to an
-    # operator-configured endpoint (OTEL Collector, DataDog, ...). Content-free
-    # by construction: no prompts, messages, tool args/results, session
-    # history, usage analytics, audit logs, or trajectories. Off by default;
-    # nothing is collected or sent until an operator enables it and sets an
-    # endpoint.
-    "monitoring": {
-        # Stable install identifier attached to exported health signals so an
-        # operator can tell instances apart in their collector. Empty string
-        # means "mint a fresh UUID on first use"; clear it to rotate. Carries
-        # no account identity.
-        "install_id": "",
-        # Gateway health & diagnostics export.
-        "gateway_health_export": {
-            "enabled": False,
-            "metrics_enabled": True,
-            "diagnostic_events_enabled": True,
-            "warning_error_events_enabled": True,
-            "export_interval_seconds": 60,
-            "logs_export_interval_seconds": 5,
-            "resource_attributes": {
-                "service.name": "renco-gateway",
-                "deployment.environment.name": "production",
-            },
-        },
-        # OTLP destination. headers_env maps header names to ENVIRONMENT
-        # VARIABLE NAMES (never secret values); values are read from the
-        # environment at export time.
-        "export": {
-            "otlp": {
-                "enabled": False,
-                "endpoint": "",
-                "headers_env": {},
-            },
-        },
     },
 
     # Gateway settings — control how messaging platforms (Telegram, Discord,
@@ -3250,11 +2650,6 @@ DEFAULT_CONFIG = {
         # "✓ Code updated!" printed while the checkout stayed days behind
         # main on a stale branch). Set false to never auto-switch.
         "auto_switch_parked_branch": True,
-        # Refresh an already-installed cua-driver during `renco update`.
-        # The refresh is best-effort and macOS-only. Turn this off if the
-        # upstream installer is not appropriate for the machine, for example
-        # on non-admin accounts where `/Applications` is not writable.
-        "refresh_cua_driver": True,
     },
 
     # Language Server Protocol — semantic diagnostics from real
@@ -3312,26 +2707,6 @@ DEFAULT_CONFIG = {
         "servers": {},
     },
 
-
-    # X (Twitter) Search via xAI's built-in x_search Responses tool.
-    # The tool registers when xAI credentials are available (SuperGrok
-    # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
-    # `renco tools`. These settings tune the backing Responses API call.
-    "x_search": {
-        # xAI model used for the Responses call. grok-4.5 is the
-        # recommended default; any Grok model with x_search tool
-        # access works.
-        "model": "grok-4.5",
-        # Optional reasoning effort sent to xAI Responses API models that
-        # support it. Leave null to preserve the selected model's default.
-        "reasoning_effort": None,
-        # Request timeout in seconds (minimum 30). x_search can take
-        # 60-120s for complex queries — the default is generous.
-        "timeout_seconds": 180,
-        # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
-        # Each retry backs off (1.5x attempt seconds, capped at 5s).
-        "retries": 2,
-    },
 
     # =========================================================================
     # External secret sources
@@ -3440,59 +2815,6 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
-    # Computer Use (cua-driver) toolset settings.
-    "computer_use": {
-        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
-        # by default upstream. Renco disables it for our users unless they
-        # explicitly opt in here. When false (default), Renco sets
-        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
-        # every invocation (MCP backend, status, doctor, install). Set true
-        # to let cua-driver use its own default (telemetry on).
-        "cua_telemetry": False,
-        # Cap driver screenshot longest edge (pixels) via set_config on
-        # session start. Shrinks SOM multimodal payloads; 0 disables.
-        "max_image_dimension": 1456,
-        # Mode for capture_after follow-ups: som (screenshot + overlays —
-        # default), ax (elements only, no PNG — faster), vision (pixels only).
-        "capture_after_mode": "som",
-        # Disable the cursor overlay rendered by cua-driver. The overlay
-        # shows where agent actions land but can peg a core when idle
-        # (macOS vImage redraw loop #47032; Linux/WSL2 idle spin #28152).
-        # cua-driver ≥ 0.6.x supports --no-overlay; Renco also calls
-        # set_agent_cursor_enabled(false) after start_session when this is on.
-        #   None  = auto-detect (off on macOS + headless/WSL2 Linux; on elsewhere)
-        #   True  = always disable the overlay
-        #   False = always enable the overlay
-        "no_overlay": None,
-        # cua-driver permission mode for each Renco computer-use runtime.
-        #   standard (default) — cua-driver's own approval boundary. Protected
-        #     operations (e.g. attaching to an existing signed-in browser
-        #     profile) fail closed unless grant_existing_profile is enabled
-        #     below.
-        #   bounded — repeatable automation under a user-reviewed session
-        #     capability manifest (set capability_manifest below). No runtime
-        #     prompts; anything outside the manifest fails closed inside
-        #     cua-driver.
-        # `unrestricted` is intentionally NOT accepted here: it stays bound to
-        # the explicit per-session YOLO toggle so a config line can never
-        # silently bypass approvals.
-        "permission_mode": "standard",
-        # Absolute or ~ path to the reviewed cua-driver capability
-        # manifest used when permission_mode is "bounded". Renco passes the
-        # canonical --capability-manifest and --approve-capability-manifest
-        # flags when it launches the runtime. See
-        # https://cua.ai/docs/reference/cua-driver/permission-modes
-        "capability_manifest": "",
-        # Pre-authorize existing-profile browser attachment in standard mode
-        # (cua-driver's trusted-launcher `--grant existing-profile`). When
-        # true, the agent can attach to your already-running, signed-in
-        # Chrome/Edge window — exposing that profile's live pages, cookies,
-        # and storage to the browser protocol — without a per-use prompt.
-        # Leave false to keep existing-profile attachment failing closed;
-        # isolated driver-owned profiles work either way.
-        "grant_existing_profile": False,
-    },
-
     # =========================================================================
     # Egress credential-injection proxy (iron-proxy)
     # =========================================================================
@@ -3553,60 +2875,6 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
 
-    # Renco Desktop (Electron app) launch options. These only affect
-    # `renco desktop`; they do not touch the CLI/gateway.
-    "desktop": {
-        # Git repository discovery for the Desktop Projects sidebar. Empty
-        # roots preserve the historical bounded scan of the user's home.
-        "repo_scan_enabled": True,
-        "repo_scan_roots": [],
-        "repo_scan_exclude_paths": [],
-        # Extra Electron command-line flags appended to every desktop launch,
-        # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
-        # explicit ozone backend, or GPU workaround flags. A list of strings;
-        # a single string is also accepted and shell-split.
-        "electron_flags": [],
-        # GPU hardware acceleration policy for the desktop app:
-        #   "auto"  - let the app detect remote displays (SSH/VNC/RDP) and
-        #             disable GPU only then (default; current behavior).
-        #   true    - always disable GPU acceleration (software rendering).
-        #             Use on no-GPU VMs / Proxmox hosts where the GPU path hangs.
-        #   false   - always keep GPU acceleration on, even over a remote display.
-        # Bridged to the RENCO_DESKTOP_DISABLE_GPU env var the Electron app reads.
-        "disable_gpu": "auto",
-        # Linux keychain backend for secure token storage (Chromium's
-        # --password-store switch, which safeStorage needs before it can
-        # encrypt remote gateway tokens):
-        #   "auto"  - detect the session keychain: KWallet via KDE session env
-        #             vars, GNOME Keyring / any org.freedesktop.secrets
-        #             provider (e.g. KeePassXC) via D-Bus (default).
-        #   "gnome-libsecret" / "kwallet" / "kwallet5" / "kwallet6" / "basic"
-        #           - force a specific backend ("basic" = unencrypted store).
-        # Ignored on macOS/Windows. Bridged to the RENCO_DESKTOP_PASSWORD_STORE
-        # env var the Electron app reads, so an explicit env var still wins.
-        "password_store": "auto",
-        # macOS only: optional persistent code-signing identity (a cert in the
-        # login keychain — a self-signed "Code Signing" cert from Keychain
-        # Access works; no Apple Developer account needed) used to re-sign
-        # locally rebuilt desktop apps. A certificate-anchored Designated
-        # Requirement stays stable across rebuilds, so TCC grants (Full Disk
-        # Access, Desktop/Downloads/Documents, Accessibility, Automation,
-        # microphone) survive every update. Empty keeps the default stable
-        # ad-hoc signing (identifier-pinned requirement).
-        "macos_signing_identity": "",
-        # Auto-continue a turn that was killed mid-run by an app/backend/machine
-        # crash: resuming that session re-submits the interrupted prompt (shown
-        # as a "resumed interrupted turn" event) if the interruption is fresh.
-        # A stale interruption just shows the recovered partial transcript.
-        "auto_continue": {
-            "enabled": True,
-            # How recent the interruption must be to auto-continue (minutes).
-            "freshness_minutes": 15,
-            # Crash-loop breaker: max automatic re-runs of one interrupted turn.
-            "max_attempts": 2,
-        },
-    },
-
 
     # Google Vertex AI provider (Gemini via the OpenAI-compatible endpoint).
     # Auth is OAuth2 (short-lived access tokens minted from a service-account
@@ -3633,14 +2901,6 @@ DEFAULT_CONFIG = {
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
-    "NOUS_BASE_URL": {
-        "description": "Nous Portal base URL override",
-        "prompt": "Nous Portal base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
     "OPENROUTER_API_KEY": {
         "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "prompt": "OpenRouter API key",
@@ -3682,22 +2942,6 @@ OPTIONAL_ENV_VARS = {
                        "application-default login). Set project/region under vertex: in config.yaml.",
         "prompt": "Vertex service account JSON path (leave empty to use ADC / GOOGLE_APPLICATION_CREDENTIALS)",
         "url": "https://cloud.google.com/iam/docs/keys-create-delete",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "XAI_API_KEY": {
-        "description": "xAI API key",
-        "prompt": "xAI API key",
-        "url": "https://console.x.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "XAI_BASE_URL": {
-        "description": "xAI base URL override",
-        "prompt": "xAI base URL (leave empty for default)",
-        "url": None,
         "password": False,
         "category": "provider",
         "advanced": True,
@@ -4160,103 +3404,7 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
-    "BROWSERBASE_API_KEY": {
-        "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
-        "prompt": "Browserbase API key",
-        "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-    },
-    "BROWSERBASE_PROJECT_ID": {
-        "description": "Browserbase project ID (optional — only needed for cloud browser)",
-        "prompt": "Browserbase project ID",
-        "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "BROWSER_USE_API_KEY": {
-        "description": "Browser Use API key for cloud browser (optional — local browser works without this)",
-        "prompt": "Browser Use API key",
-        "url": "https://browser-use.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_BROWSER_TTL": {
-        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "prompt": "Browser session TTL (seconds)",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "AGENT_BROWSER_ENGINE": {
-        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
-        "prompt": "Browser engine (auto/lightpanda/chrome)",
-        "url": "https://github.com/vercel-labs/agent-browser",
-        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "CAMOFOX_URL": {
-        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
-        "prompt": "Camofox server URL",
-        "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "CAMOFOX_API_KEY": {
-        "description": "Optional bearer token sent as Authorization header to a remote/authenticated Camofox server",
-        "prompt": "Camofox API key",
-        "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "FAL_KEY": {
-        "description": "FAL API key for image and video generation",
-        "prompt": "FAL API key",
-        "url": "https://fal.ai/",
-        "tools": ["image_generate", "video_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "KREA_API_KEY": {
-        "description": "Krea API key for Krea 2 image generation (Medium + Large)",
-        "prompt": "Krea API key",
-        "url": "https://www.krea.ai/settings/api-tokens",
-        "tools": ["image_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "VOICE_TOOLS_OPENAI_KEY": {
-        "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
-        "prompt": "OpenAI API Key (for Whisper STT + TTS)",
-        "url": "https://platform.openai.com/api-keys",
-        "tools": ["voice_transcription", "openai_tts"],
-        "password": True,
-        "category": "tool",
-    },
-    "ELEVENLABS_API_KEY": {
-        "description": "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
-        "prompt": "ElevenLabs API key",
-        "url": "https://elevenlabs.io/",
-        "tools": ["elevenlabs_tts", "voice_transcription"],
-        "password": True,
-        "category": "tool",
-    },
-    "MISTRAL_API_KEY": {
-        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
-        "prompt": "Mistral API key",
-        "url": "https://console.mistral.ai/",
-        "password": True,
-        "category": "tool",
-    },
-    "PORCUPINE_ACCESS_KEY": {
+    "TAVILY_API_KEY": {
         "description": "Picovoice access key for the Porcupine 'Hey Renco' wake word engine (optional; openWakeWord is the free default)",
         "prompt": "Picovoice access key",
         "url": "https://console.picovoice.ai/",
@@ -4812,7 +3960,7 @@ OPTIONAL_ENV_VARS = {
     # gateway still falls back to RENCO_TOOL_PROGRESS_MODE for backward
     # compatibility, so it lives in _EXTRA_ENV_KEYS (known to reload and
     # compatibility paths) but is intentionally NOT listed here:
-    # OPTIONAL_ENV_VARS feeds user-facing surfaces (dashboard keys page, setup
+    # OPTIONAL_ENV_VARS feeds user-facing surfaces (keys page, setup
     # checklists) and deprecated knobs shouldn't be offered there. The boolean
     # RENCO_TOOL_PROGRESS is fully unsupported since the v12 config support
     # floor retired its only consumer (the v3→4 migration).
