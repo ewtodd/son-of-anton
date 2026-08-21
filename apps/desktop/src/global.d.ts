@@ -1,5 +1,5 @@
-import type { GatewayWsUrlResult } from '@hermes/shared'
-import type { TranslucencyState } from '@hermes/shared/translucency'
+import type { GatewayWsUrlResult } from '@renco/shared'
+import type { TranslucencyState } from '@renco/shared/translucency'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -14,17 +14,17 @@ export {}
 
 declare global {
   interface Window {
-    hermesDesktop: {
+    rencoDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
-      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      getConnection: (profile?: string | null) => Promise<RencoConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
-      }) => Promise<HermesConnection>
+      }) => Promise<RencoConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
         connectionId?: null | string
@@ -53,7 +53,7 @@ declare global {
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
-      // Resume this session in the user's own terminal emulator (`hermes --tui
+      // Resume this session in the user's own terminal emulator (`renco --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
       openSessionInTerminal: (
         sessionId: string,
@@ -149,7 +149,7 @@ declare global {
         ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
-        // Fan out `hermes update` to every eligible registered connection;
+        // Fan out `renco update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
         // excludeIds skips connections the caller updates through another
         // path (the everything-update flow's active backend + local client).
@@ -167,7 +167,7 @@ declare global {
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
-      // Hermes Cloud: one portal login powers discovery + silent per-agent
+      // Renco Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {
         status: () => Promise<DesktopCloudStatus>
@@ -179,12 +179,12 @@ declare global {
       profile: {
         get: () => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
-        // backend under the new HERMES_HOME (reloads the window). Pass null to
+        // backend under the new RENCO_HOME (reloads the window). Pass null to
         // clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
-      api: <T>(request: HermesApiRequest) => Promise<T>
-      notify: (payload: HermesNotification) => Promise<boolean>
+      api: <T>(request: RencoApiRequest) => Promise<T>
+      notify: (payload: RencoNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
       readWindowBelow?: () => Promise<{
@@ -206,8 +206,8 @@ declare global {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
-      readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
-      selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
+      readFileText: (filePath: string) => Promise<RencoReadFileTextResult>
+      selectPaths: (options?: RencoSelectPathsOptions) => Promise<string[]>
       /** Native save dialog; returns the chosen path or null on cancel. */
       selectSavePath?: (options?: {
         defaultPath?: string
@@ -241,15 +241,15 @@ declare global {
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
-      normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
-      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
+      normalizePreviewTarget: (target: string, baseDir?: string) => Promise<RencoPreviewTarget | null>
+      watchPreviewFile: (url: string) => Promise<RencoPreviewWatch>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
        *  registry + onPreviewFileChanged channel as watchPreviewFile. Optional:
        *  older Electron shells predate it and fall back to the readdir poll. */
-      watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
+      watchDirectory?: (dir: string) => Promise<RencoPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
-      setActiveWork?: (payload: HermesActiveWork) => void
-      setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
+      setActiveWork?: (payload: RencoActiveWork) => void
+      setTitleBarTheme?: (payload: RencoTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
       glassSupported?: boolean
@@ -287,17 +287,17 @@ declare global {
         message: string
         componentStack: string
       }) => void
-      readDir: (path: string) => Promise<HermesReadDirResult>
+      readDir: (path: string) => Promise<RencoReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>
       // Open a DIRECTORY (created if missing) in the OS file manager.
       openDir?: (path: string) => Promise<{ ok: boolean; error?: string }>
-      // Local Desktop runtime-plugin root (<HERMES_HOME>/desktop-plugins),
+      // Local Desktop runtime-plugin root (<RENCO_HOME>/desktop-plugins),
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
-      // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
+      // Local AGENT-plugin root (<RENCO_HOME>/plugins), same Electron-local
       // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
       // so one agent-plugin package can ship a desktop UI half. Optional:
       // older Electron shells predate it — the scanner then skips this root.
@@ -310,7 +310,7 @@ declare global {
       trashPath?: (path: string) => Promise<boolean>
       // Git-driven worktree management for the "Start work" flow.
       git?: {
-        worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
+        worktreeList: (repoPath: string) => Promise<RencoGitWorktree[]>
         worktreeAdd: (
           repoPath: string,
           options?: { name?: string; branch?: string; base?: string; existingBranch?: string }
@@ -323,25 +323,25 @@ declare global {
         branchSwitch: (repoPath: string, branch: string) => Promise<{ branch: string }>
         // The local branches, plus the remote-tracking refs that have no local
         // branch, for the "convert a branch into a worktree" picker.
-        branchList: (repoPath: string) => Promise<HermesGitBranch[]>
+        branchList: (repoPath: string) => Promise<RencoGitBranch[]>
         // Local + remote-tracking branches for the "base branch" picker in the
         // new-worktree dialog. The remote default (origin/HEAD) is flagged so
         // the UI can preselect it.
-        baseBranchList: (repoPath: string) => Promise<HermesGitBaseBranch[]>
+        baseBranchList: (repoPath: string) => Promise<RencoGitBaseBranch[]>
         // Compact working-tree status for the composer coding rail. Null on a
         // non-repo / remote backend (where the Electron probe can't run).
-        repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
+        repoStatus: (repoPath: string) => Promise<RencoRepoStatus | null>
         // Working-tree-vs-HEAD unified diff for one file (the preview's diff
         // view). Empty string when the file is unchanged or not in a repo.
         fileDiff: (repoPath: string, filePath: string) => Promise<string>
         // Codex-style review pane: changed files per scope, per-file diff, and
         // stage / unstage / revert.
         review: {
-          list: (repoPath: string, scope: HermesReviewScope, baseRef?: null | string) => Promise<HermesReviewList>
+          list: (repoPath: string, scope: RencoReviewScope, baseRef?: null | string) => Promise<RencoReviewList>
           diff: (
             repoPath: string,
             filePath: string,
-            scope: HermesReviewScope,
+            scope: RencoReviewScope,
             baseRef?: null | string,
             staged?: boolean
           ) => Promise<string>
@@ -354,15 +354,15 @@ declare global {
           // commit message. Reads only; empty strings off-repo.
           commitContext: (repoPath: string) => Promise<{ diff: string; recent: string }>
           push: (repoPath: string) => Promise<{ ok: boolean }>
-          shipInfo: (repoPath: string) => Promise<HermesReviewShipInfo>
+          shipInfo: (repoPath: string) => Promise<RencoReviewShipInfo>
           // The PR on each of the given branches — plus any known only by
           // number — for badging a list of sessions in one request instead of
           // one `pr view` per checkout.
-          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
+          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<RencoRepoPullRequests>
           // A pasted PR review/issue comment URL resolved to its structured
           // context (author, body, file + line anchor, diff hunk). Null when
           // gh can't answer — the paste stays a plain URL.
-          fetchPrComment: (repoPath: string, url: string) => Promise<HermesPrComment | null>
+          fetchPrComment: (repoPath: string, url: string) => Promise<RencoPrComment | null>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -378,9 +378,9 @@ declare global {
         cwd: (id: string) => Promise<string | null>
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
-        onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
+        onExit: (id: string, callback: (payload: RencoTerminalExit) => void) => () => void
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
-        start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
+        start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<RencoTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
@@ -407,14 +407,14 @@ declare global {
         repo?: string
         force?: boolean
       }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
-      onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
+      onWindowStateChanged?: (callback: (payload: RencoWindowState) => void) => () => void
       onFocusSession?: (callback: (sessionId: string) => void) => () => void
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
       /** Plugin (and other session-less) notification body/action activation. */
       onNotificationActivate?: (
         callback: (payload: { actionId?: string; activate?: string; notifyId?: string; tag?: string }) => void
       ) => () => void
-      onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
+      onPreviewFileChanged: (callback: (payload: RencoPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
@@ -488,13 +488,13 @@ export interface DesktopMarketplaceThemeResult {
   themes: DesktopMarketplaceThemeFile[]
 }
 
-export interface HermesTerminalSession {
+export interface RencoTerminalSession {
   cwd: string
   id: string
   shell: string
 }
 
-export interface HermesTerminalExit {
+export interface RencoTerminalExit {
   code: number | null
   signal: string | null
 }
@@ -504,7 +504,7 @@ export interface DesktopVersionInfo {
   electronVersion: string
   nodeVersion: string
   platform: string
-  hermesRoot: string
+  rencoRoot: string
   /** True when the running renderer bundle predates desktop changes in the
    *  installed source tree (runtime updated, app binary not rebuilt/swapped). */
   bundleOutOfSync?: boolean
@@ -515,7 +515,7 @@ export interface DesktopVersionInfo {
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 
 export interface DesktopUninstallSummary {
-  hermes_home: string
+  renco_home: string
   agent_installed: boolean
   gui_installed: boolean
   source_built_artifacts: string[]
@@ -590,10 +590,10 @@ export interface DesktopUpdateApplyResult {
   message?: string
   blockers?: DesktopUpdateBlocker[]
   /** True when no staged updater exists (CLI install) and the user should run
-   *  `hermes update` themselves. `command` is the exact line to run. */
+   *  `renco update` themselves. `command` is the exact line to run. */
   manual?: boolean
   command?: string
-  hermesRoot?: string
+  rencoRoot?: string
   /** True when the backend was updated but the GUI couldn't be relaunched in
    *  place (AppImage / dev run): the new version loads on next launch. */
   backendUpdated?: boolean
@@ -651,7 +651,7 @@ export interface DesktopPluginProfileRoute {
   targetProfile: string
 }
 
-export interface HermesConnection {
+export interface RencoConnection {
   baseUrl: string
   darwinMajor?: number
   isFullscreen: boolean
@@ -663,7 +663,7 @@ export interface HermesConnection {
   remoteHost?: string
   remoteIdentity?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
-  remoteHermesVersion?: string
+  remoteRencoVersion?: string
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string
@@ -690,18 +690,18 @@ export interface HermesConnection {
   windowButtonPosition: { x: number; y: number } | null
 }
 
-export interface HermesTitleBarTheme {
+export interface RencoTitleBarTheme {
   background: string
   foreground: string
 }
 
 /** Turns in flight, so the main process can confirm before a quit kills them. */
-export interface HermesActiveWork {
+export interface RencoActiveWork {
   count: number
   titles: string[]
 }
 
-export interface HermesWindowState {
+export interface RencoWindowState {
   darwinMajor?: number
   isFullscreen: boolean
   isMinimized?: boolean
@@ -718,7 +718,7 @@ export interface DesktopActiveProfile {
 
 export interface DesktopConnectionConfig {
   envOverride: boolean
-  // The saved connection mode. 'cloud' is a Hermes Cloud connection: it carries
+  // The saved connection mode. 'cloud' is a Renco Cloud connection: it carries
   // a remote-shaped block (remoteUrl = the selected agent's dashboardUrl,
   // remoteAuthMode 'oauth') but is remembered as cloud so settings reopens into
   // the cloud picker. Resolution treats cloud exactly as remote
@@ -740,7 +740,7 @@ export interface DesktopConnectionConfig {
   // the user opted in on a machine without secure storage.
   remoteTokenPlainText: boolean
   remoteUrl: string
-  // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
+  // For a 'cloud' connection: the persisted Renco Cloud org (slug or id) the
   // connected instance was discovered under, so Settings → Gateway can reopen
   // into that org. Empty string for remote/local.
   cloudOrg: string
@@ -748,7 +748,7 @@ export interface DesktopConnectionConfig {
   sshUser: string
   sshPort: number | null
   sshKeyPath: string
-  sshRemoteHermesPath: string
+  sshRemoteRencoPath: string
   sshRemoteProfile: string
 }
 
@@ -764,14 +764,14 @@ export interface DesktopConnectionConfigInput {
   // user opt-in from the renderer.
   allowPlainTextToken?: boolean
   remoteUrl?: string
-  // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
+  // For a 'cloud' connection: the selected Renco Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
   sshHost?: string
   sshUser?: string
   sshPort?: number | null
   sshKeyPath?: string
-  sshRemoteHermesPath?: string
+  sshRemoteRencoPath?: string
   sshRemoteProfile?: string
 }
 
@@ -782,7 +782,7 @@ export interface DesktopConnectionTestResult {
   reachable?: boolean
   sshError?:
     | 'auth-failed'
-    | 'hermes-not-found'
+    | 'renco-not-found'
     | 'host-key-changed'
     | 'timeout'
     | 'unreachable'
@@ -792,8 +792,8 @@ export interface DesktopConnectionTestResult {
     | null
   error?: string | null
   host?: string
-  remoteHermesPath?: string
-  remoteHermesVersion?: string
+  remoteRencoPath?: string
+  remoteRencoVersion?: string
   remotePlatform?: string
 }
 
@@ -815,7 +815,7 @@ export interface DesktopRegistryConnection {
   user?: string
   port?: number
   keyPath?: string
-  remoteHermesPath?: string
+  remoteRencoPath?: string
   remoteProfile?: string
   tokenSet: boolean
   tokenPreview: null | string
@@ -866,7 +866,7 @@ export interface DesktopRegistryConnectionInput {
   user?: string
   port?: null | number
   keyPath?: string
-  remoteHermesPath?: string
+  remoteRencoPath?: string
   remoteProfile?: string
 }
 
@@ -946,18 +946,18 @@ export interface DesktopOauthLogoutResult {
   connected: boolean
 }
 
-// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
+// --- Renco Cloud (cloud-auto-discovery Phase 3) ---
 
 export interface DesktopCloudStatus {
   // The portal base URL the desktop talks to (default or env-overridden).
   portalBaseUrl: string
   // Whether the OAuth partition holds a live Nous portal (Privy) session — the
   // portal authenticates via Privy, so this reflects the privy-token cookie, NOT
-  // the hermes gateway session cookies. See cookiesHavePrivySession.
+  // the renco gateway session cookies. See cookiesHavePrivySession.
   signedIn: boolean
 }
 
-// A discovered Hermes Cloud agent — the trimmed DTO from NAS GET /api/agents.
+// A discovered Renco Cloud agent — the trimmed DTO from NAS GET /api/agents.
 export interface DesktopCloudAgent {
   id: string
   name: string
@@ -1085,7 +1085,7 @@ export type DesktopBootstrapEvent =
       docsUrl: string
     }
 
-export interface HermesApiRequest {
+export interface RencoApiRequest {
   path: string
   method?: string
   body?: unknown
@@ -1106,7 +1106,7 @@ export interface HermesApiRequest {
   connectionId?: string | null
 }
 
-export interface HermesNotification {
+export interface RencoNotification {
   title?: string
   body?: string
   silent?: boolean
@@ -1123,7 +1123,7 @@ export interface HermesNotification {
   actions?: { id: string; text: string; activate?: string }[]
 }
 
-export interface HermesPreviewTarget {
+export interface RencoPreviewTarget {
   binary?: boolean
   byteSize?: number
   kind: 'file' | 'url'
@@ -1138,7 +1138,7 @@ export interface HermesPreviewTarget {
   url: string
 }
 
-export interface HermesReadFileTextResult {
+export interface RencoReadFileTextResult {
   binary?: boolean
   byteSize?: number
   language?: string
@@ -1148,14 +1148,14 @@ export interface HermesReadFileTextResult {
   truncated?: boolean
 }
 
-export interface HermesPreviewWatch {
+export interface RencoPreviewWatch {
   id: string
   path: string
 }
 
 // A real git worktree as reported by `git worktree list` (source of truth for
 // the "Start work" flow), as opposed to the session-cwd-derived grouping above.
-export interface HermesGitWorktree {
+export interface RencoGitWorktree {
   path: string
   branch: null | string
   isMain: boolean
@@ -1169,7 +1169,7 @@ export interface HermesGitWorktree {
 // that a selection switches the main checkout, and does not make
 // `.worktrees/main`. `isRemote` means that a selection first makes a local
 // branch that tracks the remote one.
-export interface HermesGitBranch {
+export interface RencoGitBranch {
   name: string
   checkedOut: boolean
   isDefault: boolean
@@ -1181,7 +1181,7 @@ export interface HermesGitBranch {
 // refs. `isRemote` distinguishes `origin/main` from a local `main` (the UI
 // may show a remote glyph); `isDefault` flags origin/HEAD so the dialog can
 // preselect it.
-export interface HermesGitBaseBranch {
+export interface RencoGitBaseBranch {
   name: string
   isRemote: boolean
   isDefault: boolean
@@ -1189,7 +1189,7 @@ export interface HermesGitBaseBranch {
 
 // A single changed path from `git status --porcelain=v2`, classified by state
 // so the coding rail / switcher can group + open the right diff.
-export interface HermesRepoStatusFile {
+export interface RencoRepoStatusFile {
   path: string
   staged: boolean
   unstaged: boolean
@@ -1199,7 +1199,7 @@ export interface HermesRepoStatusFile {
 
 // Compact working-tree status for the composer coding rail (parsed from
 // `git status --porcelain=v2 --branch`).
-export interface HermesRepoStatus {
+export interface RencoRepoStatus {
   branch: null | string
   // The repo's trunk ("main" / "master" / …), so the UI can offer "branch off
   // the default" from anywhere. Null when no trunk is detected.
@@ -1218,16 +1218,16 @@ export interface HermesRepoStatus {
   added: number
   removed: number
   // Capped changed-file list (REPO_STATUS_FILE_CAP) for the diff/open actions.
-  files: HermesRepoStatusFile[]
+  files: RencoRepoStatusFile[]
 }
 
 // Diff scope for the review pane, mirroring Codex: uncommitted working-tree
 // changes, all changes vs the branch base, or everything since the current
 // turn began.
-export type HermesReviewScope = 'branch' | 'lastTurn' | 'uncommitted'
+export type RencoReviewScope = 'branch' | 'lastTurn' | 'uncommitted'
 
 // One changed file in the review pane (status letter, +/- lines, staged flag).
-export interface HermesReviewFile {
+export interface RencoReviewFile {
   path: string
   added: number
   removed: number
@@ -1236,15 +1236,15 @@ export interface HermesReviewFile {
   staged: boolean
 }
 
-export interface HermesReviewList {
-  files: HermesReviewFile[]
+export interface RencoReviewList {
+  files: RencoReviewFile[]
   // The resolved base ref the scope diffed against (branch merge-base / turn
   // baseline), or null for the uncommitted scope.
   base: null | string
 }
 
 // The branch's PR (if any) as reported by `gh pr view`.
-export interface HermesReviewPr {
+export interface RencoReviewPr {
   url: string
   state: string
   number: number
@@ -1252,7 +1252,7 @@ export interface HermesReviewPr {
 
 // One repo's PRs as reported by `gh pr list`, each tied to the branch it was
 // opened from — how a session row finds its own PR.
-export interface HermesBranchPullRequest {
+export interface RencoBranchPullRequest {
   branch: string
   draft: boolean
   number: number
@@ -1262,16 +1262,16 @@ export interface HermesBranchPullRequest {
   url: string
 }
 
-export interface HermesRepoPullRequests {
+export interface RencoRepoPullRequests {
   ghReady: boolean
-  prs: HermesBranchPullRequest[]
+  prs: RencoBranchPullRequest[]
 }
 
 // A PR review/issue comment resolved from a pasted GitHub URL — the composer's
 // review-comment attachment context. `path`/`line`/`diffHunk` are empty for
 // conversation-tab (issue) comments; `line` is null when the comment is
 // outdated and only `original_line` remained.
-export interface HermesPrComment {
+export interface RencoPrComment {
   author: string
   body: string
   diffHunk: string
@@ -1284,29 +1284,29 @@ export interface HermesPrComment {
 }
 // gh availability/auth + the current branch's PR — drives the review pane's PR
 // button (disabled when gh isn't ready, "Open PR" vs "Create PR" otherwise).
-export interface HermesReviewShipInfo {
+export interface RencoReviewShipInfo {
   ghReady: boolean
-  pr: HermesReviewPr | null
+  pr: RencoReviewPr | null
 }
 
-export interface HermesReadDirEntry {
+export interface RencoReadDirEntry {
   name: string
   path: string
   isDirectory: boolean
 }
 
-export interface HermesReadDirResult {
-  entries: HermesReadDirEntry[]
+export interface RencoReadDirResult {
+  entries: RencoReadDirEntry[]
   error?: string
 }
 
-export interface HermesPreviewFileChanged {
+export interface RencoPreviewFileChanged {
   id: string
   path: string
   url: string
 }
 
-export interface HermesSelectPathsOptions {
+export interface RencoSelectPathsOptions {
   title?: string
   defaultPath?: string
   directories?: boolean

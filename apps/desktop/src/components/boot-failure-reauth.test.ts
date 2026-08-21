@@ -28,7 +28,7 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     sshUser: '',
     sshPort: null,
     sshKeyPath: '',
-    sshRemoteHermesPath: '',
+    sshRemoteRencoPath: '',
     sshRemoteProfile: '',
     ...overrides
   }
@@ -109,7 +109,7 @@ describe('isRemoteReauthError', () => {
   })
 
   it('ignores non-auth boot errors and nullish', () => {
-    expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
+    expect(isRemoteReauthError('Renco background process exited during startup.')).toBe(false)
     expect(isRemoteReauthError(null)).toBe(false)
   })
 })

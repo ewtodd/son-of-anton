@@ -21,8 +21,8 @@ import {
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 
-const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
-const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
+const RELEASE_NOTES_URL = 'https://github.com/ewtodd/renco/releases'
+const INSTALLER_URL = 'https://renco-agent.nousresearch.com/'
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
@@ -119,7 +119,7 @@ export function AboutSettings() {
                     href={INSTALLER_URL}
                     onClick={event => {
                       event.preventDefault()
-                      void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
+                      void window.rencoDesktop?.openExternal?.(INSTALLER_URL)
                     }}
                     rel="noreferrer"
                     target="_blank"
@@ -187,7 +187,7 @@ export function AboutSettings() {
                 href={RELEASE_NOTES_URL}
                 onClick={event => {
                   event.preventDefault()
-                  void window.hermesDesktop?.openExternal?.(RELEASE_NOTES_URL)
+                  void window.rencoDesktop?.openExternal?.(RELEASE_NOTES_URL)
                 }}
                 rel="noreferrer"
                 target="_blank"

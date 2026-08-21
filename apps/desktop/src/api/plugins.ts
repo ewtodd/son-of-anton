@@ -1,7 +1,7 @@
-import type { HermesConnection } from '@/global'
+import type { RencoConnection } from '@/global'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 
-import { getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped } from './client'
+import { getApiRequestConnection, getApiRequestProfile, rencoApi, profileScoped } from './client'
 
 /** Resolve the ACTIVE backend's connection descriptor, (connectionId,
  *  profile)-scoped — mirroring how store/profile resolves $connection: a
@@ -9,23 +9,23 @@ import { getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped
  *  connection), everything else from the profile-keyed local pool. The
  *  getConnectionFor bridge is optional (older Desktop mains); without it the
  *  profile-scoped pool lookup is the best available answer. */
-async function activeConnection(): Promise<HermesConnection> {
-  const getConnectionFor = window.hermesDesktop.getConnectionFor
+async function activeConnection(): Promise<RencoConnection> {
+  const getConnectionFor = window.rencoDesktop.getConnectionFor
   const connectionId = getApiRequestConnection()
 
   if (connectionId && getConnectionFor) {
     return getConnectionFor({ connectionId, profile: getApiRequestProfile() })
   }
 
-  return window.hermesDesktop.getConnection(getApiRequestProfile())
+  return window.rencoDesktop.getConnection(getApiRequestProfile())
 }
 
-/** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
+/** Options for a plugin REST call — mirrors the app's own `rencoDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {
   method?: string
   body?: unknown
-  /** Single-file multipart upload (see HermesApiRequest.upload). */
+  /** Single-file multipart upload (see RencoApiRequest.upload). */
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
 }
@@ -51,13 +51,13 @@ function pluginPathSuffix(caller: string, path: string): string {
  *  REST call. Broader reach (core endpoints, another namespace) is the future
  *  declared-capability seam; today the namespace IS the boundary. */
 export async function pluginRest<T>(pluginId: string, path: string, opts: PluginRestOptions = {}): Promise<T> {
-  if (!window.hermesDesktop?.api) {
-    throw new Error('Hermes desktop bridge unavailable')
+  if (!window.rencoDesktop?.api) {
+    throw new Error('Renco desktop bridge unavailable')
   }
 
   const suffix = pluginPathSuffix('pluginRest', path)
 
-  return hermesApi<T>({
+  return rencoApi<T>({
     path: `/api/plugins/${pluginId}${suffix}`,
     method: opts.method,
     body: opts.body,

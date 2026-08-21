@@ -19,9 +19,9 @@ type EmbedWindow = Window &
   }
 
 const SCRIPT: Record<string, { id: string; src: string }> = {
-  instagram: { id: 'hermes-ig-embed', src: 'https://www.instagram.com/embed.js' },
-  tiktok: { id: 'hermes-tt-embed', src: 'https://www.tiktok.com/embed.js' },
-  twitter: { id: 'hermes-tw-embed', src: 'https://platform.twitter.com/widgets.js' }
+  instagram: { id: 'renco-ig-embed', src: 'https://www.instagram.com/embed.js' },
+  tiktok: { id: 'renco-tt-embed', src: 'https://www.tiktok.com/embed.js' },
+  twitter: { id: 'renco-tw-embed', src: 'https://platform.twitter.com/widgets.js' }
 }
 
 const PROCESS_DELAYS_MS = [0, 300, 800, 1600, 3000]

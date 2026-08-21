@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/renco'
 
 import { sessionRowDetails, sessionRowEstimate, type SessionRowFormatters } from './session-row-details'
 

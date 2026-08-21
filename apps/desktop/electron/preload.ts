@@ -4,95 +4,95 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
 // timers and url, so importing node:os here throws before contextBridge runs
-// and takes the ENTIRE bridge down with it (window.hermesDesktop undefined =>
+// and takes the ENTIRE bridge down with it (window.rencoDesktop undefined =>
 // "Desktop IPC bridge is unavailable"). No reply means no glass, which degrades
 // to an ordinary opaque window rather than a page thinned over nothing.
-const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
+const translucencySupport = ipcRenderer.sendSync('renco:translucency:support')
 
-contextBridge.exposeInMainWorld('hermesDesktop', {
+contextBridge.exposeInMainWorld('rencoDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
-  getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  getConnection: profile => ipcRenderer.invoke('renco:connection', profile),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
-  getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
-  getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
-  revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
-  touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
-  getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  getConnectionFor: payload => ipcRenderer.invoke('renco:connection:for', payload),
+  getProfileRoutes: profiles => ipcRenderer.invoke('renco:plugin-profile-routes', profiles),
+  revalidateConnection: () => ipcRenderer.invoke('renco:connection:revalidate'),
+  touchBackend: profile => ipcRenderer.invoke('renco:backend:touch', profile),
+  getGatewayWsUrl: profile => ipcRenderer.invoke('renco:gateway:ws-url', profile),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
-  getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),
+  getGatewayWsUrlFor: payload => ipcRenderer.invoke('renco:gateway:ws-url-for', payload),
   // Union agent roster across every registered connection.
-  getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
-  openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
-  openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
-  openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
-  claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  getAgentRoster: () => ipcRenderer.invoke('renco:agents:roster'),
+  openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('renco:window:openSession', sessionId, opts),
+  openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('renco:window:openInTerminal', sessionId, opts),
+  openWindow: () => ipcRenderer.invoke('renco:window:openInstance'),
+  claimAmbientCue: key => ipcRenderer.invoke('renco:ambient:claim', key),
   wakeIndicator: {
-    getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
-    setState: state => ipcRenderer.send('hermes:wake-indicator:set', state),
+    getState: () => ipcRenderer.invoke('renco:wake-indicator:get'),
+    setState: state => ipcRenderer.send('renco:wake-indicator:set', state),
     onState: callback => {
       const listener = (_event, state) => callback(state)
-      ipcRenderer.on('hermes:wake-indicator:state', listener)
+      ipcRenderer.on('renco:wake-indicator:state', listener)
 
-      return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
+      return () => ipcRenderer.removeListener('renco:wake-indicator:state', listener)
     }
   },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.
-    open: request => ipcRenderer.invoke('hermes:pet-overlay:open', request),
-    close: () => ipcRenderer.invoke('hermes:pet-overlay:close'),
-    setBounds: bounds => ipcRenderer.send('hermes:pet-overlay:set-bounds', bounds),
-    setIgnoreMouse: ignore => ipcRenderer.send('hermes:pet-overlay:ignore-mouse', ignore),
+    open: request => ipcRenderer.invoke('renco:pet-overlay:open', request),
+    close: () => ipcRenderer.invoke('renco:pet-overlay:close'),
+    setBounds: bounds => ipcRenderer.send('renco:pet-overlay:set-bounds', bounds),
+    setIgnoreMouse: ignore => ipcRenderer.send('renco:pet-overlay:ignore-mouse', ignore),
     // Flip the overlay focusable (and focus it) while the composer needs keys.
-    setFocusable: focusable => ipcRenderer.send('hermes:pet-overlay:set-focusable', focusable),
+    setFocusable: focusable => ipcRenderer.send('renco:pet-overlay:set-focusable', focusable),
     // Main renderer → overlay (forwarded by main): push the latest pet state.
-    pushState: payload => ipcRenderer.send('hermes:pet-overlay:state', payload),
+    pushState: payload => ipcRenderer.send('renco:pet-overlay:state', payload),
     // Overlay → main renderer (forwarded by main): pop back in / composer submit.
-    control: payload => ipcRenderer.send('hermes:pet-overlay:control', payload),
+    control: payload => ipcRenderer.send('renco:pet-overlay:control', payload),
     // Overlay subscribes to state pushes.
     onState: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:pet-overlay:state', listener)
+      ipcRenderer.on('renco:pet-overlay:state', listener)
 
-      return () => ipcRenderer.removeListener('hermes:pet-overlay:state', listener)
+      return () => ipcRenderer.removeListener('renco:pet-overlay:state', listener)
     },
     // Main renderer subscribes to overlay control messages.
     onControl: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:pet-overlay:control', listener)
+      ipcRenderer.on('renco:pet-overlay:control', listener)
 
-      return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
+      return () => ipcRenderer.removeListener('renco:pet-overlay:control', listener)
     }
   },
   // HUD mode: the chrome-free floating chat. A full app renderer (own gateway)
   // sized as a floating bar, so it mounts the real composer. Main owns the
   // window; `onChanged` keeps every window's toggle truthful.
   hud: {
-    open: request => ipcRenderer.invoke('hermes:hud:open', request),
-    close: () => ipcRenderer.invoke('hermes:hud:close'),
-    setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
-    moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
-    setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),
+    open: request => ipcRenderer.invoke('renco:hud:open', request),
+    close: () => ipcRenderer.invoke('renco:hud:close'),
+    setIgnoreMouse: ignore => ipcRenderer.send('renco:hud:ignore-mouse', ignore),
+    moveBy: delta => ipcRenderer.send('renco:hud:move-by', delta),
+    setBounds: bounds => ipcRenderer.send('renco:hud:set-bounds', bounds),
     // Whether the band covers the window below the bar. Main pairs it with the
     // user's translucency setting to decide the native frost (macOS vibrancy /
     // Windows 11 DWM backdrop) — see hudFrostFor.
-    setFrost: showing => ipcRenderer.invoke('hermes:hud:frost', showing),
+    setFrost: showing => ipcRenderer.invoke('renco:hud:frost', showing),
     // The HUD tells main which session it is on; main hands that back to the
     // app window when the HUD closes, so the app can re-home onto it.
-    setSession: sessionId => ipcRenderer.send('hermes:hud:session', sessionId),
+    setSession: sessionId => ipcRenderer.send('renco:hud:session', sessionId),
     onGoto: callback => {
       const listener = (_event, sessionId) => callback(sessionId)
-      ipcRenderer.on('hermes:hud:goto', listener)
+      ipcRenderer.on('renco:hud:goto', listener)
 
-      return () => ipcRenderer.removeListener('hermes:hud:goto', listener)
+      return () => ipcRenderer.removeListener('renco:hud:goto', listener)
     },
     onChanged: callback => {
       const listener = (_event, state) => callback(state)
-      ipcRenderer.on('hermes:hud:changed', listener)
+      ipcRenderer.on('renco:hud:changed', listener)
 
-      return () => ipcRenderer.removeListener('hermes:hud:changed', listener)
+      return () => ipcRenderer.removeListener('renco:hud:changed', listener)
     },
     // Linux only, and silent elsewhere: where the cursor is, in page
     // coordinates, or null when it has left the window. Stands in for the
@@ -100,9 +100,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // macOS and Windows but not here.
     onCursor: callback => {
       const listener = (_event, point) => callback(point)
-      ipcRenderer.on('hermes:hud:cursor', listener)
+      ipcRenderer.on('renco:hud:cursor', listener)
 
-      return () => ipcRenderer.removeListener('hermes:hud:cursor', listener)
+      return () => ipcRenderer.removeListener('renco:hud:cursor', listener)
     }
   },
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
@@ -110,110 +110,110 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // and hands it back, and the primary renderer submits it through the normal
   // prompt path.
   quickEntry: {
-    getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
-    setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
-    dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
+    getSettings: () => ipcRenderer.invoke('renco:quick-entry:settings:get'),
+    setSettings: patch => ipcRenderer.invoke('renco:quick-entry:settings:set', patch),
+    submit: payload => ipcRenderer.send('renco:quick-entry:submit', payload),
+    dismiss: () => ipcRenderer.send('renco:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest
     // payload so a freshly spawned quick window starts from truth.
-    pushState: payload => ipcRenderer.send('hermes:quick-entry:state', payload),
+    pushState: payload => ipcRenderer.send('renco:quick-entry:state', payload),
     // Quick window subscribes to those pushes.
     onState: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:quick-entry:state', listener)
+      ipcRenderer.on('renco:quick-entry:state', listener)
 
-      return () => ipcRenderer.removeListener('hermes:quick-entry:state', listener)
+      return () => ipcRenderer.removeListener('renco:quick-entry:state', listener)
     },
     // Main → primary renderer: a submit captured by the quick window.
     onSubmit: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:quick-entry:submit', listener)
+      ipcRenderer.on('renco:quick-entry:submit', listener)
 
-      return () => ipcRenderer.removeListener('hermes:quick-entry:submit', listener)
+      return () => ipcRenderer.removeListener('renco:quick-entry:submit', listener)
     },
     // Main → quick window: you were just summoned (reset draft + refocus).
     onShown: callback => {
       const listener = () => callback()
-      ipcRenderer.on('hermes:quick-entry:shown', listener)
+      ipcRenderer.on('renco:quick-entry:shown', listener)
 
-      return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
+      return () => ipcRenderer.removeListener('renco:quick-entry:shown', listener)
     }
   },
-  getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
-  getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
-  saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
-  applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
-  testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
+  getBootProgress: () => ipcRenderer.invoke('renco:boot-progress:get'),
+  getConnectionConfig: profile => ipcRenderer.invoke('renco:connection-config:get', profile),
+  saveConnectionConfig: payload => ipcRenderer.invoke('renco:connection-config:save', payload),
+  applyConnectionConfig: payload => ipcRenderer.invoke('renco:connection-config:apply', payload),
+  testConnectionConfig: payload => ipcRenderer.invoke('renco:connection-config:test', payload),
   // v2 multi-connection registry: named agent sources (local / remote / cloud / ssh).
   connections: {
-    list: () => ipcRenderer.invoke('hermes:connections:list'),
-    save: payload => ipcRenderer.invoke('hermes:connections:save', payload),
-    remove: id => ipcRenderer.invoke('hermes:connections:remove', id),
-    setPrimary: id => ipcRenderer.invoke('hermes:connections:set-primary', id),
-    setLaunchMode: mode => ipcRenderer.invoke('hermes:connections:set-launch-mode', mode),
-    setLastUsed: id => ipcRenderer.invoke('hermes:connections:set-last-used', id),
-    test: id => ipcRenderer.invoke('hermes:connections:test', id),
-    // Fan out `hermes update` to every eligible registered connection.
+    list: () => ipcRenderer.invoke('renco:connections:list'),
+    save: payload => ipcRenderer.invoke('renco:connections:save', payload),
+    remove: id => ipcRenderer.invoke('renco:connections:remove', id),
+    setPrimary: id => ipcRenderer.invoke('renco:connections:set-primary', id),
+    setLaunchMode: mode => ipcRenderer.invoke('renco:connections:set-launch-mode', mode),
+    setLastUsed: id => ipcRenderer.invoke('renco:connections:set-last-used', id),
+    test: id => ipcRenderer.invoke('renco:connections:test', id),
+    // Fan out `renco update` to every eligible registered connection.
     // Optional excludeIds skips rows the caller updates through another path.
-    updateAll: options => ipcRenderer.invoke('hermes:connections:update-all', options),
+    updateAll: options => ipcRenderer.invoke('renco:connections:update-all', options),
     // Registry lifecycle push (main → renderer): a connection was removed or
     // materially edited, so secondaries scoped to it must be disposed (and,
     // for edits, re-dialed at the new target).
     onChanged: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:connections:changed', listener)
+      ipcRenderer.on('renco:connections:changed', listener)
 
-      return () => ipcRenderer.removeListener('hermes:connections:changed', listener)
+      return () => ipcRenderer.removeListener('renco:connections:changed', listener)
     }
   },
-  sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
-  sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
-  probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
-  oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
-  oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
-  // Hermes Cloud: one portal login powers discovery + silent per-agent sign-in
+  sshConfigHosts: () => ipcRenderer.invoke('renco:ssh-config:hosts'),
+  sshResolveHost: host => ipcRenderer.invoke('renco:ssh-config:resolve', host),
+  probeConnectionConfig: remoteUrl => ipcRenderer.invoke('renco:connection-config:probe', remoteUrl),
+  oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('renco:connection-config:oauth-login', remoteUrl),
+  oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('renco:connection-config:oauth-logout', remoteUrl),
+  // Renco Cloud: one portal login powers discovery + silent per-agent sign-in
   // (cloud-auto-discovery Phase 3).
   cloud: {
-    status: () => ipcRenderer.invoke('hermes:cloud:status'),
-    login: () => ipcRenderer.invoke('hermes:cloud:login'),
-    logout: () => ipcRenderer.invoke('hermes:cloud:logout'),
-    discover: org => ipcRenderer.invoke('hermes:cloud:discover', org),
-    agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl)
+    status: () => ipcRenderer.invoke('renco:cloud:status'),
+    login: () => ipcRenderer.invoke('renco:cloud:login'),
+    logout: () => ipcRenderer.invoke('renco:cloud:logout'),
+    discover: org => ipcRenderer.invoke('renco:cloud:discover', org),
+    agentSignIn: dashboardUrl => ipcRenderer.invoke('renco:cloud:agent-sign-in', dashboardUrl)
   },
   profile: {
-    get: () => ipcRenderer.invoke('hermes:profile:get'),
-    set: name => ipcRenderer.invoke('hermes:profile:set', name)
+    get: () => ipcRenderer.invoke('renco:profile:get'),
+    set: name => ipcRenderer.invoke('renco:profile:set', name)
   },
-  api: request => ipcRenderer.invoke('hermes:api', request),
-  notify: payload => ipcRenderer.invoke('hermes:notify', payload),
-  requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
-  readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
-  readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
-  readFileDataUrlForAttach: filePath => ipcRenderer.invoke('hermes:readFileDataUrlForAttach', filePath),
+  api: request => ipcRenderer.invoke('renco:api', request),
+  notify: payload => ipcRenderer.invoke('renco:notify', payload),
+  requestMicrophoneAccess: () => ipcRenderer.invoke('renco:requestMicrophoneAccess'),
+  readWindowBelow: () => ipcRenderer.invoke('renco:window:readBelow'),
+  readFileDataUrl: filePath => ipcRenderer.invoke('renco:readFileDataUrl', filePath),
+  readFileDataUrlForAttach: filePath => ipcRenderer.invoke('renco:readFileDataUrlForAttach', filePath),
   dataUrlReadMax: {
-    get: () => ipcRenderer.invoke('hermes:data-url-read-max:get'),
-    set: maxMb => ipcRenderer.invoke('hermes:data-url-read-max:set', maxMb)
+    get: () => ipcRenderer.invoke('renco:data-url-read-max:get'),
+    set: maxMb => ipcRenderer.invoke('renco:data-url-read-max:set', maxMb)
   },
-  readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
-  selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
-  selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
-  writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
-  readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
-  saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
-  saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
-  contextMenuEdit: command => ipcRenderer.invoke('hermes:context-menu:edit', command),
-  contextMenuCopyImage: () => ipcRenderer.invoke('hermes:context-menu:copy-image'),
-  contextMenuSpellcheck: action => ipcRenderer.invoke('hermes:context-menu:spellcheck', action),
-  contextMenuGuestAddWord: payload => ipcRenderer.invoke('hermes:context-menu:guest-add-word', payload),
+  readFileText: filePath => ipcRenderer.invoke('renco:readFileText', filePath),
+  selectPaths: options => ipcRenderer.invoke('renco:selectPaths', options),
+  selectSavePath: options => ipcRenderer.invoke('renco:selectSavePath', options),
+  writeClipboard: text => ipcRenderer.invoke('renco:writeClipboard', text),
+  readClipboard: () => ipcRenderer.invoke('renco:readClipboard'),
+  saveGatewayFile: payload => ipcRenderer.invoke('renco:saveGatewayFile', payload),
+  saveImageFromUrl: url => ipcRenderer.invoke('renco:saveImageFromUrl', url),
+  contextMenuEdit: command => ipcRenderer.invoke('renco:context-menu:edit', command),
+  contextMenuCopyImage: () => ipcRenderer.invoke('renco:context-menu:copy-image'),
+  contextMenuSpellcheck: action => ipcRenderer.invoke('renco:context-menu:spellcheck', action),
+  contextMenuGuestAddWord: payload => ipcRenderer.invoke('renco:context-menu:guest-add-word', payload),
   onContextMenuSpellcheck: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:context-menu-spellcheck', listener)
+    ipcRenderer.on('renco:context-menu-spellcheck', listener)
 
-    return () => ipcRenderer.removeListener('hermes:context-menu-spellcheck', listener)
+    return () => ipcRenderer.removeListener('renco:context-menu-spellcheck', listener)
   },
-  saveImageBuffer: (data, ext) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext }),
-  saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
+  saveImageBuffer: (data, ext) => ipcRenderer.invoke('renco:saveImageBuffer', { data, ext }),
+  saveClipboardImage: () => ipcRenderer.invoke('renco:saveClipboardImage'),
   getPathForFile: file => {
     try {
       return webUtils.getPathForFile(file) || ''
@@ -221,102 +221,102 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return ''
     }
   },
-  normalizePreviewTarget: (target, baseDir) => ipcRenderer.invoke('hermes:normalizePreviewTarget', target, baseDir),
-  watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
-  watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
-  stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
-  setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
-  setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
-  setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
-  setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
-  setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
-  setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
-  setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
-  openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
-  openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
-  reachPreviewUrl: url => ipcRenderer.invoke('hermes:preview:reach', url),
-  fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
-  resolveFavicon: url => ipcRenderer.invoke('hermes:resolveFavicon', url),
-  sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
+  normalizePreviewTarget: (target, baseDir) => ipcRenderer.invoke('renco:normalizePreviewTarget', target, baseDir),
+  watchPreviewFile: url => ipcRenderer.invoke('renco:watchPreviewFile', url),
+  watchDirectory: dir => ipcRenderer.invoke('renco:watchDirectory', dir),
+  stopPreviewFileWatch: id => ipcRenderer.invoke('renco:stopPreviewFileWatch', id),
+  setActiveWork: payload => ipcRenderer.send('renco:active-work', payload),
+  setTitleBarTheme: payload => ipcRenderer.send('renco:titlebar-theme', payload),
+  setNativeTheme: mode => ipcRenderer.send('renco:native-theme', mode),
+  setTranslucency: payload => ipcRenderer.send('renco:translucency', payload),
+  setKeepAwake: on => ipcRenderer.send('renco:keep-awake', on),
+  setDisableF12: blocked => ipcRenderer.send('renco:devtools:disable-f12', blocked),
+  setPreviewShortcutActive: active => ipcRenderer.send('renco:previewShortcutActive', Boolean(active)),
+  openExternal: url => ipcRenderer.invoke('renco:openExternal', url),
+  openPreviewInBrowser: url => ipcRenderer.invoke('renco:openPreviewInBrowser', url),
+  reachPreviewUrl: url => ipcRenderer.invoke('renco:preview:reach', url),
+  fetchLinkTitle: url => ipcRenderer.invoke('renco:fetchLinkTitle', url),
+  resolveFavicon: url => ipcRenderer.invoke('renco:resolveFavicon', url),
+  sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('renco:workspace:sanitize', cwd),
   settings: {
-    getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
-    setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
-    pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
+    getDefaultProjectDir: () => ipcRenderer.invoke('renco:setting:defaultProjectDir:get'),
+    setDefaultProjectDir: dir => ipcRenderer.invoke('renco:setting:defaultProjectDir:set', dir),
+    pickDefaultProjectDir: () => ipcRenderer.invoke('renco:setting:defaultProjectDir:pick')
   },
   zoom: {
     // Current zoom of this window, as { level, percent }.
-    get: () => ipcRenderer.invoke('hermes:zoom:get'),
+    get: () => ipcRenderer.invoke('renco:zoom:get'),
     // Synchronous zoom factor (1 = 100%). Coordinate math needs it in the
     // same tick as the event it converts, so no IPC round-trip here.
     factor: () => webFrame.getZoomFactor(),
-    setPercent: percent => ipcRenderer.send('hermes:zoom:set-percent', percent),
+    setPercent: percent => ipcRenderer.send('renco:zoom:set-percent', percent),
     // Fires on every zoom change, including the Ctrl/Cmd +/-/0 shortcuts,
     // so the settings UI can stay in sync with the keyboard.
     onChanged: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:zoom:changed', listener)
+      ipcRenderer.on('renco:zoom:changed', listener)
 
-      return () => ipcRenderer.removeListener('hermes:zoom:changed', listener)
+      return () => ipcRenderer.removeListener('renco:zoom:changed', listener)
     }
   },
-  revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
-  getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  revealLogs: () => ipcRenderer.invoke('renco:logs:reveal'),
+  getRecentLogs: () => ipcRenderer.invoke('renco:logs:recent'),
   // Fire-and-forget: persists a renderer error-boundary catch (with component
   // stack) to desktop.log so crashes survive the window (#79428).
-  reportRendererError: report => ipcRenderer.send('hermes:logs:renderer-error', report),
-  readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
-  gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
-  revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
-  openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
-  desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
-  agentPluginsRoot: () => ipcRenderer.invoke('hermes:fs:agentPluginsRoot'),
-  renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
-  writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
-  trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
+  reportRendererError: report => ipcRenderer.send('renco:logs:renderer-error', report),
+  readDir: dirPath => ipcRenderer.invoke('renco:fs:readDir', dirPath),
+  gitRoot: startPath => ipcRenderer.invoke('renco:fs:gitRoot', startPath),
+  revealPath: targetPath => ipcRenderer.invoke('renco:fs:reveal', targetPath),
+  openDir: dirPath => ipcRenderer.invoke('renco:fs:openDir', dirPath),
+  desktopPluginsRoot: () => ipcRenderer.invoke('renco:fs:desktopPluginsRoot'),
+  agentPluginsRoot: () => ipcRenderer.invoke('renco:fs:agentPluginsRoot'),
+  renamePath: (targetPath, newName) => ipcRenderer.invoke('renco:fs:rename', targetPath, newName),
+  writeTextFile: (filePath, content) => ipcRenderer.invoke('renco:fs:writeText', filePath, content),
+  trashPath: targetPath => ipcRenderer.invoke('renco:fs:trash', targetPath),
   git: {
-    worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
-    worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),
+    worktreeList: repoPath => ipcRenderer.invoke('renco:git:worktreeList', repoPath),
+    worktreeAdd: (repoPath, options) => ipcRenderer.invoke('renco:git:worktreeAdd', repoPath, options),
     worktreeRemove: (repoPath, worktreePath, options) =>
-      ipcRenderer.invoke('hermes:git:worktreeRemove', repoPath, worktreePath, options),
-    branchSwitch: (repoPath, branch) => ipcRenderer.invoke('hermes:git:branchSwitch', repoPath, branch),
-    branchList: repoPath => ipcRenderer.invoke('hermes:git:branchList', repoPath),
-    baseBranchList: repoPath => ipcRenderer.invoke('hermes:git:baseBranchList', repoPath),
-    repoStatus: repoPath => ipcRenderer.invoke('hermes:git:repoStatus', repoPath),
-    fileDiff: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:fileDiff', repoPath, filePath),
-    scanRepos: (roots, options) => ipcRenderer.invoke('hermes:git:scanRepos', roots, options),
+      ipcRenderer.invoke('renco:git:worktreeRemove', repoPath, worktreePath, options),
+    branchSwitch: (repoPath, branch) => ipcRenderer.invoke('renco:git:branchSwitch', repoPath, branch),
+    branchList: repoPath => ipcRenderer.invoke('renco:git:branchList', repoPath),
+    baseBranchList: repoPath => ipcRenderer.invoke('renco:git:baseBranchList', repoPath),
+    repoStatus: repoPath => ipcRenderer.invoke('renco:git:repoStatus', repoPath),
+    fileDiff: (repoPath, filePath) => ipcRenderer.invoke('renco:git:fileDiff', repoPath, filePath),
+    scanRepos: (roots, options) => ipcRenderer.invoke('renco:git:scanRepos', roots, options),
     review: {
-      list: (repoPath, scope, baseRef) => ipcRenderer.invoke('hermes:git:review:list', repoPath, scope, baseRef),
+      list: (repoPath, scope, baseRef) => ipcRenderer.invoke('renco:git:review:list', repoPath, scope, baseRef),
       diff: (repoPath, filePath, scope, baseRef, staged) =>
-        ipcRenderer.invoke('hermes:git:review:diff', repoPath, filePath, scope, baseRef, staged),
-      stage: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:review:stage', repoPath, filePath),
-      unstage: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:review:unstage', repoPath, filePath),
-      revert: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:review:revert', repoPath, filePath),
-      revParse: (repoPath, ref) => ipcRenderer.invoke('hermes:git:review:revParse', repoPath, ref),
-      commit: (repoPath, message, push) => ipcRenderer.invoke('hermes:git:review:commit', repoPath, message, push),
-      commitContext: repoPath => ipcRenderer.invoke('hermes:git:review:commitContext', repoPath),
-      push: repoPath => ipcRenderer.invoke('hermes:git:review:push', repoPath),
-      shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
+        ipcRenderer.invoke('renco:git:review:diff', repoPath, filePath, scope, baseRef, staged),
+      stage: (repoPath, filePath) => ipcRenderer.invoke('renco:git:review:stage', repoPath, filePath),
+      unstage: (repoPath, filePath) => ipcRenderer.invoke('renco:git:review:unstage', repoPath, filePath),
+      revert: (repoPath, filePath) => ipcRenderer.invoke('renco:git:review:revert', repoPath, filePath),
+      revParse: (repoPath, ref) => ipcRenderer.invoke('renco:git:review:revParse', repoPath, ref),
+      commit: (repoPath, message, push) => ipcRenderer.invoke('renco:git:review:commit', repoPath, message, push),
+      commitContext: repoPath => ipcRenderer.invoke('renco:git:review:commitContext', repoPath),
+      push: repoPath => ipcRenderer.invoke('renco:git:review:push', repoPath),
+      shipInfo: repoPath => ipcRenderer.invoke('renco:git:review:shipInfo', repoPath),
       prList: (repoPath, branches, numbers) =>
-        ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),
-      fetchPrComment: (repoPath, url) => ipcRenderer.invoke('hermes:git:review:fetchPrComment', repoPath, url),
-      createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
+        ipcRenderer.invoke('renco:git:review:prList', repoPath, branches, numbers),
+      fetchPrComment: (repoPath, url) => ipcRenderer.invoke('renco:git:review:fetchPrComment', repoPath, url),
+      createPr: repoPath => ipcRenderer.invoke('renco:git:review:createPr', repoPath)
     }
   },
   terminal: {
-    cwd: id => ipcRenderer.invoke('hermes:terminal:cwd', id),
-    dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),
-    resize: (id, size) => ipcRenderer.invoke('hermes:terminal:resize', id, size),
-    start: options => ipcRenderer.invoke('hermes:terminal:start', options),
-    write: (id, data) => ipcRenderer.invoke('hermes:terminal:write', id, data),
+    cwd: id => ipcRenderer.invoke('renco:terminal:cwd', id),
+    dispose: id => ipcRenderer.invoke('renco:terminal:dispose', id),
+    resize: (id, size) => ipcRenderer.invoke('renco:terminal:resize', id, size),
+    start: options => ipcRenderer.invoke('renco:terminal:start', options),
+    write: (id, data) => ipcRenderer.invoke('renco:terminal:write', id, data),
     onData: (id, callback) => {
-      const channel = `hermes:terminal:${id}:data`
+      const channel = `renco:terminal:${id}:data`
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on(channel, listener)
 
       return () => ipcRenderer.removeListener(channel, listener)
     },
     onExit: (id, callback) => {
-      const channel = `hermes:terminal:${id}:exit`
+      const channel = `renco:terminal:${id}:exit`
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on(channel, listener)
 
@@ -325,138 +325,138 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   onClosePreviewRequested: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:close-preview-requested', listener)
+    ipcRenderer.on('renco:close-preview-requested', listener)
 
-    return () => ipcRenderer.removeListener('hermes:close-preview-requested', listener)
+    return () => ipcRenderer.removeListener('renco:close-preview-requested', listener)
   },
   onPreviewNav: callback => {
     const listener = (_event, command) => callback(command)
-    ipcRenderer.on('hermes:preview-nav', listener)
+    ipcRenderer.on('renco:preview-nav', listener)
 
-    return () => ipcRenderer.removeListener('hermes:preview-nav', listener)
+    return () => ipcRenderer.removeListener('renco:preview-nav', listener)
   },
   onOpenFolderRequested: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:open-folder-requested', listener)
+    ipcRenderer.on('renco:open-folder-requested', listener)
 
-    return () => ipcRenderer.removeListener('hermes:open-folder-requested', listener)
+    return () => ipcRenderer.removeListener('renco:open-folder-requested', listener)
   },
   onOpenUpdatesRequested: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:open-updates', listener)
+    ipcRenderer.on('renco:open-updates', listener)
 
-    return () => ipcRenderer.removeListener('hermes:open-updates', listener)
+    return () => ipcRenderer.removeListener('renco:open-updates', listener)
   },
   onDeepLink: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:deep-link', listener)
+    ipcRenderer.on('renco:deep-link', listener)
 
-    return () => ipcRenderer.removeListener('hermes:deep-link', listener)
+    return () => ipcRenderer.removeListener('renco:deep-link', listener)
   },
-  signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
-  probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
-  installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
+  signalDeepLinkReady: () => ipcRenderer.invoke('renco:deep-link-ready'),
+  probePluginRepo: payload => ipcRenderer.invoke('renco:plugin:probe', payload),
+  installDesktopPlugin: payload => ipcRenderer.invoke('renco:plugin:installDesktop', payload),
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:window-state-changed', listener)
+    ipcRenderer.on('renco:window-state-changed', listener)
 
-    return () => ipcRenderer.removeListener('hermes:window-state-changed', listener)
+    return () => ipcRenderer.removeListener('renco:window-state-changed', listener)
   },
   onFocusSession: callback => {
     const listener = (_event, sessionId) => callback(sessionId)
-    ipcRenderer.on('hermes:focus-session', listener)
+    ipcRenderer.on('renco:focus-session', listener)
 
-    return () => ipcRenderer.removeListener('hermes:focus-session', listener)
+    return () => ipcRenderer.removeListener('renco:focus-session', listener)
   },
   onNotificationAction: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:notification-action', listener)
+    ipcRenderer.on('renco:notification-action', listener)
 
-    return () => ipcRenderer.removeListener('hermes:notification-action', listener)
+    return () => ipcRenderer.removeListener('renco:notification-action', listener)
   },
   onNotificationActivate: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:notification-activate', listener)
+    ipcRenderer.on('renco:notification-activate', listener)
 
-    return () => ipcRenderer.removeListener('hermes:notification-activate', listener)
+    return () => ipcRenderer.removeListener('renco:notification-activate', listener)
   },
   onPreviewFileChanged: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:preview-file-changed', listener)
+    ipcRenderer.on('renco:preview-file-changed', listener)
 
-    return () => ipcRenderer.removeListener('hermes:preview-file-changed', listener)
+    return () => ipcRenderer.removeListener('renco:preview-file-changed', listener)
   },
   onBackendExit: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:backend-exit', listener)
+    ipcRenderer.on('renco:backend-exit', listener)
 
-    return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
+    return () => ipcRenderer.removeListener('renco:backend-exit', listener)
   },
   // Soft gateway-mode apply finished tearing down the primary backend. Renderer
   // should wipe session lists + re-dial without a window reload.
   onConnectionApplied: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:connection:applied', listener)
+    ipcRenderer.on('renco:connection:applied', listener)
 
-    return () => ipcRenderer.removeListener('hermes:connection:applied', listener)
+    return () => ipcRenderer.removeListener('renco:connection:applied', listener)
   },
   onPowerResume: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:power-resume', listener)
+    ipcRenderer.on('renco:power-resume', listener)
 
-    return () => ipcRenderer.removeListener('hermes:power-resume', listener)
+    return () => ipcRenderer.removeListener('renco:power-resume', listener)
   },
   // AC ↔ battery transitions; renderers slow their backstop polls on battery.
-  getOnBattery: () => ipcRenderer.invoke('hermes:power-battery:get'),
+  getOnBattery: () => ipcRenderer.invoke('renco:power-battery:get'),
   onBatteryChanged: callback => {
     const listener = (_event, onBattery) => callback(Boolean(onBattery))
-    ipcRenderer.on('hermes:power-battery', listener)
+    ipcRenderer.on('renco:power-battery', listener)
 
-    return () => ipcRenderer.removeListener('hermes:power-battery', listener)
+    return () => ipcRenderer.removeListener('renco:power-battery', listener)
   },
   onBootProgress: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:boot-progress', listener)
+    ipcRenderer.on('renco:boot-progress', listener)
 
-    return () => ipcRenderer.removeListener('hermes:boot-progress', listener)
+    return () => ipcRenderer.removeListener('renco:boot-progress', listener)
   },
   // First-launch bootstrap progress -- emitted by the install.ps1 stage
   // runner in main.ts (apps/desktop/electron/bootstrap-runner.ts).
   // Renderer's install overlay subscribes to live events and queries the
   // current snapshot via getBootstrapState() to recover after a devtools
   // reload mid-bootstrap.
-  getBootstrapState: () => ipcRenderer.invoke('hermes:bootstrap:get'),
-  continueBootstrapLocal: () => ipcRenderer.invoke('hermes:bootstrap:continue-local'),
-  resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
-  repairBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:repair'),
-  cancelBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:cancel'),
+  getBootstrapState: () => ipcRenderer.invoke('renco:bootstrap:get'),
+  continueBootstrapLocal: () => ipcRenderer.invoke('renco:bootstrap:continue-local'),
+  resetBootstrap: () => ipcRenderer.invoke('renco:bootstrap:reset'),
+  repairBootstrap: () => ipcRenderer.invoke('renco:bootstrap:repair'),
+  cancelBootstrap: () => ipcRenderer.invoke('renco:bootstrap:cancel'),
   onBootstrapEvent: callback => {
     const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:bootstrap:event', listener)
+    ipcRenderer.on('renco:bootstrap:event', listener)
 
-    return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
+    return () => ipcRenderer.removeListener('renco:bootstrap:event', listener)
   },
-  getVersion: () => ipcRenderer.invoke('hermes:version'),
-  getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
+  getVersion: () => ipcRenderer.invoke('renco:version'),
+  getRemoteDisplayReason: () => ipcRenderer.invoke('renco:get-remote-display-reason'),
   uninstall: {
-    summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
-    run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
+    summary: () => ipcRenderer.invoke('renco:uninstall:summary'),
+    run: mode => ipcRenderer.invoke('renco:uninstall:run', { mode })
   },
   updates: {
-    check: () => ipcRenderer.invoke('hermes:updates:check'),
-    apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
-    getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
-    setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
+    check: () => ipcRenderer.invoke('renco:updates:check'),
+    apply: opts => ipcRenderer.invoke('renco:updates:apply', opts),
+    getBranch: () => ipcRenderer.invoke('renco:updates:branch:get'),
+    setBranch: name => ipcRenderer.invoke('renco:updates:branch:set', name),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)
-      ipcRenderer.on('hermes:updates:progress', listener)
+      ipcRenderer.on('renco:updates:progress', listener)
 
-      return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+      return () => ipcRenderer.removeListener('renco:updates:progress', listener)
     }
   },
   themes: {
-    fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
-    searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+    fetchMarketplace: id => ipcRenderer.invoke('renco:vscode-theme:fetch', id),
+    searchMarketplace: query => ipcRenderer.invoke('renco:vscode-theme:search', query)
   },
   // Find-in-page (Ctrl/Cmd+F): delegates to Electron's
   // webContents.findInPage on the IPC sender's window so a Cmd+F pressed
@@ -464,21 +464,21 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // `onFoundInPage` returns the unsubscribe fn; the renderer wires it via
   // `initFindInPageListener` in store/find-in-page.ts and tears it down
   // when the FindBar unmounts.
-  findInPage: (query, options) => ipcRenderer.invoke('hermes:find-in-page', query, options),
-  stopFindInPage: () => ipcRenderer.invoke('hermes:stop-find-in-page'),
+  findInPage: (query, options) => ipcRenderer.invoke('renco:find-in-page', query, options),
+  stopFindInPage: () => ipcRenderer.invoke('renco:stop-find-in-page'),
   onFoundInPage: callback => {
     const listener = (_event, result) => callback(result)
-    ipcRenderer.on('hermes:found-in-page', listener)
+    ipcRenderer.on('renco:found-in-page', listener)
 
-    return () => ipcRenderer.removeListener('hermes:found-in-page', listener)
+    return () => ipcRenderer.removeListener('renco:found-in-page', listener)
   },
   // Main-process `before-input-event` forwards Ctrl/Cmd+F here so renderer
   // can open the FindBar even when the GTK compositor has already grabbed
   // the chord at the windowing layer (#81727).
   onOpenFindBarRequested: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:open-find-bar', listener)
+    ipcRenderer.on('renco:open-find-bar', listener)
 
-    return () => ipcRenderer.removeListener('hermes:open-find-bar', listener)
+    return () => ipcRenderer.removeListener('renco:open-find-bar', listener)
   }
 })

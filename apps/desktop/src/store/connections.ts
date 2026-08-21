@@ -14,7 +14,7 @@ import {
 } from '@/store/profile'
 import { $connection } from '@/store/session'
 
-const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
+const LAST_PROFILE_STORAGE_KEY = 'renco.desktop.lastProfileByConnection'
 
 export const $connectionsRegistry = atom<DesktopConnectionsRegistry | null>(null)
 
@@ -84,7 +84,7 @@ export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): vo
 
 /** Refresh the renderer cache from Electron's local registry. No backend is contacted. */
 export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
-  const bridge = window.hermesDesktop?.connections
+  const bridge = window.rencoDesktop?.connections
 
   if (!bridge) {
     return null
@@ -97,7 +97,7 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
 }
 
 async function rememberConnection(connectionId: string): Promise<void> {
-  const setLastUsed = window.hermesDesktop?.connections?.setLastUsed
+  const setLastUsed = window.rencoDesktop?.connections?.setLastUsed
 
   if (!setLastUsed) {
     return

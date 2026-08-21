@@ -4,19 +4,19 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse
-} from '@/types/hermes'
+} from '@/types/renco'
 
-import { hermesApi, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import { rencoApi, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getProfiles(): Promise<ProfilesResponse> {
-  return hermesApi<ProfilesResponse>({
+  return rencoApi<ProfilesResponse>({
     path: '/api/profiles',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
-  return hermesApi<{ name: string; ok: boolean; path: string }>({
+  return rencoApi<{ name: string; ok: boolean; path: string }>({
     path: '/api/profiles',
     method: 'POST',
     body
@@ -24,7 +24,7 @@ export function createProfile(body: ProfileCreatePayload): Promise<{ name: strin
 }
 
 export function renameProfile(name: string, newName: string): Promise<{ name: string; ok: boolean; path: string }> {
-  return hermesApi<{ name: string; ok: boolean; path: string }>({
+  return rencoApi<{ name: string; ok: boolean; path: string }>({
     path: `/api/profiles/${encodeURIComponent(name)}`,
     method: 'PATCH',
     body: { new_name: newName }
@@ -32,20 +32,20 @@ export function renameProfile(name: string, newName: string): Promise<{ name: st
 }
 
 export function deleteProfile(name: string): Promise<{ ok: boolean; path: string }> {
-  return hermesApi<{ ok: boolean; path: string }>({
+  return rencoApi<{ ok: boolean; path: string }>({
     path: `/api/profiles/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })
 }
 
 export function getProfileSoul(name: string): Promise<ProfileSoul> {
-  return hermesApi<ProfileSoul>({
+  return rencoApi<ProfileSoul>({
     path: `/api/profiles/${encodeURIComponent(name)}/soul`
   })
 }
 
 export function updateProfileSoul(name: string, content: string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rencoApi<{ ok: boolean }>({
     path: `/api/profiles/${encodeURIComponent(name)}/soul`,
     method: 'PUT',
     body: { content }
@@ -53,7 +53,7 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
 }
 
 export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
-  return hermesApi<ProfileSetupCommand>({
+  return rencoApi<ProfileSetupCommand>({
     path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
   })
 }
@@ -65,7 +65,7 @@ export function exportProfileArchive(
   name: string,
   opts: { extraFiles?: Record<string, string>; output?: string } = {}
 ): Promise<{ archive: string; ok: boolean }> {
-  return hermesApi<{ archive: string; ok: boolean }>({
+  return rencoApi<{ archive: string; ok: boolean }>({
     path: `/api/profiles/${encodeURIComponent(name)}/export`,
     method: 'POST',
     body: { extra_files: opts.extraFiles ?? {}, output: opts.output ?? '' },
@@ -80,7 +80,7 @@ export function importProfileArchive(
   archive: string,
   name?: string
 ): Promise<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }> {
-  return hermesApi<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }>({
+  return rencoApi<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }>({
     path: '/api/profiles/import',
     method: 'POST',
     body: { archive, name: name || null },

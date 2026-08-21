@@ -20,14 +20,14 @@ import pytest
 
 
 @pytest.fixture()
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def renco_home(tmp_path, monkeypatch):
+    home = tmp_path / ".renco"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RENCO_HOME", str(home))
 
-    # Bust the goal-module DB cache so it re-resolves HERMES_HOME.
-    from hermes_cli import goals
+    # Bust the goal-module DB cache so it re-resolves RENCO_HOME.
+    from renco_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -35,30 +35,30 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def server(hermes_home, monkeypatch):
+def server(renco_home, monkeypatch):
     # Mocks are scoped to the initial import only (see
     # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "renco_cli.env_loader": MagicMock(),
+            "renco_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
 
-    # Pin config resolution to the isolated HERMES_HOME. Sibling test
+    # Pin config resolution to the isolated RENCO_HOME. Sibling test
     # files (test_billing_rpc, test_delegation_session_lifecycle,
     # test_gateway_owned_session_reap, ...) import tui_gateway.server at
     # collection time — BEFORE the conftest env isolation runs — so the
-    # module-level ``_hermes_home = get_hermes_home()`` snapshot freezes
+    # module-level ``_renco_home = get_renco_home()`` snapshot freezes
     # the developer's real home. When any of them precede this file in
     # the same process, ``importlib.import_module`` returns that cached
     # module and ``_load_cfg()`` would read the REAL config.yaml (e.g. a
     # local MoA preset) instead of the one ``_write_moa_config`` writes.
     # Also reset the mtime-keyed config cache; monkeypatch restores the
     # originals on teardown so nothing leaks to later tests either.
-    monkeypatch.setattr(mod, "_hermes_home", hermes_home)
+    monkeypatch.setattr(mod, "_renco_home", renco_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
     monkeypatch.setattr(mod, "_cfg_mtime", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
@@ -182,12 +182,12 @@ def test_goal_bare_shows_status_when_none_set(server, session):
 
 def _exhaust_budget(session_key: str, goal_text: str = "finish the benchmark"):
     """Set a 1-turn goal and drive it to budget-exhaustion auto-pause."""
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     mgr = GoalManager(session_key)
     mgr.set(goal_text, max_turns=1)
     with patch(
-        "hermes_cli.goals.judge_goal",
+        "renco_cli.goals.judge_goal",
         return_value=("continue", "needs more steps", False, None, False),
     ):
         decision = mgr.evaluate_after_turn("worked a bit")
@@ -206,7 +206,7 @@ def test_goal_resume_after_budget_exhaustion_dispatches_continuation(
     must return a sendable dispatch carrying the canonical continuation
     prompt, with a concise `/goal resume` transcript projection.
     """
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     sid, session_key, _ = session
     _exhaust_budget(session_key)
@@ -259,7 +259,7 @@ def test_pending_input_commands_includes_goal(server):
 def test_active_goal_retries_once_without_judging_failed_turn(
     server, turn_env, monkeypatch
 ):
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     session_key = "goal-compression-retry"
     mgr = GoalManager(session_key)
@@ -299,7 +299,7 @@ def test_active_goal_retries_once_without_judging_failed_turn(
 def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
     server, turn_env, monkeypatch
 ):
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     session_key = "goal-compression-pause"
     GoalManager(session_key).set("finish the current task")
@@ -343,7 +343,7 @@ def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
 def test_real_queued_prompt_preempts_goal_compression_retry(
     server, turn_env, monkeypatch
 ):
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     session_key = "goal-compression-user-preempts"
     mgr = GoalManager(session_key)
@@ -380,7 +380,7 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
 
 
 def test_compression_deferred_is_not_treated_as_exhaustion(server):
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     session_key = "goal-compression-deferred"
     GoalManager(session_key).set("finish the current task")
@@ -414,7 +414,7 @@ def test_exhaustion_without_active_goal_keeps_error_only_behavior(server):
 
 
 def test_new_goal_does_not_inherit_previous_goal_recovery_attempt(server):
-    from hermes_cli.goals import GoalManager
+    from renco_cli.goals import GoalManager
 
     session_key = "goal-compression-replaced"
     mgr = GoalManager(session_key)
@@ -449,8 +449,8 @@ def _write_moa_config(home, text):
     cfg_path.write_text(text)
 
 
-def test_moa_bare_returns_usage(server, session, hermes_home):
-    _write_moa_config(hermes_home, """
+def test_moa_bare_returns_usage(server, session, renco_home):
+    _write_moa_config(renco_home, """
 moa:
   default_preset: default
   presets:

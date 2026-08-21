@@ -25,8 +25,8 @@ function load(request = async () => ({ jobs: [] })) {
     }
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -47,7 +47,7 @@ test('unit: direct execution is selected for the active bot profile', () => {
 test('integration: a different active profile retains the delegated routine wrapper', () => {
   const { __routines } = load()
   const prompt = __routines.routinePrompt('research', 'Digest', 'Summarize findings', 'default')
-  assert.match(prompt, /hermes -p 'research' chat/)
+  assert.match(prompt, /renco -p 'research' chat/)
   assert.match(prompt, /\[Scheduled routine\] Summarize findings/)
 })
 
@@ -56,8 +56,8 @@ test('security: delegated routine arguments remain literal shell values', () => 
   const title = 'Audit $(printf TITLE_EXPANDED) `printf TITLE_TICK` \'quoted\''
   const instruction = 'Line one $(printf TASK_EXPANDED) `printf TASK_TICK`\nLine two \'quoted\''
   const prompt = __routines.routinePrompt('research', title, instruction, 'default')
-  const command = prompt.slice(prompt.indexOf('hermes '), prompt.lastIndexOf('\n\nIf the command'))
-  const script = `hermes() { printf '%s\\037' "$@"; }\n${command}`
+  const command = prompt.slice(prompt.indexOf('renco '), prompt.lastIndexOf('\n\nIf the command'))
+  const script = `renco() { printf '%s\\037' "$@"; }\n${command}`
   const result = spawnSync('sh', ['-c', script], { encoding: 'utf8' })
 
   assert.equal(result.status, 0, result.stderr)
@@ -73,8 +73,8 @@ test('security: delegated routine arguments remain literal shell values', () => 
 })
 
 test('security: upgrade pauses persisted delegated routines before they can execute', async () => {
-  const titleSentinel = `/tmp/hermes-bot-mode-title-${process.pid}`
-  const taskSentinel = `/tmp/hermes-bot-mode-task-${process.pid}`
+  const titleSentinel = `/tmp/renco-bot-mode-title-${process.pid}`
+  const taskSentinel = `/tmp/renco-bot-mode-task-${process.pid}`
   rmSync(titleSentinel, { force: true })
   rmSync(taskSentinel, { force: true })
 
@@ -83,7 +83,7 @@ test('security: upgrade pauses persisted delegated routines before they can exec
   const oldPrompt =
     `You are running the scheduled routine "${title}" for agent 'research'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
-    `hermes -p research chat -c "Routine: ${title}" -q ${JSON.stringify(`[Scheduled routine] ${instruction}`)}\n\n` +
+    `renco -p research chat -c "Routine: ${title}" -q ${JSON.stringify(`[Scheduled routine] ${instruction}`)}\n\n` +
     `If the command fails, report the error instead.`
   const persisted = JSON.parse(
     JSON.stringify({
@@ -136,8 +136,8 @@ test('security: upgrade pauses persisted delegated routines before they can exec
 
   const recreated = runtime.__routines.routinePrompt('research', title, instruction, 'default')
   assert.equal(runtime.__routines.isLegacyDelegatedRoutine({ ...persisted, prompt_preview: recreated.slice(0, 100) }), false)
-  const command = recreated.slice(recreated.indexOf('hermes '), recreated.lastIndexOf('\n\nIf the command'))
-  const script = `hermes() { printf '%s\\037' "$@"; }\n${command}`
+  const command = recreated.slice(recreated.indexOf('renco '), recreated.lastIndexOf('\n\nIf the command'))
+  const script = `renco() { printf '%s\\037' "$@"; }\n${command}`
   const executed = spawnSync('sh', ['-c', script], { encoding: 'utf8' })
   assert.equal(executed.status, 0, executed.stderr)
   assert.deepEqual(executed.stdout.split('\x1f').slice(0, -1), [
@@ -169,7 +169,7 @@ test('regression: Create Cronjob passes the active profile to routinePrompt', ()
   const { __routines } = load()
   const instruction = 'Keep "quoted" output intact'
   assert.equal(__routines.routinePrompt('ops', 'Check', instruction, 'ops'), instruction)
-  assert.doesNotMatch(__routines.routinePrompt('ops', 'Check', instruction, 'ops'), /hermes -p/)
+  assert.doesNotMatch(__routines.routinePrompt('ops', 'Check', instruction, 'ops'), /renco -p/)
 })
 
 test('system: the direct-file plugin still registers its panes', () => {

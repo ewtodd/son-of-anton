@@ -20,14 +20,14 @@ const setModelAssignment = vi.fn()
 const getRecommendedDefaultModel = vi.fn()
 const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
-const getHermesConfigRecord = vi.fn()
-const saveHermesConfig = vi.fn()
+const getRencoConfigRecord = vi.fn()
+const saveRencoConfig = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/renco', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
@@ -37,8 +37,8 @@ vi.mock('@/hermes', () => ({
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
-  getHermesConfigRecord: () => getHermesConfigRecord(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  getRencoConfigRecord: () => getRencoConfigRecord(),
+  saveRencoConfig: (config: unknown) => saveRencoConfig(config),
   setApiRequestProfile: () => {}
 }))
 
@@ -55,28 +55,28 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 }))
 
 beforeEach(() => {
-  getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
+  getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'renco-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
       {
         name: 'Nous',
         slug: 'nous',
-        models: ['hermes-4', 'hermes-4-mini'],
+        models: ['renco-4', 'renco-4-mini'],
         authenticated: true,
-        capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+        capabilities: { 'renco-4': { reasoning: true, fast: true } }
       }
     ]
   })
   getAuxiliaryModels.mockResolvedValue({
-    main: { provider: 'nous', model: 'hermes-4' },
+    main: { provider: 'nous', model: 'renco-4' },
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
   getMoaModels.mockResolvedValue(null)
-  setModelAssignment.mockResolvedValue({ ok: true, provider: 'nous', model: 'hermes-4', gateway_tools: [] })
-  getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
+  setModelAssignment.mockResolvedValue({ ok: true, provider: 'nous', model: 'renco-4', gateway_tools: [] })
+  getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'renco-4', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
-  getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
-  saveHermesConfig.mockResolvedValue({ ok: true })
+  getRencoConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
+  saveRencoConfig.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -177,7 +177,7 @@ describe('ModelSettings', () => {
   it('replaces the selected provider and model when the active profile changes', async () => {
     getGlobalModelInfo
       .mockResolvedValueOnce({ provider: 'custom', model: 'local-a' })
-      .mockResolvedValueOnce({ provider: 'nous', model: 'hermes-4' })
+      .mockResolvedValueOnce({ provider: 'nous', model: 'renco-4' })
     getGlobalModelOptions
       .mockResolvedValueOnce({
         providers: [
@@ -194,9 +194,9 @@ describe('ModelSettings', () => {
           {
             name: 'Nous',
             slug: 'nous',
-            models: ['hermes-4'],
+            models: ['renco-4'],
             authenticated: true,
-            capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+            capabilities: { 'renco-4': { reasoning: true, fast: true } }
           }
         ]
       })
@@ -219,7 +219,7 @@ describe('ModelSettings', () => {
         {
           name: 'Nous',
           slug: 'nous',
-          models: ['hermes-4'],
+          models: ['renco-4'],
           authenticated: true
         },
         {
@@ -263,13 +263,13 @@ describe('ModelSettings', () => {
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
     await renderModelSettings()
-    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+    await waitFor(() => expect(getRencoConfigRecord).toHaveBeenCalled())
 
     const fastSwitch = await screen.findByRole('switch')
     fireEvent.click(fastSwitch)
 
     await waitFor(() =>
-      expect(saveHermesConfig).toHaveBeenCalledWith(
+      expect(saveRencoConfig).toHaveBeenCalledWith(
         expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
       )
     )
@@ -281,15 +281,15 @@ describe('ModelSettings', () => {
         {
           name: 'Nous',
           slug: 'nous',
-          models: ['hermes-4'],
+          models: ['renco-4'],
           authenticated: true,
-          capabilities: { 'hermes-4': { reasoning: false, fast: false } }
+          capabilities: { 'renco-4': { reasoning: false, fast: false } }
         }
       ]
     })
 
     await renderModelSettings()
-    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+    await waitFor(() => expect(getRencoConfigRecord).toHaveBeenCalled())
 
     expect(screen.queryByRole('switch')).toBeNull()
   })
@@ -310,7 +310,7 @@ describe('ModelSettings', () => {
 
     await waitFor(() =>
       expect(setModelAssignment).toHaveBeenCalledWith({
-        model: 'hermes-4',
+        model: 'renco-4',
         provider: 'nous',
         scope: 'auxiliary',
         task: 'vision'
@@ -359,7 +359,7 @@ describe('ModelSettings', () => {
       provider: 'openrouter',
       model: 'anthropic/claude-opus-4.7',
       gateway_tools: [],
-      stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
+      stale_aux: [{ task: 'compression', provider: 'nous', model: 'renco-4' }]
     })
 
     await renderModelSettings()
@@ -375,7 +375,7 @@ describe('ModelSettings', () => {
 
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
-      main: { provider: 'nous', model: 'hermes-4' },
+      main: { provider: 'nous', model: 'renco-4' },
       tasks: [{ task: 'curator', provider: 'openrouter', model: 'anthropic/claude-opus-4.7', base_url: '' }]
     })
 
@@ -393,7 +393,7 @@ describe('ModelSettings MoA preset editor', () => {
     presets: {
       default: {
         reference_models: [
-          { provider: 'nous', model: 'hermes-4' },
+          { provider: 'nous', model: 'renco-4' },
           { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }
         ],
         aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
@@ -404,7 +404,7 @@ describe('ModelSettings MoA preset editor', () => {
       }
     },
     reference_models: [
-      { provider: 'nous', model: 'hermes-4' },
+      { provider: 'nous', model: 'renco-4' },
       { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }
     ],
     aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
@@ -420,9 +420,9 @@ describe('ModelSettings MoA preset editor', () => {
         {
           name: 'Nous',
           slug: 'nous',
-          models: ['hermes-4', 'hermes-4-mini'],
+          models: ['renco-4', 'renco-4-mini'],
           authenticated: true,
-          capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+          capabilities: { 'renco-4': { reasoning: true, fast: true } }
         },
         {
           name: 'OpenRouter',
@@ -515,7 +515,7 @@ describe('ModelSettings MoA preset editor', () => {
       // Radix treats re-picking the current value as a no-op (no
       // onValueChange), so nothing changes: no save, model still shown.
       expect(saveMoaModels).not.toHaveBeenCalled()
-      expect(screen.getByText('nous · hermes-4')).toBeTruthy()
+      expect(screen.getByText('nous · renco-4')).toBeTruthy()
     } finally {
       vi.useRealTimers()
     }
@@ -556,7 +556,7 @@ describe('ModelSettings MoA preset editor', () => {
           presets: expect.objectContaining({
             default: expect.objectContaining({
               reference_models: [
-                expect.objectContaining({ provider: 'nous', model: 'hermes-4', enabled: false }),
+                expect.objectContaining({ provider: 'nous', model: 'renco-4', enabled: false }),
                 expect.objectContaining({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' })
               ]
             })

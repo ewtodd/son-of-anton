@@ -1,14 +1,14 @@
 //! Update orchestration.
 //!
-//! Driven when the installer is launched as `Hermes-Setup.exe --update` (see
+//! Driven when the installer is launched as `Renco-Setup.exe --update` (see
 //! `AppMode` in lib.rs). The desktop app hands off to us — it exits, then we:
 //!
-//!   1. wait for the old Hermes desktop process to fully exit (so both the
-//!      venv shim and packaged app.asar are free; otherwise `hermes update`
+//!   1. wait for the old Renco desktop process to fully exit (so both the
+//!      venv shim and packaged app.asar are free; otherwise `renco update`
 //!      or repair bootstrap can race locked files),
-//!   2. run `hermes update --yes --gateway` (Python/repo update; this does NOT
-//!      rebuild apps/desktop by design — see cmd_update in hermes_cli/main.py),
-//!   3. run `hermes desktop --build-only` (the rebuild step update skips),
+//!   2. run `renco update --yes --gateway` (Python/repo update; this does NOT
+//!      rebuild apps/desktop by design — see cmd_update in renco_cli/main.py),
+//!   3. run `renco desktop --build-only` (the rebuild step update skips),
 //!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
 //!
 //! We reuse the `BootstrapEvent` channel + the existing progress UI by
@@ -17,8 +17,8 @@
 //! bootstrap, broken into the real operations run_update performs so the user
 //! sees discrete steps (with the live log underneath) instead of one bar.
 //!
-//! Cross-platform note: `hermes update` already handles macOS/Linux (git/pip).
-//! The only OS-specific bits here are the venv shim path (resolve_hermes) and
+//! Cross-platform note: `renco update` already handles macOS/Linux (git/pip).
+//! The only OS-specific bits here are the venv shim path (resolve_renco) and
 //! the no-window creation flag — both already cfg-gated. Keep new logic
 //! OS-agnostic so the mac/linux port stays "fill in the paths".
 
@@ -36,13 +36,13 @@ use tokio::process::Command;
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 use crate::powershell::{pump_child, DRAIN_GRACE};
 
-/// `hermes update` exit code meaning "another hermes process is holding the
+/// `renco update` exit code meaning "another renco process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
-/// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
+/// renco_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
 /// How long to wait for the old desktop process to release files under the
-/// install tree before giving up and letting `hermes update`'s own guard decide.
+/// install tree before giving up and letting `renco update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
 
@@ -107,11 +107,11 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 /// so the desktop's launch gate can detect a stale marker (dead PID / past a
 /// hard ceiling) and self-heal rather than wait forever.
 ///
-/// The marker is also the cross-process update lock: `hermes update` claims
-/// the same file (see `hermes_cli/update_lock.py`) so a dashboard-spawned
+/// The marker is also the cross-process update lock: `renco update` claims
+/// the same file (see `renco_cli/update_lock.py`) so a dashboard-spawned
 /// update and this updater can't mutate one checkout at the same time.
 /// `acquire` therefore REFUSES when a live foreign owner holds it rather than
-/// overwriting — the pre-fix clobber is what let a dashboard `hermes update`
+/// overwriting — the pre-fix clobber is what let a dashboard `renco update`
 /// keep running while install-mode bootstrap rewrote the tree underneath it.
 struct UpdateMarkerGuard {
     path: PathBuf,
@@ -122,7 +122,7 @@ struct UpdateMarkerGuard {
 
 /// Never treat a marker older than this as a live update. Mirrors
 /// UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts and
-/// UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py — all three read
+/// UPDATE_MARKER_MAX_AGE_SECONDS in renco_cli/update_lock.py — all three read
 /// this one file, so a shorter ceiling in any of them would steal a lock the
 /// others still consider live.
 const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
@@ -139,7 +139,7 @@ struct MarkerOwner {
 ///
 /// Self-PID is returned so `acquire` can adopt the desktop's pre-written claim
 /// without refreshing its acquisition time (#74761). A foreign live pid (e.g.
-/// a dashboard-spawned `hermes update`) still blocks.
+/// a dashboard-spawned `renco update`) still blocks.
 fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
@@ -250,19 +250,19 @@ impl Drop for UpdateMarkerGuard {
 }
 
 async fn run_update(app: AppHandle) -> Result<()> {
-    let hermes_home = crate::paths::hermes_home();
-    let install_root = hermes_home.join("hermes-agent");
+    let renco_home = crate::paths::renco_home();
+    let install_root = renco_home.join("renco-agent");
 
     // Mutual exclusion (#50238): publish an "update in progress" marker for the
     // entire duration of this update. A desktop instance the user relaunches
     // mid-update consults this before spawning its own local backend — without
-    // it, that backend re-locks the venv shim, our `force_kill_other_hermes`
+    // it, that backend re-locks the venv shim, our `force_kill_other_renco`
     // straggler-cleanup kills it, and the relaunch/kill cycle loops. The guard
     // removes the marker on every exit path (incl. early returns / panics).
     //
-    // The same marker is the cross-process update lock (hermes_cli/
+    // The same marker is the cross-process update lock (renco_cli/
     // update_lock.py claims it too), so a live foreign owner means another
-    // updater — most often a dashboard-spawned `hermes update` — is already
+    // updater — most often a dashboard-spawned `renco update` — is already
     // mutating this checkout. Refuse instead of running a second one over it.
     let _update_marker = match UpdateMarkerGuard::acquire(
         crate::paths::update_in_progress_marker(),
@@ -277,7 +277,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 format!("{secs}s")
             };
             let msg = format!(
-                "Another Hermes update is already running (PID {}, started {} ago). \
+                "Another Renco update is already running (PID {}, started {} ago). \
                  Wait for it to finish, or close the window or dashboard tab that \
                  started it, then try again.",
                 owner.pid, elapsed
@@ -302,9 +302,9 @@ async fn run_update(app: AppHandle) -> Result<()> {
         None
     };
 
-    let hermes = resolve_hermes(&install_root).ok_or_else(|| {
+    let renco = resolve_renco(&install_root).ok_or_else(|| {
         let msg = format!(
-            "Could not find the hermes CLI under {}. Is Hermes installed? \
+            "Could not find the renco CLI under {}. Is Renco installed? \
              Re-run the installer to repair the install.",
             install_root.display()
         );
@@ -329,7 +329,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     // ---- stage 1: wait for the old desktop to die ------------------------
     // The desktop exec'd us then called app.exit(), but process teardown is
-    // async on Windows. If it still holds the venv shim, `hermes update`
+    // async on Windows. If it still holds the venv shim, `renco update`
     // aborts with exit 2. If it still holds the packaged app.asar,
     // install.ps1's repair/re-clone path cannot move/remove the install tree.
     // Give both handles a bounded window to clear. Surfaced as its own stage
@@ -346,11 +346,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
         None,
     );
 
-    // ---- stage 2: hermes update -----------------------------------------
-    // Pass --branch so `hermes update` targets the branch this installer was
+    // ---- stage 2: renco update -----------------------------------------
+    // Pass --branch so `renco update` targets the branch this installer was
     // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
     // `main`. The install was a detached-HEAD checkout of a specific commit;
-    // without --branch, `hermes update` switches the checkout to `main` (a
+    // without --branch, `renco update` switches the checkout to `main` (a
     // divergent branch that may not even have the desktop CLI command), then
     // reports "already up to date" against the wrong branch. The desktop
     // detected the update against this same branch, so we must update against
@@ -364,20 +364,20 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
         vec!["update".into(), "--yes".into(), "--gateway".into()];
-    // --force skips `hermes update`'s Windows running-exe guard (which would
+    // --force skips `renco update`'s Windows running-exe guard (which would
     // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
     // already exited and waited for the install locks to clear before launching
     // us, and wait_for_install_locks_free below force-kills any straggler — so by the
-    // time `hermes update` runs there is no legitimate hermes.exe to protect,
-    // and the guard would only produce a false "Hermes is still running" stop.
+    // time `renco update` runs there is no legitimate renco.exe to protect,
+    // and the guard would only produce a false "Renco is still running" stop.
     //
     // NOTE: --force does NOT bypass the venv-python holder guard (that needs
     // an explicit `--force-venv`, which we deliberately do not pass). Our lock
-    // probe only checks the hermes.exe shim and app.asar, so an external venv
+    // probe only checks the renco.exe shim and app.asar, so an external venv
     // python holding a native .pyd (a user terminal, an unmanaged gateway)
     // could still be alive here — mutating the venv under it would strand the
     // install half-updated. If that guard fires, it exits 2 and the match arm
-    // below surfaces the correct "close all Hermes windows" message.
+    // below surfaces the correct "close all Renco windows" message.
     update_args.push("--force".into());
     update_args.push("--branch".into());
     update_args.push(update_branch);
@@ -386,7 +386,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let started = Instant::now();
     let mut update = run_streamed(
         &app,
-        &hermes,
+        &renco,
         &update_args,
         &install_root,
         &child_env,
@@ -394,7 +394,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     )
     .await?;
 
-    // Retry-once for the update-boundary crash. `hermes update` lazily imports
+    // Retry-once for the update-boundary crash. `renco update` lazily imports
     // the FRESHLY PULLED modules, but the dependency-install step still runs the
     // already-in-memory pre-pull code for one invocation. A release that changed
     // an updater-path contract across that boundary (e.g. #39780's `_UvResult`,
@@ -402,10 +402,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // `list2cmdline` with `TypeError: sequence item 1: expected str instance,
     // bool found`, fixed in #39820) therefore kills the FIRST update on the
     // parked population — even though the fix is already on disk by then. A
-    // second `hermes update` runs clean because the now-current module is loaded
+    // second `renco update` runs clean because the now-current module is loaded
     // from the start. Rather than make the parked user click Update twice (and
     // stare at a scary crash first), retry once automatically. Skip the retry
-    // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
+    // for the concurrent-instance guard (exit 2) — that's a "close Renco" state
     // a retry can't fix.
     if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
         emit_log(
@@ -417,7 +417,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         update = run_streamed(
             &app,
-            &hermes,
+            &renco,
             &update_args,
             &install_root,
             &child_env,
@@ -432,7 +432,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
         }
         Some(code) if code == UPDATE_EXIT_CONCURRENT => {
-            let msg = "Hermes is still running. Close all Hermes windows and try \
+            let msg = "Renco is still running. Close all Renco windows and try \
                        the update again."
                 .to_string();
             emit_stage(
@@ -453,9 +453,9 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
         other => {
             let msg = format!(
-                "hermes update failed (exit {:?}). See {} for details.",
+                "renco update failed (exit {:?}). See {} for details.",
                 other,
-                crate::paths::hermes_home()
+                crate::paths::renco_home()
                     .join("logs")
                     .join("update.log")
                     .display()
@@ -478,15 +478,15 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
     }
 
-    // ---- stage 3: hermes desktop --build-only ----------------------------
-    // `hermes update` deliberately does NOT build apps/desktop (it installs
+    // ---- stage 3: renco desktop --build-only ----------------------------
+    // `renco update` deliberately does NOT build apps/desktop (it installs
     // repo-root deps with --workspaces=false). This is the rebuild it skips.
     emit_stage(&app, "rebuild", StageState::Running, None, None);
     let started = Instant::now();
     let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
     let mut rebuild = run_streamed(
         &app,
-        &hermes,
+        &renco,
         &rebuild_args,
         &install_root,
         &child_env,
@@ -500,7 +500,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // (the content-hash stamp makes it a near-no-op when the first actually
     // succeeded). Without this the updater bails here and never reaches the
     // relaunch below — the app updates but doesn't restart. Matches the
-    // retry-once `hermes update` already does above, and `hermes update`'s own
+    // retry-once `renco update` already does above, and `renco update`'s own
     // desktop rebuild in cmd_update.
     if rebuild_needs_retry(rebuild.exit_code) {
         emit_log(
@@ -512,7 +512,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         rebuild = run_streamed(
             &app,
-            &hermes,
+            &renco,
             &rebuild_args,
             &install_root,
             &child_env,
@@ -525,7 +525,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     if rebuild.exit_code != Some(0) {
         let msg = format!(
             "Rebuilding the desktop app failed (exit {:?}). The update was \
-             applied but the app could not be rebuilt; run `hermes desktop` \
+             applied but the app could not be rebuilt; run `renco desktop` \
              from a terminal to see the error.",
             rebuild.exit_code
         );
@@ -605,11 +605,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 &app,
                 None,
                 LogStream::Stderr,
-                &format!("[update] could not auto-launch desktop: {err}. Launch Hermes manually."),
+                &format!("[update] could not auto-launch desktop: {err}. Launch Renco manually."),
             );
         }
     } else if let Err(err) =
-        crate::bootstrap::launch_hermes_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
+        crate::bootstrap::launch_renco_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
     {
         // Launch failed: don't hard-fail the update (it succeeded); surface a
         // log line so the success screen can still tell the user to launch
@@ -618,7 +618,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             &app,
             None,
             LogStream::Stdout,
-            &format!("[update] could not auto-launch desktop: {err}. Launch Hermes manually."),
+            &format!("[update] could not auto-launch desktop: {err}. Launch Renco manually."),
         );
     }
 
@@ -649,7 +649,7 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
     let lock_targets = install_lock_probe_paths(install_root);
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
 
-    emit_log(app, Some(stage), LogStream::Stdout, "[handoff] waiting for Hermes to exit…");
+    emit_log(app, Some(stage), LogStream::Stdout, "[handoff] waiting for Renco to exit…");
 
     loop {
         let locked = locked_paths(&lock_targets);
@@ -657,24 +657,24 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
             return;
         }
         if Instant::now() >= deadline {
-            // Last resort: a backend hermes.exe (or the desktop Hermes.exe
+            // Last resort: a backend renco.exe (or the desktop Renco.exe
             // itself) is still holding one of the update-sensitive files. The
             // desktop should have reaped its tree before handing off, but
             // SIGTERM races / detached grandchildren / AV handles can leave a
             // straggler. Rather than "proceed anyway" straight into uv's
             // "Access is denied" or install.ps1's locked app.asar failure,
-            // force-kill every Hermes.exe except ourselves, then give the OS a
+            // force-kill every Renco.exe except ourselves, then give the OS a
             // beat to unload the image.
             emit_log(
                 app,
                 Some(stage),
                 LogStream::Stdout,
                 &format!(
-                    "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
+                    "[handoff] Renco still holding install files ({}); force-killing stragglers…",
                     format_locked_paths(&locked)
                 ),
             );
-            force_kill_other_hermes();
+            force_kill_other_renco();
             tokio::time::sleep(Duration::from_millis(800)).await;
             let locked_after_kill = locked_paths(&lock_targets);
             if locked_after_kill.is_empty() {
@@ -702,7 +702,7 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
 }
 
 fn install_lock_probe_paths(install_root: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![venv_hermes(install_root)];
+    let mut paths = vec![venv_renco(install_root)];
     paths.extend(desktop_app_payload_paths(install_root));
     paths
 }
@@ -716,8 +716,8 @@ fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
         ]
     } else if cfg!(target_os = "macos") {
         vec![
-            release.join("mac").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
-            release.join("mac-arm64").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
+            release.join("mac").join("Renco.app").join("Contents").join("Resources").join("app.asar"),
+            release.join("mac-arm64").join("Renco.app").join("Contents").join("Resources").join("app.asar"),
         ]
     } else {
         vec![release.join("linux-unpacked").join("resources").join("app.asar")]
@@ -732,21 +732,21 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
-/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
+/// Force-kill any `renco.exe` other than this process. Windows-only; a no-op
 /// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
 /// target "the backend" by PID here — the desktop already exited and we never
-/// knew its children — so we kill the whole `hermes.exe` image tree via
+/// knew its children — so we kill the whole `renco.exe` image tree via
 /// taskkill, excluding our own PID.
 ///
 /// Safe w.r.t. our own update child: this runs inside the install-lock wait,
-/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
+/// which completes BEFORE we spawn `venv\Scripts\renco.exe update`. And a
 /// desktop the user relaunches mid-update will NOT have spawned a backend —
-/// `startHermes()` in the desktop gates local-backend startup on our
+/// `startRenco()` in the desktop gates local-backend startup on our
 /// update-in-progress marker and parks until we finish (#50238). So the only
-/// hermes.exe images here are stragglers from the old desktop — exactly what
+/// renco.exe images here are stragglers from the old desktop — exactly what
 /// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
-/// isn't named hermes.exe.)
-fn force_kill_other_hermes() {
+/// isn't named renco.exe.)
+fn force_kill_other_renco() {
     if !cfg!(target_os = "windows") {
         return;
     }
@@ -759,7 +759,7 @@ fn force_kill_other_hermes() {
                 "/F",
                 "/T",
                 "/IM",
-                "hermes.exe",
+                "renco.exe",
                 "/FI",
                 &format!("PID ne {my_pid}"),
             ])
@@ -791,7 +791,7 @@ fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
     exit_code != Some(0)
 }
 
-/// Spawn `hermes <args>` from `cwd`, stream stdout/stderr as Log events on the
+/// Spawn `renco <args>` from `cwd`, stream stdout/stderr as Log events on the
 /// bootstrap channel, and return the exit code. Mirrors powershell::run_script
 /// but for an arbitrary command (no install.ps1 -File wrapping).
 async fn run_streamed(
@@ -824,7 +824,7 @@ async fn run_streamed(
         .map_err(|e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
 
     // Same non-UTF-8-safe decode path as powershell::run_script (#67193), and
-    // the same rule about pipe EOF: `hermes update` is precisely the shape that
+    // the same rule about pipe EOF: `renco update` is precisely the shape that
     // leaves resident descendants holding an inherited stdout handle, and every
     // stage this drives sits downstream of the read.
     let stage_owned = stage.map(|s| s.to_string());
@@ -858,24 +858,24 @@ struct CmdResult {
     exit_code: Option<i32>,
 }
 
-/// Path to the venv hermes shim under an install root, regardless of existence.
-fn venv_hermes(install_root: &Path) -> PathBuf {
+/// Path to the venv renco shim under an install root, regardless of existence.
+fn venv_renco(install_root: &Path) -> PathBuf {
     if cfg!(target_os = "windows") {
-        install_root.join("venv").join("Scripts").join("hermes.exe")
+        install_root.join("venv").join("Scripts").join("renco.exe")
     } else {
-        install_root.join("venv").join("bin").join("hermes")
+        install_root.join("venv").join("bin").join("renco")
     }
 }
 
-/// Resolve the hermes CLI to drive. Prefer the venv shim in the install we
-/// just updated; fall back to `hermes` on PATH.
-fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
-    let shim = venv_hermes(install_root);
+/// Resolve the renco CLI to drive. Prefer the venv shim in the install we
+/// just updated; fall back to `renco` on PATH.
+fn resolve_renco(install_root: &Path) -> Option<PathBuf> {
+    let shim = venv_renco(install_root);
     if shim.exists() {
         return Some(shim);
     }
     // PATH fallback. which-style probe via env, kept dependency-free.
-    let exe = if cfg!(target_os = "windows") { "hermes.exe" } else { "hermes" };
+    let exe = if cfg!(target_os = "windows") { "renco.exe" } else { "renco" };
     if let Ok(path) = std::env::var("PATH") {
         let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
         for dir in path.split(sep) {
@@ -889,12 +889,12 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
 }
 
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
-    let hermes_home = crate::paths::hermes_home();
+    let renco_home = crate::paths::renco_home();
     let mut envs = vec![(
-        "HERMES_HOME".to_string(),
-        hermes_home.as_os_str().to_os_string(),
+        "RENCO_HOME".to_string(),
+        renco_home.as_os_str().to_os_string(),
     )];
-    // `hermes update` is a Python CLI writing to a pipe here, so CPython
+    // `renco update` is a Python CLI writing to a pipe here, so CPython
     // block-buffers its stdout: nothing reaches run_streamed (and the live
     // log UI) until 8 KB accumulate or the process exits. Long quiet steps —
     // the pre-update backup can zip multi-GB archives for minutes — render as
@@ -902,18 +902,18 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     // output instead.
     envs.push(("PYTHONUNBUFFERED".to_string(), OsString::from("1")));
     // We hold the update-in-progress marker for this whole run, and the
-    // `hermes update` child claims that SAME lock (hermes_cli/update_lock.py).
+    // `renco update` child claims that SAME lock (renco_cli/update_lock.py).
     // Name our pid so the child recognizes the live holder as its own
     // orchestrator and runs under our claim — without this every GUI update
-    // refuses its parent's marker with exit 2 ("Hermes is still running")
+    // refuses its parent's marker with exit 2 ("Renco is still running")
     // and no number of retries can ever succeed. Keep the variable name in
-    // sync with HANDOFF_PID_ENV in hermes_cli/update_lock.py.
+    // sync with HANDOFF_PID_ENV in renco_cli/update_lock.py.
     envs.push((
-        "HERMES_UPDATE_HANDOFF_PID".to_string(),
+        "RENCO_UPDATE_HANDOFF_PID".to_string(),
         OsString::from(std::process::id().to_string()),
     ));
     if let Some(path) = path_with_prepended_entries(&[
-        hermes_home.join("node").join("bin"),
+        renco_home.join("node").join("bin"),
         venv_bin_dir(install_root),
     ]) {
         envs.push(("PATH".to_string(), path));
@@ -987,9 +987,9 @@ async fn install_macos_app_update(
         ));
     }
 
-    let rebuilt_app = crate::bootstrap::resolve_hermes_desktop_app(install_root).ok_or_else(|| {
+    let rebuilt_app = crate::bootstrap::resolve_renco_desktop_app(install_root).ok_or_else(|| {
         anyhow!(
-            "desktop rebuild succeeded but no Hermes.app was found under {}",
+            "desktop rebuild succeeded but no Renco.app was found under {}",
             install_root.join("apps").join("desktop").join("release").display()
         )
     })?;
@@ -1025,15 +1025,15 @@ async fn install_macos_app_update(
     if let Some(parent) = target_app.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let tmp = PathBuf::from(format!("{}.hermes-update-new", target_app.display()));
-    let old = PathBuf::from(format!("{}.hermes-update-old", target_app.display()));
+    let tmp = PathBuf::from(format!("{}.renco-update-new", target_app.display()));
+    let old = PathBuf::from(format!("{}.renco-update-old", target_app.display()));
     remove_dir_if_exists(&tmp).await;
     remove_dir_if_exists(&old).await;
 
     let ditto = Command::new("/usr/bin/ditto")
         .arg(&rebuilt_app)
         .arg(&tmp)
-        .current_dir(crate::paths::hermes_home())
+        .current_dir(crate::paths::renco_home())
         .status()
         .await
         .map_err(|e| anyhow!("running ditto: {e}"))?;
@@ -1053,7 +1053,7 @@ async fn install_macos_app_update(
         .arg("-dr")
         .arg("com.apple.quarantine")
         .arg(target_app)
-        .current_dir(crate::paths::hermes_home())
+        .current_dir(crate::paths::renco_home())
         .status()
         .await;
 
@@ -1213,9 +1213,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn venv_hermes_is_under_install_root() {
-        let root = Path::new("/x/hermes-agent");
-        let shim = venv_hermes(root);
+    fn venv_renco_is_under_install_root() {
+        let root = Path::new("/x/renco-agent");
+        let shim = venv_renco(root);
         assert!(shim.starts_with(root));
         assert!(shim.to_string_lossy().contains("venv"));
     }
@@ -1227,7 +1227,7 @@ mod tests {
 
     #[test]
     fn update_child_env_forces_unbuffered_python() {
-        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        let envs = update_child_env(Path::new("/x/renco-agent"));
         assert!(
             envs.iter()
                 .any(|(k, v)| k == "PYTHONUNBUFFERED" && v.to_str() == Some("1")),
@@ -1237,22 +1237,22 @@ mod tests {
 
     #[test]
     fn update_child_env_names_our_pid_for_the_lock_handoff() {
-        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        let envs = update_child_env(Path::new("/x/renco-agent"));
         assert!(
-            envs.iter().any(|(k, v)| k == "HERMES_UPDATE_HANDOFF_PID"
+            envs.iter().any(|(k, v)| k == "RENCO_UPDATE_HANDOFF_PID"
                 && v.to_str() == Some(std::process::id().to_string().as_str())),
-            "the hermes update child claims the same marker we hold; without our pid \
+            "the renco update child claims the same marker we hold; without our pid \
              it refuses its own parent's lock and every GUI update dead-ends on exit 2"
         );
     }
 
     #[test]
     fn lock_probe_paths_include_desktop_app_payload() {
-        let root = Path::new("/x/hermes-agent");
+        let root = Path::new("/x/renco-agent");
         let probes = install_lock_probe_paths(root);
 
         assert!(
-            probes.iter().any(|p| p == &venv_hermes(root)),
+            probes.iter().any(|p| p == &venv_renco(root)),
             "venv shim remains part of the update lock probe"
         );
         assert!(
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn locked_paths_ignores_missing_payloads() {
-        let root = Path::new("/nonexistent/hermes-agent");
+        let root = Path::new("/nonexistent/renco-agent");
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
@@ -1278,7 +1278,7 @@ mod tests {
     fn update_marker_guard_writes_then_removes_on_drop() {
         let dir = unique_tmp_dir("marker-guard");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         {
             let _g = UpdateMarkerGuard::acquire(marker.clone())
@@ -1305,7 +1305,7 @@ mod tests {
     fn update_marker_guard_drop_is_quiet_when_already_gone() {
         let dir = unique_tmp_dir("marker-guard-gone");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
@@ -1347,11 +1347,11 @@ mod tests {
     fn acquire_refuses_while_a_live_updater_owns_the_marker() {
         let dir = unique_tmp_dir("marker-contended");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         // A live *foreign* updater holds it. We must NOT clobber the marker and
         // run concurrently over the same checkout — that race is what let a
-        // dashboard `hermes update` and install-mode bootstrap mutate one tree
+        // dashboard `renco update` and install-mode bootstrap mutate one tree
         // at once. Own-pid markers are adoptable (#74761), so the foreign pid
         // must be a real sibling process.
         let mut foreign = spawn_foreign_holder();
@@ -1376,13 +1376,13 @@ mod tests {
 
     #[test]
     fn acquire_adopts_a_marker_prewritten_with_our_own_pid() {
-        // #74761: desktop writeUpdateMarker(hermesHome, child.pid) races ahead
+        // #74761: desktop writeUpdateMarker(rencoHome, child.pid) races ahead
         // of UpdateMarkerGuard::acquire. The marker names US; refusing it made
         // every in-app desktop update loop forever. Adopt it without resetting
         // the holder age, so a wedged updater still reaches the stale ceiling.
         let dir = unique_tmp_dir("marker-own-pid");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1421,7 +1421,7 @@ mod tests {
     fn acquire_reclaims_a_marker_owned_by_a_dead_pid() {
         let dir = unique_tmp_dir("marker-dead-pid");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         // pid 1 exists everywhere, so fabricate a dead one: a very large pid
         // that no live process owns. A crashed updater must never wedge every
@@ -1448,7 +1448,7 @@ mod tests {
     fn acquire_reclaims_a_marker_past_the_age_ceiling() {
         let dir = unique_tmp_dir("marker-stale-age");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         // Our own (live) pid, but started well past the ceiling: a wedged
         // updater must not hold the lock forever.
@@ -1469,7 +1469,7 @@ mod tests {
     fn completed_update_releases_marker_before_guard_drop() {
         let dir = unique_tmp_dir("marker-complete");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".renco-update-in-progress");
 
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
@@ -1540,8 +1540,8 @@ mod tests {
     #[test]
     fn parses_only_app_targets() {
         assert_eq!(
-            target_app_from_args(["--update", "--target-app", "/Applications/Hermes.app"]),
-            Some(PathBuf::from("/Applications/Hermes.app"))
+            target_app_from_args(["--update", "--target-app", "/Applications/Renco.app"]),
+            Some(PathBuf::from("/Applications/Renco.app"))
         );
         assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
     }
@@ -1549,7 +1549,7 @@ mod tests {
     // Helpers for the swap tests: make a throwaway dir tree we can rename.
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
-            "hermes-swap-test-{tag}-{}-{}",
+            "renco-swap-test-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1568,9 +1568,9 @@ mod tests {
     #[tokio::test]
     async fn swap_installs_new_bundle_and_cleans_up() {
         let base = unique_tmp_dir("ok");
-        let target = base.join("Hermes.app");
-        let tmp = base.join("Hermes.app.hermes-update-new");
-        let old = base.join("Hermes.app.hermes-update-old");
+        let target = base.join("Renco.app");
+        let tmp = base.join("Renco.app.renco-update-new");
+        let old = base.join("Renco.app.renco-update-old");
         write_marker(&target, "OLD");
         write_marker(&tmp, "NEW");
 
@@ -1598,9 +1598,9 @@ mod tests {
         //  - `old` is a NON-EMPTY dir  -> rename(target, old) fails
         //  - `tmp` does not exist       -> rename(tmp, target) fails
         let base = unique_tmp_dir("fail");
-        let target = base.join("Hermes.app");
-        let tmp = base.join("Hermes.app.hermes-update-new"); // intentionally absent
-        let old = base.join("Hermes.app.hermes-update-old");
+        let target = base.join("Renco.app");
+        let tmp = base.join("Renco.app.renco-update-new"); // intentionally absent
+        let old = base.join("Renco.app.renco-update-old");
         write_marker(&target, "OLD");
         write_marker(&old, "OCCUPIED"); // non-empty => rename(target,old) fails
 
@@ -1621,9 +1621,9 @@ mod tests {
         // Move-aside succeeds but installing the staged bundle fails (tmp
         // absent). The original must be rolled back from `old` to `target`.
         let base = unique_tmp_dir("rollback");
-        let target = base.join("Hermes.app");
-        let tmp = base.join("Hermes.app.hermes-update-new"); // absent
-        let old = base.join("Hermes.app.hermes-update-old");
+        let target = base.join("Renco.app");
+        let tmp = base.join("Renco.app.renco-update-new"); // absent
+        let old = base.join("Renco.app.renco-update-old");
         write_marker(&target, "OLD");
 
         let result = swap_in_new_bundle(&tmp, &target, &old).await;

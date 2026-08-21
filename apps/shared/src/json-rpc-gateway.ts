@@ -88,7 +88,7 @@ export interface GatewayClientOptions {
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 // A reconnect after sleep/wake must not hang forever in 'connecting' (which
-// keeps the composer disabled and stuck on "Starting Hermes..."). If the open
+// keeps the composer disabled and stuck on "Starting Renco..."). If the open
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
@@ -395,7 +395,7 @@ export class JsonRpcGatewayClient {
 
       if (frame.error) {
         call.reject(
-          new JsonRpcGatewayError(frame.error.message || 'Hermes RPC failed', {
+          new JsonRpcGatewayError(frame.error.message || 'Renco RPC failed', {
             code: typeof frame.error.code === 'number' ? frame.error.code : undefined,
             data: frame.error.data
           })

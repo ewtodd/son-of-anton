@@ -175,16 +175,16 @@ class TestFullRepoScan:
         # into this branch, this set should be empty. If not, these are
         # the expected matches.
         pr_60741_sites = {
-            "hermes_cli/main.py",
-            "hermes_cli/onepassword_secrets_cli.py",
-            "hermes_cli/setup.py",
+            "renco_cli/main.py",
+            "renco_cli/onepassword_secrets_cli.py",
+            "renco_cli/setup.py",
             "tools/transcription_tools.py",
             "tools/tts_tool.py",
         }
 
         # Run the full scan
         roots = [
-            REPO_ROOT / "hermes_cli",
+            REPO_ROOT / "renco_cli",
             REPO_ROOT / "gateway",
             REPO_ROOT / "tools",
             REPO_ROOT / "cron",

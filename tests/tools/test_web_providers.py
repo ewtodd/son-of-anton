@@ -109,7 +109,7 @@ class TestDefaultConfig:
     """The web section exists in DEFAULT_CONFIG with per-capability keys."""
 
     def test_web_section_in_default_config(self):
-        from hermes_cli.config import DEFAULT_CONFIG
+        from renco_cli.config import DEFAULT_CONFIG
 
         assert "web" in DEFAULT_CONFIG
         web = DEFAULT_CONFIG["web"]
@@ -232,10 +232,10 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(fc, "_load_web_config", lambda: {"backend": "firecrawl"}, raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        # Developer machines may carry FIRECRAWL_* in ~/.hermes/.env — the
+        # Developer machines may carry FIRECRAWL_* in ~/.renco/.env — the
         # config-aware lookup must see a truly keyless environment here.
         monkeypatch.setattr(
-            "hermes_cli.config.get_env_value", lambda name: None, raising=True
+            "renco_cli.config.get_env_value", lambda name: None, raising=True
         )
 
         calls = {}
@@ -356,7 +356,7 @@ class TestDispatchersTriggerPluginDiscovery:
 
             mock_hook = MagicMock(wraps=_register_fake)
             # Patch the helper on ``tools.web_tools`` directly rather than the
-            # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
+            # underlying ``renco_cli.plugins._ensure_plugins_discovered`` so
             # the test stays valid even if the import inside the helper is
             # later moved to module scope or renamed.
             monkeypatch.setattr(
@@ -482,7 +482,7 @@ class TestDisabledPluginDiagnostic:
         """Point ``get_plugin_manager()`` at a stub whose ``_plugins``
         dict is ``plugins_map`` so ``_disabled_web_plugin_for`` sees the
         simulated disabled/enabled state without touching real config."""
-        import hermes_cli.plugins as plugins_mod
+        import renco_cli.plugins as plugins_mod
 
         class _StubMgr:
             _plugins = plugins_map

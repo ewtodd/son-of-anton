@@ -5,11 +5,11 @@ export interface LaunchResult {
   error?: string
 }
 
-const resolveHermesBin = () => process.env.HERMES_BIN?.trim() || 'hermes'
+const resolveRencoBin = () => process.env.RENCO_BIN?.trim() || 'renco'
 
-export const launchHermesCommand = (args: string[]): Promise<LaunchResult> =>
+export const launchRencoCommand = (args: string[]): Promise<LaunchResult> =>
   new Promise(resolve => {
-    const child = spawn(resolveHermesBin(), args, { stdio: 'inherit' })
+    const child = spawn(resolveRencoBin(), args, { stdio: 'inherit' })
 
     child.on('error', err => resolve({ code: null, error: err.message }))
     child.on('exit', code => resolve({ code }))

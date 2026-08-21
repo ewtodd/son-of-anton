@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
-import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/renco'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,

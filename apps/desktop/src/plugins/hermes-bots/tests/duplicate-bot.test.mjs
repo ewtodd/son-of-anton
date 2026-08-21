@@ -27,8 +27,8 @@ function load() {
     }
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -69,7 +69,7 @@ test('unit: duplicate copies the look but not the source chat pin', async () => 
 
   const configure = calls.filter(c => c.method === 'profiles.configure')
   assert.ok(configure.length)
-  const ui = configure[configure.length - 1].params.ui_meta['hermes-bots']
+  const ui = configure[configure.length - 1].params.ui_meta['renco-bots']
   assert.equal(ui.chat, undefined)
   assert.equal(ui.created, undefined)
   assert.equal(ui.title, 'Researcher (copy)')

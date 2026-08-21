@@ -58,12 +58,12 @@ beforeEach(() => {
   FakeWebSocket.instances = [];
   reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockClear();
   vi.stubGlobal("WebSocket", FakeWebSocket);
-  Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
+  Object.defineProperty(window, "__RENCO_SESSION_TOKEN__", {
     configurable: true,
     value: "stale-token",
     writable: true,
   });
-  Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
+  Object.defineProperty(window, "__RENCO_AUTH_REQUIRED__", {
     configurable: true,
     value: false,
     writable: true,

@@ -82,7 +82,7 @@ test('roster without profiles never throws', () => {
   assert.equal(activeBots([], 'default', 'open', NOW).length, 0)
 })
 
-// ── botActivitySession: canonical Bot Chat activity counts (hermes-agent "6d ago" bug) ──
+// ── botActivitySession: canonical Bot Chat activity counts (renco-agent "6d ago" bug) ──
 
 test('botActivitySession picks the fresher preferred_session over a stale last_session', () => {
   const botActivitySession = loadBotActivitySession()

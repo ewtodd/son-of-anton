@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import resource_limits
+from renco_cli import resource_limits
 
 
 class _FakeResource:
@@ -33,14 +33,14 @@ class _FakeResource:
 
 def test_real_config_loader_reads_runtime_nofile_setting(monkeypatch, tmp_path):
     """The helper uses the canonical config loader, not a second YAML parser."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     (home / "config.yaml").write_text(
         "runtime:\n  nofile_soft_limit: 2048\n",
         encoding="utf-8",
     )
     fake_resource = _FakeResource(soft=256, hard=4096)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RENCO_HOME", str(home))
     monkeypatch.setattr(resource_limits, "_resource", fake_resource)
 
     assert resource_limits.apply_nofile_soft_limit() is True
@@ -108,7 +108,7 @@ def test_fresh_process_import_without_posix_resource_is_a_safe_noop():
         sys.modules["resource"] = None
         module_path = pathlib.Path(sys.argv[1])
         spec = importlib.util.spec_from_file_location(
-            "hermes_cli._resource_limits_without_posix_resource",
+            "renco_cli._resource_limits_without_posix_resource",
             module_path,
         )
         module = importlib.util.module_from_spec(spec)
@@ -202,16 +202,16 @@ async def test_gateway_startup_applies_limit_before_gateway_initialization(monke
 
 
 def test_serve_startup_applies_limit_before_web_server(monkeypatch):
-    from hermes_cli import main as cli_main
-    import hermes_cli.plugins
-    import hermes_cli.web_server
+    from renco_cli import main as cli_main
+    import renco_cli.plugins
+    import renco_cli.web_server
 
-    # cmd_dashboard(headless_backend=True) exports HERMES_SERVE_HEADLESS=1 into
+    # cmd_dashboard(headless_backend=True) exports RENCO_SERVE_HEADLESS=1 into
     # this process's environment (main.py serve path). Touch the key through
     # monkeypatch FIRST so teardown restores the pre-test state — otherwise the
     # leaked flag flips later web-server tests (mount_spa) into the headless
     # 404 path.
-    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "0")
+    monkeypatch.setenv("RENCO_SERVE_HEADLESS", "0")
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -222,9 +222,9 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     monkeypatch.setattr(cli_main, "_sync_bundled_skills_quietly", lambda: None)
     monkeypatch.setattr(cli_main, "_build_web_ui", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_main, "_maybe_setup_dashboard_auth_interactively", lambda args: None)
-    monkeypatch.setattr(hermes_cli.plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(renco_cli.plugins, "discover_plugins", lambda: None)
     monkeypatch.setattr(
-        hermes_cli.web_server,
+        renco_cli.web_server,
         "start_server",
         lambda **kwargs: calls.append("server"),
     )
@@ -251,22 +251,22 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
 
 def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_path):
     """The launcher profile must not leak its limit across machine re-exec."""
-    from hermes_cli import main as cli_main
-    import hermes_cli.profiles
-    import hermes_constants
+    from renco_cli import main as cli_main
+    import renco_cli.profiles
+    import renco_constants
     from tools.environments import local as local_environment
 
     calls: list[str] = []
     exec_call: dict[str, object] = {}
 
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("RENCO_DESKTOP", raising=False)
     monkeypatch.setattr(
         resource_limits,
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
     )
     monkeypatch.setattr(
-        hermes_cli.profiles,
+        renco_cli.profiles,
         "get_active_profile_name",
         lambda: "worker",
     )
@@ -277,8 +277,8 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         lambda **kwargs: {},
     )
     monkeypatch.setattr(
-        hermes_constants,
-        "get_default_hermes_root",
+        renco_constants,
+        "get_default_renco_root",
         lambda: tmp_path,
     )
 
@@ -310,14 +310,14 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         cli_main.cmd_dashboard(args)
 
     assert calls == []
-    assert exec_call["argv"][1:5] == ["-m", "hermes_cli.main", "-p", "default"]
-    assert exec_call["env"]["HERMES_HOME"] == str(tmp_path)
+    assert exec_call["argv"][1:5] == ["-m", "renco_cli.main", "-p", "default"]
+    assert exec_call["env"]["RENCO_HOME"] == str(tmp_path)
 
 
 @pytest.mark.parametrize("lifecycle_flag", ["status", "stop"])
 def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_flag):
     """Informational/stop-only commands must not mutate process limits."""
-    from hermes_cli import main as cli_main
+    from renco_cli import main as cli_main
 
     calls: list[str] = []
     monkeypatch.setattr(

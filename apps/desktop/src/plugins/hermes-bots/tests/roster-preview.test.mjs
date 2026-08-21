@@ -19,8 +19,8 @@ function runtime() {
     host: { state: { profile: { get: () => 'ops', listen: () => undefined } }, request: () => undefined }
   }
   const code = source
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -126,8 +126,8 @@ function renderRuntime() {
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } }
   }
   const code = source
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -227,7 +227,7 @@ test('render: a remote gateway name is not squeezed out by its handle', () => {
 })
 
 test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {
-  // hermes-agent#88200: the row opens the pinned chat on click, so the
+  // renco-agent#88200: the row opens the pinned chat on click, so the
   // preview must describe that same session — not the profile's most recent
   // (but unrelated) activity.
   const r = renderRuntime()
@@ -246,10 +246,10 @@ test('render: BotRow previews the pinned canonical chat, not an unrelated latest
   assert.doesNotMatch(text, /unrelated scratch content/)
 })
 
-test('previewKind: the primary profile surfaces as @hermes, never @default', () => {
+test('previewKind: the primary profile surfaces as @renco, never @default', () => {
   // botHandle() exists so "the word 'default' never surfaces in the UI"; the
   // bot-to-bot badge was rendering the raw captured profile name (#89484).
-  assert.equal(fromBotOf("Message from agent 'default': deploy is green"), 'hermes')
+  assert.equal(fromBotOf("Message from agent 'default': deploy is green"), 'renco')
 })
 
 test('previewKind: a named profile keeps its own handle', () => {

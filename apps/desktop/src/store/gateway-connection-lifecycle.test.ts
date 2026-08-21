@@ -21,9 +21,9 @@ const gatewayMocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/renco', () => ({
   setApiRequestConnection: vi.fn(),
-  HermesGateway: class {
+  RencoGateway: class {
     connectionState = 'closed'
     close = vi.fn(() => {
       this.connectionState = 'closed'
@@ -60,7 +60,7 @@ const {
 } = await import('./gateway')
 
 function installDesktop(stub: Record<string, unknown>): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
+  ;(window as unknown as { rencoDesktop: unknown }).rencoDesktop = stub
 }
 
 function descriptorFor(connectionId: string, profile: string) {
@@ -84,7 +84,7 @@ afterEach(() => {
   gatewayMocks.instances.length = 0
   vi.clearAllMocks()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rencoDesktop?: unknown }).rencoDesktop
 })
 
 describe('disposeSecondariesForConnection', () => {
@@ -338,7 +338,7 @@ describe('reconnect fail-stop on a removed connection', () => {
     // path (wake sweep, agent activation) used to make ensureActiveGatewayOpen
     // return null immediately: reconnectSecondary early-returns on
     // `reconnecting`, the socket is still closed, and the caller surfaced
-    // "Hermes gateway is not connected" on the Sessions + action. The drive
+    // "Renco gateway is not connected" on the Sessions + action. The drive
     // must ride out the in-flight activation and hand back the opened socket.
     let releaseDial: (() => void) | undefined
 

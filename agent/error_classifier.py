@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Synthetic error code used when the OpenAI SDK rejects a provider's SSE
-# ``data:`` field before Hermes receives a completion chunk.  Keeping this
+# ``data:`` field before Renco receives a completion chunk.  Keeping this
 # distinct from generic JSON parse failures lets the classifier make narrow,
 # provider-stream-specific recovery decisions without inventing an HTTP status.
 PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
@@ -292,7 +292,7 @@ _IMAGE_TOO_LARGE_PATTERNS = [
 # messages in-place, record the (provider, model) for the rest of the
 # session so we don't waste another call learning the same lesson, retry.
 #
-# See: https://github.com/NousResearch/hermes-agent/issues/27344
+# See: https://github.com/ewtodd/renco/issues/27344
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
     # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
     "text is not set",
@@ -395,7 +395,7 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
     if not name or "/" in name:
         return False
     try:
-        from hermes_cli.model_normalize import suggest_prefixed_model_id
+        from renco_cli.model_normalize import suggest_prefixed_model_id
 
         return bool(suggest_prefixed_model_id((provider or "").strip(), name))
     except Exception:
@@ -404,7 +404,7 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
 
 # Malformed-message-array 400s.  Deterministic request-shape rejections that
 # describe the *transcript* being invalid, not a parameter.  The canonical
-# case: a stream dies mid-response and Hermes persists a content-less
+# case: a stream dies mid-response and Renco persists a content-less
 # assistant stub; on the next turn the Anthropic message schema (and the
 # litellm/Bedrock proxies in front of it) reject the whole request with
 #   "all messages must have non-empty content except for the optional final
@@ -810,12 +810,12 @@ def classify_api_error(
     # Consulted BEFORE the built-in pipeline so a provider plugin can both
     # add classifications the core patterns miss and correct ones they get
     # wrong for its provider (see the ``transform_api_error_classification`` entry in
-    # hermes_cli.plugins.VALID_HOOKS for the callback contract). Callback
+    # renco_cli.plugins.VALID_HOOKS for the callback contract). Callback
     # exceptions are isolated inside invoke_hook and malformed returns are
     # dropped by the helper, so a broken plugin can never break
     # classification — the guard here only covers import/dispatch failure.
     try:
-        from hermes_cli.plugins import get_plugin_error_classification
+        from renco_cli.plugins import get_plugin_error_classification
         plugin_classification = get_plugin_error_classification(
             provider=provider,
             model=model,

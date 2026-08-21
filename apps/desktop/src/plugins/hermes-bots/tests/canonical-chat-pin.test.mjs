@@ -6,7 +6,7 @@ import vm from 'node:vm'
 // #24's guarantee — a VALID canonical pin is opened as-is, never replaced,
 // and only an ACTUALLY-missing pin triggers recovery — used to be pinned
 // against the old implementation's source shape (session.list rows[0]
-// fallback). hermes-agent#88200 replaced that windowed, hidden-excluding
+// fallback). renco-agent#88200 replaced that windowed, hidden-excluding
 // lookup with the backend's precise preferred_session resolver, so the
 // guarantee is now pinned as BEHAVIOR: what gets opened, what gets saved,
 // and what never happens to a live pin.

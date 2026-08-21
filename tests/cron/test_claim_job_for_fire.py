@@ -4,7 +4,7 @@
 scheduler (Chronos) fires a job: across N gateway replicas, exactly ONE wins the
 claim for a given fire. Single-machine deployments always win (unaffected).
 
-These exercise the real store against a temp HERMES_HOME (no mocks) per the
+These exercise the real store against a temp RENCO_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
 """
 import threading
@@ -15,9 +15,9 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # cron.jobs caches no home at import; get_hermes_home() reads the env live.
+    """Isolated RENCO_HOME so jobs.json doesn't touch the real store."""
+    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    # cron.jobs caches no home at import; get_renco_home() reads the env live.
     yield tmp_path
 
 
@@ -115,7 +115,7 @@ def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypat
     claimed_at = datetime.fromisoformat(claimed["at"])
     monkeypatch.setattr(
         jobs,
-        "_hermes_now",
+        "_renco_now",
         lambda: claimed_at + timedelta(seconds=30),
     )
 
@@ -143,7 +143,7 @@ def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
     original_at = datetime.fromisoformat(original["at"])
     monkeypatch.setattr(
         jobs,
-        "_hermes_now",
+        "_renco_now",
         lambda: original_at + timedelta(seconds=301),
     )
 

@@ -31,7 +31,7 @@ function loadCanonicalRecovery({ openSession, request }) {
 }
 
 test('regression: a definitively-gone pin with no history clears and creates a replacement', async () => {
-  // New contract (hermes-agent#88200): the pin is verified through the
+  // New contract (renco-agent#88200): the pin is verified through the
   // backend's precise preferred_session resolver — NOT a paginated,
   // hidden-excluding session.list window. preferred_session=null is the
   // definitive "this session is gone"; with no previewed history to
@@ -76,7 +76,7 @@ test('regression: an unpinned bot adopts its previewed chat instead of creating 
 })
 
 test('regression: a dead pin re-anchors on the previewed chat instead of the newest session', async () => {
-  // hermes-agent#88146: recovery must never steal an unrelated scratch
+  // renco-agent#88146: recovery must never steal an unrelated scratch
   // session. A pin the backend reports definitively gone re-anchors on the
   // previewed history row when one exists — session.create never fires.
   const opened = []
@@ -98,7 +98,7 @@ test('regression: a dead pin re-anchors on the previewed chat instead of the new
 })
 
 test('regression: an inconclusive lookup opens the stored pin as-is and never rewrites it', async () => {
-  // hermes-agent#88146: an older backend (profiles.list without the
+  // renco-agent#88146: an older backend (profiles.list without the
   // preferred_session_ids param) or a transient hiccup is NOT proof the pin
   // is gone. The pin is opened as-is; nothing is saved, nothing is created.
   const opened = []

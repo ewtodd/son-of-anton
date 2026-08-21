@@ -30,7 +30,7 @@ class CopilotProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning and model:
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                from renco_cli.models import github_model_reasoning_efforts
 
                 supported_efforts = github_model_reasoning_efforts(model)
                 if supported_efforts and reasoning_config:
@@ -44,7 +44,7 @@ class CopilotProfile(ProviderProfile):
                     # strongest ask) resolved weaker than an explicit
                     # ``high`` (#74295).
                     if effort not in supported_efforts:
-                        from hermes_cli.models import (
+                        from renco_cli.models import (
                             clamp_reasoning_effort_to_supported,
                         )
 

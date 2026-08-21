@@ -6,9 +6,9 @@ import type {
   SessionMessage,
   SessionMessagesResponse,
   SessionSearchResponse
-} from '@/types/hermes'
+} from '@/types/renco'
 
-import { hermesApi } from './client'
+import { rencoApi } from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
@@ -38,7 +38,7 @@ export async function listSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
-  const result = await hermesApi<PaginatedSessions>({
+  const result = await rencoApi<PaginatedSessions>({
     path:
       `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}`,
@@ -79,7 +79,7 @@ export async function listAllProfileSessions(
     ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
     : ''
 
-  const result = await hermesApi<PaginatedSessions>({
+  const result = await rencoApi<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -194,7 +194,7 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
 export function scanSessionPullRequests(
   ids: string[]
 ): Promise<{ pull_requests: Record<string, { number: number; url: string }>; scanned: string[] }> {
-  return hermesApi<{
+  return rencoApi<{
     pull_requests: Record<string, { number: number; url: string }>
     scanned: string[]
   }>({
@@ -227,7 +227,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   let result: SidebarSessionsResponse
 
   try {
-    result = await hermesApi<SidebarSessionsResponse>({
+    result = await rencoApi<SidebarSessionsResponse>({
       path: `/api/profiles/sessions/sidebar?${params.toString()}`,
       timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
     })
@@ -255,7 +255,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 // Mutations take the owning `profile` so Electron can route them to the correct
 // remote backend or local profile scope. Omit for the current/default profile.
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rencoApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
@@ -268,7 +268,7 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
 // pinned chat. Best-effort: the sidebar stays localStorage-driven for its own
 // display; this only feeds the backend policy.
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rencoApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
@@ -281,7 +281,7 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
 // routing as the other session mutations: a remote session's row lives only
 // on its remote host, so the owning profile must travel with the request.
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rencoApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
@@ -290,7 +290,7 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
-  return hermesApi<SessionSearchResponse>({
+  return rencoApi<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`
   })
 }
@@ -302,7 +302,7 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 export function getSession(id: string, profile?: string | null): Promise<SessionInfo> {
   const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
 
-  return hermesApi<SessionInfo>({
+  return rencoApi<SessionInfo>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
@@ -341,7 +341,7 @@ export function getSessionMessages(
 
   const suffix = query.size ? `?${query.toString()}` : ''
 
-  return hermesApi<SessionMessagesResponse>({
+  return rencoApi<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
@@ -444,7 +444,7 @@ export async function getAllSessionMessages(
 }
 
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rencoApi<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'DELETE'
@@ -456,7 +456,7 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
-  return hermesApi<{ ok: boolean; title: string }>({
+  return rencoApi<{ ok: boolean; title: string }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',

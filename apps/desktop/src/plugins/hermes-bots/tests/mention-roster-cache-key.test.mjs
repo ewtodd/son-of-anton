@@ -67,7 +67,7 @@ function load({ cacheKeyConnection = 'local' } = {}) {
   const queryClient = makeQueryClient()
 
   // Exactly where useRoster writes it: suffixed with the connection id.
-  queryClient.setQueryData(['hermes-bots', 'roster', cacheKeyConnection], ROSTER)
+  queryClient.setQueryData(['renco-bots', 'roster', cacheKeyConnection], ROSTER)
 
   const context = {
     atom,
@@ -102,7 +102,7 @@ function load({ cacheKeyConnection = 'local' } = {}) {
 
         if (method === 'profiles.list') {
           return {
-            profiles: [{ name: 'default', ui_meta: { 'hermes-bots': { chat: 'remote-pin' } } }]
+            profiles: [{ name: 'default', ui_meta: { 'renco-bots': { chat: 'remote-pin' } } }]
           }
         }
 
@@ -141,8 +141,8 @@ function load({ cacheKeyConnection = 'local' } = {}) {
     sdk: new Proxy({}, { get: () => undefined })
   }
   const code = pluginSource
-    .replace(/^import \* as sdk from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import \* as sdk from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
@@ -175,8 +175,8 @@ test('the roster cache entry lives under the connection-suffixed key, invisible 
   // reachable through an exact getQueryData(ROSTER_KEY).
   const { queryClient } = load()
 
-  assert.equal(queryClient.getQueryData(['hermes-bots', 'roster']), undefined)
-  assert.equal(queryClient.getQueriesData({ queryKey: ['hermes-bots', 'roster'] }).length, 1)
+  assert.equal(queryClient.getQueryData(['renco-bots', 'roster']), undefined)
+  assert.equal(queryClient.getQueriesData({ queryKey: ['renco-bots', 'roster'] }).length, 1)
 })
 
 test('mention completions offer remote @name-device handles from the suffixed cache entry', () => {
@@ -193,8 +193,8 @@ test('the middleware resolves a remote @name-device mention and routes delivery 
   assert.match(result.text, /stay on this device/i)
   assert.match(result.text, /@default-vera/)
   // No local CLI handoff is composed for remote bots — only the note's
-  // "do not run hermes -p" instruction must mention the phrase.
-  assert.doesNotMatch(result.text, /hermes -p '?default/)
+  // "do not run renco -p" instruction must mention the phrase.
+  assert.doesNotMatch(result.text, /renco -p '?default/)
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.ok(delivered.length > 0, 'remote delivery dispatched')
   assert.equal(delivered[0][0], 'vera')

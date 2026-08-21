@@ -30,7 +30,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from renco_constants import get_renco_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text, is_truthy_value
@@ -58,12 +58,12 @@ _memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar(
 )
 
 # Where memory files live — resolved dynamically so profile overrides
-# (HERMES_HOME env var changes) are always respected.  The old module-level
+# (RENCO_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+    return get_renco_home() / "memories"
 
 # Stable header prefixes for the system-prompt memory blocks rendered by
 # MemoryStore._render_block. Exported so compression's prompt-retention check
@@ -926,7 +926,7 @@ def load_on_disk_store() -> "MemoryStore":
     memory_enabled = True
     user_profile_enabled = True
     try:
-        from hermes_cli.config import load_config
+        from renco_cli.config import load_config
 
         config = load_config() or {}
         mem_cfg = get_builtin_memory_config(config)
@@ -1184,7 +1184,7 @@ def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[s
     """
     if config is None:
         try:
-            from hermes_cli.config import load_config_readonly
+            from renco_cli.config import load_config_readonly
 
             config = load_config_readonly()
         except Exception:

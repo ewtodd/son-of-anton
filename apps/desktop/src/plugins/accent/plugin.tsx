@@ -13,12 +13,12 @@
  * authored.
  */
 
-import type { HermesPlugin, PaletteContribution } from '@hermes/plugin-sdk'
-import { $accentOverride, PALETTE_AREA, setAccentOverride, STATUSBAR_AREAS } from '@hermes/plugin-sdk'
+import type { RencoPlugin, PaletteContribution } from '@renco/plugin-sdk'
+import { $accentOverride, PALETTE_AREA, setAccentOverride, STATUSBAR_AREAS } from '@renco/plugin-sdk'
 
 import { AccentPickerTrigger } from './picker'
 
-const plugin: HermesPlugin = {
+const plugin: RencoPlugin = {
   id: 'accent',
   name: 'Accent Picker',
   description:

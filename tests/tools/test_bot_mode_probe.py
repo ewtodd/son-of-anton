@@ -22,7 +22,7 @@ def _make_bot_profile(root, name, *, managed=True, soul=None):
             textwrap.dedent(
                 """\
                 ui_meta:
-                  hermes-bots:
+                  renco-bots:
                     shape: cloud
                     color: '#8b5cf6'
                 """
@@ -35,28 +35,28 @@ def _make_bot_profile(root, name, *, managed=True, soul=None):
 
 
 def test_silent_when_no_profile_is_bot_managed(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=False)
     assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
 
 
 def test_emits_for_default_when_any_profile_is_managed(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
 
     section = bot_mode_probe.get_bot_mode_protocol_section(home)
     assert section.startswith("## Messaging other agents")
-    # default's callable alias is @hermes, never @default
-    assert "@hermes" in section
+    # default's callable alias is @renco, never @default
+    assert "@renco" in section
     assert "@default" not in section
     assert "`researcher`" in section
-    assert "hermes profile list" in section
+    assert "renco profile list" in section
 
 
 def test_emits_for_named_profile_with_own_handle(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     profile_dir = _make_bot_profile(home, "coder", managed=True)
 
@@ -69,7 +69,7 @@ def test_emits_for_named_profile_with_own_handle(tmp_path):
 
 def test_silent_when_soul_already_carries_protocol(tmp_path):
     """Legacy plugin-side append — never double the section."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "coder", managed=True)
     (home / "SOUL.md").write_text(
@@ -79,7 +79,7 @@ def test_silent_when_soul_already_carries_protocol(tmp_path):
 
 
 def test_deterministic_across_calls(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
     first = bot_mode_probe.get_bot_mode_protocol_section(home)
@@ -91,7 +91,7 @@ def test_deterministic_across_calls(tmp_path):
 
 
 def test_never_raises_on_garbage(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     profiles = home / "profiles" / "bad"
     profiles.mkdir(parents=True)
@@ -107,14 +107,14 @@ def test_never_raises_on_garbage(tmp_path, monkeypatch):
 
 
 def test_fingerprint_stable_when_nothing_changes(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
     assert bot_mode_probe.capability_fingerprint(home) == bot_mode_probe.capability_fingerprint(home)
 
 
 def test_fingerprint_changes_on_each_capability_axis(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
     base = bot_mode_probe.capability_fingerprint(home)
@@ -150,7 +150,7 @@ def test_fingerprint_changes_on_each_capability_axis(tmp_path):
 
 
 def test_stored_prompt_staleness(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
 
@@ -172,7 +172,7 @@ def test_stored_prompt_staleness(tmp_path):
 
 
 def test_legacy_bot_chat_upgrade(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
 
@@ -197,7 +197,7 @@ def test_legacy_bot_chat_upgrade(tmp_path):
 
     # unmanaged install → probe silent → never upgrades
     bot_mode_probe._reset_cache_for_tests()
-    home2 = tmp_path / ".hermes2"
+    home2 = tmp_path / ".renco2"
     home2.mkdir()
     assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home2)
 
@@ -206,17 +206,17 @@ def test_legacy_bot_chat_upgrade(tmp_path):
 
 
 def test_peer_paragraph_absent_without_peers(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
 
     section = bot_mode_probe.get_bot_mode_protocol_section(home)
-    assert "hermes peer dm" not in section
+    assert "renco peer dm" not in section
     assert "OTHER machines" not in section
 
 
 def test_peer_paragraph_lists_registered_peers(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
     (home / "config.yaml").write_text(
@@ -233,13 +233,13 @@ def test_peer_paragraph_lists_registered_peers(tmp_path):
     )
 
     section = bot_mode_probe.get_bot_mode_protocol_section(home)
-    assert "hermes peer dm" in section
+    assert "renco peer dm" in section
     assert "`homelab`" in section and "`spark`" in section
-    assert "hermes peer list" in section
+    assert "renco peer list" in section
 
 
 def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".renco"
     home.mkdir()
     _make_bot_profile(home, "researcher", managed=True)
 

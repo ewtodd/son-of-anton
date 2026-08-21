@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 
 def test_at_context_resolution_passes_active_provider():
     """The CLI @-reference path must preserve the active Codex provider."""
-    from cli import HermesCLI
+    from cli import RencoCLI
 
-    cli = HermesCLI.__new__(HermesCLI)
+    cli = RencoCLI.__new__(RencoCLI)
     cli.model = "gpt-5.6-terra"
     cli.base_url = "https://chatgpt.com/backend-api/codex"
     cli.api_key = "token"

@@ -21,8 +21,8 @@ function load() {
     sdk: new Proxy({}, { get: () => undefined })
   }
   const source = pluginSource
-    .replace(/^import \* as sdk from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import \* as sdk from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
@@ -57,7 +57,7 @@ test('regression: authoritative server metadata removes stale local canonical ch
     {
       name: 'default',
       ui_meta: {
-        'hermes-bots': { shape: 'cloud', color: '#8b5cf6', title: 'Hermana' }
+        'renco-bots': { shape: 'cloud', color: '#8b5cf6', title: 'Hermana' }
       }
     }
   ])
@@ -79,7 +79,7 @@ test('regression: authoritative groups remove a stale local legacy group project
   sync.mergeServerMeta([
     {
       name: 'researcher',
-      ui_meta: { 'hermes-bots': { groups: [], title: 'Researcher' } }
+      ui_meta: { 'renco-bots': { groups: [], title: 'Researcher' } }
     }
   ])
 
@@ -109,7 +109,7 @@ test('regression (#disband-resurrection): a roster snapshot fetched BEFORE a loc
 
   // Snapshot fetched now — its ui_meta still names the group.
   const staleFetchedAt = Date.now()
-  const staleRow = { name: 'builder', ui_meta: { 'hermes-bots': { groups: ['Team'], group: 'Team', title: 'Builder' } } }
+  const staleRow = { name: 'builder', ui_meta: { 'renco-bots': { groups: ['Team'], group: 'Team', title: 'Builder' } } }
 
   // Disband path: saveBotMeta removes the membership AFTER the fetch.
   await new Promise(resolve => setTimeout(resolve, 5))
@@ -133,7 +133,7 @@ test('compatibility: mergeServerMeta without fetchedAt overlays as before (no fe
   sync.setPluginCtx({ storage: { set: () => undefined } })
 
   await sync.saveBotMeta('builder', { groups: [], group: null })
-  sync.mergeServerMeta([{ name: 'builder', ui_meta: { 'hermes-bots': { groups: ['Team'] } } }])
+  sync.mergeServerMeta([{ name: 'builder', ui_meta: { 'renco-bots': { groups: ['Team'] } } }])
 
   assert.deepEqual(sync.get().builder.groups, ['Team'])
 })

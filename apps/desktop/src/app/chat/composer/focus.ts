@@ -43,13 +43,13 @@ interface AttachImagesDetail {
   target: ComposerTarget
 }
 
-const FOCUS_EVENT = 'hermes:composer-focus'
-const INSERT_EVENT = 'hermes:composer-insert'
-const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
-const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
-const SUBMIT_EVENT = 'hermes:composer-submit'
-const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
-const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
+const FOCUS_EVENT = 'renco:composer-focus'
+const INSERT_EVENT = 'renco:composer-insert'
+const ATTACH_IMAGES_EVENT = 'renco:composer-attach-images'
+const INSERT_REFS_EVENT = 'renco:composer-insert-refs'
+const SUBMIT_EVENT = 'renco:composer-submit'
+const VOICE_TOGGLE_EVENT = 'renco:composer-voice-toggle'
+const MODEL_MENU_EVENT = 'renco:composer-model-menu'
 
 /** Inline edit composer root — mounted only while a user bubble is being edited. */
 const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'

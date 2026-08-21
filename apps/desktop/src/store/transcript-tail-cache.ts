@@ -18,8 +18,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 //   - Same trust domain as state.db on the same disk — no new exposure.
 //   - Keyed by stored session id (durable identity), never runtime id.
 
-const PREFIX = 'hermes.transcript-tail.v1:'
-const INDEX_KEY = 'hermes.transcript-tail.v1-index'
+const PREFIX = 'renco.transcript-tail.v1:'
+const INDEX_KEY = 'renco.transcript-tail.v1-index'
 const TAIL_MESSAGES = 40
 const MAX_ENTRY_BYTES = 256 * 1024
 const MAX_ENTRIES = 50

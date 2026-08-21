@@ -17,7 +17,7 @@ def has_xai_credentials() -> bool:
     """Cheap probe — return True when xAI credentials are *likely* usable.
 
     Deliberately avoids :func:`resolve_xai_http_credentials` so callers in
-    hot-paint paths (``hermes tools`` repaint, tool-registration scans,
+    hot-paint paths (``renco tools`` repaint, tool-registration scans,
     ``WebSearchProvider.is_available()``) don't incur disk locks or — in
     the OAuth path — a network token refresh. The ABC contract on
     :meth:`agent.web_search_provider.WebSearchProvider.is_available`
@@ -26,10 +26,10 @@ def has_xai_credentials() -> bool:
     Resolution order, fast-to-slow:
 
     1. ``XAI_API_KEY`` env var (cheapest; covers explicit-key users).
-    2. ``~/.hermes/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
+    2. ``~/.renco/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
        (single file read, no expiry check, no refresh).
     3. ``credential_pool.xai-oauth`` has any entry with a non-empty
-       ``access_token`` (covers multi-account ``hermes auth add xai-oauth``
+       ``access_token`` (covers multi-account ``renco auth add xai-oauth``
        grants that are pool-only / ``manual:device_code``).
 
     Returns False on any exception so a corrupted auth store can't block
@@ -45,9 +45,9 @@ def has_xai_credentials() -> bool:
         if (get_secret("XAI_API_KEY", "") or "").strip():
             return True
     try:
-        from hermes_constants import get_hermes_home
+        from renco_constants import get_renco_home
 
-        auth_path = get_hermes_home() / "auth.json"
+        auth_path = get_renco_home() / "auth.json"
         if not auth_path.exists():
             return False
         store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
@@ -77,44 +77,44 @@ def has_xai_credentials() -> bool:
 
 
 def get_env_value(name: str, default=None):
-    """Read ``name`` from ``~/.hermes/.env`` first, then ``os.environ``.
+    """Read ``name`` from ``~/.renco/.env`` first, then ``os.environ``.
 
-    Wraps :func:`hermes_cli.config.get_env_value` so tests can patch
+    Wraps :func:`renco_cli.config.get_env_value` so tests can patch
     ``tools.xai_http.get_env_value`` to inject dotenv-only secrets into the
     xAI credential resolver.
     """
     try:
-        from hermes_cli.config import get_env_value as _hermes_get_env_value
+        from renco_cli.config import get_env_value as _renco_get_env_value
     except ImportError:
         return os.environ.get(name, default)
 
-    value = _hermes_get_env_value(name)
+    value = _renco_get_env_value(name)
     return value if value is not None else default
 
 
-def hermes_xai_user_agent() -> str:
-    """Return a stable Hermes-specific User-Agent for xAI HTTP calls."""
+def renco_xai_user_agent() -> str:
+    """Return a stable Renco-specific User-Agent for xAI HTTP calls."""
     try:
-        from hermes_cli import __version__
+        from renco_cli import __version__
     except Exception:
         __version__ = "unknown"
-    return f"Hermes-Agent/{__version__}"
+    return f"Renco-Agent/{__version__}"
 
 
-def hermes_xai_default_headers() -> Dict[str, str]:
+def renco_xai_default_headers() -> Dict[str, str]:
     """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI.
 
     Replaces the OpenAI Python SDK's identifying ``User-Agent: OpenAI/Python …``
-    so chat/completions and Responses traffic is attributed as Hermes Agent,
+    so chat/completions and Responses traffic is attributed as Renco Agent,
     matching the direct HTTP integrations (search, TTS, STT, image, video).
     """
-    return {"User-Agent": hermes_xai_user_agent()}
+    return {"User-Agent": renco_xai_user_agent()}
 
 
 def _load_config_section(section_name: str) -> Dict[str, Any]:
-    """Return a top-level Hermes config section as a dict, or empty."""
+    """Return a top-level Renco config section as a dict, or empty."""
     try:
-        from hermes_cli.config import load_config
+        from renco_cli.config import load_config
 
         cfg = load_config()
         section = cfg.get(section_name) if isinstance(cfg, dict) else None
@@ -236,14 +236,14 @@ def xai_storage_notice_text(section_name: str) -> str:
 
 
 def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
-    """Return the storage notice once per Hermes home, then mark it seen."""
+    """Return the storage notice once per Renco home, then mark it seen."""
     notice = xai_storage_notice_text(section_name)
     if not notice:
         return None
     try:
-        from hermes_constants import get_hermes_home
+        from renco_constants import get_renco_home
 
-        marker_dir = get_hermes_home() / "state"
+        marker_dir = get_renco_home() / "state"
         marker_dir.mkdir(parents=True, exist_ok=True)
         marker = marker_dir / f"{section_name}_xai_storage_notice_seen"
         if marker.exists():
@@ -274,19 +274,19 @@ def _resolve_explicit_xai_api_key() -> str:
 def _resolve_explicit_xai_base_url(default: str = "https://api.x.ai/v1") -> str:
     """Base URL for the explicit-API-key path.
 
-    Honors ``HERMES_XAI_BASE_URL`` then ``XAI_BASE_URL`` (the same override
+    Honors ``RENCO_XAI_BASE_URL`` then ``XAI_BASE_URL`` (the same override
     pair the OAuth branch reads) and pins the origin with
-    :func:`hermes_cli.auth._xai_validate_inference_base_url` so a tampered
+    :func:`renco_cli.auth._xai_validate_inference_base_url` so a tampered
     env override can't exfiltrate the bearer; on rejection it falls back to
     the default rather than raising.
     """
     override = str(
-        get_env_value("HERMES_XAI_BASE_URL")
+        get_env_value("RENCO_XAI_BASE_URL")
         or get_env_value("XAI_BASE_URL")
         or ""
     ).strip().rstrip("/")
     try:
-        import hermes_cli.auth as auth_mod
+        import renco_cli.auth as auth_mod
 
         return auth_mod._xai_validate_inference_base_url(override, fallback=default)
     except Exception:  # pragma: no cover — auth is in-repo
@@ -301,9 +301,9 @@ def resolve_xai_http_credentials(
 ) -> Dict[str, str]:
     """Resolve bearer credentials for direct xAI HTTP endpoints.
 
-    Prefers Hermes-managed xAI OAuth credentials when available, then falls back
-    to ``XAI_API_KEY`` resolved via ``hermes_cli.config.get_env_value`` so keys
-    stored in ``~/.hermes/.env`` (the standard Hermes location) are honored —
+    Prefers Renco-managed xAI OAuth credentials when available, then falls back
+    to ``XAI_API_KEY`` resolved via ``renco_cli.config.get_env_value`` so keys
+    stored in ``~/.renco/.env`` (the standard Renco location) are honored —
     not just ones already exported into ``os.environ``. This keeps direct xAI
     endpoints (images, TTS, STT, etc.) aligned with the main runtime auth model
     and preserves the regression contract from PR #17140 / #17163.
@@ -316,7 +316,7 @@ def resolve_xai_http_credentials(
     (#87045). The key is read through
     :func:`tools.tool_backend_helpers.resolve_provider_secret` so profile
     secret scoping is identical to the fallback branch, and the base URL
-    honors ``HERMES_XAI_BASE_URL`` / ``XAI_BASE_URL`` behind the same
+    honors ``RENCO_XAI_BASE_URL`` / ``XAI_BASE_URL`` behind the same
     origin-pinning validation as the OAuth branch.
 
     Set ``force_refresh=True`` to perform an unconditional OAuth refresh.
@@ -335,7 +335,7 @@ def resolve_xai_http_credentials(
 
     try:
         from agent.credential_pool import load_pool
-        import hermes_cli.auth as auth_mod
+        import renco_cli.auth as auth_mod
 
         pool = load_pool("xai-oauth")
         entry = (
@@ -358,7 +358,7 @@ def resolve_xai_http_credentials(
             or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
         ).strip().rstrip("/")
         override_base_url = str(
-            get_env_value("HERMES_XAI_BASE_URL")
+            get_env_value("RENCO_XAI_BASE_URL")
             or get_env_value("XAI_BASE_URL")
             or ""
         ).strip().rstrip("/")

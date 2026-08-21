@@ -6,7 +6,7 @@ description: "Schedule automated tasks with natural language, manage them with o
 
 # Scheduled Tasks (Cron)
 
-Schedule tasks to run automatically with natural language or cron expressions. Hermes exposes cron management through a single `cronjob` tool with action-style operations instead of separate schedule/list/remove tools.
+Schedule tasks to run automatically with natural language or cron expressions. Renco exposes cron management through a single `cronjob` tool with action-style operations instead of separate schedule/list/remove tools.
 
 ## What cron can do now
 
@@ -19,24 +19,24 @@ Cron jobs can:
 - run in fresh agent sessions with the normal static tool list
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
 
-All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
+All of this is available to Renco itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-**Which model does a cron job run on?** Resolution at fire time is: per-job pin → `cron.model` in `config.yaml` → the global default from `hermes model`.
+**Which model does a cron job run on?** Resolution at fire time is: per-job pin → `cron.model` in `config.yaml` → the global default from `renco model`.
 
-- **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
-- **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
-- **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
+- **Per-job pin** — set by *you* via the dashboard, `renco cron create/edit --model … --provider …`, or by editing `~/.renco/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
+- **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`renco config set cron.model <name>`) and switching your chat model with `renco model` or `/model` never touches your cron fleet.
+- **Global default** — only when neither of the above is set does a job follow `renco model`. In this case Renco **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`renco cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
 
-`hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+`renco setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
 :::tip
-**Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. When set, it overrides both the global `agent.reasoning_effort` and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `hermes cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob` tool — model configuration stays a user decision.) Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. The pin has no effect on `no_agent` jobs (there is no LLM call to tune). Use it to run heavy scheduled analyses at `high` while cheap recurring jobs run at `minimal`, without touching your global default.
+**Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. When set, it overrides both the global `agent.reasoning_effort` and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `renco cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob` tool — model configuration stays a user decision.) Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. The pin has no effect on `no_agent` jobs (there is no LLM call to tune). Use it to run heavy scheduled analyses at `high` while cheap recurring jobs run at `minimal`, without touching your global default.
 :::
 
 :::warning
-Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
+Cron-run sessions cannot recursively create more cron jobs. Renco disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
 
 ## Creating scheduled tasks
@@ -53,9 +53,9 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 ### From the standalone CLI
 
 ```bash
-hermes cron create "every 2h" "Check server status"
-hermes cron create "every 1h" "Summarize new feed items" --skill blogwatcher
-hermes cron create "every 1h" "Use both skills and combine the result" \
+renco cron create "every 2h" "Check server status"
+renco cron create "every 1h" "Summarize new feed items" --skill blogwatcher
+renco cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
   --skill maps \
   --name "Skill combo"
@@ -63,13 +63,13 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
 
 ### Through natural conversation
 
-Ask Hermes normally:
+Ask Renco normally:
 
 ```text
 Every morning at 9am, check Hacker News for AI news and send me a summary on Telegram.
 ```
 
-Hermes will use the unified `cronjob` tool internally.
+Renco will use the unified `cronjob` tool internally.
 
 ## Pre-dispatch configuration validation
 
@@ -96,7 +96,7 @@ cron:
   preflight: false
 ```
 
-Or: `hermes config set cron.preflight false`
+Or: `renco config set cron.preflight false`
 
 ## Letting unpinned jobs track global defaults
 
@@ -112,7 +112,7 @@ cron:
 Or use the config command:
 
 ```bash
-hermes config set cron.model_drift_guard false
+renco config set cron.model_drift_guard false
 ```
 
 This disables both the runtime block and the warning shown when global
@@ -163,7 +163,7 @@ Cron jobs default to running detached from any repo — no `AGENTS.md`, `CLAUDE.
 
 ```bash
 # Standalone CLI (schedule and prompt are positional)
-hermes cron create "every 1d at 09:00" \
+renco cron create "every 1d at 09:00" \
   "Audit open PRs, summarize CI health, and post to #eng" \
   --workdir /home/me/projects/acme
 ```
@@ -210,12 +210,12 @@ The `<job_id>` placeholder below (and in [Lifecycle actions](#lifecycle-actions)
 ### Standalone CLI
 
 ```bash
-hermes cron edit <job_id> --schedule "every 4h"
-hermes cron edit <job_id> --prompt "Use the revised task"
-hermes cron edit <job_id> --skill blogwatcher --skill maps
-hermes cron edit <job_id> --add-skill maps
-hermes cron edit <job_id> --remove-skill blogwatcher
-hermes cron edit <job_id> --clear-skills
+renco cron edit <job_id> --schedule "every 4h"
+renco cron edit <job_id> --prompt "Use the revised task"
+renco cron edit <job_id> --skill blogwatcher --skill maps
+renco cron edit <job_id> --add-skill maps
+renco cron edit <job_id> --remove-skill blogwatcher
+renco cron edit <job_id> --clear-skills
 ```
 
 Notes:
@@ -242,14 +242,14 @@ Cron jobs now have a fuller lifecycle than just create/remove.
 ### Standalone CLI
 
 ```bash
-hermes cron list
-hermes cron pause <job_id_or_name>
-hermes cron resume <job_id_or_name>
-hermes cron run <job_id_or_name>
-hermes cron remove <job_id_or_name>
-hermes cron edit <job_id_or_name> [...flags]
-hermes cron status
-hermes cron tick
+renco cron list
+renco cron pause <job_id_or_name>
+renco cron resume <job_id_or_name>
+renco cron run <job_id_or_name>
+renco cron remove <job_id_or_name>
+renco cron edit <job_id_or_name> [...flags]
+renco cron status
+renco cron tick
 ```
 
 What they do:
@@ -296,19 +296,19 @@ over ones that create new jobs each run.
 **Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
 
 ```bash
-hermes gateway install     # Install as a user service
-sudo hermes gateway install --system   # Linux: boot-time system service for servers
-hermes gateway             # Or run in foreground
+renco gateway install     # Install as a user service
+sudo renco gateway install --system   # Linux: boot-time system service for servers
+renco gateway             # Or run in foreground
 
-hermes cron list
-hermes cron status
+renco cron list
+renco cron status
 ```
 
 ### Gateway scheduler behavior
 
-On each tick Hermes:
+On each tick Renco:
 
-1. loads jobs from `~/.hermes/cron/jobs.json`
+1. loads jobs from `~/.renco/cron/jobs.json`
 2. checks `next_run_at` against the current time
 3. starts a fresh `AIAgent` session for each due job
 4. optionally injects one or more attached skills into that fresh session
@@ -316,19 +316,19 @@ On each tick Hermes:
 6. delivers the final response
 7. updates run metadata and the next scheduled time
 
-A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
+A file lock at `~/.renco/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
 ### Execution history
 
-Hermes records each claimed cron attempt in the profile-local
-`~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
+Renco records each claimed cron attempt in the profile-local
+`~/.renco/cron/executions.db` before executor or provider dispatch. Attempts
 move through `claimed`, `running`, and one immutable terminal state:
-`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
+`completed`, `failed`, or `unknown`. After restart, Renco marks an abandoned
 attempt `unknown` only when the original PID and process-start fingerprint prove
 that its owner is gone. Unknown attempts are audit records and are never
 automatically rerun.
 
-Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
+Inspect recent attempts with `renco cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
 
@@ -338,8 +338,8 @@ Each job tracks a `failure_streak` — consecutive runs where the agent failed
 (delivery failures don't count). When a *recurring* job's streak reaches the
 threshold, the failure message delivered to chat gains a review nudge telling
 you the job has failed N runs in a row and suggesting you fix, pause
-(`hermes cron pause <job>`), or remove it. Any successful run resets the
-streak, and `hermes cron list` shows the streak alongside a failing job's last
+(`renco cron pause <job>`), or remove it. Any successful run resets the
+streak, and `renco cron list` shows the streak alongside a failing job's last
 run. One-shot jobs never nudge.
 
 ```yaml
@@ -354,7 +354,7 @@ When scheduling jobs, you specify where the output goes:
 | Option | Description | Example |
 |--------|-------------|---------|
 | `"origin"` | Back to where the job was created | Default on messaging platforms |
-| `"local"` | Save to local files only (`~/.hermes/cron/output/`) | Default on CLI |
+| `"local"` | Save to local files only (`~/.renco/cron/output/`) | Default on CLI |
 | `"telegram"` | Telegram home channel | Uses `TELEGRAM_HOME_CHANNEL` |
 | `"telegram:123456"` | Specific Telegram chat by ID | Direct delivery |
 | `"telegram:-100123:17585"` | Specific Telegram topic | `chat_id:thread_id` format |
@@ -415,7 +415,7 @@ Note: The agent cannot see this message, and therefore cannot respond to it.
 To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 cron:
   wrap_response: false
 ```
@@ -432,7 +432,7 @@ Opt-in, **default off**. Enable globally in config, or per-job via the `cronjob`
 tool's `attach_to_session` (which overrides the global setting for that one job):
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 cron:
   mirror_delivery: false   # set true to make cron deliveries continuable
 ```
@@ -460,7 +460,7 @@ delivery. If you'd rather have a continuable job land **flat in the channel
 timeline** — no thread — set the Slack **continuable surface** to `in_channel`:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 slack:
   cron_continuable_surface: in_channel   # default: thread
   reply_in_thread: false                 # required pairing (see below)
@@ -512,7 +512,7 @@ not required (and is ignored) for DMs.
 
 ### Silent suppression
 
-If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
+If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.renco/cron/output/`), but no message is sent to the delivery target.
 
 This is useful for monitoring jobs that should only report when something is wrong:
 
@@ -528,17 +528,17 @@ Failed jobs always deliver regardless of the `[SILENT]` marker — only successf
 Pre-run scripts (attached via the `script` parameter) have a default timeout of 3600 seconds (1 hour). This bounds the **script only** — skill-based / LLM-driven jobs run on a separate inactivity budget and are not capped by this value. If your scripts need a different limit, you can change it:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 cron:
   script_timeout_seconds: 1800   # 30 minutes
 ```
 
-Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
+Or set the `RENCO_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
 
 Cron also bounds post-run session and agent-resource cleanup. This happens after the LLM turn returns, so it is separate from the inactivity timeout. The default is 10 seconds per cleanup operation. If a storage or client finalizer stops returning, the scheduler logs an error, releases the job's in-flight guard, and allows later runs to dispatch instead of skipping that job forever.
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 cron:
   cleanup_timeout_seconds: 10
 ```
@@ -550,19 +550,19 @@ Set `cleanup_timeout_seconds: 0` only to restore the legacy unbounded cleanup be
 When a cron delivery includes media attachments (a generated PDF, TTS audio, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 cron:
   media_send_timeout_seconds: 600   # 10 minutes per attachment
 ```
 
-Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
+Or set the `RENCO_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
 
 ## No-agent mode (script-only jobs)
 
 For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:
 
 ```bash
-hermes cron create "every 5m" \
+renco cron create "every 5m" \
   --no-agent \
   --script memory-watchdog.sh \
   --deliver telegram \
@@ -577,17 +577,17 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$RENCO_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Renco-managed secrets are **not** inherited by cron scripts.
 
 ### The agent sets these up for you
 
-The `cronjob` tool's schema exposes `no_agent` to Hermes directly, so you can describe a watchdog in chat and let the agent wire it up:
+The `cronjob` tool's schema exposes `no_agent` to Renco directly, so you can describe a watchdog in chat and let the agent wire it up:
 
 ```text
 Ping me on Telegram if RAM is over 85%, every 5 minutes.
 ```
 
-Hermes will write the check script to `~/.hermes/scripts/` via `write_file`, then call:
+Renco will write the check script to `~/.renco/scripts/` via `write_file`, then call:
 
 ```python
 cronjob(action="create", schedule="every 5m",
@@ -607,7 +607,7 @@ Cron jobs run in isolated sessions with no memory of previous runs. But sometime
 # Job 1: Collect raw data
 cronjob(
     action="create",
-    prompt="Fetch the top 10 AI/ML stories from Hacker News. Save them to ~/.hermes/data/briefs/raw.md in markdown format with title, URL, and score.",
+    prompt="Fetch the top 10 AI/ML stories from Hacker News. Save them to ~/.renco/data/briefs/raw.md in markdown format with title, URL, and score.",
     schedule="0 7 * * *",
     name="AI News Collector",
 )
@@ -616,7 +616,7 @@ cronjob(
 # Get Job 1's ID from: cronjob(action="list")
 cronjob(
     action="create",
-    prompt="Read ~/.hermes/data/briefs/raw.md. Score each story 1–10 for engagement potential and novelty. Output the top 5 to ~/.hermes/data/briefs/ranked.md.",
+    prompt="Read ~/.renco/data/briefs/raw.md. Score each story 1–10 for engagement potential and novelty. Output the top 5 to ~/.renco/data/briefs/ranked.md.",
     schedule="30 7 * * *",
     context_from="<job1_id>",
     name="AI News Triage",
@@ -625,7 +625,7 @@ cronjob(
 # Job 3: Ship — receives Job 2's output as context
 cronjob(
     action="create",
-    prompt="Read ~/.hermes/data/briefs/ranked.md. Write 3 tweet drafts (hook + body + hashtags). Deliver to telegram:7976161601.",
+    prompt="Read ~/.renco/data/briefs/ranked.md. Write 3 tweet drafts (hook + body + hashtags). Deliver to telegram:7976161601.",
     schedule="0 8 * * *",
     context_from="<job2_id>",
     name="AI News Brief",
@@ -634,7 +634,7 @@ cronjob(
 
 **How it works:**
 
-- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1_id}/*.md`
+- When Job 2 fires, Renco reads Job 1's most recent output from `~/.renco/cron/output/{job1_id}/*.md`
 - That output is prepended to Job 2's prompt automatically
 - Job 2 doesn't need to hardcode "read this file" — it receives the content as context
 - The chain can be any length: Job 1 → Job 2 → Job 3 → ...
@@ -664,7 +664,7 @@ cronjob(
 
 The first run has no previous output, so the prompt runs as-is. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
 
-From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and `hermes cron edit <job_id> --continuity` / `--no-continuity` to toggle it on an existing job. The same toggle appears in the dashboard's cron editor and the desktop Bot Mode routine dialog.
+From the CLI: `renco cron create "every 6h" "Scan for news" --continuity`, and `renco cron edit <job_id> --continuity` / `--no-continuity` to toggle it on an existing job. The same toggle appears in the dashboard's cron editor and the desktop Bot Mode routine dialog.
 
 **When to use it:**
 
@@ -689,10 +689,10 @@ On hosted (managed-cron) deployments, a scheduled fire travels from the platform
 These misses are stamped on the job record as `last_fire_error` (timestamp + reason) and surfaced by:
 
 - `cronjob` tool → `action: "list"` — the `last_fire_error` field
-- `hermes cron list` — a red `⚠ Missed scheduled fire:` line under the job
+- `renco cron list` — a red `⚠ Missed scheduled fire:` line under the job
 - The dashboard job view
 
-The stamp always reflects **current** auto-fire health: it is overwritten by newer misses and cleared automatically by the next successful run. If you see it, the job and its schedule are fine — the gateway side of the fire path needs attention (most commonly, restart the gateway through its supervisor so it loads the full profile environment: `hermes gateway restart`).
+The stamp always reflects **current** auto-fire health: it is overwritten by newer misses and cleared automatically by the next successful run. If you see it, the job and its schedule are fine — the gateway side of the fire path needs attention (most commonly, restart the gateway through its supervisor so it loads the full profile environment: `renco gateway restart`).
 
 ### Misfire catch-up
 
@@ -797,16 +797,16 @@ The context is appended to the job's stored prompt under a `## Run Context`
 header for that single fire only — it is never persisted to the job
 definition, and it passes the same prompt-injection scan as stored prompts.
 
-Runtimes that can't receive detached results (one-shot `hermes -z`, `hermes
+Runtimes that can't receive detached results (one-shot `renco -z`, `renco
 cron run` from the CLI, cron child sessions, Kanban workers) fall back to
 synchronous execution automatically.
 
 ## Toolsets available to cron jobs
 
-Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
+Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `renco tools`** — not the CLI default, not everything under the sun.
 
 ```bash
-hermes tools
+renco tools
 # → pick the "cron" platform in the curses UI
 # → toggle toolsets on/off just like you would for Telegram/Discord/etc.
 ```
@@ -820,11 +820,11 @@ cronjob(action="create", name="weekly-news-summary",
         prompt="Summarize this week's AI news: ...")
 ```
 
-When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+When `enabled_toolsets` is set on a job it wins; otherwise the `renco tools` cron-platform config wins; otherwise Renco falls back to the built-in defaults. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
 
 ### Skipping the agent entirely: `wakeAgent`
 
-If your cron job attaches a pre-check script (via `script=`), the script can decide at runtime whether Hermes should even invoke the agent. Emit a final stdout line of the form:
+If your cron job attaches a pre-check script (via `script=`), the script can decide at runtime whether Renco should even invoke the agent. Emit a final stdout line of the form:
 
 ```text
 {"wakeAgent": false}
@@ -854,9 +854,9 @@ The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should
 
 ```bash
 #!/bin/bash
-# ~/.hermes/scripts/feed-changed.sh
+# ~/.renco/scripts/feed-changed.sh
 FEED="$HOME/data/feed.json"
-STATE="$HOME/.hermes/scripts/.feed-changed.last"
+STATE="$HOME/.renco/scripts/.feed-changed.last"
 test -f "$FEED" || { echo '{"wakeAgent": false}'; exit 0; }
 mtime=$(stat -c %Y "$FEED")
 last=$(cat "$STATE" 2>/dev/null || echo 0)
@@ -879,7 +879,7 @@ cronjob(action="create", name="process-feed",
 
 ```bash
 #!/bin/bash
-# ~/.hermes/scripts/flag-ready.sh
+# ~/.renco/scripts/flag-ready.sh
 if test -f /tmp/new-data-ready; then
   rm -f /tmp/new-data-ready
   echo '{"wakeAgent": true}'
@@ -899,7 +899,7 @@ cronjob(action="create", name="nightly-analysis",
 
 ```python
 #!/usr/bin/env python
-# ~/.hermes/scripts/new-rows.py
+# ~/.renco/scripts/new-rows.py
 import json, sqlite3
 conn = sqlite3.connect("/home/me/data/app.db")
 n = conn.execute(
@@ -921,10 +921,10 @@ cronjob(action="create", name="summarize-new-msgs",
 The same pattern works for any data source you can query from a script — Postgres, an HTTP API, your own state store — without baking a SQL evaluator into the cron subsystem.
 
 :::tip
-Hermes's own `~/.hermes/state.db` is an internal schema that changes between releases. Don't query it from a pre-run gate — point at your own database or feed instead.
+Renco's own `~/.renco/state.db` is an internal schema that changes between releases. Don't query it from a pre-run gate — point at your own database or feed instead.
 :::
 
-Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https://github.com/NousResearch/hermes-agent/pull/2654), which proposed adding sql/file/command triggers as a parallel mechanism. The `script` + `wakeAgent` gate already covers all three cases at $0, so the work landed as documentation instead.
+Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https://github.com/ewtodd/renco/pull/2654), which proposed adding sql/file/command triggers as a parallel mechanism. The `script` + `wakeAgent` gate already covers all three cases at $0, so the work landed as documentation instead.
 
 ### Chaining jobs: `context_from`
 
@@ -941,15 +941,15 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 ## Job storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+Jobs are stored in `~/.renco/cron/jobs.json`. Output from job runs is saved to `~/.renco/cron/output/{job_id}/{timestamp}.md`.
 
-Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
+Job definitions are plain JSON on disk: they survive `renco update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 
 :::tip
-Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
+Ask the agent to manage jobs through the `cronjob` tool, `renco cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `RENCO_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
 :::
 
-Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
+Jobs may store `model` and `provider` as `null`. When those fields are omitted, Renco resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 

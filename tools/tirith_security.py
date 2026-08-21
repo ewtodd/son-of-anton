@@ -11,7 +11,7 @@ Operational failures (spawn error, timeout, unknown exit code) respect
 the fail_open config setting. Programming errors propagate.
 
 Auto-install: if tirith is not found on PATH or at the configured path,
-it is automatically downloaded from GitHub releases to $HERMES_HOME/bin/tirith.
+it is automatically downloaded from GitHub releases to $RENCO_HOME/bin/tirith.
 The download always verifies SHA-256 checksums.  When cosign is available on
 PATH, provenance verification (GitHub Actions workflow signature) is also
 performed.  If cosign is not installed, the download proceeds with SHA-256
@@ -34,7 +34,7 @@ import threading
 import time
 import urllib.request
 
-from hermes_constants import get_hermes_home
+from renco_constants import get_renco_home
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def _load_security_config() -> dict:
         "tirith_fail_open": True,
     }
     try:
-        from hermes_cli.config import load_config_readonly
+        from renco_cli.config import load_config_readonly
         cfg = load_config_readonly().get("security", {}) or {}
     except Exception:
         cfg = {}
@@ -162,14 +162,14 @@ def _reset_spawn_warning_state() -> None:
 _MARKER_TTL = 86400  # 24 hours
 
 
-def _get_hermes_home() -> str:
-    """Return the Hermes home directory, respecting HERMES_HOME env var."""
-    return str(get_hermes_home())
+def _get_renco_home() -> str:
+    """Return the Renco home directory, respecting RENCO_HOME env var."""
+    return str(get_renco_home())
 
 
 def _failure_marker_path() -> str:
     """Return the path to the install-failure marker file."""
-    return os.path.join(_get_hermes_home(), ".tirith-install-failed")
+    return os.path.join(_get_renco_home(), ".tirith-install-failed")
 
 
 def _read_failure_reason() -> str | None:
@@ -235,9 +235,9 @@ def _clear_install_failed():
         pass
 
 
-def _hermes_bin_dir() -> str:
-    """Return $HERMES_HOME/bin, creating it if needed."""
-    d = os.path.join(_get_hermes_home(), "bin")
+def _renco_bin_dir() -> str:
+    """Return $RENCO_HOME/bin, creating it if needed."""
+    d = os.path.join(_get_renco_home(), "bin")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -384,7 +384,7 @@ def _extract_tirith_binary(tar: tarfile.TarFile, dest_dir: str, log) -> tuple[st
 
 
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
-    """Download and install tirith to $HERMES_HOME/bin/tirith.
+    """Download and install tirith to $RENCO_HOME/bin/tirith.
 
     Verifies provenance via cosign and SHA-256 checksum.
     Returns (installed_path, failure_reason).  On success failure_reason is "".
@@ -459,7 +459,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             if src is None:
                 return None, reason
 
-        dest = os.path.join(_hermes_bin_dir(), "tirith")
+        dest = os.path.join(_renco_bin_dir(), "tirith")
         try:
             shutil.move(src, dest)
         except OSError:
@@ -499,8 +499,8 @@ def _resolve_tirith_path(configured_path: str) -> str:
 
     For the default "tirith":
     1. PATH lookup via shutil.which
-    2. $HERMES_HOME/bin/tirith (previously auto-installed)
-    3. Auto-install from GitHub releases → $HERMES_HOME/bin/tirith
+    2. $RENCO_HOME/bin/tirith (previously auto-installed)
+    3. Auto-install from GitHub releases → $RENCO_HOME/bin/tirith
 
     Failed installs are cached for the process lifetime (and persisted to
     disk for 24h) to avoid repeated network attempts.
@@ -549,12 +549,12 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
-        _resolved_path = hermes_bin
+    renco_bin = os.path.join(_renco_bin_dir(), "tirith")
+    if os.path.isfile(renco_bin) and os.access(renco_bin, os.X_OK):
+        _resolved_path = renco_bin
         _install_failure_reason = ""
         _clear_install_failed()
-        return hermes_bin
+        return renco_bin
 
     # Local checks failed.  If a previous install attempt already failed,
     # skip the network retry — UNLESS the failure was "cosign_missing" and
@@ -613,9 +613,9 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
-        hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-        if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
-            _resolved_path = hermes_bin
+        renco_bin = os.path.join(_renco_bin_dir(), "tirith")
+        if os.path.isfile(renco_bin) and os.access(renco_bin, os.X_OK):
+            _resolved_path = renco_bin
             _install_failure_reason = ""
             return
 
@@ -683,12 +683,12 @@ def ensure_installed(*, log_failures: bool = True):
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
-        _resolved_path = hermes_bin
+    renco_bin = os.path.join(_renco_bin_dir(), "tirith")
+    if os.path.isfile(renco_bin) and os.access(renco_bin, os.X_OK):
+        _resolved_path = renco_bin
         _install_failure_reason = ""
         _clear_install_failed()
-        return hermes_bin
+        return renco_bin
 
     # If previously failed in-memory, check if the cause is now resolved
     if _resolved_path is _INSTALL_FAILED:

@@ -19,13 +19,13 @@ import pytest
 
 
 @pytest.fixture()
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def renco_home(tmp_path, monkeypatch):
+    home = tmp_path / ".renco"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RENCO_HOME", str(home))
 
-    from hermes_cli import goals
+    from renco_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -33,12 +33,12 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def server(hermes_home):
+def server(renco_home):
     with patch.dict(
         "sys.modules",
         {
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "renco_cli.env_loader": MagicMock(),
+            "renco_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
@@ -87,7 +87,7 @@ def test_loop_set_persists(server, session):
     assert result["type"] == "exec"
     assert "Loop set" in result["output"]
 
-    from hermes_cli.loops import LoopManager
+    from renco_cli.loops import LoopManager
 
     mgr = LoopManager(session_key)
     assert mgr.state is not None
@@ -115,7 +115,7 @@ def test_loop_pause_resume_stop(server, session):
     r = _call(server, "command.dispatch", name="loop", arg="stop", session_id=sid)
     assert "stopped" in r["result"]["output"].lower()
 
-    from hermes_cli.loops import LoopManager
+    from renco_cli.loops import LoopManager
 
     assert not LoopManager(session_key).has_loop()
 
@@ -131,7 +131,7 @@ def test_loop_requires_session(server):
 
 def test_tui_tick_fires_when_idle_and_due(server, session):
     sid, session_key, s = session
-    from hermes_cli.loops import LoopManager, save_loop
+    from renco_cli.loops import LoopManager, save_loop
 
     mgr = LoopManager(session_key)
     mgr.set("poll the build", interval_seconds=60)
@@ -155,7 +155,7 @@ def test_tui_tick_fires_when_idle_and_due(server, session):
 
 def test_tui_tick_defers_when_running(server, session):
     sid, session_key, s = session
-    from hermes_cli.loops import LoopManager, save_loop
+    from renco_cli.loops import LoopManager, save_loop
 
     mgr = LoopManager(session_key)
     mgr.set("poll", interval_seconds=60)
@@ -174,8 +174,8 @@ def test_tui_tick_defers_when_running(server, session):
 
 def test_tui_tick_defers_to_active_goal(server, session):
     sid, session_key, s = session
-    from hermes_cli.goals import GoalManager
-    from hermes_cli.loops import LoopManager, save_loop
+    from renco_cli.goals import GoalManager
+    from renco_cli.loops import LoopManager, save_loop
 
     GoalManager(session_id=session_key).set("finish the feature")
     mgr = LoopManager(session_key)
@@ -193,7 +193,7 @@ def test_tui_tick_defers_to_active_goal(server, session):
 
 def test_tui_tick_noop_when_not_due(server, session):
     sid, session_key, s = session
-    from hermes_cli.loops import LoopManager
+    from renco_cli.loops import LoopManager
 
     LoopManager(session_key).set("poll", interval_seconds=300)
 

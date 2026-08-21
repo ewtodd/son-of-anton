@@ -1,1 +1,1 @@
-# Hermes plugins package
+# Renco plugins package

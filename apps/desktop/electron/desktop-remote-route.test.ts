@@ -58,7 +58,7 @@ test('environment URL without its token keeps the existing error', () => {
         env: { url: 'https://env.test' },
         registry: registry('local', [])
       }),
-    /HERMES_DESKTOP_REMOTE_TOKEN is not/
+    /RENCO_DESKTOP_REMOTE_TOKEN is not/
   )
 })
 
@@ -91,10 +91,10 @@ test('profile SSH identity includes port, key, paths, and remote profile', () =>
   const ssh = {
     mode: 'ssh',
     host: 'box.test',
-    user: 'hermes',
+    user: 'renco',
     port: 2222,
     keyPath: '/keys/a',
-    remoteHermesPath: '/srv/hermes',
+    remoteRencoPath: '/srv/renco',
     remoteProfile: 'worker'
   }
 
@@ -115,17 +115,17 @@ test('profile SSH route fails closed when any dial field differs', () => {
   const ssh = {
     mode: 'ssh',
     host: 'box.test',
-    user: 'hermes',
+    user: 'renco',
     port: 2222,
     keyPath: '/keys/a',
-    remoteHermesPath: '/srv/hermes',
+    remoteRencoPath: '/srv/renco',
     remoteProfile: 'worker'
   }
 
   const variants = [
     { ...ssh, port: 2200 },
     { ...ssh, keyPath: '/keys/b' },
-    { ...ssh, remoteHermesPath: '/opt/hermes' },
+    { ...ssh, remoteRencoPath: '/opt/renco' },
     { ...ssh, remoteProfile: 'default' },
     { ...ssh, user: 'other' }
   ]
@@ -143,9 +143,9 @@ test('profile SSH route fails closed when any dial field differs', () => {
 
 test('global SSH treats an omitted port as 22 and checks the primary route', () => {
   const route = resolveDesktopRemoteRoute({
-    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'hermes' } },
+    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'renco' } },
     registry: registry('ssh-primary', [
-      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'hermes', port: 22 }
+      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'renco', port: 22 }
     ])
   })
 

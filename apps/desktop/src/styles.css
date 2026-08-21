@@ -596,7 +596,7 @@
      pinned back to the opaque chrome mix: xterm resolves its surface var to a
      concrete color for its canvas (see right-sidebar/terminal/selection.ts),
      which does not composite page alpha. */
-  :root[data-hermes-glass] {
+  :root[data-renco-glass] {
     background-color: transparent !important;
     --ui-chat-surface-background: transparent;
     --ui-sidebar-surface-background: transparent;
@@ -604,7 +604,7 @@
     --ui-terminal-surface-background: var(--ui-bg-chrome);
   }
 
-  :root[data-hermes-glass] body {
+  :root[data-renco-glass] body {
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
@@ -616,7 +616,7 @@
      no smear across the seam; RTL mirrors via html[dir='rtl']. The content
      column's own surfaces stay transparent (they'd double-paint the tint
      otherwise) — the body backdrop alone restores the opaque look. */
-  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body {
+  :root[data-renco-glass][data-renco-glass-scope='sidebar'] body {
     background: linear-gradient(
       to right,
       color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
@@ -625,7 +625,7 @@
     );
   }
 
-  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'][dir='rtl'] body {
+  :root[data-renco-glass][data-renco-glass-scope='sidebar'][dir='rtl'] body {
     background: linear-gradient(
       to left,
       color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
@@ -639,8 +639,8 @@
      surface. Their fills are Tailwind utilities (bg-(--ui-bg-chrome) /
      bg-background), which cascade-layer above these base rules — hence the
      !important. Clearing them makes <body> the window's only field paint. */
-  :root[data-hermes-glass] [data-contrib-shell],
-  :root[data-hermes-glass] [data-slot='sidebar-wrapper'] {
+  :root[data-renco-glass] [data-contrib-shell],
+  :root[data-renco-glass] [data-slot='sidebar-wrapper'] {
     background-color: transparent !important;
   }
 
@@ -649,7 +649,7 @@
      Anything that paints over its own siblings declares `data-glass-opaque`
      at its call site (the diff gutter, a dragged sidebar row), rather than
      styles.css reaching in by class name. */
-  :root[data-hermes-glass] [data-glass-opaque] {
+  :root[data-renco-glass] [data-glass-opaque] {
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
@@ -661,7 +661,7 @@
      more than 94%. The card wears the chat token and its internal nav asides
      wear the sidebar token, so both come back as almost-solid fills and the
      two-tone layout survives. */
-  :root[data-hermes-glass] [data-glass-raised] {
+  :root[data-renco-glass] [data-glass-raised] {
     --ui-chat-surface-background: color-mix(
       in srgb,
       var(--ui-bg-chrome) max(94%, var(--translucency-glass-keep, 100%)),
@@ -684,7 +684,7 @@
      of the desktop. Set on <html> by store/translucency.ts whenever
      mode='clear' and intensity > 0; !important because the utility classes
      live in a later cascade layer. */
-  :root[data-hermes-clear] [data-overlay-surface] {
+  :root[data-renco-clear] [data-overlay-surface] {
     background-color: rgb(0 0 0 / 0.55) !important;
     backdrop-filter: blur(0.5rem) !important;
   }
@@ -708,7 +708,7 @@
     transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  :root[data-hermes-translucency-peek] [data-overlay-surface]:has([data-translucency-peek-scope]) {
+  :root[data-renco-translucency-peek] [data-overlay-surface]:has([data-translucency-peek-scope]) {
     opacity: 0.08;
     transition: opacity 160ms cubic-bezier(0.32, 0.72, 0, 1);
   }
@@ -2651,7 +2651,7 @@ button[data-slot='aui_msg-reactions'] svg {
    Under Glass the sheet wears the SAME paint the docked thread does:
    `--ui-bg-chrome` kept at `--translucency-glass-keep`, the one number
    store/translucency publishes from the Tint slider (see the
-   `[data-hermes-glass]` block). One painter, one token, one lever — the band
+   `[data-renco-glass]` block). One painter, one token, one lever — the band
    reads as the app's thread surface rather than as a HUD-only lookalike that
    drifts the first time either side is touched.
 
@@ -2705,12 +2705,12 @@ button[data-slot='aui_msg-reactions'] svg {
    The band becomes the app's thread surface: the docked window's field mix,
    over the platform material.
 
-   Keyed to `data-hermes-glass-on` — "the user's Glass setting is live" — and
-   NOT to `data-hermes-glass`, which additionally means "this window's field
+   Keyed to `data-renco-glass-on` — "the user's Glass setting is live" — and
+   NOT to `data-renco-glass`, which additionally means "this window's field
    surfaces may be rewritten" and is false here by design: the HUD is a
    transparent window that owns its own backgrounds (isChatWindow). Two flags,
    because the HUD wants the setting without the rewrite. */
-:root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
+:root[data-renco-glass-on] [data-hud-shell] [data-hud-glass] {
   background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
 }
 
@@ -2719,18 +2719,18 @@ button[data-slot='aui_msg-reactions'] svg {
    but the frost is the WINDOW, so an inset sheet leaves a hairline of bare
    untinted material down both sides. Nothing to hold off the material's edge:
    the window's own rounded corners are where the band ends. */
-:root[data-hermes-glass-on] [data-hud-shell] {
+:root[data-renco-glass-on] [data-hud-shell] {
   --hud-band-inset: 0px;
 }
 
-:root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
+:root[data-renco-glass-on] [data-hud-shell] [data-hud-glass] {
   border-radius: 0.75rem 0.75rem 0 0;
 }
 
 /* Engaged, the field steps up the same way the docked thread's does — but
    never below the resting tint, so a high lever cannot make focusing the
    composer paint MORE transparent than glancing at it. */
-:root[data-hermes-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+:root[data-renco-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
   background: color-mix(
     in srgb,
     var(--ui-bg-chrome) min(100%, calc(var(--translucency-glass-keep, 100%) + 12%)),
@@ -3137,7 +3137,7 @@ button[data-slot='aui_msg-reactions'] svg {
 /* The corner resize handle — a hot corner, not a button. The window is created
    non-resizable (the transparent-frameless Windows drag-growth bug), so this
    is the one sanctioned way to change the HUD's size; it drives
-   `hermes:hud:set-bounds`, which flips resizable on for the call.
+   `renco:hud:set-bounds`, which flips resizable on for the call.
 
    Deliberately invisible chrome: no glyph, no border — the corner of the bar
    reads as the affordance, and painting a handle on a surface that lives over

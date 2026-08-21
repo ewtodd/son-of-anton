@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB, _is_not_a_database_error, _on_disk_journal_mode
+from renco_state import SessionDB, _is_not_a_database_error, _on_disk_journal_mode
 
 
 class _NotADbOnce:
@@ -85,7 +85,7 @@ class TestReconnectAfterNotADb:
         db = SessionDB(db_path=tmp_path / "state.db")
         try:
             monkeypatch.setattr(
-                "hermes_state._connect_tracked_db",
+                "renco_state._connect_tracked_db",
                 MagicMock(side_effect=sqlite3.DatabaseError("file is not a database")),
             )
             db._conn = _NotADbOnce(db._conn)

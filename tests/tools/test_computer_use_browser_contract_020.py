@@ -24,7 +24,7 @@ class _Driver:
 
 def _route(driver: _Driver) -> CuaTypedBrowserRoute:
     return CuaTypedBrowserRoute(
-        session_id="hermes-browser-contract",
+        session_id="renco-browser-contract",
         call_tool=driver.call,
         has_tool=driver.has_tool,
     )
@@ -67,7 +67,7 @@ def test_browser_state_forwards_screenshot_request_and_preserves_mcp_image():
                 "pid": 101,
                 "window_id": 202,
                 "include_screenshot": True,
-                "session": "hermes-browser-contract",
+                "session": "renco-browser-contract",
             },
         )
     ]

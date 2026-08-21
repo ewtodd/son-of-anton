@@ -80,7 +80,7 @@ export const $contextMenu = atom<null | OpenContextMenu>(null)
  *  verdict) and the flag lands a tick later — same late-fact pattern as
  *  spellcheck. Guarded by identity: a stale read never flags a newer menu. */
 function probeClipboard(opened: OpenContextMenu): void {
-  void window.hermesDesktop
+  void window.rencoDesktop
     ?.readClipboard?.()
     .then((text: string) => {
       const current = $contextMenu.get()

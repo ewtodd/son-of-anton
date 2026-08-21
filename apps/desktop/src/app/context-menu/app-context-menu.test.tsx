@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
-import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
+import { ContextMenu, ContextMenuTrigger, RENCO_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
@@ -18,14 +18,14 @@ import {
 } from './store'
 import { resolveDomTarget } from './target'
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const desktopWindow = window as unknown as { rencoDesktop?: Window['rencoDesktop'] }
 
-function installBridge(partial: Partial<Window['hermesDesktop']> = {}) {
-  desktopWindow.hermesDesktop = {
+function installBridge(partial: Partial<Window['rencoDesktop']> = {}) {
+  desktopWindow.rencoDesktop = {
     openExternal: vi.fn().mockResolvedValue(undefined),
     writeClipboard: vi.fn().mockResolvedValue(undefined),
     ...partial
-  } as unknown as Window['hermesDesktop']
+  } as unknown as Window['rencoDesktop']
 }
 
 function mountMenu() {
@@ -52,7 +52,7 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   document.body.innerHTML = ''
-  delete desktopWindow.hermesDesktop
+  delete desktopWindow.rencoDesktop
 })
 
 describe('resolveDomTarget', () => {
@@ -116,8 +116,8 @@ describe('AppContextMenu', () => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
 
     installBridge({
-      reachPreviewUrl: reachPreviewUrl as unknown as Window['hermesDesktop']['reachPreviewUrl'],
-      writeClipboard: writeClipboard as unknown as Window['hermesDesktop']['writeClipboard']
+      reachPreviewUrl: reachPreviewUrl as unknown as Window['rencoDesktop']['reachPreviewUrl'],
+      writeClipboard: writeClipboard as unknown as Window['rencoDesktop']['writeClipboard']
     })
     mountMenu()
     const host = attach('<a href="http://localhost:5173/">Dev</a>')
@@ -181,7 +181,7 @@ describe('AppContextMenu', () => {
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 
-    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'] })
+    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['rencoDesktop']['contextMenuEdit'] })
     mountMenu()
     const host = attach('<textarea>some draft text</textarea>')
     const textarea = host.querySelector('textarea')!
@@ -239,7 +239,7 @@ describe('AppContextMenu', () => {
   it('select all stays inside the field and never reaches main', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 
-    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'] })
+    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['rencoDesktop']['contextMenuEdit'] })
     mountMenu()
     const host = attach('<textarea>alpha beta gamma</textarea>')
     const textarea = host.querySelector('textarea')!
@@ -293,7 +293,7 @@ describe('AppContextMenu', () => {
   it('grays out paste until the clipboard reports text', async () => {
     const readClipboard = vi.fn().mockResolvedValue('clip content')
 
-    installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
+    installBridge({ readClipboard: readClipboard as unknown as Window['rencoDesktop']['readClipboard'] })
     mountMenu()
     const host = attach('<textarea>text</textarea>')
 
@@ -308,7 +308,7 @@ describe('AppContextMenu', () => {
   it('keeps paste grayed out on an empty clipboard', async () => {
     const readClipboard = vi.fn().mockResolvedValue('')
 
-    installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
+    installBridge({ readClipboard: readClipboard as unknown as Window['rencoDesktop']['readClipboard'] })
     mountMenu()
     const host = attach('<textarea>text</textarea>')
 
@@ -582,6 +582,6 @@ describe('ContextMenuTrigger asChild', () => {
     const footer = screen.getByText('bar')
 
     expect(footer.getAttribute('data-slot')).toBe('statusbar')
-    expect(footer.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
+    expect(footer.hasAttribute(RENCO_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })

@@ -2,7 +2,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getGlobalModelInfo } from '@/hermes'
+import { getGlobalModelInfo } from '@/renco'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -23,7 +23,7 @@ import { useModelControls } from './use-model-controls'
 const setGlobalModel = vi.fn()
 const notifyError = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/renco', () => ({
   getGlobalModelInfo: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)

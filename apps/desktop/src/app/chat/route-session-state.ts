@@ -1,5 +1,5 @@
 import { sessionMatchesStoredId } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/renco'
 
 /**
  * Whether the route points at a different conversation than the selected view.

@@ -39,16 +39,16 @@ MCP_TOOL_PREFIX: str = "mcp_"
 def _configured_mcp_result_size() -> int:
     """Read ``tool_budget.mcp_result_size_chars`` from the active config.
 
-    Goes through :func:`hermes_cli.config.load_config_readonly` (the
+    Goes through :func:`renco_cli.config.load_config_readonly` (the
     sanctioned read path — raw config.yaml parsing outside owner modules
-    is guarded by tests/hermes_cli/test_config_read_guard.py). Fully
+    is guarded by tests/renco_cli/test_config_read_guard.py). Fully
     guarded: any error, missing key, or non-positive value returns the
     built-in default. The ``tool_budget:`` block name is shared with the
     wider configurable-caps proposal (#80508) so the two can merge
     without a key rename.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from renco_cli.config import load_config_readonly
 
         data = load_config_readonly()
         block = data.get("tool_budget") if isinstance(data, dict) else None

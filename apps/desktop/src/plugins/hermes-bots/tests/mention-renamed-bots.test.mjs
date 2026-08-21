@@ -4,7 +4,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 // Renamed bots stay taggable (Discord report, Aug 2026): renaming a bot —
-// Bot Mode title or `hermes profile rename` display_name — must update what
+// Bot Mode title or `renco profile rename` display_name — must update what
 // the user can @-tag it with, in the mention middleware, group rooms, and
 // the composer autocomplete. Old profile handles keep resolving.
 
@@ -33,8 +33,8 @@ function runtime({ meta } = {}) {
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } }
   }
   const code = source
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -54,8 +54,8 @@ test('mentionNameForms: slugged + collapsed, reserved tokens dropped', () => {
 
   assert.deepEqual(JSON.parse(JSON.stringify(mentionNameForms('Research Buddy'))), ['research-buddy', 'researchbuddy'])
   assert.deepEqual(JSON.parse(JSON.stringify(mentionNameForms('Ops'))), ['ops'])
-  // A bot renamed "Hermes" or "everyone" cannot hijack reserved tags.
-  assert.equal(mentionNameForms('Hermes').length, 0)
+  // A bot renamed "Renco" or "everyone" cannot hijack reserved tags.
+  assert.equal(mentionNameForms('Renco').length, 0)
   assert.equal(mentionNameForms('@everyone').length, 0)
   assert.equal(mentionNameForms('').length, 0)
 })
@@ -65,8 +65,8 @@ test('botMentionTag: renamed slug wins, profile handle is the fallback', () => {
 
   assert.equal(botMentionTag({ name: 'writer' }), 'research-buddy')
   assert.equal(botMentionTag({ name: 'ops' }), 'ops')
-  assert.equal(botMentionTag({ name: 'default' }), 'hermes')
-  // display_name (hermes profile rename) drives the tag too.
+  assert.equal(botMentionTag({ name: 'default' }), 'renco')
+  // display_name (renco profile rename) drives the tag too.
   assert.equal(botMentionTag({ name: 'scout', display_name: 'Deal Finder' }), 'deal-finder')
 })
 
@@ -91,7 +91,7 @@ test('parseGroupChatMentions: display_name and ui_meta title forms address a mem
   const members = [
     { name: 'research', title: '' },
     { name: 'builder', title: '', display_name: 'Site Smith' },
-    { name: 'ops', title: '', ui_meta: { 'hermes-bots': { title: 'Night Watch' } } }
+    { name: 'ops', title: '', ui_meta: { 'renco-bots': { title: 'Night Watch' } } }
   ]
 
   const bySlug = parseGroupChatMentions('@site-smith and @night-watch please', members)
@@ -154,8 +154,8 @@ test('composer autocomplete offers the renamed tag and matches on the display na
     sdk: new Proxy({}, { get: () => undefined })
   }
   const code = source
-    .replace(/^import \* as sdk from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import \* as sdk from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')

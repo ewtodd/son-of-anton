@@ -22,7 +22,7 @@ The active provider is chosen by configuration with this precedence:
    candidate order so installs that never set a config key keep landing
    on the same provider they did before the plugin migration.
 5. Otherwise ``None`` — the tool surfaces a helpful error pointing at
-   ``hermes tools``.
+   ``renco tools``.
 
 The capability filter (``supports_search`` / ``supports_extract``) is
 applied at every step so a search-only provider (``brave-free``)
@@ -37,7 +37,7 @@ import threading
 from typing import Dict, List, Optional
 
 from agent.web_search_provider import WebSearchProvider
-from hermes_constants import hermes_home_key
+from renco_constants import renco_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def list_providers(*, scope: Optional[str] = None) -> List[WebSearchProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         merged = dict(_providers)
-        merged.update(_scoped_providers.get(scope or hermes_home_key(), {}))
+        merged.update(_scoped_providers.get(scope or renco_home_key(), {}))
         items = list(merged.values())
     return sorted(items, key=lambda p: p.name)
 
@@ -94,7 +94,7 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[WebSearc
         return None
     with _lock:
         key = name.strip()
-        return _scoped_providers.get(scope or hermes_home_key(), {}).get(key) or _providers.get(key)
+        return _scoped_providers.get(scope or renco_home_key(), {}).get(key) or _providers.get(key)
 
 
 def snapshot_registration(
@@ -135,7 +135,7 @@ def restore_registration(
 def _read_config_key(*path: str) -> Optional[str]:
     """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from renco_cli.config import load_config_readonly
 
         cfg = load_config_readonly()
         cur = cfg
@@ -171,7 +171,7 @@ _LEGACY_PREFERENCE = (
 # web credentials and no importable ddgs). All five vendors expose public
 # anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
 # traffic round-robins across the ring per request (the ring cursor lives
-# in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
+# in keyless_mcp; an explicit `renco tools` pick bypasses this walk
 # entirely, and rate-limited requests fail over to the next ring vendor).
 # Disable the tier with ``web.keyless_fallback: false``.
 _KEYLESS_PREFERENCE = (
@@ -237,7 +237,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     """
     with _lock:
         snapshot = dict(_providers)
-        snapshot.update(_scoped_providers.get(hermes_home_key(), {}))
+        snapshot.update(_scoped_providers.get(renco_home_key(), {}))
 
     def _capable(p: WebSearchProvider) -> bool:
         if capability == "search":
@@ -316,7 +316,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
 def _keyless_tier_enabled() -> bool:
     """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
     try:
-        from hermes_cli.config import load_config
+        from renco_cli.config import load_config
 
         web_cfg = load_config().get("web") or {}
         return bool(web_cfg.get("keyless_fallback", True))
@@ -366,7 +366,7 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
 
     want = _norm(configured)
     try:
-        from hermes_cli.plugins import get_plugin_manager
+        from renco_cli.plugins import get_plugin_manager
 
         pm = get_plugin_manager()
         for key, loaded in pm._plugins.items():

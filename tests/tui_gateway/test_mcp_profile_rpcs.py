@@ -1,7 +1,7 @@
 """E2E tests for the per-profile MCP lifecycle RPCs (mcp.servers.*).
 
 These drive the real registered gateway handlers against a real temp
-``HERMES_HOME`` with named profile dirs — no mocks of the config/mcp layer — and
+``RENCO_HOME`` with named profile dirs — no mocks of the config/mcp layer — and
 assert that every write lands in the RIGHT profile's ``config.yaml`` / ``.env``
 and NEVER leaks into the launch (default) profile.
 
@@ -20,21 +20,21 @@ import tui_gateway.server as server
 
 
 @pytest.fixture
-def hermes_root(tmp_path, monkeypatch):
-    """A temp HERMES_HOME root with two named profiles: 'work' and 'other'.
+def renco_root(tmp_path, monkeypatch):
+    """A temp RENCO_HOME root with two named profiles: 'work' and 'other'.
 
-    Pointing HERMES_HOME at a dir outside ~/.hermes makes it the profile ROOT
-    (get_default_hermes_root's Docker/custom branch), so named profiles live at
+    Pointing RENCO_HOME at a dir outside ~/.renco makes it the profile ROOT
+    (get_default_renco_root's Docker/custom branch), so named profiles live at
     ``<root>/profiles/<name>/`` and the launch/default profile is ``<root>``.
     """
-    root = tmp_path / "hermes_home"
+    root = tmp_path / "renco_home"
     (root / "profiles" / "work").mkdir(parents=True)
     (root / "profiles" / "other").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RENCO_HOME", str(root))
     # Make sure no stale process-wide home override leaks in from another test.
-    from hermes_constants import get_hermes_home_override
+    from renco_constants import get_renco_home_override
 
-    assert get_hermes_home_override() is None
+    assert get_renco_home_override() is None
     return root
 
 
@@ -58,8 +58,8 @@ def _read_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def test_add_lands_in_named_profile_only(hermes_root):
-    root = hermes_root
+def test_add_lands_in_named_profile_only(renco_root):
+    root = renco_root
     resp = _call(
         "mcp.servers.add",
         {
@@ -84,7 +84,7 @@ def test_add_lands_in_named_profile_only(hermes_root):
     assert "weather" not in other_cfg.get("mcp_servers", {})
 
 
-def test_list_reflects_the_scoped_profile(hermes_root):
+def test_list_reflects_the_scoped_profile(renco_root):
     _result(
         _call(
             "mcp.servers.add",
@@ -110,8 +110,8 @@ def test_list_reflects_the_scoped_profile(hermes_root):
     assert work_server["command"] == "svc-a-bin"
 
 
-def test_set_api_key_writes_env_and_header_to_right_profile(hermes_root):
-    root = hermes_root
+def test_set_api_key_writes_env_and_header_to_right_profile(renco_root):
+    root = renco_root
     _result(
         _call(
             "mcp.servers.add",
@@ -147,8 +147,8 @@ def test_set_api_key_writes_env_and_header_to_right_profile(hermes_root):
     assert "sk-secret-123" not in str(work_cfg)
 
 
-def test_set_api_key_stdio_references_env_block(hermes_root):
-    root = hermes_root
+def test_set_api_key_stdio_references_env_block(renco_root):
+    root = renco_root
     _result(
         _call(
             "mcp.servers.add",
@@ -175,8 +175,8 @@ def test_set_api_key_stdio_references_env_block(hermes_root):
     assert "LOCALTOOL_TOKEN=tok-xyz" in work_env
 
 
-def test_remove_scoped_to_profile(hermes_root):
-    root = hermes_root
+def test_remove_scoped_to_profile(renco_root):
+    root = renco_root
     _result(
         _call(
             "mcp.servers.add",
@@ -199,7 +199,7 @@ def test_remove_scoped_to_profile(hermes_root):
     assert "temp" in _read_yaml(root / "profiles" / "other" / "config.yaml").get("mcp_servers", {})
 
 
-def test_add_duplicate_and_missing_errors(hermes_root):
+def test_add_duplicate_and_missing_errors(renco_root):
     _result(
         _call(
             "mcp.servers.add",
@@ -225,21 +225,21 @@ def test_add_duplicate_and_missing_errors(hermes_root):
     assert bad_profile["error"]["code"] == 4064
 
 
-def test_add_requires_transport(hermes_root):
+def test_add_requires_transport(renco_root):
     resp = _call("mcp.servers.add", {"profile": "work", "name": "empty", "config": {}})
     assert "error" in resp
     assert resp["error"]["code"] == 4063
 
 
-def test_default_profile_add_when_profile_omitted(hermes_root):
-    root = hermes_root
+def test_default_profile_add_when_profile_omitted(renco_root):
+    root = renco_root
     _result(
         _call(
             "mcp.servers.add",
             {"name": "rootsvc", "config": {"command": "rootsvc-bin"}},
         )
     )
-    # Omitted profile → launch/default profile == HERMES_HOME root config.yaml.
+    # Omitted profile → launch/default profile == RENCO_HOME root config.yaml.
     default_cfg = _read_yaml(root / "config.yaml")
     assert "rootsvc" in default_cfg.get("mcp_servers", {})
     # ...and NOT in a named profile.

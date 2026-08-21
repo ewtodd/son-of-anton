@@ -26,8 +26,8 @@ function runtime() {
     sdk: new Proxy({}, { get: () => undefined })
   }
   const code = source
-    .replace(/^import \* as sdk from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import \* as sdk from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
@@ -244,20 +244,20 @@ test('default rows use source identity without borrowing another source title', 
 
   // The ACTIVE gateway's own default is the user's main agent — annotation
   // (sourceScoped + connection fields) must NOT rename it to a connection
-  // label. Titled: the title wins. Untitled: it stays "Hermes". Regression:
+  // label. Titled: the title wins. Untitled: it stays "Renco". Regression:
   // remote-gateway desktops showed the main agent as an IP-derived label
   // with no shortname (Aug 17 2026 report).
   assert.equal(name(active, metadata.default), 'Active workspace')
-  assert.equal(name(active, undefined), 'Hermes')
+  assert.equal(name(active, undefined), 'Renco')
 })
 
-test('botHandle: precomputed multi-source handle wins; default stays hermes', () => {
+test('botHandle: precomputed multi-source handle wins; default stays renco', () => {
   const { __botHandle: botHandle } = runtime()
 
   assert.equal(botHandle('research', { handle: 'research-homelab' }), 'research-homelab')
   assert.equal(botHandle('research', { handle: 'research' }), 'research')
   assert.equal(botHandle('research'), 'research')
-  assert.equal(botHandle('default'), 'hermes')
+  assert.equal(botHandle('default'), 'renco')
 })
 
 test('filterBots: matches the source device name for remote rows', () => {
@@ -473,7 +473,7 @@ test('merge: previous remotes from a removed connection do not resurrect', () =>
   assert.equal(out.profiles.find(p => p.connectionId === 'gone'), undefined)
 })
 
-test('displayName: local default stays Hermes; remote default uses the device label', () => {
+test('displayName: local default stays Renco; remote default uses the device label', () => {
   const { __displayName: name } = runtime()
 
   assert.equal(
@@ -486,7 +486,7 @@ test('displayName: local default stays Hermes; remote default uses the device la
       },
       null
     ),
-    'Hermes'
+    'Renco'
   )
   assert.equal(
     name(
@@ -630,10 +630,10 @@ test('resolveRosterMentions: @dixie and @bob-mac-mini hit Connections bots, not 
   )
 })
 
-test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself', () => {
+test('resolveRosterMentions: @renco in this chat is not a handoff to yourself', () => {
   const { __resolveRosterMentions: resolve } = runtime()
   const roster = [
-    { name: 'default', connectionId: 'local', handle: 'hermes' },
+    { name: 'default', connectionId: 'local', handle: 'renco' },
     {
       name: 'default',
       connectionId: 'mac-mini',
@@ -643,7 +643,7 @@ test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself',
     }
   ]
 
-  const hits = resolve('ask @hermes and @default-mac-mini', roster, {
+  const hits = resolve('ask @renco and @default-mac-mini', roster, {
     name: 'default',
     connectionId: 'local'
   })
