@@ -7,28 +7,28 @@ from pathlib import Path
 from typing import Optional
 
 
-def _renco_home_path() -> Path:
-    """Resolve the active RENCO_HOME (profile-aware) without circular imports."""
+def _son_of_anton_home_path() -> Path:
+    """Resolve the active SON_OF_ANTON_HOME (profile-aware) without circular imports."""
     try:
-        from renco_constants import get_renco_home  # local import to avoid cycles
-        return get_renco_home()
+        from son_of_anton_constants import get_son_of_anton_home  # local import to avoid cycles
+        return get_son_of_anton_home()
     except Exception:
-        return Path(os.path.expanduser("~/.renco"))
+        return Path(os.path.expanduser("~/.son-of-anton"))
 
 
-def _renco_root_path() -> Path:
-    """Resolve the Renco root dir (always the parent of any profile, never per-profile)."""
+def _son_of_anton_root_path() -> Path:
+    """Resolve the Son of Anton root dir (always the parent of any profile, never per-profile)."""
     try:
-        from renco_constants import get_default_renco_root  # local import to avoid cycles
-        return get_default_renco_root()
+        from son_of_anton_constants import get_default_son_of_anton_root  # local import to avoid cycles
+        return get_default_son_of_anton_root()
     except Exception:
-        return Path(os.path.expanduser("~/.renco"))
+        return Path(os.path.expanduser("~/.son-of-anton"))
 
 
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
-    renco_home = _renco_home_path()
-    renco_root = _renco_root_path()
+    son_of_anton_home = _son_of_anton_home_path()
+    son_of_anton_root = _son_of_anton_root_path()
     return {
         os.path.realpath(p)
         for p in [
@@ -47,18 +47,18 @@ def build_write_denied_paths(home: str) -> set[str]:
             # it while the terminal only *asked* was an inconsistency that
             # made writes look like they flip-flopped between denied and OK.
             # Active profile .env (or top-level .env when not in profile mode).
-            str(renco_home / ".env"),
+            str(son_of_anton_home / ".env"),
             # Top-level .env, even when running under a profile — overwriting it
             # leaks credentials across every profile that inherits from root (#15981).
-            str(renco_root / ".env"),
+            str(son_of_anton_root / ".env"),
             # Active profile Anthropic PKCE credential store.
-            str(renco_home / ".anthropic_oauth.json"),
+            str(son_of_anton_home / ".anthropic_oauth.json"),
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
-            str(renco_root / ".anthropic_oauth.json"),
+            str(son_of_anton_root / ".anthropic_oauth.json"),
             # Bitwarden Secrets Manager encrypted disk cache.
-            str(renco_home / "cache" / "bws_cache.enc.json"),
-            str(renco_root / "cache" / "bws_cache.enc.json"),
+            str(son_of_anton_home / "cache" / "bws_cache.enc.json"),
+            str(son_of_anton_root / "cache" / "bws_cache.enc.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -91,10 +91,10 @@ def build_write_denied_prefixes(home: str) -> list[str]:
 
 
 def get_safe_write_roots() -> set[str]:
-    """Return resolved RENCO_WRITE_SAFE_ROOT paths. Supports multiple directories
+    """Return resolved SON_OF_ANTON_WRITE_SAFE_ROOT paths. Supports multiple directories
     separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
     E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
-    env = os.getenv("RENCO_WRITE_SAFE_ROOT", "")
+    env = os.getenv("SON_OF_ANTON_WRITE_SAFE_ROOT", "")
     if not env:
         return set()
     roots: set[str] = set()
@@ -150,16 +150,16 @@ def _classify_write_denial(path: str) -> Optional[str]:
 
     mcp_tokens_dir_name = "mcp-tokens"
 
-    renco_dirs = []
-    for base in (_renco_home_path(), _renco_root_path()):
+    son_of_anton_dirs = []
+    for base in (_son_of_anton_home_path(), _son_of_anton_root_path()):
         try:
             real = os.path.realpath(base)
-            if real not in renco_dirs:
-                renco_dirs.append(real)
+            if real not in son_of_anton_dirs:
+                son_of_anton_dirs.append(real)
         except Exception:
             continue
 
-    for base_real in renco_dirs:
+    for base_real in son_of_anton_dirs:
         # Session transcripts are application-owned state.  Letting the agent's
         # generic file tools rewrite state.db or legacy JSON snapshots can
         # falsify conversation history and invalidate resume/compression state.
@@ -210,7 +210,7 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (
-            f"{verb} denied: '{path}' is outside RENCO_WRITE_SAFE_ROOT "
+            f"{verb} denied: '{path}' is outside SON_OF_ANTON_WRITE_SAFE_ROOT "
             f"({roots_display}). Unset the variable or add this path's directory prefix."
         )
     return f"{verb} denied: '{path}' is a protected system/credential file."
@@ -245,14 +245,14 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 
 
 def get_read_block_error(path: str) -> Optional[str]:
-    """Return an error message when a read targets a denied Renco path.
+    """Return an error message when a read targets a denied Son of Anton path.
 
     Three categories are blocked:
 
-      * Internal Renco cache files under ``RENCO_HOME/skills/.hub`` —
+      * Internal Son of Anton cache files under ``SON_OF_ANTON_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
         carrier.
-      * Credential / secret stores under RENCO_HOME and the global Renco
+      * Credential / secret stores under SON_OF_ANTON_HOME and the global Son of Anton
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,
@@ -269,7 +269,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
-    or ``cat ~/.renco/.env`` and exfiltrate the file. The read-deny exists
+    or ``cat ~/.son-of-anton/.env`` and exfiltrate the file. The read-deny exists
     as defense-in-depth that:
 
       * Returns a clear error to models that respect tool denials, which
@@ -291,22 +291,22 @@ def get_read_block_error(path: str) -> Optional[str]:
     """
     resolved = Path(path).expanduser().resolve()
 
-    # Resolve BOTH the active RENCO_HOME (profile-aware) AND the global
-    # Renco root so credential stores at <root>/auth.json etc. are also
-    # blocked when running under a profile (RENCO_HOME points at
+    # Resolve BOTH the active SON_OF_ANTON_HOME (profile-aware) AND the global
+    # Son of Anton root so credential stores at <root>/auth.json etc. are also
+    # blocked when running under a profile (SON_OF_ANTON_HOME points at
     # <root>/profiles/<name> in profile mode). Same shape as the write
     # deny widening (#15981, #14157).
-    renco_dirs: list[Path] = []
-    for base in (_renco_home_path(), _renco_root_path()):
+    son_of_anton_dirs: list[Path] = []
+    for base in (_son_of_anton_home_path(), _son_of_anton_root_path()):
         try:
             real = base.resolve()
-            if real not in renco_dirs:
-                renco_dirs.append(real)
+            if real not in son_of_anton_dirs:
+                son_of_anton_dirs.append(real)
         except Exception:
             continue
 
     # Skills .hub: prompt-injection carriers.
-    for hd in renco_dirs:
+    for hd in son_of_anton_dirs:
         blocked_dirs = [
             hd / "skills" / ".hub" / "index-cache",
             hd / "skills" / ".hub",
@@ -317,13 +317,13 @@ def get_read_block_error(path: str) -> Optional[str]:
             except ValueError:
                 continue
             return (
-                f"Access denied: {path} is an internal Renco cache file "
+                f"Access denied: {path} is an internal Son of Anton cache file "
                 "and cannot be read directly to prevent prompt injection. "
                 "Use the skills_list or skill_view tools instead."
             )
 
     # Credential / secret stores. Exact-file matches under either
-    # RENCO_HOME or <root>.
+    # SON_OF_ANTON_HOME or <root>.
     credential_file_names = (
         "auth.json",
         "auth.lock",
@@ -336,7 +336,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         # was introduced by #31968 but not added to this guard.
         os.path.join("cache", "bws_cache.json"),
     )
-    for hd in renco_dirs:
+    for hd in son_of_anton_dirs:
         for name in credential_file_names:
             try:
                 blocked = (hd / name).resolve()
@@ -344,7 +344,7 @@ def get_read_block_error(path: str) -> Optional[str]:
                 continue
             if resolved == blocked:
                 return (
-                    f"Access denied: {path} is a Renco credential store "
+                    f"Access denied: {path} is a Son of Anton credential store "
                     "and cannot be read directly. Provider tools consume "
                     "these credentials through internal channels. "
                     "(Defense-in-depth — not a security boundary; the "
@@ -353,14 +353,14 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     # mcp-tokens/: directory prefix match — anything inside is OAuth
     # token material.
-    for hd in renco_dirs:
+    for hd in son_of_anton_dirs:
         try:
             mcp_tokens = (hd / "mcp-tokens").resolve()
         except Exception:
             continue
         if resolved == mcp_tokens:
             return (
-                f"Access denied: {path} is the Renco MCP token directory "
+                f"Access denied: {path} is the Son of Anton MCP token directory "
                 "and cannot be read directly. (Defense-in-depth — not a "
                 "security boundary; the terminal tool can still bypass.)"
             )
@@ -369,7 +369,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         except ValueError:
             continue
         return (
-            f"Access denied: {path} is a Renco MCP token file "
+            f"Access denied: {path} is a Son of Anton MCP token file "
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
         )
@@ -391,7 +391,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
 
 def raise_if_read_blocked(path: str) -> None:
-    """Raise ``ValueError`` if ``path`` is a denied Renco read (see
+    """Raise ``ValueError`` if ``path`` is a denied Son of Anton read (see
     :func:`get_read_block_error`), else return.
 
     Shared chokepoint for provider input-loading sites that read a local
@@ -417,7 +417,7 @@ def raise_if_read_blocked(path: str) -> None:
 # ---------------------------------------------------------------------------
 # Cross-profile write guard (#TBD)
 #
-# Renco profiles are separate RENCO_HOME dirs under
+# Son of Anton profiles are separate SON_OF_ANTON_HOME dirs under
 # ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
 # cron/, memories/. When an agent runs under one profile, writing into
 # ANOTHER profile's directories is almost always wrong — those skills /
@@ -430,30 +430,30 @@ def raise_if_read_blocked(path: str) -> None:
 # as the dangerous-command approval flow — the agent is told the boundary
 # exists, and explicit user direction is required to cross it.
 #
-# Reference: May 2026 incident where a renco-security profile session
-# edited skills under both ``~/.renco/profiles/renco-security/skills/``
-# AND ``~/.renco/skills/`` (the default profile's skills) without realizing
+# Reference: May 2026 incident where a son-of-anton-security profile session
+# edited skills under both ``~/.son-of-anton/profiles/son-of-anton-security/skills/``
+# AND ``~/.son-of-anton/skills/`` (the default profile's skills) without realizing
 # the second path belonged to a different profile.
 # ---------------------------------------------------------------------------
 
-# Profile-scoped directories under RENCO_HOME / <root> / <root>/profiles/<X>/
+# Profile-scoped directories under SON_OF_ANTON_HOME / <root> / <root>/profiles/<X>/
 # that should be guarded. Adding a new area here extends the guard with no
 # other code change.
 PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
 
 
 def _resolve_active_profile_name() -> str:
-    """Return the active profile name derived from RENCO_HOME.
+    """Return the active profile name derived from SON_OF_ANTON_HOME.
 
-    ``~/.renco``              -> ``"default"``
-    ``~/.renco/profiles/X``  -> ``"X"``
+    ``~/.son-of-anton``              -> ``"default"``
+    ``~/.son-of-anton/profiles/X``  -> ``"X"``
 
     Falls back to ``"default"`` on any resolution failure so the guard
     never raises into the tool path.
     """
     try:
-        home_real = _renco_home_path().resolve()
-        root_real = _renco_root_path().resolve()
+        home_real = _son_of_anton_home_path().resolve()
+        root_real = _son_of_anton_root_path().resolve()
     except (OSError, RuntimeError):
         return "default"
     profiles_dir = root_real / "profiles"
@@ -471,7 +471,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
     """Classify a write target as cross-profile if it lands in another
     profile's scoped area (skills/plugins/cron/memories).
 
-    Returns ``None`` when the target is outside Renco scope, or is inside
+    Returns ``None`` when the target is outside Son of Anton scope, or is inside
     the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
     returns a dict with:
 
@@ -486,7 +486,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
     """
     try:
         target = Path(os.path.expanduser(str(path))).resolve()
-        root_real = _renco_root_path().resolve()
+        root_real = _son_of_anton_root_path().resolve()
     except (OSError, RuntimeError):
         return None
 
@@ -534,7 +534,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
     """Return a model-facing warning string when ``path`` is cross-profile.
 
     Returns ``None`` when the write is in-scope (same profile) or outside
-    Renco entirely. Caller is expected to surface the warning to the
+    Son of Anton entirely. Caller is expected to surface the warning to the
     agent as a tool-result error, NOT to silently allow the write — the
     agent must either get explicit user direction to proceed, or pass
     ``cross_profile=True`` to its write tool.
@@ -548,7 +548,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
         return None
     return (
         f"Cross-profile write blocked by soft guard: {info['target_path']} "
-        f"belongs to Renco profile {info['target_profile']!r}, but the "
+        f"belongs to Son of Anton profile {info['target_profile']!r}, but the "
         f"agent is running under profile {info['active_profile']!r}. "
         f"Editing another profile's {info['area']}/ will affect that "
         f"profile's future sessions, not the one you are currently in. "
@@ -565,7 +565,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 # Non-local terminal backends (Docker, Daytona, etc.) bind a sandbox-local
 # directory to the container's ``$HOME``. The on-disk layout looks like
 #
-#   <RENCO_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.renco/...
+#   <SON_OF_ANTON_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.son-of-anton/...
 #
 # When the agent (running host-side) speculates that authoritative profile
 # state lives at one of those sandbox-mirror paths, the write lands on the
@@ -574,48 +574,48 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 # disk two divergent copies accumulate. See #32049 for evidence.
 #
 # This guard is path-shape-only: it detects the
-# ``…/sandboxes/<backend>/<task>/home/.renco/…`` segment and warns
-# regardless of which Renco profile is active. It does NOT cover the
+# ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` segment and warns
+# regardless of which Son of Anton profile is active. It does NOT cover the
 # inner-container case where the bind mount strips the ``sandboxes/`` prefix
-# (the agent's view inside the container is plain ``/root/.renco/...``);
+# (the agent's view inside the container is plain ``/root/.son-of-anton/...``);
 # that case needs a separate dispatch-layer or host-side ``profile_state``
 # tool.
 # ---------------------------------------------------------------------------
 
 
 def _find_sandbox_mirror_segments(parts: tuple) -> Optional[int]:
-    """Return the index of the inner ``.renco`` part in a sandbox-mirror path.
+    """Return the index of the inner ``.son-of-anton`` part in a sandbox-mirror path.
 
-    Matches ``…/sandboxes/<backend>/<task>/home/.renco/…`` and returns the
-    index where the inner Renco-state portion starts. Returns ``None`` for
+    Matches ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` and returns the
+    index where the inner Son of Anton-state portion starts. Returns ``None`` for
     paths that do not contain the sandbox-mirror shape.
     """
     for i, part in enumerate(parts):
         if part != "sandboxes":
             continue
-        # Need at least: sandboxes / <backend> / <task> / home / .renco / <thing>
+        # Need at least: sandboxes / <backend> / <task> / home / .son-of-anton / <thing>
         if i + 5 >= len(parts):
             continue
-        if parts[i + 3] == "home" and parts[i + 4] == ".renco":
+        if parts[i + 3] == "home" and parts[i + 4] == ".son-of-anton":
             return i + 4
     return None
 
 
 def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
-    """Classify a write target as a sandbox-mirror of authoritative Renco state.
+    """Classify a write target as a sandbox-mirror of authoritative Son of Anton state.
 
     Returns ``None`` when the path does not match the sandbox-mirror shape.
     Otherwise returns a dict with:
 
       * ``target_path``: the resolved path string
-      * ``mirror_root``: the ``…/sandboxes/<backend>/<task>/home/.renco``
+      * ``mirror_root``: the ``…/sandboxes/<backend>/<task>/home/.son-of-anton``
         prefix (so callers can show users which sandbox owns the mirror)
-      * ``inner_path``: the portion under the mirror's ``.renco`` (what the
+      * ``inner_path``: the portion under the mirror's ``.son-of-anton`` (what the
         agent likely meant to address on the host)
 
-    Detection is path-shape-only — does not require any Renco resolver to
+    Detection is path-shape-only — does not require any Son of Anton resolver to
     succeed, so it works correctly even when called from contexts where
-    RENCO_HOME resolution would be ambiguous.
+    SON_OF_ANTON_HOME resolution would be ambiguous.
     """
     try:
         target = Path(os.path.expanduser(str(path))).resolve()
@@ -658,9 +658,9 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
         f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
         f"sits under {info['mirror_root']!r}, which is a per-task mirror "
         f"created by a non-local terminal backend (docker/daytona/etc.). "
-        f"Writes here land on a copy that the host Renco process never "
+        f"Writes here land on a copy that the host Son of Anton process never "
         f"reads — the authoritative file is likely {info['inner_path']!r} "
-        f"under the real RENCO_HOME. Use the host-side tool for "
+        f"under the real SON_OF_ANTON_HOME. Use the host-side tool for "
         f"authoritative state (e.g. ``memory`` for memories), or address "
         f"the host path directly. To bypass this guard after explicit "
         f"user direction, retry the call with ``cross_profile=True``. "
@@ -673,9 +673,9 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
 # Container-context mirror guard (inner-container case — #32049 follow-up)
 #
 # Brian's shape-based detector (#32213) catches paths that still carry the
-# full ``…/sandboxes/<backend>/<task>/home/.renco/…`` prefix on the host.
+# full ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` prefix on the host.
 # But when file tools execute *inside* the container the bind-mount strips
-# that prefix: the agent sees plain ``/root/.renco/…``.  The root:root
+# that prefix: the agent sees plain ``/root/.son-of-anton/…``.  The root:root
 # ownership on the divergent SOUL.md in #32049 confirms this is the primary
 # failure mode.
 #
@@ -699,7 +699,7 @@ def classify_container_mirror_target(
       * ``target_path``: resolved path string
       * ``mirror_root``: the declared container mirror prefix
       * ``inner_path``: portion under the mirror root (what the agent
-        likely meant to address in the host RENCO_HOME)
+        likely meant to address in the host SON_OF_ANTON_HOME)
     """
     if not mirror_prefix:
         return None
@@ -721,7 +721,7 @@ def get_container_mirror_warning(
     mirror_prefix: str | None = None,
 ) -> Optional[str]:
     """Return a model-facing warning when *path* lands in the container's
-    sandbox mirror of authoritative Renco state.
+    sandbox mirror of authoritative Son of Anton state.
 
     The caller supplies ``mirror_prefix`` only when the current file-tool
     backend is known to execute inside a Docker sandbox. Same contract as
@@ -735,9 +735,9 @@ def get_container_mirror_warning(
     return (
         f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
         f"sits under {info['mirror_root']!r}, which is the container's "
-        f"bind-mounted home — a per-task mirror that the host Renco "
+        f"bind-mounted home — a per-task mirror that the host Son of Anton "
         f"process never reads. The authoritative file is "
-        f"{info['inner_path']!r} under the real RENCO_HOME. Use the "
+        f"{info['inner_path']!r} under the real SON_OF_ANTON_HOME. Use the "
         f"host-side tool for authoritative state (e.g. ``memory`` for "
         f"memories), or address the host path directly. To bypass after "
         f"explicit user direction, retry with ``cross_profile=True``. "

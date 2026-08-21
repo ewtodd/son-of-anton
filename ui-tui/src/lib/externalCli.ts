@@ -5,11 +5,11 @@ export interface LaunchResult {
   error?: string
 }
 
-const resolveRencoBin = () => process.env.RENCO_BIN?.trim() || 'renco'
+const resolveSonOfAntonBin = () => process.env.SON_OF_ANTON_BIN?.trim() || 'son-of-anton'
 
-export const launchRencoCommand = (args: string[]): Promise<LaunchResult> =>
+export const launchSonOfAntonCommand = (args: string[]): Promise<LaunchResult> =>
   new Promise(resolve => {
-    const child = spawn(resolveRencoBin(), args, { stdio: 'inherit' })
+    const child = spawn(resolveSonOfAntonBin(), args, { stdio: 'inherit' })
 
     child.on('error', err => resolve({ code: null, error: err.message }))
     child.on('exit', code => resolve({ code }))

@@ -63,8 +63,8 @@ def test_opencode_free_blanks_authorization_header(mock_openai):
 
 
 @patch("run_agent.OpenAI")
-def test_opencode_free_sends_renco_attribution(mock_openai):
-    """Keyless requests still identify as Renco (attribution headers match
+def test_opencode_free_sends_son_of_anton_attribution(mock_openai):
+    """Keyless requests still identify as Son of Anton (attribution headers match
     the opencode zen/go profiles)."""
     mock_openai.return_value = MagicMock()
     create_openai_client(
@@ -74,8 +74,8 @@ def test_opencode_free_sends_renco_attribution(mock_openai):
         shared=False,
     )
     headers = _zen_call_headers(mock_openai)
-    assert headers.get("X-Title") == "Renco Agent"
-    assert str(headers.get("User-Agent", "")).startswith("RencoAgent/")
+    assert headers.get("X-Title") == "Son of Anton Agent"
+    assert str(headers.get("User-Agent", "")).startswith("SonOfAntonAgent/")
 
 
 @patch("run_agent.OpenAI")

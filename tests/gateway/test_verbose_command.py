@@ -47,12 +47,12 @@ class TestVerboseCommand:
     @pytest.mark.asyncio
     async def test_disabled_by_default(self, tmp_path, monkeypatch):
         """When tool_progress_command is false, /verbose returns an info message."""
-        renco_home = tmp_path / "renco"
-        renco_home.mkdir()
-        config_path = renco_home / "config.yaml"
+        son_of_anton_home = tmp_path / "son-of-anton"
+        son_of_anton_home.mkdir()
+        config_path = son_of_anton_home / "config.yaml"
         config_path.write_text("display:\n  tool_progress: all\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_run, "_renco_home", renco_home)
+        monkeypatch.setattr(gateway_run, "_son_of_anton_home", son_of_anton_home)
 
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
@@ -63,15 +63,15 @@ class TestVerboseCommand:
     @pytest.mark.asyncio
     async def test_enabled_cycles_mode(self, tmp_path, monkeypatch):
         """When enabled, /verbose cycles tool_progress mode per-platform."""
-        renco_home = tmp_path / "renco"
-        renco_home.mkdir()
-        config_path = renco_home / "config.yaml"
+        son_of_anton_home = tmp_path / "son-of-anton"
+        son_of_anton_home.mkdir()
+        config_path = son_of_anton_home / "config.yaml"
         config_path.write_text(
             "display:\n  tool_progress_command: true\n  tool_progress: all\n",
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(gateway_run, "_renco_home", renco_home)
+        monkeypatch.setattr(gateway_run, "_son_of_anton_home", son_of_anton_home)
 
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
@@ -87,15 +87,15 @@ class TestVerboseCommand:
     @pytest.mark.asyncio
     async def test_quoted_false_keeps_command_disabled(self, tmp_path, monkeypatch):
         """Quoted false must not enable the /verbose gateway command."""
-        renco_home = tmp_path / "renco"
-        renco_home.mkdir()
-        config_path = renco_home / "config.yaml"
+        son_of_anton_home = tmp_path / "son-of-anton"
+        son_of_anton_home.mkdir()
+        config_path = son_of_anton_home / "config.yaml"
         config_path.write_text(
             'display:\n  tool_progress_command: "false"\n  tool_progress: all\n',
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(gateway_run, "_renco_home", renco_home)
+        monkeypatch.setattr(gateway_run, "_son_of_anton_home", son_of_anton_home)
 
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())

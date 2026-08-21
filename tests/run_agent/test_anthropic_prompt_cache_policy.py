@@ -259,9 +259,9 @@ class TestThirdPartyAnthropicGateway:
         agent and the policy loads config itself."""
         import textwrap
 
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             textwrap.dedent(
                 """
                 providers:
@@ -277,9 +277,9 @@ class TestThirdPartyAnthropicGateway:
                 """
             )
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         # load_config's cache is keyed by resolved config path, so pointing
-        # RENCO_HOME at a fresh tempdir needs no cache invalidation.
+        # SON_OF_ANTON_HOME at a fresh tempdir needs no cache invalidation.
         agent = _make_agent(
             provider="custom:anthropic-proxy",
             base_url="https://gateway.example.com/anthropic",

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build the Renco Skills Index — a centralized JSON catalog of all skills.
+"""Build the Son of Anton Skills Index — a centralized JSON catalog of all skills.
 
 This script crawls every skill source (skills.sh, GitHub taps, official,
 clawhub, lobehub) and writes a JSON index with resolved
 GitHub paths. The index is served as a static file on the docs site so that
-`renco skills search/install` can use it without hitting the GitHub API.
+`son-of-anton skills search/install` can use it without hitting the GitHub API.
 
 Usage:
     # Local (uses gh CLI or GITHUB_TOKEN for auth)
@@ -28,8 +28,8 @@ from datetime import datetime, timezone
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure RENCO_HOME is set (needed by tools/skills_hub.py imports)
-os.environ.setdefault("RENCO_HOME", os.path.join(os.path.expanduser("~"), ".renco"))
+# Ensure SON_OF_ANTON_HOME is set (needed by tools/skills_hub.py imports)
+os.environ.setdefault("SON_OF_ANTON_HOME", os.path.join(os.path.expanduser("~"), ".son-of-anton"))
 
 from tools.skills_hub import (
     GitHubAuth,
@@ -240,7 +240,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
 
 
 def main():
-    print("Building Renco Skills Index...", flush=True)
+    print("Building Son of Anton Skills Index...", flush=True)
     overall_start = time.time()
 
     auth = GitHubAuth()

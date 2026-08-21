@@ -9,7 +9,7 @@ Covers the canonical fix for issues #4146, #27303, #30882, #33057:
   3. tools.approval.check_execute_code_guard — the entry-point guard decision
      matrix (isolated backends, yolo/off, cron-deny, headless-local,
      gateway approve/deny/timeout/missing-notify, smart mode).
-  4. tools.code_execution_tool._scrub_child_env — broad RENCO_ prefix dropped,
+  4. tools.code_execution_tool._scrub_child_env — broad SON_OF_ANTON_ prefix dropped,
      operational allowlist kept, DSN/WEBHOOK blocked, passthrough precedence.
 """
 
@@ -107,12 +107,12 @@ def test_both_rpc_threads_use_propagation_helper():
 
 @pytest.fixture
 def gw_session(monkeypatch):
-    """A clean gateway session: RENCO_GATEWAY_SESSION set, a bound session
+    """A clean gateway session: SON_OF_ANTON_GATEWAY_SESSION set, a bound session
     key, and isolated gateway queues/callbacks. Yields the session_key."""
-    monkeypatch.setenv("RENCO_GATEWAY_SESSION", "1")
-    monkeypatch.delenv("RENCO_INTERACTIVE", raising=False)
-    monkeypatch.delenv("RENCO_CRON_SESSION", raising=False)
-    monkeypatch.delenv("RENCO_EXEC_ASK", raising=False)
+    monkeypatch.setenv("SON_OF_ANTON_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("SON_OF_ANTON_INTERACTIVE", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_CRON_SESSION", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_EXEC_ASK", raising=False)
     # Force manual mode regardless of host config and disable any process-level
     # yolo inherited from the developer's live environment.
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
@@ -172,18 +172,18 @@ def test_guard_isolated_backend_approved():
 
 def test_guard_headless_local_approved(monkeypatch):
     # Documented #30882 limitation: no approval surface → preserve auto-run.
-    monkeypatch.delenv("RENCO_GATEWAY_SESSION", raising=False)
-    monkeypatch.delenv("RENCO_INTERACTIVE", raising=False)
-    monkeypatch.delenv("RENCO_CRON_SESSION", raising=False)
-    monkeypatch.delenv("RENCO_EXEC_ASK", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_INTERACTIVE", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_CRON_SESSION", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_EXEC_ASK", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     assert A.check_execute_code_guard("import os", "local")["approved"] is True
 
 
 def test_guard_cron_deny_blocks(monkeypatch):
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.delenv("RENCO_CRON_SESSION", raising=False)
-    monkeypatch.delenv("RENCO_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_CRON_SESSION", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_GATEWAY_SESSION", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
     tokens = set_session_vars(cron_session="1")
@@ -197,10 +197,10 @@ def test_guard_cron_deny_blocks(monkeypatch):
 
 def test_guard_explicit_non_cron_masks_leaked_env(monkeypatch):
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setenv("RENCO_CRON_SESSION", "1")
-    monkeypatch.delenv("RENCO_GATEWAY_SESSION", raising=False)
-    monkeypatch.delenv("RENCO_INTERACTIVE", raising=False)
-    monkeypatch.delenv("RENCO_EXEC_ASK", raising=False)
+    monkeypatch.setenv("SON_OF_ANTON_CRON_SESSION", "1")
+    monkeypatch.delenv("SON_OF_ANTON_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_INTERACTIVE", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_EXEC_ASK", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
     tokens = set_session_vars(cron_session="")
@@ -215,8 +215,8 @@ def test_guard_explicit_non_cron_masks_leaked_env(monkeypatch):
 def test_guard_legacy_env_cron_still_blocks(monkeypatch):
     reset_session_vars()
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setenv("RENCO_CRON_SESSION", "1")
-    monkeypatch.delenv("RENCO_GATEWAY_SESSION", raising=False)
+    monkeypatch.setenv("SON_OF_ANTON_CRON_SESSION", "1")
+    monkeypatch.delenv("SON_OF_ANTON_GATEWAY_SESSION", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
     res = A.check_execute_code_guard("import os", "local")
@@ -433,17 +433,17 @@ def test_guard_session_yolo_bypasses(gw_session):
 # 4. Env scrubbing (#27303)
 # ---------------------------------------------------------------------------
 
-def test_env_scrub_renco_allowlist_and_secret_blocks():
+def test_env_scrub_son_of_anton_allowlist_and_secret_blocks():
     from tools.code_execution_tool import _scrub_child_env
 
     env = {
         # operational allowlist → kept
-        "RENCO_HOME": "/h", "RENCO_PROFILE": "p",
-        "RENCO_CONFIG": "/c.yaml", "RENCO_ENV": "/e",
-        "RENCO_DELEGATED_CHILD_CONTEXT": "1",
-        # other RENCO_* → dropped (broad prefix removed)
-        "RENCO_BASE_URL": "https://x", "RENCO_INTERACTIVE": "1",
-        "RENCO_KANBAN_DB": "postgres://u:p@h/db",
+        "SON_OF_ANTON_HOME": "/h", "SON_OF_ANTON_PROFILE": "p",
+        "SON_OF_ANTON_CONFIG": "/c.yaml", "SON_OF_ANTON_ENV": "/e",
+        "SON_OF_ANTON_DELEGATED_CHILD_CONTEXT": "1",
+        # other SON_OF_ANTON_* → dropped (broad prefix removed)
+        "SON_OF_ANTON_BASE_URL": "https://x", "SON_OF_ANTON_INTERACTIVE": "1",
+        "SON_OF_ANTON_KANBAN_DB": "postgres://u:p@h/db",
         # secret substrings (incl. new DSN/WEBHOOK) → dropped
         "SENTRY_DSN": "https://a@s.io/1", "SLACK_WEBHOOK": "https://h/x",
         "OPENAI_API_KEY": "sk", "GITHUB_TOKEN": "ghp",
@@ -453,12 +453,12 @@ def test_env_scrub_renco_allowlist_and_secret_blocks():
     out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
 
     for kept in (
-        "RENCO_HOME", "RENCO_PROFILE", "RENCO_CONFIG", "RENCO_ENV",
-        "RENCO_DELEGATED_CHILD_CONTEXT", "PATH",
+        "SON_OF_ANTON_HOME", "SON_OF_ANTON_PROFILE", "SON_OF_ANTON_CONFIG", "SON_OF_ANTON_ENV",
+        "SON_OF_ANTON_DELEGATED_CHILD_CONTEXT", "PATH",
     ):
         assert kept in out, f"{kept} should be kept"
     for dropped in (
-        "RENCO_BASE_URL", "RENCO_INTERACTIVE", "RENCO_KANBAN_DB",
+        "SON_OF_ANTON_BASE_URL", "SON_OF_ANTON_INTERACTIVE", "SON_OF_ANTON_KANBAN_DB",
         "SENTRY_DSN", "SLACK_WEBHOOK", "OPENAI_API_KEY", "GITHUB_TOKEN",
         "RANDOM_X",
     ):
@@ -487,14 +487,14 @@ def test_env_scrub_passthrough_overrides_secret_block():
 
 
 def test_env_scrub_no_log_when_nothing_dropped(caplog):
-    """No diagnostic noise when there are no dropped RENCO_* vars."""
+    """No diagnostic noise when there are no dropped SON_OF_ANTON_* vars."""
     import logging
 
     from tools.code_execution_tool import _scrub_child_env
 
     with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
         _scrub_child_env(
-            {"RENCO_HOME": "/h", "PATH": "/usr/bin"},
+            {"SON_OF_ANTON_HOME": "/h", "PATH": "/usr/bin"},
             is_passthrough=lambda _: False,
             is_windows=False,
         )

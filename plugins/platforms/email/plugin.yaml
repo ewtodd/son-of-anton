@@ -3,9 +3,9 @@ label: Email
 kind: platform
 version: 1.0.0
 description: >
-  Email gateway adapter for Renco Agent. Polls an IMAP mailbox for inbound
+  Email gateway adapter for Son of Anton Agent. Polls an IMAP mailbox for inbound
   messages and replies over SMTP, relaying email threads to and from the
-  Renco agent.
+  Son of Anton agent.
 author: NousResearch
 requires_env:
   - name: EMAIL_ADDRESS

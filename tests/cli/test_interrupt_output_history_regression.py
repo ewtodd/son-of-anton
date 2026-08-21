@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import cli as cli_mod
-from cli import RencoCLI, _suspend_output_history
+from cli import SonOfAntonCLI, _suspend_output_history
 
 
 @pytest.fixture(autouse=True)
@@ -51,10 +51,10 @@ class TestRecoverTerminalPreservesHistory:
         cli_mod._configure_output_history(True, 10)
         cli_mod._record_output_history("normal response text")
 
-        cli = object.__new__(RencoCLI)
+        cli = object.__new__(SonOfAntonCLI)
         cli._force_full_redraw = MagicMock()
 
-        with patch("renco_cli.curses_ui.flush_stdin"):
+        with patch("son_of_anton_cli.curses_ui.flush_stdin"):
             cli._recover_terminal_after_interrupt()
 
         assert list(cli_mod._OUTPUT_HISTORY) == ["normal response text"], (
@@ -63,10 +63,10 @@ class TestRecoverTerminalPreservesHistory:
 
     def test_recovery_still_calls_force_full_redraw(self, monkeypatch):
         """The recovery path still forces a redraw (original behavior preserved)."""
-        cli = object.__new__(RencoCLI)
+        cli = object.__new__(SonOfAntonCLI)
         cli._force_full_redraw = MagicMock()
 
-        with patch("renco_cli.curses_ui.flush_stdin"):
+        with patch("son_of_anton_cli.curses_ui.flush_stdin"):
             cli._recover_terminal_after_interrupt()
 
         cli._force_full_redraw.assert_called_once()
@@ -77,10 +77,10 @@ class TestRecoverTerminalPreservesHistory:
         for i in range(5):
             cli_mod._record_output_history(f"visible line {i}")
 
-        cli = object.__new__(RencoCLI)
+        cli = object.__new__(SonOfAntonCLI)
         cli._force_full_redraw = MagicMock()
 
-        with patch("renco_cli.curses_ui.flush_stdin"):
+        with patch("son_of_anton_cli.curses_ui.flush_stdin"):
             cli._recover_terminal_after_interrupt()
 
         assert len(cli_mod._OUTPUT_HISTORY) == 5

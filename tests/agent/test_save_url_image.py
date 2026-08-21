@@ -75,14 +75,14 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def http_server(tmp_path, monkeypatch):
-    """Spin up a localhost HTTP server and isolate RENCO_HOME under tmp_path."""
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-    (tmp_path / ".renco").mkdir()
+    """Spin up a localhost HTTP server and isolate SON_OF_ANTON_HOME under tmp_path."""
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+    (tmp_path / ".son-of-anton").mkdir()
 
-    # Force the constants/image cache helpers to re-read RENCO_HOME.
+    # Force the constants/image cache helpers to re-read SON_OF_ANTON_HOME.
     import sys
     for mod in list(sys.modules):
-        if mod.startswith("renco_constants") or mod.startswith("agent.image_gen_provider"):
+        if mod.startswith("son_of_anton_constants") or mod.startswith("agent.image_gen_provider"):
             sys.modules.pop(mod, None)
 
     httpd = socketserver.TCPServer(("127.0.0.1", 0), _TinyImageHandler)
@@ -94,7 +94,7 @@ def http_server(tmp_path, monkeypatch):
 
 
 class TestSaveUrlImage:
-    def test_writes_real_bytes_to_renco_home_cache(self, http_server):
+    def test_writes_real_bytes_to_son_of_anton_home_cache(self, http_server):
         base, _ = http_server
         from agent.image_gen_provider import save_url_image
 
@@ -102,7 +102,7 @@ class TestSaveUrlImage:
 
         assert path.exists()
         assert path.read_bytes() == PNG_1PX
-        # The cache directory must be under RENCO_HOME — gateway cleanup
+        # The cache directory must be under SON_OF_ANTON_HOME — gateway cleanup
         # relies on this being the canonical location.
         assert "cache/images" in str(path)
         assert path.suffix == ".png"

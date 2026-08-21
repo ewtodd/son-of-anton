@@ -2,11 +2,11 @@
 name: github-repo-management
 description: "Clone/create/fork repos; manage remotes, releases."
 version: 1.1.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [GitHub, Repositories, Git, Releases, Secrets, Configuration]
     related_skills: [github-auth, github-pr-workflow, github-issues]
 ---
@@ -27,10 +27,10 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null; then
 else
   AUTH="git"
   if [ -z "$GITHUB_TOKEN" ]; then
-    if _renco_env="${RENCO_HOME:-$HOME/.renco}/.env"; [ -f "$_renco_env" ] && grep -q "^GITHUB_TOKEN=" "$_renco_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_renco_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
+    if _son_of_anton_env="${SON_OF_ANTON_HOME:-$HOME/.son-of-anton}/.env"; [ -f "$_son_of_anton_env" ] && grep -q "^GITHUB_TOKEN=" "$_son_of_anton_env"; then
+      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_son_of_anton_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
     elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${RENCO_HOME:-$HOME/.renco}/skills/github/github-auth/scripts/git-credential-token.py")
+      GITHUB_TOKEN=$(uv run python "${SON_OF_ANTON_HOME:-$HOME/.son-of-anton}/skills/github/github-auth/scripts/git-credential-token.py")
     fi
   fi
 fi

@@ -15,7 +15,7 @@ def _host_block(refresh="hch-rt-old", expires_at=10_000):
         "oauth": {
             "refreshToken": refresh,
             "expiresAt": expires_at,
-            "clientId": "renco-desktop",
+            "clientId": "son-of-anton-desktop",
             "tokenEndpoint": "http://localhost:8000/oauth/token",
             "scope": "write",
             "tokenType": "Bearer",
@@ -42,7 +42,7 @@ class TestCredentialModel:
         block = cred.oauth_block()
         assert block["refreshToken"] == "hch-rt-old"
         assert block["expiresAt"] == 10_000
-        assert block["clientId"] == "renco-desktop"
+        assert block["clientId"] == "son-of-anton-desktop"
 
     def test_incomplete_block_returns_none(self):
         # plain API key (no oauth sub-block)
@@ -61,29 +61,29 @@ class TestCredentialModel:
 class TestEnsureFreshToken:
     def test_no_oauth_credential_is_noop(self, tmp_path):
         path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"renco": {"apiKey": "hch-v3-static"}}})
-        token, refreshed = oauth.ensure_fresh_token(path, "renco", now=0)
+        _write(path, {"hosts": {"son-of-anton": {"apiKey": "hch-v3-static"}}})
+        token, refreshed = oauth.ensure_fresh_token(path, "son-of-anton", now=0)
         assert token is None and refreshed is False
 
     def test_fresh_token_skips_refresh(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"renco": _host_block(expires_at=10_000)}})
+        _write(path, {"hosts": {"son-of-anton": _host_block(expires_at=10_000)}})
         monkeypatch.setattr(
             oauth, "_http_post_form_status",
             lambda *a, **k: pytest.fail("refresh must not be called when fresh"),
         )
-        token, refreshed = oauth.ensure_fresh_token(path, "renco", now=0)
+        token, refreshed = oauth.ensure_fresh_token(path, "son-of-anton", now=0)
         assert token == "hch-at-old" and refreshed is False
 
 
     def test_expired_token_refreshes_and_persists_rotation(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"renco": _host_block(expires_at=100)}})
+        _write(path, {"hosts": {"son-of-anton": _host_block(expires_at=100)}})
 
         def fake_post(url, data, timeout):
             assert data["grant_type"] == "refresh_token"
             assert data["refresh_token"] == "hch-rt-old"
-            assert data["client_id"] == "renco-desktop"
+            assert data["client_id"] == "son-of-anton-desktop"
             return 200, {
                 "access_token": "hch-at-new",
                 "refresh_token": "hch-rt-new",
@@ -93,18 +93,18 @@ class TestEnsureFreshToken:
             }
 
         monkeypatch.setattr(oauth, "_http_post_form_status", fake_post)
-        token, refreshed = oauth.ensure_fresh_token(path, "renco", now=1000)
+        token, refreshed = oauth.ensure_fresh_token(path, "son-of-anton", now=1000)
         assert token == "hch-at-new" and refreshed is True
 
         # Rotated refresh token + new access token + absolute expiry persisted.
-        saved = json.loads(path.read_text())["hosts"]["renco"]
+        saved = json.loads(path.read_text())["hosts"]["son-of-anton"]
         assert saved["apiKey"] == "hch-at-new"
         assert saved["oauth"]["refreshToken"] == "hch-rt-new"
         assert saved["oauth"]["expiresAt"] == 1000 + 3600
 
     def test_refresh_failure_fails_open(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"renco": _host_block(expires_at=100)}})
+        _write(path, {"hosts": {"son-of-anton": _host_block(expires_at=100)}})
         monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
 
         calls = []
@@ -114,25 +114,25 @@ class TestEnsureFreshToken:
             raise RuntimeError("network down")
 
         monkeypatch.setattr(oauth, "_http_post_form_status", boom)
-        token, refreshed = oauth.ensure_fresh_token(path, "renco", now=1000)
+        token, refreshed = oauth.ensure_fresh_token(path, "son-of-anton", now=1000)
         # Stale token returned, no crash, file untouched. Transient failures
         # retry exactly once, then fail open.
         assert token == "hch-at-old" and refreshed is False
         assert len(calls) == 2
-        assert json.loads(path.read_text())["hosts"]["renco"]["apiKey"] == "hch-at-old"
+        assert json.loads(path.read_text())["hosts"]["son-of-anton"]["apiKey"] == "hch-at-old"
 
     def test_double_check_uses_disk_when_already_rotated(self, tmp_path, monkeypatch):
         # Simulates a concurrent thread that rotated the token on disk after our
         # stale in-memory snapshot: the locked re-read must skip the HTTP call.
         path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"renco": _host_block(refresh="hch-rt-fresh", expires_at=10_000)}})
-        stale_raw = {"hosts": {"renco": _host_block(refresh="hch-rt-old", expires_at=100)}}
-        stale_raw["hosts"]["renco"]["apiKey"] = "hch-at-stale"
+        _write(path, {"hosts": {"son-of-anton": _host_block(refresh="hch-rt-fresh", expires_at=10_000)}})
+        stale_raw = {"hosts": {"son-of-anton": _host_block(refresh="hch-rt-old", expires_at=100)}}
+        stale_raw["hosts"]["son-of-anton"]["apiKey"] = "hch-at-stale"
         monkeypatch.setattr(
             oauth, "_http_post_form_status",
             lambda *a, **k: pytest.fail("must not refresh; disk token is fresh"),
         )
-        token, refreshed = oauth.ensure_fresh_token(path, "renco", stale_raw, now=1000)
+        token, refreshed = oauth.ensure_fresh_token(path, "son-of-anton", stale_raw, now=1000)
         assert token == "hch-at-old"  # the on-disk fresh credential's access token
 
 
@@ -143,7 +143,7 @@ class TestInstallGrant:
             "apiKey": "hch-v3-root",  # root static key preserved
             "hosts": {
                 "obsidian": {"workspace": "obsidian"},
-                "renco": {"workspace": "renco", "saveMessages": False},
+                "son-of-anton": {"workspace": "son-of-anton", "saveMessages": False},
             },
         })
         grant = {
@@ -153,12 +153,12 @@ class TestInstallGrant:
             "scope": "write",
             "config": {
                 "environment": "production",
-                "hosts": {"renco": {"saveMessages": True, "recallMode": "hybrid"}},
+                "hosts": {"son-of-anton": {"saveMessages": True, "recallMode": "hybrid"}},
             },
         }
         cred = oauth.install_grant(
-            path, "renco", grant,
-            client_id="renco-desktop",
+            path, "son-of-anton", grant,
+            client_id="son-of-anton-desktop",
             token_endpoint="http://localhost:8000/oauth/token",
             now=1000,
         )
@@ -167,12 +167,12 @@ class TestInstallGrant:
         saved = json.loads(path.read_text())
         assert saved["apiKey"] == "hch-v3-root"  # untouched
         assert saved["hosts"]["obsidian"] == {"workspace": "obsidian"}  # untouched
-        h = saved["hosts"]["renco"]
+        h = saved["hosts"]["son-of-anton"]
         assert h["apiKey"] == "hch-at-fresh"
         assert h["oauth"]["refreshToken"] == "hch-rt-fresh"
         assert h["saveMessages"] is True  # grant config won the deep-merge
         assert h["recallMode"] == "hybrid"  # new key added
-        assert h["workspace"] == "renco"  # pre-existing key preserved
+        assert h["workspace"] == "son-of-anton"  # pre-existing key preserved
         assert saved["environment"] == "production"  # root key from grant
 
     def test_rejects_grant_without_tokens(self, tmp_path):
@@ -180,7 +180,7 @@ class TestInstallGrant:
         _write(path, {})
         with pytest.raises(ValueError):
             oauth.install_grant(
-                path, "renco", {"access_token": "hch-at-x"},  # no refresh_token
+                path, "son-of-anton", {"access_token": "hch-at-x"},  # no refresh_token
                 client_id="c", token_endpoint="e",
             )
 

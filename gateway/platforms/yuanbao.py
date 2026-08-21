@@ -79,7 +79,7 @@ from gateway.platforms.yuanbao_proto import (
     _parse_fields,
     WS_HEARTBEAT_RUNNING,
     WS_HEARTBEAT_FINISH,
-    RENCO_INSTANCE_ID,
+    SON_OF_ANTON_INSTANCE_ID,
     decode_conn_msg,
     decode_inbound_push,
     decode_forward_msg_data,
@@ -104,13 +104,13 @@ logger = logging.getLogger(__name__)
 # Version / platform constants (used in AUTH_BIND and sign-token headers)
 # ---------------------------------------------------------------------------
 try:
-    from renco_cli import __version__ as _RENCO_VERSION
+    from son_of_anton_cli import __version__ as _SON_OF_ANTON_VERSION
 except ImportError:
-    _RENCO_VERSION = "0.0.0"
+    _SON_OF_ANTON_VERSION = "0.0.0"
 
-_APP_VERSION = _RENCO_VERSION
-_BOT_VERSION = _RENCO_VERSION
-_YUANBAO_INSTANCE_ID = str(RENCO_INSTANCE_ID)  # single source: yuanbao_proto.RENCO_INSTANCE_ID
+_APP_VERSION = _SON_OF_ANTON_VERSION
+_BOT_VERSION = _SON_OF_ANTON_VERSION
+_YUANBAO_INSTANCE_ID = str(SON_OF_ANTON_INSTANCE_ID)  # single source: yuanbao_proto.SON_OF_ANTON_INSTANCE_ID
 _OPERATION_SYSTEM = sys.platform
 
 # ---------------------------------------------------------------------------
@@ -1385,10 +1385,10 @@ class AutoSetHomeMiddleware(InboundMiddleware):
                 adapter._auto_sethome_done = True  # DM seen — no further upgrades needed
             if _should_set:
                 try:
-                    from renco_constants import get_renco_home
-                    from renco_cli.config import atomic_config_write, read_user_config_raw
+                    from son_of_anton_constants import get_son_of_anton_home
+                    from son_of_anton_cli.config import atomic_config_write, read_user_config_raw
 
-                    _home = get_renco_home()
+                    _home = get_son_of_anton_home()
                     config_path = _home / "config.yaml"
                     # Write-back round-trip: raw read is correct (merged
                     # defaults must not be persisted to the user's file).

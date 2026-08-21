@@ -1,9 +1,9 @@
 """Tests for the container-context sandbox-mirror guard (#32049 follow-up).
 
 Brian's shape-based guard (#32213) catches paths that carry the full
-``…/sandboxes/<backend>/<task>/home/.renco/…`` prefix. This covers the
+``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` prefix. This covers the
 complementary inner-container case: when file tools execute inside Docker,
-the bind-mount strips that prefix and the guard sees plain ``/root/.renco/…``.
+the bind-mount strips that prefix and the guard sees plain ``/root/.son-of-anton/…``.
 The root:root ownership on the divergent SOUL.md in #32049 confirms this
 is the primary failure mode.
 """
@@ -19,11 +19,11 @@ class TestClassifyContainerMirrorTarget:
         from agent.file_safety import classify_container_mirror_target
 
         result = classify_container_mirror_target(
-            "/root/.renco/profiles/group1/SOUL.md",
-            mirror_prefix="/root/.renco",
+            "/root/.son-of-anton/profiles/group1/SOUL.md",
+            mirror_prefix="/root/.son-of-anton",
         )
         assert result is not None
-        assert result["mirror_root"].replace("\\", "/").endswith("root/.renco")
+        assert result["mirror_root"].replace("\\", "/").endswith("root/.son-of-anton")
         assert result["inner_path"] == "profiles/group1/SOUL.md"
 
     @pytest.mark.parametrize("inner", [
@@ -34,8 +34,8 @@ class TestClassifyContainerMirrorTarget:
         from agent.file_safety import classify_container_mirror_target
 
         result = classify_container_mirror_target(
-            f"/root/.renco/{inner}",
-            mirror_prefix="/root/.renco",
+            f"/root/.son-of-anton/{inner}",
+            mirror_prefix="/root/.son-of-anton",
         )
         assert result is not None
         assert result["inner_path"] == inner
@@ -47,8 +47,8 @@ class TestGetContainerMirrorWarning:
         from agent.file_safety import get_container_mirror_warning
 
         warn = get_container_mirror_warning(
-            "/root/.renco/profiles/group1/SOUL.md",
-            mirror_prefix="/root/.renco",
+            "/root/.son-of-anton/profiles/group1/SOUL.md",
+            mirror_prefix="/root/.son-of-anton",
         )
         assert warn is not None
         assert "profiles/group1/SOUL.md" in warn
@@ -62,10 +62,10 @@ class TestOrthogonality:
         """No sandboxes/ segment — shape guard passes, context guard blocks."""
         from agent.file_safety import classify_container_mirror_target
 
-        path = "/root/.renco/profiles/group1/SOUL.md"
+        path = "/root/.son-of-anton/profiles/group1/SOUL.md"
 
         assert classify_container_mirror_target(path) is None  # no context
-        assert classify_container_mirror_target(path, mirror_prefix="/root/.renco") is not None
+        assert classify_container_mirror_target(path, mirror_prefix="/root/.son-of-anton") is not None
 
 
 class TestFileToolIntegration:
@@ -77,11 +77,11 @@ class TestFileToolIntegration:
         monkeypatch.setattr(
             file_tools,
             "_get_container_mirror_prefix_for_task",
-            lambda task_id: "/root/.renco",
+            lambda task_id: "/root/.son-of-anton",
         )
 
         warning = file_tools._check_cross_profile_path(
-            "/root/.renco/profiles/group1/SOUL.md",
+            "/root/.son-of-anton/profiles/group1/SOUL.md",
             task_id="new-task",
         )
 

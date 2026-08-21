@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from renco_cli.models import validate_requested_model
+from son_of_anton_cli.models import validate_requested_model
 
 
 class TestMiniMaxModelValidation:
@@ -26,8 +26,8 @@ class TestMiniMaxModelValidation:
             "suggested_base_url": None,
             "used_fallback": False,
         }
-        with patch("renco_cli.models.fetch_api_models", return_value=None), \
-             patch("renco_cli.models.probe_api_models", return_value=probe_payload):
+        with patch("son_of_anton_cli.models.fetch_api_models", return_value=None), \
+             patch("son_of_anton_cli.models.probe_api_models", return_value=probe_payload):
             yield
 
     # -------------------------------------------------------------------------

@@ -9,11 +9,11 @@ from __future__ import annotations
 
 def test_nous_portal_tags_contains_product_and_client():
     """Every Nous Portal request gets BOTH the product tag and the version tag."""
-    from agent.portal_tags import renco_client_tag, nous_portal_tags
+    from agent.portal_tags import son_of_anton_client_tag, nous_portal_tags
 
     tags = nous_portal_tags()
-    assert "product=renco-agent" in tags
-    assert renco_client_tag() in tags
+    assert "product=son-of-anton" in tags
+    assert son_of_anton_client_tag() in tags
     assert len(tags) == 2
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that subprocess calls in TUI-context code specify stdin=.
 
-When Renco runs in TUI mode, the gateway child process communicates with
+When Son of Anton runs in TUI mode, the gateway child process communicates with
 the Node.js parent over a JSON-RPC protocol on stdin. Subprocess calls that
 inherit this fd can cause the gateway to exit with stdin EOF during tool
 execution (issue #14036, PR #39257).
@@ -38,14 +38,14 @@ TUI_CONTEXT_DIRS = [
 ]
 
 # User plugin roots — scanned at runtime if they exist.  Plugins load from
-# ``get_renco_home() / "plugins"`` (user) and ``./.renco/plugins/`` (project,
-# gated behind ``RENCO_ENABLE_PROJECT_PLUGINS``) — see
-# ``renco_cli/plugins.py:10-12``.  The guard only checked the bundled
+# ``get_son_of_anton_home() / "plugins"`` (user) and ``./.son-of-anton/plugins/`` (project,
+# gated behind ``SON_OF_ANTON_ENABLE_PROJECT_PLUGINS``) — see
+# ``son_of_anton_cli/plugins.py:10-12``.  The guard only checked the bundled
 # ``plugins/`` dir, missing user-installed code that spawns subprocesses
 # (gap reported in #67639).
 #
 # Import is deferred to ``main()`` (after ``os.chdir(repo_root)``) because
-# this script runs as a standalone subprocess — ``renco_constants`` isn't
+# this script runs as a standalone subprocess — ``son_of_anton_constants`` isn't
 # on ``sys.path`` until the repo root is added.
 
 # subprocess and os APIs that inherit stdin by default when called without
@@ -78,7 +78,7 @@ SKIP_DIRS = {
     "scripts/",
     "skills/",
     "optional-skills/",
-    "renco_cli/",
+    "son_of_anton_cli/",
     "gateway/",
     "cron/",
 }
@@ -157,10 +157,10 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)
 
-    # Add repo root to sys.path so we can import renco_constants (this script
+    # Add repo root to sys.path so we can import son_of_anton_constants (this script
     # runs as a standalone subprocess, not as a module).
     sys.path.insert(0, str(repo_root))
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
     all_violations = []
 
@@ -186,12 +186,12 @@ def main() -> int:
             all_violations.extend(violations)
 
     # Scan user plugin directories (Gap 1: guard missed user-installed
-    # plugins in get_renco_home()/plugins/ and project plugins in
-    # ./.renco/plugins/, where code like ori/hooks.py can spawn
+    # plugins in get_son_of_anton_home()/plugins/ and project plugins in
+    # ./.son-of-anton/plugins/, where code like ori/hooks.py can spawn
     # subprocesses with inherited stdin — #67639).
-    plugin_roots: list[Path] = [get_renco_home() / "plugins"]
-    if os.environ.get("RENCO_ENABLE_PROJECT_PLUGINS"):
-        plugin_roots.append(Path.cwd() / ".renco" / "plugins")
+    plugin_roots: list[Path] = [get_son_of_anton_home() / "plugins"]
+    if os.environ.get("SON_OF_ANTON_ENABLE_PROJECT_PLUGINS"):
+        plugin_roots.append(Path.cwd() / ".son-of-anton" / "plugins")
     seen_roots: set[Path] = set()
     for plugin_root in plugin_roots:
         resolved = plugin_root.resolve()

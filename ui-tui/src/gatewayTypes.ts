@@ -1,11 +1,11 @@
-import type { BillingBlock, UsageModelData } from '@renco/shared/billing'
-import type { RencoSkin } from '@renco/shared/skin'
+import type { BillingBlock, UsageModelData } from '@sonofanton/shared/billing'
+import type { SonOfAntonSkin } from '@sonofanton/shared/skin'
 
 import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
 
-/** The cross-surface skin contract (canonical shape in `@renco/shared`).
+/** The cross-surface skin contract (canonical shape in `@sonofanton/shared`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
-export type GatewaySkin = RencoSkin
+export type GatewaySkin = SonOfAntonSkin
 
 export interface GatewayCompletionItem {
   display: string
@@ -48,7 +48,7 @@ export interface SlashExecResponse {
 
 // ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
-// Wire shapes now live in @renco/shared for reuse by TypeScript clients.
+// Wire shapes now live in @sonofanton/shared for reuse by TypeScript clients.
 export type {
   BillingAutoReload,
   BillingBlock,
@@ -65,7 +65,7 @@ export type {
   SubscriptionUpgradeResponse,
   UsageBarData,
   UsageModelData
-} from '@renco/shared/billing'
+} from '@sonofanton/shared/billing'
 
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }

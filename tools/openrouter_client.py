@@ -1,4 +1,4 @@
-"""Shared OpenRouter API client for Renco tools.
+"""Shared OpenRouter API client for Son of Anton tools.
 
 Provides a single lazy-initialized AsyncOpenAI client that all tool modules
 can share.  Routes through the centralized provider router in

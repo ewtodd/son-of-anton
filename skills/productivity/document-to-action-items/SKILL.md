@@ -2,11 +2,11 @@
 name: document-to-action-items
 description: "Extract cited obligations, deadlines, tasks from documents."
 version: 0.1.0
-author: Ben Barclay (benbarclay), Renco Agent
+author: Ben Barclay (benbarclay), Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Documents, OCR, Action-Items, Deadlines, Extraction]
     related_skills: [ocr-and-documents, pdf, docx, notion]
 ---

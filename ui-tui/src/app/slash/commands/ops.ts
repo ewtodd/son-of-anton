@@ -127,7 +127,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 're-read ~/.renco/.env into the running gateway (CLI parity)',
+    help: 're-read ~/.son-of-anton/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
       ctx.gateway
@@ -675,7 +675,7 @@ export const opsCommands: SlashCommand[] = [
     run: (arg, ctx, cmd) => {
       // No argument → open the interactive Plugins Hub overlay. Any
       // subcommand (enable/disable/list/install/…) falls through to the
-      // text slash worker so it stays at parity with `renco plugins`.
+      // text slash worker so it stays at parity with `son-of-anton plugins`.
       if (!arg.trim()) {
         return patchOverlayState({ pluginsHub: true })
       }

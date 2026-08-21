@@ -70,28 +70,28 @@ class TestEnvFileReadBlocking:
 
 
 class TestCacheFileReadBlocking:
-    """Internal Renco cache files must remain blocked."""
+    """Internal Son of Anton cache files must remain blocked."""
 
     def test_hub_index_cache_blocked(self, tmp_path):
         """Hub index-cache reads are blocked."""
-        renco_home = tmp_path / ".renco"
-        cache = renco_home / "skills" / ".hub" / "index-cache" / "data.json"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        cache = son_of_anton_home / "skills" / ".hub" / "index-cache" / "data.json"
         cache.parent.mkdir(parents=True)
         cache.write_text("{}")
 
-        with patch("agent.file_safety._renco_home_path", return_value=renco_home):
+        with patch("agent.file_safety._son_of_anton_home_path", return_value=son_of_anton_home):
             error = get_read_block_error(str(cache))
             assert error is not None
-            assert "internal Renco cache" in error
+            assert "internal Son of Anton cache" in error
 
     def test_hub_directory_blocked(self, tmp_path):
         """Hub directory reads are blocked."""
-        renco_home = tmp_path / ".renco"
-        hub = renco_home / "skills" / ".hub" / "metadata.json"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        hub = son_of_anton_home / "skills" / ".hub" / "metadata.json"
         hub.parent.mkdir(parents=True)
         hub.write_text("{}")
 
-        with patch("agent.file_safety._renco_home_path", return_value=renco_home):
+        with patch("agent.file_safety._son_of_anton_home_path", return_value=son_of_anton_home):
             error = get_read_block_error(str(hub))
             assert error is not None
 
@@ -104,12 +104,12 @@ class TestCacheFileReadBlocking:
 class TestCombinedGuards:
     """Both guards should work independently without interference."""
 
-    def test_env_guard_works_regardless_of_renco_home(self, tmp_path):
-        """The env basename guard does not depend on RENCO_HOME resolution."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
+    def test_env_guard_works_regardless_of_son_of_anton_home(self, tmp_path):
+        """The env basename guard does not depend on SON_OF_ANTON_HOME resolution."""
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
 
-        with patch("agent.file_safety._renco_home_path", return_value=renco_home):
+        with patch("agent.file_safety._son_of_anton_home_path", return_value=son_of_anton_home):
             # Regular project .env should still be blocked
             error = get_read_block_error("/workspace/.env")
             assert error is not None
@@ -120,12 +120,12 @@ class TestCombinedGuards:
 
     def test_cache_guard_still_works_with_env_guard(self, tmp_path):
         """Cache file blocking still works when env guard is active."""
-        renco_home = tmp_path / ".renco"
-        cache = renco_home / "skills" / ".hub" / "index-cache" / "x"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        cache = son_of_anton_home / "skills" / ".hub" / "index-cache" / "x"
         cache.parent.mkdir(parents=True)
         cache.write_text("")
 
-        with patch("agent.file_safety._renco_home_path", return_value=renco_home):
+        with patch("agent.file_safety._son_of_anton_home_path", return_value=son_of_anton_home):
             error = get_read_block_error(str(cache))
             assert error is not None
-            assert "internal Renco cache" in error
+            assert "internal Son of Anton cache" in error

@@ -2,7 +2,7 @@
 Event Hook System
 
 A lightweight event-driven system that fires handlers at key lifecycle points.
-Hooks are discovered from ~/.renco/hooks/ directories, each containing:
+Hooks are discovered from ~/.son-of-anton/hooks/ directories, each containing:
   - HOOK.yaml  (metadata: name, description, events list)
   - handler.py (Python handler with async def handle(event_type, context))
 
@@ -25,7 +25,7 @@ Context dict passed to ``agent:start`` / ``agent:end`` handlers:
   thread_id    -- Telegram forum-topic id / thread root id (string; empty
                   when not in a thread / topic)
   chat_type    -- "dm" | "group" | "forum" (empty if unknown)
-  session_id   -- Renco session id
+  session_id   -- Son of Anton session id
   message      -- inbound message text (truncated to 500 chars)
 
 ``agent:end`` adds:
@@ -45,10 +45,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
-from renco_cli.config import get_renco_home
+from son_of_anton_cli.config import get_son_of_anton_home
 
 
-HOOKS_DIR = get_renco_home() / "hooks"
+HOOKS_DIR = get_son_of_anton_home() / "hooks"
 
 
 class HookRegistry:
@@ -124,7 +124,7 @@ class HookRegistry:
                 # in the handler). Without this, a handler that declares a
                 # Pydantic BaseModel for webhook/event payloads fails at first
                 # dispatch with "TypeAdapter ... is not fully defined".
-                module_name = f"renco_hook_{hook_name}"
+                module_name = f"son_of_anton_hook_{hook_name}"
                 spec = importlib.util.spec_from_file_location(
                     module_name, handler_path
                 )

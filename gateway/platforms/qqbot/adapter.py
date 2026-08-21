@@ -283,7 +283,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # Default interaction dispatcher: routes approval-button clicks to
         # tools.approval.resolve_gateway_approval() and update-prompt clicks
-        # to ~/.renco/.update_response. Set here so the cross-adapter gateway
+        # to ~/.son-of-anton/.update_response. Set here so the cross-adapter gateway
         # contract (send_exec_approval / send_update_prompt) works out of the
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
@@ -492,7 +492,7 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        # Honor WSL proxy env for QQ WebSocket. Renco upgrades overwrite this
+        # Honor WSL proxy env for QQ WebSocket. Son of Anton upgrades overwrite this
         # local patch, so QQ can regress to direct-connect timeouts after update.
         self._session = aiohttp.ClientSession(trust_env=True)
         ws_proxy = (
@@ -779,8 +779,8 @@ class QQAdapter(BasePlatformAdapter):
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",
-                    "$browser": "renco-agent",
-                    "$device": "renco-agent",
+                    "$browser": "son-of-anton",
+                    "$device": "son-of-anton",
                 },
             },
         }
@@ -1151,8 +1151,8 @@ class QQAdapter(BasePlatformAdapter):
           :func:`tools.approval.resolve_gateway_approval`
           (unblocks the agent thread waiting on a dangerous-command approval).
         - ``update_prompt:<answer>`` →
-          writes the answer to ``~/.renco/.update_response`` for the
-          detached ``renco update --gateway`` process to consume.
+          writes the answer to ``~/.son-of-anton/.update_response`` for the
+          detached ``son-of-anton update --gateway`` process to consume.
         - Anything else is logged at DEBUG and ignored.
 
         Installed as the adapter's default interaction callback in
@@ -1221,13 +1221,13 @@ class QQAdapter(BasePlatformAdapter):
         """Atomically write the update-prompt answer to ``.update_response``.
 
         Mirrors the Discord / Telegram / Feishu adapters: the detached
-        ``renco update --gateway`` watcher polls this file for a ``y``/``n``
+        ``son-of-anton update --gateway`` watcher polls this file for a ``y``/``n``
         response to its interactive prompts (stash-restore, config migration).
         Writes via ``tmp + rename`` so a partial write can't fool the reader.
         """
         try:
-            from renco_constants import get_renco_home
-            home = get_renco_home()
+            from son_of_anton_constants import get_son_of_anton_home
+            home = get_son_of_anton_home()
             response_path = home / ".update_response"
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")
@@ -2228,7 +2228,7 @@ class QQAdapter(BasePlatformAdapter):
                                  or ("glm-asr" if provider in {"zai", "glm"} else "whisper-1"),
                     }
 
-        # 2. QQ-specific env vars (set by `renco setup gateway` / `renco gateway`)
+        # 2. QQ-specific env vars (set by `son-of-anton setup gateway` / `son-of-anton gateway`)
         qq_stt_key = _resolve_qq_secret("QQ_STT_API_KEY", "")
         if qq_stt_key:
             base_url = _resolve_qq_secret(
@@ -2751,11 +2751,11 @@ class QQAdapter(BasePlatformAdapter):
         """Send a Yes/No update-confirmation prompt with inline buttons.
 
         Matches the cross-adapter contract used by
-        ``gateway/run.py``'s ``renco update --gateway`` watcher. Button
+        ``gateway/run.py``'s ``son-of-anton update --gateway`` watcher. Button
         clicks surface as ``INTERACTION_CREATE`` with
         ``button_data = 'update_prompt:y'`` or ``'update_prompt:n'``;
         the adapter's interaction callback writes the answer to
-        ``~/.renco/.update_response`` so the detached update process
+        ``~/.son-of-anton/.update_response`` so the detached update process
         can read it.
         """
         del session_key, metadata  # present for contract parity only.

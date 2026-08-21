@@ -73,7 +73,7 @@ def _bootstrap(monkeypatch, tmp_path):
     runner.session_store.has_platform_message_id.return_value = False
     runner.session_store.update_session = MagicMock()
 
-    monkeypatch.setattr(gateway_run, "_renco_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_son_of_anton_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
@@ -248,7 +248,7 @@ async def test_no_new_messages_fallback_row_is_marked_for_internal_event(
 def test_marked_row_replays_cleanly_and_never_reaches_provider(tmp_path):
     """A marked row persists, resumes with role='user' + marker intact, and
     the provider-bound copy built by conversation_loop drops the marker."""
-    from renco_state import SessionDB
+    from son_of_anton_state import SessionDB
 
     db = SessionDB(tmp_path / "state.db")
     sid = "sess-82888-replay"

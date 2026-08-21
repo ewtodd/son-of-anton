@@ -5,7 +5,7 @@ The sidecar source ships inside the installed plugin tree
 (``plugins/platforms/photon/sidecar/``). On dev/source installs that tree is
 writable and everything — ``npm ci``, the spectrum patch, the sidecar itself —
 happens in place. Hosted/managed images instead keep the whole install tree
-under an immutable ``/opt/renco`` (read-only for the renco user), which
+under an immutable ``/opt/son-of-anton`` (read-only for the son-of-anton user), which
 broke every install/self-heal path with EROFS (NS-606).
 
 Resolution order (mirrors ``resolve_whatsapp_bridge_dir`` for the Baileys
@@ -18,7 +18,7 @@ bridge, which hit the same wall):
    sidecar deps with ``npm ci`` at build time (deterministic installs,
    NS-559), so no runtime install is ever needed.
 4. Source dir read-only and deps missing or stale → mirror the sidecar
-   source files to ``$RENCO_HOME/photon/sidecar`` (the durable data volume,
+   source files to ``$SON_OF_ANTON_HOME/photon/sidecar`` (the durable data volume,
    e.g. ``/opt/data`` on hosted) and return that. The caller's normal
    install/self-heal machinery then works there because it is writable.
 
@@ -29,7 +29,7 @@ lockfile-vs-install-marker staleness check then triggers the ``npm ci``
 self-heal inside the mirror.
 
 This module is import-light on purpose: both ``adapter.py`` (gateway) and
-``cli.py`` (``renco photon ...``) use it.
+``cli.py`` (``son-of-anton photon ...``) use it.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def dir_writable(path: Path) -> bool:
     mounts), so probe with a real create+unlink like the WhatsApp bridge
     resolver does.
     """
-    probe = path / ".renco-write-probe"
+    probe = path / ".son-of-anton-write-probe"
     try:
         probe.touch()
         probe.unlink()
@@ -117,9 +117,9 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     # Deps missing or stale inside a read-only tree: mirror to the durable
     # data volume so the normal install/self-heal machinery has somewhere
     # writable to work.
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    mirror = get_renco_home() / "photon" / "sidecar"
+    mirror = get_son_of_anton_home() / "photon" / "sidecar"
     try:
         mirror.mkdir(parents=True, exist_ok=True)
         for name in _MIRROR_FILES:

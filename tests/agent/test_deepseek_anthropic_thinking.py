@@ -14,9 +14,9 @@ DeepSeek's compatibility matrix lists ``thinking`` as supported but
 ``redacted_thinking`` and ``cache_control`` on thinking blocks as not
 supported.  Handling is the same as Kimi's ``/coding`` endpoint: strip
 Anthropic-signed blocks (DeepSeek can't validate them) but preserve unsigned
-blocks that Renco synthesises from ``reasoning_content``.
+blocks that Son of Anton synthesises from ``reasoning_content``.
 
-See renco-agent#16748.
+See son-of-anton#16748.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class TestDeepSeekAnthropicPreservesThinking:
 
         DeepSeek's compatibility matrix lists cache_control on thinking blocks
         as ignored — cache markers interfere with signature validation on
-        upstreams that do check them, so Renco strips them everywhere.
+        upstreams that do check them, so Son of Anton strips them everywhere.
         """
         from agent.anthropic_adapter import convert_messages_to_anthropic
 

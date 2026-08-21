@@ -6,8 +6,8 @@ vi.mock('../lib/memory.js', () => ({
   performHeapDump: vi.fn(async () => null)
 }))
 
-// @renco/ink is dynamically imported only on the dump path; stub the eviction.
-vi.mock('@renco/ink', () => ({ evictInkCaches: vi.fn() }))
+// @sonofanton/ink is dynamically imported only on the dump path; stub the eviction.
+vi.mock('@sonofanton/ink', () => ({ evictInkCaches: vi.fn() }))
 
 import { startMemoryMonitor } from '../lib/memoryMonitor.js'
 

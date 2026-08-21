@@ -1,10 +1,10 @@
-"""Tests for slash command prefix matching in RencoCLI.process_command."""
+"""Tests for slash command prefix matching in SonOfAntonCLI.process_command."""
 from unittest.mock import MagicMock, patch
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 def _make_cli():
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli_obj.config = {}
     cli_obj.console = MagicMock()
     cli_obj.agent = None

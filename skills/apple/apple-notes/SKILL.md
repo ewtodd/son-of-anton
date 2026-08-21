@@ -2,11 +2,11 @@
 name: apple-notes
 description: "Manage Apple Notes via memo CLI: create, search, edit."
 version: 1.0.1
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [macos]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Notes, Apple, macOS, note-taking]
     related_skills: [obsidian]
 prerequisites:

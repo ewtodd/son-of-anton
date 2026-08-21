@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from renco_state import SessionCompressionInProgressError, SessionDB
+from son_of_anton_state import SessionCompressionInProgressError, SessionDB
 
 
 @pytest.fixture

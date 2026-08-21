@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -165,7 +165,7 @@ def test_flush_adopts_exactly_once_no_retry_loop(tmp_path: Path, monkeypatch) ->
     """Adoption budget: the tip lookup runs at most once per flush, and a
     second closed-parent write after adoption fails closed instead of looping.
     """
-    from renco_state import CompressionSessionClosedError
+    from son_of_anton_state import CompressionSessionClosedError
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -205,7 +205,7 @@ def test_flush_adopts_exactly_once_no_retry_loop(tmp_path: Path, monkeypatch) ->
 
 
 def test_compression_closed_error_classifies_as_compression_closed() -> None:
-    from renco_state import (
+    from son_of_anton_state import (
         PERSISTENCE_ERROR_CAUSES,
         CompressionSessionClosedError,
         classify_persistence_error,
@@ -222,7 +222,7 @@ def test_compression_closed_error_classifies_as_compression_closed() -> None:
 
 
 def test_compression_closed_wording_never_mentions_disk() -> None:
-    from renco_state import CompressionSessionClosedError, classify_persistence_error
+    from son_of_anton_state import CompressionSessionClosedError, classify_persistence_error
 
     text = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed",

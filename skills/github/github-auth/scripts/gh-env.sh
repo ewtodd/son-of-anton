@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GitHub environment detection helper for Renco Agent skills.
+# GitHub environment detection helper for Son of Anton Agent skills.
 #
 # Usage (via terminal tool):
 #   source skills/github/github-auth/scripts/gh-env.sh
@@ -23,13 +23,13 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     GH_USER=$(gh api user --jq '.login' 2>/dev/null)
 elif [ -n "$GITHUB_TOKEN" ]; then
     GH_AUTH_METHOD="curl"
-elif _renco_env="${RENCO_HOME:-$HOME/.renco}/.env"; [ -f "$_renco_env" ] && grep -q "^GITHUB_TOKEN=" "$_renco_env" 2>/dev/null; then
-    GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_renco_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
+elif _son_of_anton_env="${SON_OF_ANTON_HOME:-$HOME/.son-of-anton}/.env"; [ -f "$_son_of_anton_env" ] && grep -q "^GITHUB_TOKEN=" "$_son_of_anton_env" 2>/dev/null; then
+    GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_son_of_anton_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi
 elif [ -f "$HOME/.git-credentials" ]; then
-    GITHUB_TOKEN=$(uv run python3 "${RENCO_HOME:-$HOME/.renco}/skills/github/github-auth/scripts/git-credential-token.py")
+    GITHUB_TOKEN=$(uv run python3 "${SON_OF_ANTON_HOME:-$HOME/.son-of-anton}/skills/github/github-auth/scripts/git-credential-token.py")
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi

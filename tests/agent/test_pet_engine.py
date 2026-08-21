@@ -68,7 +68,7 @@ def test_state_row_index_maps_to_supported_atlas_taxonomies():
     assert constants.state_row_index(PetState.RUN, 9) == 7
     assert constants.state_row_index(PetState.REVIEW, 9) == 8
 
-    # Legacy Renco/petdex sheets were 8 rows with Renco state names packed in
+    # Legacy Son of Anton/petdex sheets were 8 rows with Son of Anton state names packed in
     # order. Keep those readable instead of forcing old installs through the
     # newer Codex taxonomy.
     assert constants.state_row_index(PetState.WAVE, 8) == 1
@@ -97,12 +97,12 @@ def test_state_row_index_maps_to_supported_atlas_taxonomies():
 
 @pytest.fixture
 def boba_like(tmp_path, monkeypatch):
-    """Install a synthetic 8-col × 9-row pet into a temp RENCO_HOME."""
+    """Install a synthetic 8-col × 9-row pet into a temp SON_OF_ANTON_HOME."""
     from PIL import Image
 
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
 
     cols, rows = 8, 9
     sheet = Image.new("RGBA", (FRAME_W * cols, FRAME_H * rows), (0, 0, 0, 0))

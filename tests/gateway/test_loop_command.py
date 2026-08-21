@@ -10,7 +10,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from renco_cli import goals, loops
+from son_of_anton_cli import goals, loops
 
 
 class _FakeSessionEntry:
@@ -30,9 +30,9 @@ class _FakeSessionStore:
 
 @pytest.fixture
 def loop_env(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     goals._DB_CACHE.clear()
     yield home
     goals._DB_CACHE.clear()
@@ -96,7 +96,7 @@ async def test_gateway_loop_status_pause_stop(loop_env):
 
 @pytest.mark.asyncio
 async def test_gateway_loop_goal_note_when_goal_active(loop_env):
-    from renco_cli.goals import GoalManager
+    from son_of_anton_cli.goals import GoalManager
 
     GoalManager(session_id="sid-gateway-loop").set("finish the migration")
     runner = _make_runner()

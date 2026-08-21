@@ -18,7 +18,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="Mode",
             kind=KIND_SELECT,
             default="cloud",
-            description="How Renco connects to Hindsight.",
+            description="How Son of Anton connects to Hindsight.",
             options=(
                 ProviderFieldOption(
                     "cloud",
@@ -55,7 +55,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             key="bank_id",
             label="Bank ID",
             kind=KIND_TEXT,
-            default="renco",
+            default="son-of-anton",
             aliases=("bankId",),
             inline=True,
         ),

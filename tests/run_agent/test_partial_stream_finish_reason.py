@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from renco_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from son_of_anton_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.conversation_loop import _get_continuation_prompt
 
 
@@ -78,7 +78,7 @@ class TestPartialStreamStubFinishReason:
         agent = _make_agent()
         agent._current_streamed_assistant_text = "Here's my answer so far"
 
-        monkeypatch.setenv("RENCO_STREAM_RETRIES", "0")
+        monkeypatch.setenv("SON_OF_ANTON_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID
@@ -432,7 +432,7 @@ class TestContentFilterStallActivatesFallback:
         agent._fire_stream_delta = lambda text: None
         agent._current_streamed_assistant_text = "Writing the file: "
 
-        monkeypatch.setenv("RENCO_STREAM_RETRIES", "0")
+        monkeypatch.setenv("SON_OF_ANTON_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID

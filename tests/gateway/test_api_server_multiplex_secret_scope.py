@@ -70,7 +70,7 @@ class TestProfileScopedApiAuthentication:
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "renco_cli.profiles.get_profile_dir",
+            "son_of_anton_cli.profiles.get_profile_dir",
             lambda name: profile_home,
         )
         adapter._api_key = default_key
@@ -109,13 +109,13 @@ async def test_profile_middleware_binds_auth_before_handler(
         "_Runner", (), {"config": GatewayConfig(multiplex_profiles=True)}
     )()
     monkeypatch.setattr(
-        "renco_cli.profiles.profiles_to_serve",
+        "son_of_anton_cli.profiles.profiles_to_serve",
         lambda multiplex, profile_allowlist=None: [
             ("default", tmp_path), ("worker", worker_home)
         ],
     )
     monkeypatch.setattr(
-        "renco_cli.profiles.get_profile_dir",
+        "son_of_anton_cli.profiles.get_profile_dir",
         lambda name: tmp_path if name == "default" else worker_home,
     )
     ss.set_multiplex_active(True)

@@ -1,5 +1,5 @@
 /**
- * Shared ESLint flat config for all Renco TS workspaces.
+ * Shared ESLint flat config for all Son of Anton TS workspaces.
  *
  * Usage in a workspace's eslint.config.mjs:
  *

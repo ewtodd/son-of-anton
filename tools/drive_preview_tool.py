@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interact with the in-app browser / preview pane in the Renco desktop GUI.
+"""Interact with the in-app browser / preview pane in the Son of Anton desktop GUI.
 
 ``open_preview`` shows a page and ``read_preview`` reads it; this tool is the
 third leg — clicking, typing, scrolling, and history — so the agent can drive
@@ -66,7 +66,7 @@ def drive_preview_tool(
 ) -> str:
     """Dispatch one interaction to the desktop renderer and return its outcome."""
     if callback is None:
-        return tool_error("drive_preview is only available in the Renco desktop app.")
+        return tool_error("drive_preview is only available in the Son of Anton desktop app.")
 
     verb = (action or "").strip().lower()
     if verb not in ACTIONS:
@@ -128,7 +128,7 @@ ACT_PREVIEW_SCHEMA = {
     "name": "drive_preview",
     "description": (
         "Interact with the page open in the in-app browser / preview pane of "
-        "the Renco desktop GUI — the pane open_preview opens beside this "
+        "the Son of Anton desktop GUI — the pane open_preview opens beside this "
         "chat. This is how you USE a web app the user is looking at: log in, "
         "fill a form, click through a flow, page a long document. ALWAYS call "
         "action='elements' first to get the current inventory of clickable and "

@@ -59,13 +59,13 @@ class TestResolutionOrder:
         """source.profile should be used even if routing would match."""
         discord_source.profile = "from-source"
         
-        with patch("renco_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("renco_cli.profiles.get_profile_dir") as mock_get_dir:
-                with patch("renco_cli.profiles.profile_exists", return_value=True):
-                    mock_get_dir.return_value = Path("/renco/profiles/from-source")
+        with patch("son_of_anton_cli.profiles.get_active_profile_name", return_value="active"):
+            with patch("son_of_anton_cli.profiles.get_profile_dir") as mock_get_dir:
+                with patch("son_of_anton_cli.profiles.profile_exists", return_value=True):
+                    mock_get_dir.return_value = Path("/son-of-anton/profiles/from-source")
                     result = mock_runner._resolve_profile_home_for_source(discord_source)
                     
-                    assert result == Path("/renco/profiles/from-source")
+                    assert result == Path("/son-of-anton/profiles/from-source")
                     mock_get_dir.assert_called_once_with("from-source")
     
     
@@ -79,16 +79,16 @@ class TestMissingProfileWarning:
         """When source.profile points to a nonexistent profile, log a WARNING."""
         discord_source.profile = "nonexistent"
         
-        with patch("renco_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("renco_cli.profiles.get_profile_dir") as mock_get_dir:
-                mock_get_dir.return_value = Path("/renco/profiles/nonexistent")
-                with patch("renco_cli.profiles.profile_exists", return_value=False):
-                    with patch("renco_constants.get_renco_home", return_value=Path("/renco")):
+        with patch("son_of_anton_cli.profiles.get_active_profile_name", return_value="active"):
+            with patch("son_of_anton_cli.profiles.get_profile_dir") as mock_get_dir:
+                mock_get_dir.return_value = Path("/son-of-anton/profiles/nonexistent")
+                with patch("son_of_anton_cli.profiles.profile_exists", return_value=False):
+                    with patch("son_of_anton_constants.get_son_of_anton_home", return_value=Path("/son-of-anton")):
                         with caplog.at_level(logging.WARNING):
                             result = mock_runner._resolve_profile_home_for_source(discord_source)
                             
-                            # Should fall back to global RENCO_HOME
-                            assert result == Path("/renco")
+                            # Should fall back to global SON_OF_ANTON_HOME
+                            assert result == Path("/son-of-anton")
                             
                             # Should have logged a warning
                             assert len(caplog.records) == 1
@@ -109,14 +109,14 @@ class TestExceptionHandling:
         """When get_profile_dir raises an exception, log a WARNING with context."""
         discord_source.profile = "bad-profile"
         
-        with patch("renco_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("renco_cli.profiles.get_profile_dir", side_effect=ValueError("Invalid profile name")):
-                with patch("renco_constants.get_renco_home", return_value=Path("/renco")):
+        with patch("son_of_anton_cli.profiles.get_active_profile_name", return_value="active"):
+            with patch("son_of_anton_cli.profiles.get_profile_dir", side_effect=ValueError("Invalid profile name")):
+                with patch("son_of_anton_constants.get_son_of_anton_home", return_value=Path("/son-of-anton")):
                     with caplog.at_level(logging.WARNING):
                         result = mock_runner._resolve_profile_home_for_source(discord_source)
                         
-                        # Should fall back to global RENCO_HOME
-                        assert result == Path("/renco")
+                        # Should fall back to global SON_OF_ANTON_HOME
+                        assert result == Path("/son-of-anton")
                         
                         # Should have logged a warning with exception info
                         assert len(caplog.records) == 1
@@ -133,9 +133,9 @@ class TestRoutingConsultation:
         """_profile_name_for_source should be called when source.profile is empty."""
         discord_source.profile = None
         
-        with patch("renco_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("renco_cli.profiles.get_profile_dir") as mock_get_dir:
-                mock_get_dir.return_value = Path("/renco/profiles/routed")
+        with patch("son_of_anton_cli.profiles.get_active_profile_name", return_value="active"):
+            with patch("son_of_anton_cli.profiles.get_profile_dir") as mock_get_dir:
+                mock_get_dir.return_value = Path("/son-of-anton/profiles/routed")
                 
                 mock_runner._profile_name_for_source = MagicMock(return_value="routed")
                 
@@ -166,7 +166,7 @@ class TestNonDiscordProfileRouting:
         telegram_source.profile = None
 
         with patch(
-            "renco_cli.profiles.profiles_to_serve",
+            "son_of_anton_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("tg-profile", Path("/profiles/tg-profile"))],
         ):
@@ -185,7 +185,7 @@ class TestNonDiscordProfileRouting:
         telegram_source.chat_id = "route-chat"
 
         with patch(
-            "renco_cli.profiles.profiles_to_serve",
+            "son_of_anton_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
         ) as enumerate_profiles:
@@ -208,7 +208,7 @@ class TestNonDiscordProfileRouting:
         telegram_source.chat_id = "route-chat"
 
         with patch(
-            "renco_cli.profiles.profiles_to_serve",
+            "son_of_anton_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
         ), caplog.at_level(logging.WARNING, logger="gateway.run"):
@@ -294,7 +294,7 @@ class TestAdapterToSessionKeyIntegration:
         adapter = _stub_adapter(Platform.DISCORD, mock_runner)
 
         with patch(
-            "renco_cli.profiles.profiles_to_serve",
+            "son_of_anton_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("coder", Path("/profiles/coder"))],
         ):
@@ -322,7 +322,7 @@ class TestAdapterToSessionKeyIntegration:
         adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
 
         with patch(
-            "renco_cli.profiles.profiles_to_serve",
+            "son_of_anton_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default"))],
         ):
             source = adapter.build_source(chat_id="route-chat", chat_type="group")
@@ -353,7 +353,7 @@ class TestAdapterToSessionKeyIntegration:
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="route-chat")
 
         with patch(
-            "renco_cli.profiles.profiles_to_serve",
+            "son_of_anton_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default"))],
         ):
             result = await GatewayRunner._handle_message(

@@ -1,11 +1,11 @@
 import { PassThrough } from 'stream'
 
-import { renderSync } from '@renco/ink'
+import { renderSync } from '@sonofanton/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 // Stub useInput so the overlay doesn't enter raw mode under renderSync.
-vi.mock('@renco/ink', async importOriginal => {
+vi.mock('@sonofanton/ink', async importOriginal => {
   const mod = await importOriginal()
 
   return { ...mod, useInput: () => {} }

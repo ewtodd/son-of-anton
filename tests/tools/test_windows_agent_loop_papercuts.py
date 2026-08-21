@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from renco_cli._subprocess_compat import split_command_line
+from son_of_anton_cli._subprocess_compat import split_command_line
 
 
 class TestSplitCommandLine:

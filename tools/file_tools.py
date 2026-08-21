@@ -36,14 +36,14 @@ def _expand_tilde(path: str) -> str:
 
     In-process file tools share the gateway process's HOME, which may differ
     from the profile-specific HOME that interactive CLI sessions use.  This
-    mirrors ``renco_constants.get_subprocess_home()`` so that ``~`` resolves
+    mirrors ``son_of_anton_constants.get_subprocess_home()`` so that ``~`` resolves
     consistently regardless of whether the tool runs interactively or inside a
     gateway-driven cron job (#48552).
     """
     if not path or "~" not in path:
         return path
     try:
-        from renco_constants import get_subprocess_home
+        from son_of_anton_constants import get_subprocess_home
 
         home = get_subprocess_home()
     except Exception:
@@ -77,7 +77,7 @@ def _get_max_read_chars() -> int:
     if _max_read_chars_cached is not None:
         return _max_read_chars_cached
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
         cfg = load_config()
         val = cfg.get("file_read_max_chars")
         if isinstance(val, (int, float)) and val > 0:
@@ -93,7 +93,7 @@ def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bo
     """Trim line-numbered ``read_file`` content to fit a char budget.
 
     Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on
-    ``read_file``). Where renco previously hard-rejected an oversized read
+    ``read_file``). Where son-of-anton previously hard-rejected an oversized read
     (forcing the model to guess a smaller ``limit`` and burn a round-trip
     returning nothing), this trims the content to the last *complete line*
     that fits within ``max_chars`` and reports how many lines were kept so
@@ -445,7 +445,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 
 def _file_ops_uses_host_paths(file_ops) -> bool:
-    """Return True when *file_ops* targets the same host filesystem as Renco.
+    """Return True when *file_ops* targets the same host filesystem as Son of Anton.
 
     Only then may we rewrite V4A header paths to resolved host-absolute
     paths: a container/remote backend has its own filesystem namespace where
@@ -656,25 +656,25 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
-_renco_config_resolved: str | None = None
-_renco_config_resolved_loaded = False
+_son_of_anton_config_resolved: str | None = None
+_son_of_anton_config_resolved_loaded = False
 
 
-def _get_renco_config_resolved() -> str | None:
-    """Return the resolved absolute path of the Renco config file (cached)."""
-    global _renco_config_resolved, _renco_config_resolved_loaded
-    if _renco_config_resolved_loaded:
-        return _renco_config_resolved
-    _renco_config_resolved_loaded = True
+def _get_son_of_anton_config_resolved() -> str | None:
+    """Return the resolved absolute path of the Son of Anton config file (cached)."""
+    global _son_of_anton_config_resolved, _son_of_anton_config_resolved_loaded
+    if _son_of_anton_config_resolved_loaded:
+        return _son_of_anton_config_resolved
+    _son_of_anton_config_resolved_loaded = True
     try:
-        from renco_cli.config import get_config_path
-        _renco_config_resolved = str(get_config_path().resolve())
+        from son_of_anton_cli.config import get_config_path
+        _son_of_anton_config_resolved = str(get_config_path().resolve())
     except Exception:
         try:
-            _renco_config_resolved = str(Path(_expand_tilde("~/.renco/config.yaml")).resolve())
+            _son_of_anton_config_resolved = str(Path(_expand_tilde("~/.son-of-anton/config.yaml")).resolve())
         except Exception:
-            _renco_config_resolved = None
-    return _renco_config_resolved
+            _son_of_anton_config_resolved = None
+    return _son_of_anton_config_resolved
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
@@ -693,16 +693,16 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
-    # Prevent agents from modifying the Renco config file directly.
+    # Prevent agents from modifying the Son of Anton config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
     # this file.
-    renco_config = _get_renco_config_resolved()
-    if renco_config and (resolved == renco_config or normalized == renco_config):
+    son_of_anton_config = _get_son_of_anton_config_resolved()
+    if son_of_anton_config and (resolved == son_of_anton_config or normalized == son_of_anton_config):
         return (
-            f"Refusing to write to Renco config file: {filepath}\n"
+            f"Refusing to write to Son of Anton config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.renco/config.yaml directly or use 'renco config' instead."
+            "Edit ~/.son-of-anton/config.yaml directly or use 'son-of-anton config' instead."
         )
     return None
 
@@ -712,7 +712,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
 # ---------------------------------------------------------------------------
 # Files that steer FUTURE agent behavior are a prompt-injection persistence
 # vector: an injected instruction that edits AGENTS.md / CLAUDE.md / SOUL.md /
-# .cursorrules (or a project-local .renco config tree) outlives the current
+# .cursorrules (or a project-local .son-of-anton config tree) outlives the current
 # turn and poisons every later session that loads it. Writes to these files
 # therefore ALWAYS require human approval — even under --yolo / auto-approve —
 # and fail closed when no human channel exists.
@@ -733,25 +733,25 @@ _PROTECTED_INSTRUCTION_BASENAMES = frozenset({
     "agents.md", "claude.md", "soul.md", ".cursorrules",
 })
 
-_real_renco_home_cached: str | None = None
-_real_renco_home_loaded = False
+_real_son_of_anton_home_cached: str | None = None
+_real_son_of_anton_home_loaded = False
 
 
-def _get_real_renco_home() -> str | None:
-    """Return the realpath of the authoritative Renco home (cached)."""
-    global _real_renco_home_cached, _real_renco_home_loaded
-    if _real_renco_home_loaded:
-        return _real_renco_home_cached
-    _real_renco_home_loaded = True
+def _get_real_son_of_anton_home() -> str | None:
+    """Return the realpath of the authoritative Son of Anton home (cached)."""
+    global _real_son_of_anton_home_cached, _real_son_of_anton_home_loaded
+    if _real_son_of_anton_home_loaded:
+        return _real_son_of_anton_home_cached
+    _real_son_of_anton_home_loaded = True
     try:
-        from renco_constants import get_renco_home
-        _real_renco_home_cached = os.path.realpath(str(get_renco_home()))
+        from son_of_anton_constants import get_son_of_anton_home
+        _real_son_of_anton_home_cached = os.path.realpath(str(get_son_of_anton_home()))
     except Exception:
         try:
-            _real_renco_home_cached = os.path.realpath(_expand_tilde("~/.renco"))
+            _real_son_of_anton_home_cached = os.path.realpath(_expand_tilde("~/.son-of-anton"))
         except Exception:
-            _real_renco_home_cached = None
-    return _real_renco_home_cached
+            _real_son_of_anton_home_cached = None
+    return _real_son_of_anton_home_cached
 
 
 def _protected_instruction_config() -> tuple[bool, list[str]]:
@@ -768,7 +768,7 @@ def _protected_instruction_config() -> tuple[bool, list[str]]:
           protected_instruction_extra_patterns: []  # fnmatch on basename
     """
     try:
-        from renco_cli.config import load_config, cfg_get
+        from son_of_anton_cli.config import load_config, cfg_get
         cfg = load_config()
         enabled = cfg_get(cfg, "security", "protected_instruction_files",
                           default=True)
@@ -805,12 +805,12 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     except (OSError, ValueError, RuntimeError):
         resolved = os.path.realpath(normalized)
 
-    # The authoritative ~/.renco home is governed by its own guards
+    # The authoritative ~/.son-of-anton home is governed by its own guards
     # (config.yaml hard-block, cross-profile guard, write_approval); this
     # gate targets PROJECT-LOCAL instruction files only. Checked before the
-    # ``.renco`` component rule below, which would otherwise match the
+    # ``.son-of-anton`` component rule below, which would otherwise match the
     # home directory itself.
-    real_home = _get_real_renco_home()
+    real_home = _get_real_son_of_anton_home()
     if real_home and (resolved == real_home
                       or resolved.startswith(real_home + os.sep)):
         return None
@@ -824,14 +824,14 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         for pattern in extra_patterns:
             if fnmatch.fnmatch(base_lower, pattern.lower()):
                 return base
-        # Project-local .renco config dirs (e.g. <repo>/.renco/config.yaml)
+        # Project-local .son-of-anton config dirs (e.g. <repo>/.son-of-anton/config.yaml)
         # are loaded as project context and steer behavior the same way.
-        # Scope: the file's IMMEDIATE parent must be ``.renco`` — matching
-        # any ancestor named .renco would gate every write inside a
-        # checkout that happens to live under ~/.renco (e.g. the
-        # renco-agent repo itself at ~/.renco/renco-agent).
+        # Scope: the file's IMMEDIATE parent must be ``.son-of-anton`` — matching
+        # any ancestor named .son-of-anton would gate every write inside a
+        # checkout that happens to live under ~/.son-of-anton (e.g. the
+        # son-of-anton repo itself at ~/.son-of-anton/son-of-anton).
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) >= 2 and parts[-2] == ".renco":
+        if len(parts) >= 2 and parts[-2] == ".son-of-anton":
             return candidate
     return None
 
@@ -1020,7 +1020,7 @@ def _check_approval_required_write(paths: list[str],
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
-    """Return the container-side Renco mirror prefix for Docker file tools."""
+    """Return the container-side Son of Anton mirror prefix for Docker file tools."""
     try:
         from tools.terminal_tool import (
             _active_environments,
@@ -1041,7 +1041,7 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
             if env.__class__.__name__ == "DockerEnvironment" and bool(
                 getattr(env, "_persistent", False)
             ):
-                return "/root/.renco"
+                return "/root/.son-of-anton"
             return None
 
         config = _get_env_config()
@@ -1049,29 +1049,29 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
         return None
 
     if config.get("env_type") == "docker" and config.get("container_persistent", True):
-        return "/root/.renco"
+        return "/root/.son-of-anton"
     return None
 
 
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return a soft-guard warning when ``filepath`` lands in another Renco
+    """Return a soft-guard warning when ``filepath`` lands in another Son of Anton
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
-    state, or the Docker container's sandbox mirror of Renco state.
+    state, or the Docker container's sandbox mirror of Son of Anton state.
 
     Three detectors run in order:
 
     * cross-profile — writes that hit another profile's
       ``skills/plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
-      ``…/sandboxes/<backend>/<task>/home/.renco/…`` mirror created by a
+      ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` mirror created by a
       non-local terminal backend (Docker, Daytona, etc.), where the host
-      Renco process never reads the mirror and the authoritative file is
+      Son of Anton process never reads the mirror and the authoritative file is
       left untouched.
     * container-mirror (#32049 follow-up) — writes from inside a Docker
       container whose bind-mounted home strips the ``sandboxes/`` prefix, so
-      the agent sees a plain ``/root/.renco/…`` path.
+      the agent sees a plain ``/root/.son-of-anton/…`` path.
 
-    Returns ``None`` when the write is in-scope or outside Renco scope.
+    Returns ``None`` when the write is in-scope or outside Son of Anton scope.
     All detectors are soft guards — the agent can override any by
     passing ``cross_profile=True`` to its write tool after explicit user
     direction. Defense-in-depth, NOT a security boundary — the terminal
@@ -1092,7 +1092,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         return None
 
     # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
-    # in a session that cd'd into ``~/.renco/profiles/other/`` is
+    # in a session that cd'd into ``~/.son-of-anton/profiles/other/`` is
     # classified against the right base.
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
@@ -1766,11 +1766,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 "Use vision_analyze for images, or terminal to inspect binary files."
             )
 
-        # ── Renco internal path guard ────────────────────────────────
+        # ── Son of Anton internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files,
-        # and block credential stores under RENCO_HOME.  Pass the
+        # and block credential stores under SON_OF_ANTON_HOME.  Pass the
         # already-resolved path so a relative-path read against
-        # TERMINAL_CWD == RENCO_HOME (e.g. "auth.json") still hits the
+        # TERMINAL_CWD == SON_OF_ANTON_HOME (e.g. "auth.json") still hits the
         # denylist — get_read_block_error's own resolve() runs against
         # the Python process cwd, which can differ.
         block_error = get_read_block_error(str(_resolved))
@@ -2224,7 +2224,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     session_id: str | None = None) -> str:
     """Write content to a file.
 
-    ``cross_profile`` opts out of the soft cross-Renco-profile guard. The
+    ``cross_profile`` opts out of the soft cross-Son of Anton-profile guard. The
     guard fires only on writes that land in another profile's
     skills/plugins/cron/memories directory; everything else is unaffected.
     Pass ``True`` after explicit user direction — same shape as ``force``
@@ -2317,7 +2317,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
-    ``cross_profile`` opts out of the soft cross-Renco-profile guard for
+    ``cross_profile`` opts out of the soft cross-Son of Anton-profile guard for
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
@@ -2673,7 +2673,7 @@ WRITE_FILE_SCHEMA = {
             "content": {"type": "string", "description": "Complete content to write to the file"},
             "cross_profile": {
                 "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Renco profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Son of Anton profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
                 "default": False,
             },
         },
@@ -2724,7 +2724,7 @@ PATCH_SCHEMA = {
             },
             "cross_profile": {
                 "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Renco profile's skills/plugins/cron/memories.",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Son of Anton profile's skills/plugins/cron/memories.",
                 "default": False,
             },
         },
@@ -2769,7 +2769,7 @@ def _handle_write_file(args, **kw):
             "write_file: missing required field 'content'. The tool call included a "
             "path but no content argument — this is almost always a dropped-arg bug "
             "under context pressure. Re-emit the tool call with the full content "
-            "payload, or use execute_code with renco_tools.write_file() for very "
+            "payload, or use execute_code with son_of_anton_tools.write_file() for very "
             "large files."
         )
     if not isinstance(args["content"], str):

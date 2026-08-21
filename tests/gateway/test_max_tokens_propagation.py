@@ -6,7 +6,7 @@ free models, Ollama Cloud, custom OpenAI-compatible endpoints) truncated long
 generations with `finish_reason="length"`.
 
 Precedence verified here:
-    RENCO_MAX_TOKENS env  >  model.max_tokens  >  per-provider
+    SON_OF_ANTON_MAX_TOKENS env  >  model.max_tokens  >  per-provider
     max_output_tokens  >  None
 """
 
@@ -20,30 +20,30 @@ import pytest
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Isolated RENCO_HOME with a writable config.yaml and a clean module cache.
+    """Isolated SON_OF_ANTON_HOME with a writable config.yaml and a clean module cache.
 
-    These tests deliberately re-import ``renco_cli`` / ``gateway`` so each
+    These tests deliberately re-import ``son_of_anton_cli`` / ``gateway`` so each
     config write is read fresh. To avoid leaking that purge into sibling test
     files in the same worker (which breaks their import-time mocks), we snapshot
     the affected modules and restore them on teardown.
     """
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
-    monkeypatch.delenv("RENCO_MAX_TOKENS", raising=False)
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
+    monkeypatch.delenv("SON_OF_ANTON_MAX_TOKENS", raising=False)
 
     _saved = {
         k: v
         for k, v in sys.modules.items()
-        if k.startswith(("renco_cli", "gateway"))
+        if k.startswith(("son_of_anton_cli", "gateway"))
     }
 
     def write_cfg(body: str) -> None:
-        (renco_home / "config.yaml").write_text(textwrap.dedent(body))
+        (son_of_anton_home / "config.yaml").write_text(textwrap.dedent(body))
 
     def fresh_gateway():
         for mod in list(sys.modules.keys()):
-            if mod.startswith(("renco_cli", "gateway")):
+            if mod.startswith(("son_of_anton_cli", "gateway")):
                 del sys.modules[mod]
         return importlib.import_module("gateway.run")
 
@@ -53,7 +53,7 @@ def isolated_home(tmp_path, monkeypatch):
         # Drop anything we (re)imported, then restore the pre-test snapshot so
         # the next test file sees the module objects it was loaded with.
         for k in list(sys.modules.keys()):
-            if k.startswith(("renco_cli", "gateway")):
+            if k.startswith(("son_of_anton_cli", "gateway")):
                 del sys.modules[k]
         sys.modules.update(_saved)
 

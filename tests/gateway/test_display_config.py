@@ -192,10 +192,10 @@ class TestConfigMigration:
         }
         config_path.write_text(yaml.dump(config), encoding="utf-8")
 
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        # Re-import to pick up the new RENCO_HOME
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        # Re-import to pick up the new SON_OF_ANTON_HOME
         import importlib
-        import renco_cli.config as cfg_mod
+        import son_of_anton_cli.config as cfg_mod
         importlib.reload(cfg_mod)
 
         result = cfg_mod.migrate_config(interactive=False, quiet=True)

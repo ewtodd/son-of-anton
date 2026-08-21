@@ -131,7 +131,7 @@ _CONTROL_WRAPPERS = (
     ("<ide_selection>", "</ide_selection>"),
 )
 
-# Renco' own machine-authored openers. A compaction handoff or a resumed
+# Son of Anton' own machine-authored openers. A compaction handoff or a resumed
 # session must not be titled after the scaffolding that carried it. The legacy
 # summary prefix comes from the compressor rather than a fourth local copy —
 # compaction still emits it, and a session named after it is named after us.
@@ -156,7 +156,7 @@ _MACHINE_PREFIXES = (
 def _title_language() -> str:
     """Return configured title language, or empty string to match the user."""
     try:
-        from renco_cli.config import load_config_readonly
+        from son_of_anton_cli.config import load_config_readonly
 
         return str(
             ((load_config_readonly() or {}).get("auxiliary") or {})
@@ -171,9 +171,9 @@ def _auto_title_enabled() -> bool:
     """Return whether automatic session title generation is enabled."""
     try:
         # Lazy imports, matching _title_language(): title_generator is imported
-        # from agent code paths where a module-level renco_cli import risks
+        # from agent code paths where a module-level son_of_anton_cli import risks
         # circularity, and the read-only loader avoids config-migration writes.
-        from renco_cli.config import load_config_readonly
+        from son_of_anton_cli.config import load_config_readonly
         from utils import is_truthy_value
 
         config = load_config_readonly()
@@ -548,7 +548,7 @@ def auto_title_session(
     Never lets an exception escape: this is a daemon-thread target, and an
     escaping exception would spray a raw traceback into the user's terminal
     via the default threading excepthook. The canonical trigger is the
-    post-``renco update`` stale-module window, where this function's lazy
+    post-``son-of-anton update`` stale-module window, where this function's lazy
     imports read NEW source from disk while already-cached modules
     (``agent.portal_tags`` etc.) are still the OLD version — the resulting
     ImportError repeats on every auto-title attempt until the long-running
@@ -569,7 +569,7 @@ def auto_title_session(
         # names the likely cause so "restart the process" is discoverable.
         logger.warning(
             "Auto-title failed (harmless; if this started after an update, "
-            "restart the running Renco process): %s",
+            "restart the running Son of Anton process): %s",
             e,
         )
         logger.debug("Auto-title traceback", exc_info=True)
@@ -659,7 +659,7 @@ def _auto_title_session(
 def _is_real_user_turn(message: Any) -> bool:
     """Whether a history entry is a question a person actually asked.
 
-    Renco persists a lot of machinery under ``role="user"`` — compaction
+    Son of Anton persists a lot of machinery under ``role="user"`` — compaction
     handoffs, model-switch markers, background-process notices — because strict
     OpenAI-compatible providers reject a system message that isn't first.
     Counting those as turns is what made a session that merely *opened* with one

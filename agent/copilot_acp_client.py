@@ -1,9 +1,9 @@
-"""OpenAI-compatible shim that forwards Renco requests to `copilot --acp`.
+"""OpenAI-compatible shim that forwards Son of Anton requests to `copilot --acp`.
 
-This adapter lets Renco treat the GitHub Copilot ACP server as a chat-style
+This adapter lets Son of Anton treat the GitHub Copilot ACP server as a chat-style
 backend. Each request starts a short-lived ACP session, sends the formatted
 conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Renco expects from an OpenAI client.
+back into the minimal shape Son of Anton expects from an OpenAI client.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
 from agent.redact import redact_sensitive_text
-from tools.environments.local import renco_subprocess_env
+from tools.environments.local import son_of_anton_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -61,14 +61,14 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
 
 def _resolve_command() -> str:
     return (
-        os.getenv("RENCO_COPILOT_ACP_COMMAND", "").strip()
+        os.getenv("SON_OF_ANTON_COPILOT_ACP_COMMAND", "").strip()
         or os.getenv("COPILOT_CLI_PATH", "").strip()
         or "copilot"
     )
 
 
 def _resolve_args() -> list[str]:
-    raw = os.getenv("RENCO_COPILOT_ACP_ARGS", "").strip()
+    raw = os.getenv("SON_OF_ANTON_COPILOT_ACP_ARGS", "").strip()
     if not raw:
         return ["--acp", "--stdio"]
     return shlex.split(raw)
@@ -104,7 +104,7 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
         command" error with full context.
 
     Only probes when ``--acp`` is actually among ``args``: a custom
-    RENCO_COPILOT_ACP_ARGS transport is the operator's business.
+    SON_OF_ANTON_COPILOT_ACP_ARGS transport is the operator's business.
     """
     if "--acp" not in args:
         return True
@@ -148,7 +148,7 @@ def _resolve_home_dir() -> str:
         pass
 
     # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
-    # subprocess with no HOME; callers can set RENCO_HOME explicitly if they
+    # subprocess with no HOME; callers can set SON_OF_ANTON_HOME explicitly if they
     # need a different writable dir.
     return "/tmp"
 
@@ -157,10 +157,10 @@ def _build_subprocess_env() -> dict[str, str]:
     # Copilot ACP is a model-driving CLI executor: it legitimately needs LLM
     # provider credentials. Route through the central helper so Tier-1 secrets
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
-    env = renco_subprocess_env(inherit_credentials=True)
+    env = son_of_anton_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
-    from renco_constants import apply_subprocess_home_env
+    from son_of_anton_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env
 
@@ -195,13 +195,13 @@ def _format_messages_as_prompt(
     tool_choice: Any = None,
 ) -> str:
     sections: list[str] = [
-        "You are being used as the active ACP agent backend for Renco.",
+        "You are being used as the active ACP agent backend for Son of Anton.",
         "Use ACP capabilities to complete tasks.",
         "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
         "If no tool is needed, answer normally.",
     ]
     if model:
-        sections.append(f"Renco requested model hint: {model}")
+        sections.append(f"Son of Anton requested model hint: {model}")
 
     if isinstance(tools, list) and tools:
         tool_specs: list[dict[str, Any]] = []
@@ -574,14 +574,14 @@ class CopilotACPClient:
                 f"Claude Code v2.x) or a different tool than expected. "
                 f"Either install a CLI that ships with --acp support "
                 f"(e.g. `@github/copilot` late 2025+), or set "
-                f"RENCO_COPILOT_ACP_COMMAND / RENCO_COPILOT_ACP_ARGS "
+                f"SON_OF_ANTON_COPILOT_ACP_COMMAND / SON_OF_ANTON_COPILOT_ACP_ARGS "
                 f"to a working pair."
             )
 
         try:
             # Hide the console the CLI child would otherwise flash on Windows
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.
-            from renco_cli._subprocess_compat import windows_hide_flags
+            from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -597,7 +597,7 @@ class CopilotACPClient:
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"Could not start Copilot ACP command '{self._acp_command}'. "
-                "Install GitHub Copilot CLI or set RENCO_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+                "Install GitHub Copilot CLI or set SON_OF_ANTON_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
             ) from exc
 
         if proc.stdin is None or proc.stdout is None:
@@ -677,17 +677,17 @@ class CopilotACPClient:
             if proc.poll() is not None and stderr_text:
                 if _is_gh_copilot_deprecation_message(stderr_text):
                     raise RuntimeError(
-                        "Renco ACP mode requires the NEW GitHub Copilot CLI "
+                        "Son of Anton ACP mode requires the NEW GitHub Copilot CLI "
                         "(github.com/github/copilot-cli), but the binary it just "
                         "spawned is the deprecated `gh copilot` extension.\n\n"
                         "Install the new CLI:\n"
                         "  npm install -g @github/copilot\n"
                         "  # then verify with: copilot --help\n\n"
                         "If `copilot` already resolves to the new CLI but you still see this,\n"
-                        "point Renco at it explicitly:\n"
-                        "  export RENCO_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
+                        "point Son of Anton at it explicitly:\n"
+                        "  export SON_OF_ANTON_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
                         "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
-                        "directly with a Copilot subscription token) via `renco setup`.\n\n"
+                        "directly with a Copilot subscription token) via `son-of-anton setup`.\n\n"
                         f"Original error:\n{stderr_text}"
                     )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
@@ -705,8 +705,8 @@ class CopilotACPClient:
                         }
                     },
                     "clientInfo": {
-                        "name": "renco-agent",
-                        "title": "Renco Agent",
+                        "name": "son-of-anton",
+                        "title": "Son of Anton Agent",
                         "version": "0.0.0",
                     },
                 },
@@ -832,7 +832,7 @@ class CopilotACPClient:
             response = _jsonrpc_error(
                 message_id,
                 -32601,
-                f"ACP client method '{method}' is not supported by Renco yet.",
+                f"ACP client method '{method}' is not supported by Son of Anton yet.",
             )
 
         process.stdin.write(json.dumps(response) + "\n")

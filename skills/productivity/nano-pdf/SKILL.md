@@ -6,7 +6,7 @@ author: community
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [PDF, Documents, Editing, NLP, Productivity]
     homepage: https://pypi.org/project/nano-pdf/
     related_skills: [pdf, ocr-and-documents]
@@ -19,7 +19,7 @@ Edit PDFs using natural-language instructions. Point it at a page and describe w
 ## Prerequisites
 
 ```bash
-# Install with uv (recommended — already available in Renco)
+# Install with uv (recommended — already available in Son of Anton)
 uv pip install nano-pdf
 
 # Or with pip

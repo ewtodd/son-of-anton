@@ -1,6 +1,6 @@
 """Regression tests for the Docker terminal network toggle.
 
-Ported from NanoClaw PR #2713's opt-in egress lockdown idea. Renco already
+Ported from NanoClaw PR #2713's opt-in egress lockdown idea. Son of Anton already
 has DockerEnvironment(network=False), but the terminal config path did not
 expose it, so operators could not request networkless Docker execution from
 config.yaml.

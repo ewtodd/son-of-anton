@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
@@ -101,9 +101,9 @@ class TestGoalMigratesOnRotation:
         agent = _build_agent_with_db(db, parent)
 
         # Set a persistent goal on the parent via the real persistence path.
-        with patch.dict(os.environ, {"RENCO_HOME": str(tmp_path / ".renco")}):
-            (tmp_path / ".renco").mkdir(exist_ok=True)
-            import renco_cli.goals as goals
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(tmp_path / ".son-of-anton")}):
+            (tmp_path / ".son-of-anton").mkdir(exist_ok=True)
+            import son_of_anton_cli.goals as goals
             goals._DB_CACHE.clear()
             # Point the goal DB at the same state.db the agent uses.
             with patch.object(goals, "_get_session_db", return_value=db):

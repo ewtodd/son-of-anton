@@ -18,8 +18,8 @@ def _reset_emitter():
 def test_lives_in_the_gui_surface_toolset(monkeypatch):
     """Surface eligibility is the toolset's job, not a process env var — the
     desktop client can be driving a remote/cloud backend that never sees
-    RENCO_DESKTOP."""
-    monkeypatch.delenv("RENCO_DESKTOP", raising=False)
+    SON_OF_ANTON_DESKTOP."""
+    monkeypatch.delenv("SON_OF_ANTON_DESKTOP", raising=False)
     entry = registry.get_entry("apply_layout")
 
     assert entry is not None

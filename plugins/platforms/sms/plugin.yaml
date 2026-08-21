@@ -3,9 +3,9 @@ label: SMS (Twilio)
 kind: platform
 version: 1.0.0
 description: >
-  SMS gateway adapter for Renco Agent via Twilio. Sends and receives SMS
+  SMS gateway adapter for Son of Anton Agent via Twilio. Sends and receives SMS
   through the Twilio REST API + inbound webhook, relaying texts between phone
-  numbers and the Renco agent. Markdown is stripped to plain text.
+  numbers and the Son of Anton agent. Markdown is stripped to plain text.
 author: NousResearch
 requires_env:
   - name: TWILIO_ACCOUNT_SID

@@ -1,1 +1,1 @@
-# Renco plugins package
+# Son of Anton plugins package

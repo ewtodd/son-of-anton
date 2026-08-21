@@ -75,14 +75,14 @@ class TestCacheRoundTrip:
 
 
 class TestCacheFileLocation:
-    def test_cache_lives_under_renco_home_cache_dir_with_0600(
+    def test_cache_lives_under_son_of_anton_home_cache_dir_with_0600(
         self, monkeypatch, tmp_path
     ):
-        # Real path (no _cache_path monkeypatch): RENCO_HOME/cache/…, 0o600,
+        # Real path (no _cache_path monkeypatch): SON_OF_ANTON_HOME/cache/…, 0o600,
         # matching the discovery-cache precedent in tools/registry.py.
-        import renco_constants
+        import son_of_anton_constants
 
-        monkeypatch.setattr(renco_constants, "get_renco_home", lambda: tmp_path)
+        monkeypatch.setattr(son_of_anton_constants, "get_son_of_anton_home", lambda: tmp_path)
         path = msc._cache_path()
         assert path == tmp_path / "cache" / "mcp_schema_cache.json"
         msc.write_cache_entry("srv", "fp", tools=[], utility_tools=[])

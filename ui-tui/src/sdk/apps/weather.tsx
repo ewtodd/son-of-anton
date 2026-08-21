@@ -1,4 +1,4 @@
-import { Box, Text } from '@renco/ink'
+import { Box, Text } from '@sonofanton/ink'
 
 import { ShimmerRows } from '../../components/loaders.js'
 import { Dialog } from '../../components/overlay.js'
@@ -79,7 +79,7 @@ const artColor = (art: Art, t: Theme): string =>
 
 async function fetchReport(location: string): Promise<Report> {
   const res = await fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1`, {
-    headers: { 'User-Agent': 'renco-tui-weather' },
+    headers: { 'User-Agent': 'son-of-anton-tui-weather' },
     signal: AbortSignal.timeout(10_000)
   })
 

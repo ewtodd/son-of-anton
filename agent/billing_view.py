@@ -345,16 +345,16 @@ def build_billing_state(*, timeout: float = 15.0) -> BillingState:
     failure, returns ``logged_in=False`` with ``error`` set so the surface can show
     a clear message rather than crashing.
 
-    Dev override: ``RENCO_DEV_BILLING_FIXTURE`` short-circuits to a fixture so the
+    Dev override: ``SON_OF_ANTON_DEV_BILLING_FIXTURE`` short-circuits to a fixture so the
     card-on-file / admin / scope states are testable offline (mirrors
-    ``RENCO_DEV_CREDITS_FIXTURE`` for the usage model).
+    ``SON_OF_ANTON_DEV_CREDITS_FIXTURE`` for the usage model).
     """
     fixture = _dev_fixture_billing_state()
     if fixture is not None:
         return fixture
 
     try:
-        from renco_cli.nous_billing import (
+        from son_of_anton_cli.nous_billing import (
             BillingAuthError,
             BillingError,
             _absolutize_portal_url,
@@ -399,7 +399,7 @@ def _fallback_portal_url(base: str) -> str:
 
 
 def _dev_fixture_billing_state() -> Optional[BillingState]:
-    """Map ``RENCO_DEV_BILLING_FIXTURE`` to a :class:`BillingState` for offline UX.
+    """Map ``SON_OF_ANTON_DEV_BILLING_FIXTURE`` to a :class:`BillingState` for offline UX.
 
     Recognized names::
 
@@ -411,10 +411,10 @@ def _dev_fixture_billing_state() -> Optional[BillingState]:
         logged-out       not logged in
 
     Returns ``None`` when the env var is unset (the real portal path runs).
-    Mirrors ``RENCO_DEV_CREDITS_FIXTURE``; the usage *bar* still comes from
-    ``RENCO_DEV_CREDITS_FIXTURE`` (set both to pair a bar with a billing state).
+    Mirrors ``SON_OF_ANTON_DEV_CREDITS_FIXTURE``; the usage *bar* still comes from
+    ``SON_OF_ANTON_DEV_CREDITS_FIXTURE`` (set both to pair a bar with a billing state).
     """
-    name = (os.getenv("RENCO_DEV_BILLING_FIXTURE") or "").strip().lower()
+    name = (os.getenv("SON_OF_ANTON_DEV_BILLING_FIXTURE") or "").strip().lower()
     if not name:
         return None
 
@@ -456,7 +456,7 @@ def _dev_fixture_billing_state() -> Optional[BillingState]:
         return BillingState(logged_in=True, card=None, **opts)
 
     # Unknown name → logged-out so the misconfiguration is visible.
-    return BillingState(logged_in=False, error=f"unknown RENCO_DEV_BILLING_FIXTURE: {name}")
+    return BillingState(logged_in=False, error=f"unknown SON_OF_ANTON_DEV_BILLING_FIXTURE: {name}")
 
 
 # =============================================================================

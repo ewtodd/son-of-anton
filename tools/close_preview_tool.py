@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Close the Renco desktop GUI's preview pane, or one of its tabs.
+"""Close the Son of Anton desktop GUI's preview pane, or one of its tabs.
 
 Lives in the ``desktop_ui`` toolset (same as ``open_preview``), which the GUI
 gateway enables only for a session whose source is the desktop app. Emits
@@ -24,7 +24,7 @@ def close_preview_tool(url: str = "") -> str:
     except Exception as exc:
         return tool_error(f"Failed to close the preview pane: {exc}")
     if not ok:
-        return tool_error("The preview pane is only available in the Renco desktop app.")
+        return tool_error("The preview pane is only available in the Son of Anton desktop app.")
 
     return json.dumps({"success": True, "url": target}, ensure_ascii=False)
 
@@ -32,7 +32,7 @@ def close_preview_tool(url: str = "") -> str:
 CLOSE_PREVIEW_SCHEMA = {
     "name": "close_preview",
     "description": (
-        "Close the preview pane beside the chat in the Renco desktop app, or one "
+        "Close the preview pane beside the chat in the Son of Anton desktop app, or one "
         "tab inside it. Use this when the user asks to close, hide, or dismiss the "
         "preview — e.g. \"close the preview pane\", \"close cnn.com\", \"hide the "
         "preview\". Omit url to close the whole pane (every tab). Pass a web URL, "

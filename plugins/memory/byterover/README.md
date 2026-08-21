@@ -14,14 +14,14 @@ npm install -g byterover-cli
 ## Setup
 
 ```bash
-renco memory setup    # select "byterover"
+son-of-anton memory setup    # select "byterover"
 ```
 
 Or manually:
 ```bash
-renco config set memory.provider byterover
+son-of-anton config set memory.provider byterover
 # Optional cloud sync:
-echo "BRV_API_KEY=your-key" >> ~/.renco/.env
+echo "BRV_API_KEY=your-key" >> ~/.son-of-anton/.env
 ```
 
 ## Config
@@ -30,7 +30,7 @@ echo "BRV_API_KEY=your-key" >> ~/.renco/.env
 |---------|----------|-------------|
 | `BRV_API_KEY` | No | Cloud sync key (optional, local-first by default) |
 
-Working directory: `$RENCO_HOME/byterover/` (profile-scoped).
+Working directory: `$SON_OF_ANTON_HOME/byterover/` (profile-scoped).
 
 ## Tools
 

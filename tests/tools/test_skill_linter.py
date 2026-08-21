@@ -18,10 +18,10 @@ CLEAN = """---
 name: my-skill
 description: Search arXiv papers by keyword, author, or ID.
 version: 1.0.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 metadata:
-  renco:
+  son-of-anton:
     tags: [arxiv, research]
     related_skills: []
 ---
@@ -178,7 +178,7 @@ def test_lint_skill_reads_from_disk(tmp_path):
 
 
 def test_author_caps_warned():
-    content = CLEAN.replace("author: Renco Agent", "author: renco agent")
+    content = CLEAN.replace("author: Son of Anton Agent", "author: son-of-anton agent")
     findings = lint_content(content)
     assert "author-caps" in _rules(findings)
 

@@ -13,7 +13,7 @@ from agent.prompt_builder import (
     _truncate_content,
     _parse_skill_file,
     _skill_should_show,
-    _find_renco_md,
+    _find_son_of_anton_md,
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
@@ -35,7 +35,7 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
-from renco_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from son_of_anton_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
 
 # =========================================================================
@@ -98,8 +98,8 @@ class TestTruncateContent:
         def default_load_config():
             return {}
 
-        monkeypatch.setattr("renco_cli.config.load_config", default_load_config)
-        monkeypatch.setattr("renco_cli.config.load_config_readonly", default_load_config)
+        monkeypatch.setattr("son_of_anton_cli.config.load_config", default_load_config)
+        monkeypatch.setattr("son_of_anton_cli.config.load_config_readonly", default_load_config)
 
 
 
@@ -117,8 +117,8 @@ class TestTruncateContent:
         def fake_load_config():
             return {"context_file_max_chars": 120}
 
-        monkeypatch.setattr("renco_cli.config.load_config", fake_load_config)
-        monkeypatch.setattr("renco_cli.config.load_config_readonly", fake_load_config)
+        monkeypatch.setattr("son_of_anton_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("son_of_anton_cli.config.load_config_readonly", fake_load_config)
 
         _truncate_content("x" * 180, "warning.md")
 
@@ -135,8 +135,8 @@ class TestTruncateContent:
         def fake_load_config():
             return {"context_file_max_chars": 120}
 
-        monkeypatch.setattr("renco_cli.config.load_config", fake_load_config)
-        monkeypatch.setattr("renco_cli.config.load_config_readonly", fake_load_config)
+        monkeypatch.setattr("son_of_anton_cli.config.load_config", fake_load_config)
+        monkeypatch.setattr("son_of_anton_cli.config.load_config_readonly", fake_load_config)
 
         # Generate a warning in a fresh child context, then assert it did NOT
         # leak into the parent context's accumulator.
@@ -164,8 +164,8 @@ class TestDynamicContextFileCap:
     @pytest.fixture(autouse=True)
     def _no_explicit_config(self, monkeypatch):
         # No explicit context_file_max_chars → dynamic path is eligible.
-        monkeypatch.setattr("renco_cli.config.load_config", lambda: {})
-        monkeypatch.setattr("renco_cli.config.load_config_readonly", lambda: {})
+        monkeypatch.setattr("son_of_anton_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("son_of_anton_cli.config.load_config_readonly", lambda: {})
 
 
     def test_dynamic_scales_above_floor_for_large_window(self):
@@ -181,11 +181,11 @@ class TestDynamicContextFileCap:
     def test_explicit_config_beats_dynamic(self, monkeypatch):
         # An explicit value always wins, even when a big window is available.
         monkeypatch.setattr(
-            "renco_cli.config.load_config",
+            "son_of_anton_cli.config.load_config",
             lambda: {"context_file_max_chars": 1_000},
         )
         monkeypatch.setattr(
-            "renco_cli.config.load_config_readonly",
+            "son_of_anton_cli.config.load_config_readonly",
             lambda: {"context_file_max_chars": 1_000},
         )
         assert _get_context_file_max_chars(200_000) == 1_000
@@ -284,7 +284,7 @@ class TestBuildSkillsSystemPrompt:
 
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
         for subdir in ["search", "search"]:
             d = cat_dir / subdir
@@ -298,7 +298,7 @@ class TestBuildSkillsSystemPrompt:
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
@@ -319,7 +319,7 @@ class TestBuildSkillsSystemPrompt:
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         skills_dir = tmp_path / "skills" / "tools"
         skills_dir.mkdir(parents=True)
 
@@ -347,7 +347,7 @@ class TestBuildSkillsSystemPrompt:
         assert "old-tool" not in result
 
     def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
@@ -372,7 +372,7 @@ class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
-            "renco_cli.nous_subscription.get_nous_subscription_features",
+            "son_of_anton_cli.nous_subscription.get_nous_subscription_features",
             lambda config=None: NousSubscriptionFeatures(
                 subscribed=True,
                 nous_auth_present=True,
@@ -398,7 +398,7 @@ class TestBuildNousSubscriptionPrompt:
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
-            "renco_cli.nous_subscription.get_nous_subscription_features",
+            "son_of_anton_cli.nous_subscription.get_nous_subscription_features",
             lambda config=None: NousSubscriptionFeatures(
                 subscribed=False,
                 nous_auth_present=False,
@@ -442,7 +442,7 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "Renco Agent" in result
+        assert "Son of Anton Agent" in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -531,11 +531,11 @@ class TestBuildContextFilesPrompt:
         assert "Override-only context" in result
         assert "Project Context" in result
 
-    def test_renco_md_still_wins_over_agents_override(self, tmp_path):
-        (tmp_path / ".renco.md").write_text("Renco-first context.")
+    def test_son_of_anton_md_still_wins_over_agents_override(self, tmp_path):
+        (tmp_path / ".son-of-anton.md").write_text("Son of Anton-first context.")
         (tmp_path / "AGENTS.override.md").write_text("Override context.")
         result = build_context_files_prompt(cwd=str(tmp_path))
-        assert "Renco-first context" in result
+        assert "Son of Anton-first context" in result
         assert "Override context" not in result
 
     def test_skips_agents_md_in_install_tree_on_fallback(self, monkeypatch, tmp_path):
@@ -558,17 +558,17 @@ class TestBuildContextFilesPrompt:
 
 
     def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / "renco_home"))
-        renco_home = tmp_path / "renco_home"
-        renco_home.mkdir()
-        (renco_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "son_of_anton_home"))
+        son_of_anton_home = tmp_path / "son_of_anton_home"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
 
 
 
-    # --- .renco.md / RENCO.md discovery ---
+    # --- .son-of-anton.md / SON_OF_ANTON.md discovery ---
 
 
 
@@ -608,23 +608,23 @@ class TestBuildContextFilesPrompt:
 
 
 # =========================================================================
-# .renco.md helper functions
+# .son-of-anton.md helper functions
 # =========================================================================
 
 
-class TestFindRencoMd:
+class TestFindSonOfAntonMd:
     def test_finds_in_cwd(self, tmp_path):
-        (tmp_path / ".renco.md").write_text("rules")
-        assert _find_renco_md(tmp_path) == tmp_path / ".renco.md"
+        (tmp_path / ".son-of-anton.md").write_text("rules")
+        assert _find_son_of_anton_md(tmp_path) == tmp_path / ".son-of-anton.md"
 
 
 
     def test_walks_to_git_root(self, tmp_path):
         (tmp_path / ".git").mkdir()
-        (tmp_path / ".renco.md").write_text("root rules")
+        (tmp_path / ".son-of-anton.md").write_text("root rules")
         sub = tmp_path / "a" / "b"
         sub.mkdir(parents=True)
-        assert _find_renco_md(sub) == tmp_path / ".renco.md"
+        assert _find_son_of_anton_md(sub) == tmp_path / ".son-of-anton.md"
 
 
 
@@ -632,19 +632,19 @@ class TestFindRencoMd:
         """Outside a git repo, only cwd is checked — parents are NOT walked.
 
         Walking parents with no git root to stop the loop would climb all
-        the way to / and pick up a .renco.md planted in /tmp, /home, or /
+        the way to / and pick up a .son-of-anton.md planted in /tmp, /home, or /
         on a shared system — a cross-user prompt-injection vector.
         """
         from unittest.mock import patch
 
         parent = tmp_path / "parent"
         parent.mkdir()
-        (parent / ".renco.md").write_text("planted by another user")
+        (parent / ".son-of-anton.md").write_text("planted by another user")
         cwd = parent / "work"
         cwd.mkdir()
         # No git root anywhere up the tree.
         with patch("agent.prompt_builder._find_git_root", return_value=None):
-            assert _find_renco_md(cwd) is None
+            assert _find_son_of_anton_md(cwd) is None
 
 
 
@@ -860,11 +860,11 @@ class TestEnvironmentHints:
 
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
-        """RENCO_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
+        """SON_OF_ANTON_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        monkeypatch.setenv("RENCO_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
+        monkeypatch.setenv("SON_OF_ANTON_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "Running inside an OpenShell sandbox." in result
@@ -922,11 +922,11 @@ class TestBuildSkillsSystemPromptConditional:
 
 
     def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "iot" / "openhue"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  renco:\n    requires_toolsets: [terminal]\n---\n"
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  son-of-anton:\n    requires_toolsets: [terminal]\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -938,11 +938,11 @@ class TestBuildSkillsSystemPromptConditional:
 
     def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
         """Backward compat: calling with no args shows everything."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  renco:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  son-of-anton:\n    fallback_for_toolsets: [web]\n---\n"
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result

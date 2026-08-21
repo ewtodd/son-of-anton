@@ -13,11 +13,11 @@ from .constants import QQBOT_VERSION
 # User-Agent
 # ---------------------------------------------------------------------------
 
-def _get_renco_version() -> str:
-    """Return the renco-agent package version, or 'dev' if unavailable."""
+def _get_son_of_anton_version() -> str:
+    """Return the son-of-anton package version, or 'dev' if unavailable."""
     try:
         from importlib.metadata import version
-        return version("renco-agent")
+        return version("son-of-anton")
     except Exception:
         return "dev"
 
@@ -27,16 +27,16 @@ def build_user_agent() -> str:
 
     Format::
 
-        QQBotAdapter/<qqbot_version> (Python/<py_version>; <os>; Renco/<renco_version>)
+        QQBotAdapter/<qqbot_version> (Python/<py_version>; <os>; Son of Anton/<son_of_anton_version>)
 
     Example::
 
-        QQBotAdapter/1.0.0 (Python/3.11.15; darwin; Renco/0.9.0)
+        QQBotAdapter/1.0.0 (Python/3.11.15; darwin; Son of Anton/0.9.0)
     """
     py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     os_name = platform.system().lower()
-    renco_version = _get_renco_version()
-    return f"QQBotAdapter/{QQBOT_VERSION} (Python/{py_version}; {os_name}; Renco/{renco_version})"
+    son_of_anton_version = _get_son_of_anton_version()
+    return f"QQBotAdapter/{QQBOT_VERSION} (Python/{py_version}; {os_name}; Son of Anton/{son_of_anton_version})"
 
 
 def get_api_headers() -> Dict[str, str]:

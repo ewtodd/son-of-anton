@@ -9,11 +9,11 @@ dispatch so the idle prompt doesn't read as "nothing happened".
 import json
 
 import cli
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 def _make_cli():
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli_obj._pending_edit_snapshots = {}
     return cli_obj
 

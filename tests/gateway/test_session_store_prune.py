@@ -24,17 +24,17 @@ from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.session import SessionEntry, SessionStore
 
 
-def test_session_store_default_db_uses_runtime_renco_home(tmp_path, monkeypatch):
-    """SessionStore must honor runtime RENCO_HOME when opening the default DB.
+def test_session_store_default_db_uses_runtime_son_of_anton_home(tmp_path, monkeypatch):
+    """SessionStore must honor runtime SON_OF_ANTON_HOME when opening the default DB.
 
     Regression for the import-time DEFAULT_DB_PATH freeze: importing
-    renco_state before a fixture redirected RENCO_HOME used to pin every
-    default SessionDB() at the developer's real ~/.renco/state.db.
+    son_of_anton_state before a fixture redirected SON_OF_ANTON_HOME used to pin every
+    default SessionDB() at the developer's real ~/.son-of-anton/state.db.
     """
     config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
-    fake_home = tmp_path / "alt_renco_home"
+    fake_home = tmp_path / "alt_son_of_anton_home"
     fake_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(fake_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(fake_home))
 
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
@@ -257,5 +257,5 @@ class TestReadmeSentinel:
         assert next(iter(raw)) == "_README"
         # The note points users at the real store and command.
         assert "state.db" in raw["_README"]
-        assert "renco sessions list" in raw["_README"]
+        assert "son-of-anton sessions list" in raw["_README"]
 

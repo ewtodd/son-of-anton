@@ -3,9 +3,9 @@ label: Matrix
 kind: platform
 version: 1.0.0
 description: >
-  Matrix gateway adapter for Renco Agent.
+  Matrix gateway adapter for Son of Anton Agent.
   Connects to a Matrix homeserver via mautrix (with optional E2EE) and relays
-  messages between Matrix rooms/DMs and the Renco agent. Supports threads,
+  messages between Matrix rooms/DMs and the Son of Anton agent. Supports threads,
   HTML/markdown rendering, native media uploads, mention gating, free-response
   rooms, and per-room allowlists.
 author: NousResearch

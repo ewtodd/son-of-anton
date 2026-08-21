@@ -27,7 +27,7 @@ def _make_env_config(**overrides):
 
 @pytest.fixture
 def repo(tmp_path):
-    root = tmp_path / "renco-agent"
+    root = tmp_path / "son-of-anton"
     (root / ".git").mkdir(parents=True)
     return root.resolve()
 

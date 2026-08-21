@@ -127,7 +127,7 @@ class _FakeAS(BaseHTTPRequestHandler):
             body["config"] = {
                 "peerName": "lyra",
                 "environment": "production",
-                "hosts": {"renco": {"saveMessages": True, "recallMode": "hybrid"}},
+                "hosts": {"son-of-anton": {"saveMessages": True, "recallMode": "hybrid"}},
             }
         payload = json.dumps(body).encode()
         self.send_response(200)
@@ -157,7 +157,7 @@ def fake_as(monkeypatch):
     base = f"http://127.0.0.1:{port}"
     monkeypatch.setenv("HONCHO_OAUTH_AUTHORIZE_URL", f"{base}/authorize")
     monkeypatch.setenv("HONCHO_OAUTH_TOKEN_URL", f"{base}/oauth/token")
-    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "renco-desktop")
+    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "son-of-anton-desktop")
     try:
         yield base
     finally:
@@ -187,7 +187,7 @@ def test_full_loopback_flow_then_refresh(tmp_path, fake_as):
 
     cred = oauth_flow.authorize_via_loopback(
         config_path=config_path,
-        host="renco",
+        host="son-of-anton",
         open_url=lambda url: _browser_driver(url),
         timeout=10,
     )
@@ -195,19 +195,19 @@ def test_full_loopback_flow_then_refresh(tmp_path, fake_as):
     # Grant installed: token stored, config deep-merged, other host preserved.
     assert cred.access_token == "hch-at-1"
     saved = json.loads(config_path.read_text())
-    assert saved["hosts"]["renco"]["apiKey"] == "hch-at-1"
-    assert saved["hosts"]["renco"]["oauth"]["refreshToken"] == "hch-rt-1"
-    assert saved["hosts"]["renco"]["recallMode"] == "hybrid"
+    assert saved["hosts"]["son-of-anton"]["apiKey"] == "hch-at-1"
+    assert saved["hosts"]["son-of-anton"]["oauth"]["refreshToken"] == "hch-rt-1"
+    assert saved["hosts"]["son-of-anton"]["recallMode"] == "hybrid"
     assert saved["environment"] == "production"
     assert saved["hosts"]["obsidian"] == {"workspace": "obsidian"}
 
     # Force expiry; ensure_fresh_token refreshes against the same AS and rotates.
     token, refreshed = oauth.ensure_fresh_token(
-        config_path, "renco", now=saved["hosts"]["renco"]["oauth"]["expiresAt"] + 10
+        config_path, "son-of-anton", now=saved["hosts"]["son-of-anton"]["oauth"]["expiresAt"] + 10
     )
     assert refreshed is True
     assert token == "hch-at-2"
-    rotated = json.loads(config_path.read_text())["hosts"]["renco"]["oauth"]
+    rotated = json.loads(config_path.read_text())["hosts"]["son-of-anton"]["oauth"]
     assert rotated["refreshToken"] == "hch-rt-2"
 
 
@@ -217,51 +217,51 @@ def test_state_mismatch_is_rejected(fake_as, tmp_path):
     with pytest.raises(ValueError, match="unknown or expired"):
         oauth_flow.complete_authorization(
             endpoints, "code", "not-the-real-state",
-            config_path=tmp_path / "honcho.json", host="renco",
+            config_path=tmp_path / "honcho.json", host="son-of-anton",
         )
 
 
 def test_source_tags_the_authorize_link(fake_as):
     endpoints = oauth_flow.resolve_endpoints()
-    url, _ = oauth_flow.begin_authorization(endpoints, source="renco-cli")
-    assert "source=renco-cli" in url
+    url, _ = oauth_flow.begin_authorization(endpoints, source="son-of-anton-cli")
+    assert "source=son-of-anton-cli" in url
     untagged, _ = oauth_flow.begin_authorization(endpoints)
     assert "source=" not in untagged
 
 
-def test_client_id_defaults_to_renco_agent(monkeypatch):
+def test_client_id_defaults_to_son_of_anton_agent(monkeypatch):
     # One client for every surface; the env var overrides for unusual deployments.
     monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID", raising=False)
     common = {"environment": "production", "base_url": "https://api.honcho.dev"}
-    assert oauth_flow.resolve_endpoints(**common).client_id == "renco-agent"
+    assert oauth_flow.resolve_endpoints(**common).client_id == "son-of-anton"
     monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "custom-id")
     assert oauth_flow.resolve_endpoints(**common).client_id == "custom-id"
 
 
 def test_grant_persists_default_client_id(tmp_path, fake_as, monkeypatch):
     # Drop the fixture's override so the default takes effect; the grant must
-    # store client_id=renco-agent so refresh reuses the right client.
+    # store client_id=son-of-anton so refresh reuses the right client.
     monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID", raising=False)
     config_path = tmp_path / "honcho.json"
     config_path.write_text(json.dumps({"hosts": {}}))
 
     oauth_flow.authorize_via_loopback(
         config_path=config_path,
-        host="renco",
-        source="renco-cli",
+        host="son-of-anton",
+        source="son-of-anton-cli",
         apply_config=False,
         open_url=lambda url: _browser_driver(url),
         timeout=10,
     )
     saved = json.loads(config_path.read_text())
-    assert saved["hosts"]["renco"]["oauth"]["clientId"] == "renco-agent"
+    assert saved["hosts"]["son-of-anton"]["oauth"]["clientId"] == "son-of-anton"
 
 
 def test_config_path_rides_the_authorize_link(fake_as):
     endpoints = oauth_flow.resolve_endpoints()
-    url, _ = oauth_flow.begin_authorization(endpoints, config_path="~/.renco/honcho.json")
+    url, _ = oauth_flow.begin_authorization(endpoints, config_path="~/.son-of-anton/honcho.json")
     q = parse_qs(urlparse(url).query)
-    assert q["config_path"][0] == "~/.renco/honcho.json"
+    assert q["config_path"][0] == "~/.son-of-anton/honcho.json"
     bare, _ = oauth_flow.begin_authorization(endpoints)
     assert "config_path=" not in bare
 
@@ -270,27 +270,27 @@ def test_display_config_path_never_leaks_absolute_path():
     from pathlib import Path
 
     # Under home → collapsed to ~/…; outside home → bare filename only.
-    under_home = Path.home() / ".renco" / "profiles" / "work" / "honcho.json"
-    assert oauth_flow._display_config_path(under_home) == "~/.renco/profiles/work/honcho.json"
+    under_home = Path.home() / ".son-of-anton" / "profiles" / "work" / "honcho.json"
+    assert oauth_flow._display_config_path(under_home) == "~/.son-of-anton/profiles/work/honcho.json"
     assert oauth_flow._display_config_path("/var/folders/tmp/honcho.json") == "honcho.json"
 
 
 def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):
     # apply_config=False (the CLI path): grant config must NOT touch settings.
     config_path = tmp_path / "honcho.json"
-    config_path.write_text(json.dumps({"hosts": {"renco": {"saveMessages": False}}}))
+    config_path.write_text(json.dumps({"hosts": {"son-of-anton": {"saveMessages": False}}}))
 
     cred = oauth_flow.authorize_via_loopback(
         config_path=config_path,
-        host="renco",
-        source="renco-cli",
+        host="son-of-anton",
+        source="son-of-anton-cli",
         apply_config=False,
         open_url=lambda url: _browser_driver(url),
         timeout=10,
     )
 
     saved = json.loads(config_path.read_text())
-    host = saved["hosts"]["renco"]
+    host = saved["hosts"]["son-of-anton"]
     assert host["apiKey"] == cred.access_token
     assert host["oauth"]["refreshToken"] == cred.refresh_token
     # Wizard-owned setting untouched; grant config keys absent.
@@ -337,7 +337,7 @@ def test_supports_device_login_from_metadata(fake_as):
     dead = oauth_flow.OAuthEndpoints(
         authorize_url="http://127.0.0.1:1/authorize",
         token_url="http://127.0.0.1:1/oauth/token",
-        client_id="renco-agent",
+        client_id="son-of-anton",
         scope="write",
     )
     assert oauth_flow.supports_device_login(dead, timeout=0.2) is False
@@ -345,15 +345,15 @@ def test_supports_device_login_from_metadata(fake_as):
 
 def test_request_device_code_parses_response_and_sends_identity(fake_as):
     endpoints = oauth_flow.resolve_endpoints()
-    device = oauth_flow.request_device_code(endpoints, source="renco-cli")
+    device = oauth_flow.request_device_code(endpoints, source="son-of-anton-cli")
     assert device.device_code == "dev-code-1"
     assert device.user_code == "ABCD-EFGH"
     assert device.verification_uri.endswith("/device")
     assert device.verification_uri_complete.endswith("?user_code=ABCD-EFGH")
     assert (device.expires_in, device.interval) == (600, 0)
-    assert _FakeAS.last_device_form["client_id"] == "renco-desktop"
+    assert _FakeAS.last_device_form["client_id"] == "son-of-anton-desktop"
     assert _FakeAS.last_device_form["scope"] == "write"
-    assert _FakeAS.last_device_form["source"] == "renco-cli"
+    assert _FakeAS.last_device_form["source"] == "son-of-anton-cli"
 
 
 def test_poll_backs_off_on_slow_down(fake_as):
@@ -440,10 +440,10 @@ def test_launcher_runs_flow_in_background_and_reports_connected(monkeypatch, res
     monkeypatch.setattr(oauth_flow, "authorize_via_loopback", fake)
     monkeypatch.setattr(oauth_flow, "_detect_connection", lambda: (True, "oauth"))
 
-    st = oauth_flow.start_loopback_flow_background(config_path=Path("/t/honcho.json"), host="renco")
+    st = oauth_flow.start_loopback_flow_background(config_path=Path("/t/honcho.json"), host="son-of-anton")
     assert st["state"] == "pending"  # returns immediately, before the flow finishes
-    assert _wait_until(lambda: seen.get("source") == "renco-desktop")  # default source tag
-    assert seen["host"] == "renco"
+    assert _wait_until(lambda: seen.get("source") == "son-of-anton-desktop")  # default source tag
+    assert seen["host"] == "son-of-anton"
     gate.set()
     assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "connected")
 
@@ -453,20 +453,20 @@ def test_get_flow_status_reports_stored_connection(tmp_path, monkeypatch, reset_
 
     cfgfile = tmp_path / "honcho.json"
     monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: cfgfile)
-    monkeypatch.setattr(honcho_client, "resolve_active_host", lambda: "renco")
+    monkeypatch.setattr(honcho_client, "resolve_active_host", lambda: "son-of-anton")
     monkeypatch.delenv("HONCHO_API_KEY", raising=False)
 
-    cfgfile.write_text(json.dumps({"hosts": {"renco": {}}}))
+    cfgfile.write_text(json.dumps({"hosts": {"son-of-anton": {}}}))
     assert oauth_flow.get_flow_status()["connected"] is False
 
-    cfgfile.write_text(json.dumps({"hosts": {"renco": {"apiKey": "hch-v3-static"}}}))
+    cfgfile.write_text(json.dumps({"hosts": {"son-of-anton": {"apiKey": "hch-v3-static"}}}))
     s = oauth_flow.get_flow_status()
     assert s["connected"] is True and s["auth"] == "apikey"
 
-    cfgfile.write_text(json.dumps({"hosts": {"renco": {
+    cfgfile.write_text(json.dumps({"hosts": {"son-of-anton": {
         "apiKey": "hch-at-tok",
         "oauth": {"refreshToken": "hch-rt-x", "expiresAt": 9_999_999_999,
-                  "clientId": "renco-desktop", "tokenEndpoint": "http://x/oauth/token"},
+                  "clientId": "son-of-anton-desktop", "tokenEndpoint": "http://x/oauth/token"},
     }}}))
     s = oauth_flow.get_flow_status()
     assert s["connected"] is True and s["auth"] == "oauth"
@@ -476,7 +476,7 @@ def test_memory_oauth_router_dispatches_by_provider_convention():
     # The generic seam behind the two routes: provider → plugins.memory.<p>.oauth_flow.
     from fastapi import HTTPException
 
-    from renco_cli.memory_oauth import _resolve_flow
+    from son_of_anton_cli.memory_oauth import _resolve_flow
 
     mod = _resolve_flow("honcho")
     assert hasattr(mod, "start_loopback_flow_background") and hasattr(mod, "get_flow_status")

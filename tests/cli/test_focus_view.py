@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from renco_cli.focus_view import (
+from son_of_anton_cli.focus_view import (
     FOCUS_CONFIG_KEY,
     FOCUS_STATUSBAR_LABEL,
     FOCUS_TOOL_PROGRESS_MODE,
@@ -32,7 +32,7 @@ from renco_cli.focus_view import (
     resolve_focus_arg,
     would_display_tool_line,
 )
-from renco_cli.cli_commands_mixin import CLICommandsMixin
+from son_of_anton_cli.cli_commands_mixin import CLICommandsMixin
 
 
 # =========================================================================
@@ -198,9 +198,9 @@ class TestStatusBarSegment:
 
     @pytest.mark.parametrize("width", [40, 60, 120])
     def test_text_renderer_includes_the_badge_at_every_width_tier(self, width):
-        from cli import RencoCLI
+        from cli import SonOfAntonCLI
 
-        host = RencoCLI.__new__(RencoCLI)
+        host = SonOfAntonCLI.__new__(SonOfAntonCLI)
         host.model = "opus"
         host._focus_view_enabled = True
 
@@ -222,9 +222,9 @@ class TestStatusBarSegment:
             "idle_since": "",
         }
 
-        with patch.object(RencoCLI, "_get_status_bar_snapshot", return_value=snapshot), \
-             patch.object(RencoCLI, "_is_session_yolo_active", return_value=False):
-            text = RencoCLI._build_status_bar_text(host, width=width)
+        with patch.object(SonOfAntonCLI, "_get_status_bar_snapshot", return_value=snapshot), \
+             patch.object(SonOfAntonCLI, "_is_session_yolo_active", return_value=False):
+            text = SonOfAntonCLI._build_status_bar_text(host, width=width)
 
         assert "focus" in text
 
@@ -253,7 +253,7 @@ def _make_agent(tool_progress_mode: str):
     with (
         patch("run_agent.get_tool_definitions", return_value=tool_defs),
         patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("renco_cli.config.load_config", return_value={}),
+        patch("son_of_anton_cli.config.load_config", return_value={}),
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
@@ -294,7 +294,7 @@ def _run_fake_turn(tool_progress_mode: str, dispatch_mode: str = "sequential"):
         ],
     )
     messages: list = [
-        {"role": "system", "content": "you are renco"},
+        {"role": "system", "content": "you are son-of-anton"},
         {"role": "user", "content": "find three things"},
     ]
 
@@ -365,7 +365,7 @@ class TestModelFacingMessagesUnchanged:
 
 class TestCommandRegistration:
     def test_focus_is_registered_with_the_sibling_toggle_convention(self):
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         cmd = resolve_command("focus")
         assert cmd is not None
@@ -376,9 +376,9 @@ class TestCommandRegistration:
     def test_verbose_cycle_releases_focus_view(self):
         # /verbose is the explicit tool-progress control; cycling it must clear
         # the focus badge so the indicator can never contradict the display.
-        from cli import RencoCLI
+        from cli import SonOfAntonCLI
 
-        host = RencoCLI.__new__(RencoCLI)
+        host = SonOfAntonCLI.__new__(SonOfAntonCLI)
         host.tool_progress_mode = "off"
         host._focus_view_enabled = True
         host._focus_saved_tool_progress = "all"
@@ -387,7 +387,7 @@ class TestCommandRegistration:
         host.agent = None
 
         with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
-            RencoCLI._toggle_verbose(host)
+            SonOfAntonCLI._toggle_verbose(host)
 
         assert host._focus_view_enabled is False
         assert host._focus_saved_tool_progress is None

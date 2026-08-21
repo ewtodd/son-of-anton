@@ -2,11 +2,11 @@
 name: blocked-page-recovery
 description: "Recover blocked/paywalled/WAF'd pages via fallbacks."
 version: 1.0.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Research, Archives, Wayback, Paywall, WAF, Fallback]
     related_skills: [grounded-citations]
 ---

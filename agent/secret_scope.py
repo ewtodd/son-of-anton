@@ -10,7 +10,7 @@ This module provides a fail-closed, context-local secret scope:
 
 - ``set_secret_scope(mapping)`` installs the active profile's secrets for the
   current task (a contextvar, so it propagates into the agent's worker thread
-  via ``copy_context()`` exactly like the RENCO_HOME override).
+  via ``copy_context()`` exactly like the SON_OF_ANTON_HOME override).
 - ``get_secret(name)`` reads from that scope. When multiplexing is **active**
   and no scope is set, it RAISES rather than silently falling back to
   ``os.environ`` — an un-migrated or newly-added call site fails loud at that
@@ -96,16 +96,16 @@ def current_secret_scope() -> Optional[Mapping[str, str]]:
 # Membership test is by exact name OR prefix (see _is_global_env). Keep this
 # list tight: when in doubt a value is a profile secret, not a global.
 _GLOBAL_ENV_EXACT = frozenset({
-    # Renco runtime / deployment
-    "RENCO_HOME", "RENCO_PROFILE", "RENCO_GATEWAY_LOCK_DIR",
-    "RENCO_MAX_ITERATIONS", "RENCO_MAX_TOKENS", "RENCO_API_TIMEOUT",
-    "RENCO_REDACT_SECRETS", "RENCO_NOUS_TIMEOUT_SECONDS",
-    "_RENCO_GATEWAY",
+    # Son of Anton runtime / deployment
+    "SON_OF_ANTON_HOME", "SON_OF_ANTON_PROFILE", "SON_OF_ANTON_GATEWAY_LOCK_DIR",
+    "SON_OF_ANTON_MAX_ITERATIONS", "SON_OF_ANTON_MAX_TOKENS", "SON_OF_ANTON_API_TIMEOUT",
+    "SON_OF_ANTON_REDACT_SECRETS", "SON_OF_ANTON_NOUS_TIMEOUT_SECONDS",
+    "_SON_OF_ANTON_GATEWAY",
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
     # Kanban paths (per-board, not per-profile-secret)
-    "RENCO_KANBAN_DB", "RENCO_KANBAN_WORKSPACES_ROOT", "RENCO_KANBAN_BOARD",
+    "SON_OF_ANTON_KANBAN_DB", "SON_OF_ANTON_KANBAN_WORKSPACES_ROOT", "SON_OF_ANTON_KANBAN_BOARD",
     # API-server LISTENER settings — deployment config (Docker compose
     # ``environment:`` block, systemd ``Environment=``), not profile secrets.
     # The scoped runner reload (#64674) must keep seeing them or container
@@ -133,8 +133,8 @@ _GLOBAL_ENV_EXACT = frozenset({
     "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
 })
 _GLOBAL_ENV_PREFIXES = (
-    "RENCO_KANBAN_",
-    "RENCO_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
+    "SON_OF_ANTON_KANBAN_",
+    "SON_OF_ANTON_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
     "TERMINAL_",          # terminal/sandbox backend settings
 )
 
@@ -244,11 +244,11 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     """Parse a ``.env`` file into a plain dict WITHOUT touching ``os.environ``.
 
     Used to load a profile's secrets into an isolated mapping for
-    ``set_secret_scope``. Parses the small KEY=VALUE subset Renco writes
+    ``set_secret_scope``. Parses the small KEY=VALUE subset Son of Anton writes
     itself (``export`` prefix, ``#`` comments — full-line and
     dotenv-compatible inline, matching quotes with the
     writer's ``\\"``/``\\\\`` escapes reversed — the same semantics as
-    ``renco_cli.config._parse_env_value``) but never mutates the process
+    ``son_of_anton_cli.config._parse_env_value``) but never mutates the process
     environment — that isolation is the whole point.
 
     Encoding is ``utf-8-sig`` so a leading UTF-8 BOM (Windows Notepad /
@@ -261,13 +261,13 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     except (FileNotFoundError, OSError, UnicodeDecodeError):
         return secrets
 
-    # Parse values with the canonical Renco parser: save_env_value
+    # Parse values with the canonical Son of Anton parser: save_env_value
     # escapes " and \ inside double quotes, and every other reader
     # (load_env, python-dotenv) reverses those escapes. Stripping only
     # the outer quotes here would corrupt credentials containing "
     # or \ — they work interactively but fail in scoped (cron /
     # multiplex) resolution.
-    from renco_cli.config import _parse_env_value
+    from son_of_anton_cli.config import _parse_env_value
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -286,18 +286,18 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(renco_home: Path) -> Dict[str, str]:
+def build_profile_secret_scope(son_of_anton_home: Path) -> Dict[str, str]:
     """Build a profile's secret mapping from its ``<home>/.env``.
 
     Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
     """
-    home = Path(renco_home)
+    home = Path(son_of_anton_home)
     secrets = load_env_file(home / ".env")
 
     try:
-        from renco_cli.env_loader import get_secret_source_values
+        from son_of_anton_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(home)
     except Exception:
         external_secrets = {}

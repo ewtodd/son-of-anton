@@ -28,15 +28,15 @@ def test_check_node_requires_npm_alongside_node() -> None:
         "if command -v node &> /dev/null && command -v npm &> /dev/null \\" in text
     )
     # The "node found but npm missing" case has its own explicit branch that
-    # falls through to installing the Renco-managed Node (which bundles npm).
+    # falls through to installing the Son of Anton-managed Node (which bundles npm).
     assert "node found but npm is not on PATH (stray node symlink?)" in text
 
 
 def test_check_node_managed_requires_npm() -> None:
-    """The Renco-managed Node fallback also requires its npm to exist."""
+    """The Son of Anton-managed Node fallback also requires its npm to exist."""
     text = INSTALL_SH.read_text()
     assert (
-        '[ -x "$RENCO_HOME/node/bin/node" ] && [ -x "$RENCO_HOME/node/bin/npm" ] \\'
+        '[ -x "$SON_OF_ANTON_HOME/node/bin/node" ] && [ -x "$SON_OF_ANTON_HOME/node/bin/npm" ] \\'
         in text
     )
 

@@ -2,18 +2,18 @@
 name: opencode
 description: "Delegate coding to OpenCode CLI (features, PR review)."
 version: 1.2.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Coding-Agent, OpenCode, Autonomous, Refactoring, Code-Review]
-    related_skills: [claude-code, codex, renco-agent]
+    related_skills: [claude-code, codex, son-of-anton]
 ---
 
 # OpenCode CLI
 
-Use [OpenCode](https://opencode.ai) as an autonomous coding worker orchestrated by Renco terminal/process tools. OpenCode is a provider-agnostic, open-source AI coding agent with a TUI and CLI.
+Use [OpenCode](https://opencode.ai) as an autonomous coding worker orchestrated by Son of Anton terminal/process tools. OpenCode is a provider-agnostic, open-source AI coding agent with a TUI and CLI.
 
 ## When to Use
 
@@ -32,7 +32,7 @@ Use [OpenCode](https://opencode.ai) as an autonomous coding worker orchestrated 
 
 ## Binary Resolution (Important)
 
-Shell environments may resolve different OpenCode binaries. If behavior differs between your terminal and Renco, check:
+Shell environments may resolve different OpenCode binaries. If behavior differs between your terminal and Son of Anton, check:
 
 ```
 terminal(command="which -a opencode")

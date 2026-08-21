@@ -1094,7 +1094,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         payload = {
             "msgtype": "markdown",
-            "markdown": {"title": "Renco", "text": normalized},
+            "markdown": {"title": "Son of Anton", "text": normalized},
         }
 
         try:
@@ -1231,7 +1231,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             if not token:
                 return None
 
-            out_track_id = f"renco_{uuid.uuid4().hex[:12]}"
+            out_track_id = f"son_of_anton_{uuid.uuid4().hex[:12]}"
 
             conversation_id = getattr(message, "conversation_id", "") or ""
             conversation_type = getattr(message, "conversation_type", "1")
@@ -1716,7 +1716,7 @@ class _IncomingHandler(
 # per-platform core touchpoints (the Platform.DINGTALK elif in gateway/run.py,
 # the dingtalk_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
 # gateway/config.py, the _setup_dingtalk wizard + _PLATFORMS["dingtalk"] static
-# dict in renco_cli/gateway.py, and the _send_dingtalk dispatch in
+# dict in son_of_anton_cli/gateway.py, and the _send_dingtalk dispatch in
 # tools/send_message_tool.py).
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -1772,13 +1772,13 @@ async def _standalone_send(
 def interactive_setup() -> None:
     """Configure DingTalk — QR scan (recommended) or manual credential entry.
 
-    Replaces renco_cli/setup.py-era _setup_dingtalk + the static
-    _PLATFORMS["dingtalk"] dict in renco_cli/gateway.py. CLI helpers are
+    Replaces son_of_anton_cli/setup.py-era _setup_dingtalk + the static
+    _PLATFORMS["dingtalk"] dict in son_of_anton_cli/gateway.py. CLI helpers are
     lazy-imported so the plugin's module-load surface stays minimal.
     """
-    from renco_cli.config import get_env_value, save_env_value
-    from renco_cli.setup import prompt_choice
-    from renco_cli.cli_output import (
+    from son_of_anton_cli.config import get_env_value, save_env_value
+    from son_of_anton_cli.setup import prompt_choice
+    from son_of_anton_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_header,
@@ -1804,7 +1804,7 @@ def interactive_setup() -> None:
 
     if method == 0:
         try:
-            from renco_cli.dingtalk_auth import dingtalk_qr_auth
+            from son_of_anton_cli.dingtalk_auth import dingtalk_qr_auth
         except ImportError as exc:
             print_warning(f"QR auth module failed to load ({exc}), falling back to manual input.")
             _manual_credential_entry(prompt, save_env_value, print_success)
@@ -1908,7 +1908,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Renco plugin system."""
+    """Plugin entry point — called by the Son of Anton plugin system."""
     ctx.register_platform(
         name="dingtalk",
         label="DingTalk",

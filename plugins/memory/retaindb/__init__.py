@@ -12,7 +12,7 @@ Features:
 - Shared file store tools (upload, list, read, ingest, delete)
 - Explicit memory tools (profile, search, context, remember, forget)
 
-Config (env vars or renco config.yaml under retaindb:):
+Config (env vars or son-of-anton config.yaml under retaindb:):
   RETAINDB_API_KEY     — API key (required)
   RETAINDB_BASE_URL    — API endpoint (default: https://api.retaindb.com)
   RETAINDB_PROJECT     — Project identifier (optional — defaults to "default")
@@ -53,7 +53,7 @@ def _load_retaindb_config() -> Dict[str, Any]:
     secret resolution rather than config.yaml.
     """
     try:
-        from renco_cli.config import load_config_readonly
+        from son_of_anton_cli.config import load_config_readonly
 
         config = load_config_readonly()
         memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
@@ -213,7 +213,7 @@ class _Client:
         h = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "x-sdk-runtime": "renco-plugin",
+            "x-sdk-runtime": "son-of-anton-plugin",
         }
         if path.startswith(("/v1/memory", "/v1/context")):
             h["X-API-Key"] = token
@@ -312,7 +312,7 @@ class _Client:
         import requests
         url = f"{self.base_url}/v1/files"
         token = self.api_key.replace("Bearer ", "").strip()
-        headers = {"Authorization": f"Bearer {token}", "x-sdk-runtime": "renco-plugin"}
+        headers = {"Authorization": f"Bearer {token}", "x-sdk-runtime": "son-of-anton-plugin"}
         fields = {"path": remote_path, "scope": scope.upper()}
         if project_id:
             fields["project_id"] = project_id
@@ -333,7 +333,7 @@ class _Client:
         import requests
         token = self.api_key.replace("Bearer ", "").strip()
         url = f"{self.base_url}/v1/files/{quote(file_id, safe='')}/content"
-        resp = requests.get(url, headers={"Authorization": f"Bearer {token}", "x-sdk-runtime": "renco-plugin"}, timeout=30, allow_redirects=True)
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}", "x-sdk-runtime": "son-of-anton-plugin"}, timeout=30, allow_redirects=True)
         resp.raise_for_status()
         return resp.content
 
@@ -532,7 +532,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._queue: _WriteQueue | None = None
         self._user_id = "default"
         self._session_id = ""
-        self._agent_id = "renco"
+        self._agent_id = "son-of-anton"
         self._lock = threading.Lock()
 
         # Prefetch caches
@@ -573,28 +573,28 @@ class RetainDBMemoryProvider(MemoryProvider):
         )
         base_url = re.sub(r"/+$", "", base_url_raw)
 
-        # Project resolution: RETAINDB_PROJECT > config.yaml project > renco-<profile> > "default"
+        # Project resolution: RETAINDB_PROJECT > config.yaml project > son-of-anton-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.
         explicit = os.environ.get("RETAINDB_PROJECT") or _config_str(provider_config.get("project"))
         if explicit:
             project = explicit
         else:
-            renco_home = str(kwargs.get("renco_home", ""))
-            profile_name = os.path.basename(renco_home) if renco_home else ""
-            project = f"renco-{profile_name}" if (profile_name and profile_name not in {"", ".renco"}) else "default"
+            son_of_anton_home = str(kwargs.get("son_of_anton_home", ""))
+            profile_name = os.path.basename(son_of_anton_home) if son_of_anton_home else ""
+            project = f"son-of-anton-{profile_name}" if (profile_name and profile_name not in {"", ".son-of-anton"}) else "default"
 
         self._client = _Client(api_key, base_url, project)
         self._session_id = session_id
         self._user_id = kwargs.get("user_id", "default") or "default"
-        self._agent_id = kwargs.get("agent_id", "renco") or "renco"
+        self._agent_id = kwargs.get("agent_id", "son-of-anton") or "son-of-anton"
 
-        from renco_constants import get_renco_home
-        renco_home_path = get_renco_home()
-        db_path = renco_home_path / "retaindb_queue.db"
+        from son_of_anton_constants import get_son_of_anton_home
+        son_of_anton_home_path = get_son_of_anton_home()
+        db_path = son_of_anton_home_path / "retaindb_queue.db"
         self._queue = _WriteQueue(self._client, db_path)
 
         # Seed agent identity from SOUL.md in background
-        soul_path = renco_home_path / "SOUL.md"
+        soul_path = son_of_anton_home_path / "SOUL.md"
         if soul_path.exists():
             soul_content = soul_path.read_text(encoding="utf-8", errors="replace").strip()
             if soul_content:

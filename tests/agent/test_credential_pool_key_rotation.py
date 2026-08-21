@@ -6,21 +6,21 @@ import json
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
-    renco_home = tmp_path / "renco"
-    renco_home.mkdir(parents=True, exist_ok=True)
-    (renco_home / "auth.json").write_text(json.dumps(payload, indent=2))
+    son_of_anton_home = tmp_path / "son-of-anton"
+    son_of_anton_home.mkdir(parents=True, exist_ok=True)
+    (son_of_anton_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
 def test_key_rotation_clears_exhausted_status(tmp_path, monkeypatch):
     """Replacing an exhausted API key via _upsert_entry resets last_status.
 
-    Regression: `renco setup` saves a new OPENROUTER_API_KEY to .env, which
+    Regression: `son-of-anton setup` saves a new OPENROUTER_API_KEY to .env, which
     triggers _seed_from_env → _upsert_entry.  If the existing pool entry was
     marked exhausted (e.g. from a rate-limit on the old key), the stale status
     was preserved on the new key — making the pool appear unusable even though
     a fresh valid key was present.
     """
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / "renco"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "son-of-anton"))
     _write_auth_store(
         tmp_path,
         {
@@ -66,7 +66,7 @@ def test_key_rotation_clears_exhausted_status(tmp_path, monkeypatch):
 
 def test_same_key_preserves_exhausted_status(tmp_path, monkeypatch):
     """If the key has NOT changed, _upsert_entry does not clear exhaustion state."""
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / "renco"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "son-of-anton"))
 
     from agent.credential_pool import PooledCredential, _upsert_entry
 

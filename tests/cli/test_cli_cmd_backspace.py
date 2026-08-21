@@ -11,7 +11,7 @@ from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
 
-from renco_cli.pt_input_extras import install_cmd_backspace_alias
+from son_of_anton_cli.pt_input_extras import install_cmd_backspace_alias
 
 
 # Cmd rides as the super modifier bit (8), so modifier = 9 (super) or

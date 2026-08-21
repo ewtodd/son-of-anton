@@ -59,7 +59,7 @@ def bundles_env(tmp_path, monkeypatch):
     bundles_dir = tmp_path / "skill-bundles"
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    monkeypatch.setenv("RENCO_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setenv("SON_OF_ANTON_BUNDLES_DIR", str(bundles_dir))
     import tools.skills_tool as skills_tool_module
     monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
     import agent.skill_bundles as mod

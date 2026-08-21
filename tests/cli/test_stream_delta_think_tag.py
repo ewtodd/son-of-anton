@@ -9,10 +9,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _make_cli_stub():
-    """Create a minimal RencoCLI-like object with stream state."""
-    from cli import RencoCLI
+    """Create a minimal SonOfAntonCLI-like object with stream state."""
+    from cli import SonOfAntonCLI
 
-    cli = RencoCLI.__new__(RencoCLI)
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli.show_reasoning = False
     cli._stream_buf = ""
     cli._stream_started = False

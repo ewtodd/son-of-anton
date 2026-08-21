@@ -1,6 +1,6 @@
-"""Upload a Renco session transcript to Hugging Face as an agent trace.
+"""Upload a Son of Anton session transcript to Hugging Face as an agent trace.
 
-Renco stores sessions in its own SQLite store (``renco_state.SessionDB``),
+Son of Anton stores sessions in its own SQLite store (``son_of_anton_state.SessionDB``),
 so we reconstruct the conversation and emit it in the **Claude Code JSONL**
 shape — one of the three formats the Hugging Face Agent Trace Viewer
 auto-detects (Claude Code / Codex / Pi). No dataset-side preprocessing is
@@ -11,11 +11,11 @@ Docs: https://huggingface.co/docs/hub/agent-traces
 Design notes
 ------------
 * **Zero LLM turn.** This is a deterministic export — it never spends a
-  model call. The ``renco trace upload`` subcommand calls
+  model call. The ``son-of-anton trace upload`` subcommand calls
   :func:`upload_session_trace` directly.
 * **Private by default.** Traces can contain prompts, tool output, local
   paths, and secrets. The dataset is created private and every text body
-  is passed through Renco' secret redactor (``force=True``) unless the
+  is passed through Son of Anton' secret redactor (``force=True``) unless the
   caller explicitly opts out with ``redact=False``.
 * **Never raises.** Returns a user-facing status string so command
   handlers can echo it straight back to the user. Programmatic callers
@@ -34,8 +34,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATASET_NAME = "renco-traces"
-_RENCO_VERSION = "renco-agent"
+DEFAULT_DATASET_NAME = "son-of-anton-traces"
+_SON_OF_ANTON_VERSION = "son-of-anton"
 _REDACTION_BLOCKED_MESSAGE = (
     "Trace upload blocked: secret redaction failed, so the transcript may "
     "still contain credentials or other sensitive data. Fix the redactor or "
@@ -48,7 +48,7 @@ class TraceRedactionError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Conversion: Renco OpenAI-format messages -> Claude Code JSONL
+# Conversion: Son of Anton OpenAI-format messages -> Claude Code JSONL
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
@@ -58,7 +58,7 @@ def _now_iso() -> str:
 def _redact(text: Any, enabled: bool) -> Any:
     """Redact secrets from a string body when redaction is enabled.
 
-    Non-strings pass through untouched. Uses Renco' shared redactor with
+    Non-strings pass through untouched. Uses Son of Anton' shared redactor with
     ``force=True`` so an upload always scrubs known secret shapes even if
     the user disabled log redaction globally.
     """
@@ -140,7 +140,7 @@ def build_trace_jsonl(
     cwd: str = "",
     redact: bool = True,
 ) -> str:
-    """Render Renco conversation messages as Claude Code JSONL text.
+    """Render Son of Anton conversation messages as Claude Code JSONL text.
 
     Each non-system message becomes one JSONL line in the Claude Code
     transcript shape the HF Agent Trace Viewer auto-detects:
@@ -176,7 +176,7 @@ def build_trace_jsonl(
             "userType": "external",
             "cwd": cwd or os.getcwd(),
             "sessionId": session_id,
-            "version": _RENCO_VERSION,
+            "version": _SON_OF_ANTON_VERSION,
             "gitBranch": git_branch,
             "uuid": turn_uuid,
             "timestamp": base_ts,
@@ -258,9 +258,9 @@ _NO_TOKEN_MESSAGE = (
     "\n"
     "1. Create a token with WRITE access at https://huggingface.co/settings/tokens\n"
     "   (New token -> type \"Write\" -> copy it).\n"
-    "2. Add it to your environment as HF_TOKEN (e.g. in ~/.renco/.env):\n"
+    "2. Add it to your environment as HF_TOKEN (e.g. in ~/.son-of-anton/.env):\n"
     "     HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n"
-    "3. Run /upload-trace again (or `renco trace upload`)."
+    "3. Run /upload-trace again (or `son-of-anton trace upload`)."
 )
 
 
@@ -334,7 +334,7 @@ def load_session_messages(
     Returns ``(messages, meta)``. ``meta`` is ``{}`` when the session row is
     missing (messages may still be present for a live, untitled session).
     """
-    from renco_state import SessionDB
+    from son_of_anton_state import SessionDB
     db = SessionDB(db_path=db_path) if db_path else SessionDB()
     try:
         resolved = db.resolve_session_id(session_id) or session_id
@@ -362,7 +362,7 @@ def upload_session_trace(
     """Top-level entry point used by the CLI/gateway/subcommand.
 
     Loads the session, converts it to Claude Code JSONL, and uploads it to
-    the user's private ``{user}/renco-traces`` dataset. Returns a
+    the user's private ``{user}/son-of-anton-traces`` dataset. Returns a
     user-facing status string and never raises.
     """
     if not session_id:

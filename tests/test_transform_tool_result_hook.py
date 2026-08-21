@@ -8,7 +8,7 @@ targets the generic tool-result seam that runs for every tool dispatch.
 import os
 from pathlib import Path
 
-import renco_cli.plugins as plugins_mod
+import son_of_anton_cli.plugins as plugins_mod
 import model_tools
 
 
@@ -35,11 +35,11 @@ def _run_handle_function_call(
 
     if invoke_hook is not _UNSET:
         # Patch the symbol actually imported inside handle_function_call.
-        monkeypatch.setattr("renco_cli.plugins.invoke_hook", invoke_hook)
+        monkeypatch.setattr("son_of_anton_cli.plugins.invoke_hook", invoke_hook)
         # Supplying a custom invoke_hook means the test expects hooks to
         # fire — make has_hook agree so the has_hook gate doesn't skip the
         # post_tool_call / transform_tool_result emit paths.
-        monkeypatch.setattr("renco_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("son_of_anton_cli.plugins.has_hook", lambda name: True)
 
     return model_tools.handle_function_call(
         tool_name,
@@ -133,11 +133,11 @@ def test_transform_tool_result_runs_after_post_tool_call(monkeypatch):
 
 
 def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_path):
-    """End-to-end: load a real plugin from RENCO_HOME and verify it rewrites results."""
+    """End-to-end: load a real plugin from SON_OF_ANTON_HOME and verify it rewrites results."""
     import yaml
 
-    renco_home = Path(os.environ["RENCO_HOME"])
-    plugins_dir = renco_home / "plugins"
+    son_of_anton_home = Path(os.environ["SON_OF_ANTON_HOME"])
+    plugins_dir = son_of_anton_home / "plugins"
     plugin_dir = plugins_dir / "transform_result_canon"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text("name: transform_result_canon\n", encoding="utf-8")
@@ -148,7 +148,7 @@ def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_pat
         encoding="utf-8",
     )
     # Plugins are opt-in — must be listed in plugins.enabled to load.
-    cfg_path = renco_home / "config.yaml"
+    cfg_path = son_of_anton_home / "config.yaml"
     cfg_path.write_text(
         yaml.safe_dump({"plugins": {"enabled": ["transform_result_canon"]}}),
         encoding="utf-8",

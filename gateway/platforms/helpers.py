@@ -243,8 +243,8 @@ class ThreadParticipationTracker:
         }
 
     def _state_path(self) -> Path:
-        from renco_constants import get_renco_home
-        return get_renco_home() / f"{self._platform}_threads.json"
+        from son_of_anton_constants import get_son_of_anton_home
+        return get_son_of_anton_home() / f"{self._platform}_threads.json"
 
     def _load(self) -> list[str]:
         path = self._state_path()

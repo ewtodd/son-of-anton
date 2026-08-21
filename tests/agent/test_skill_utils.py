@@ -35,11 +35,11 @@ def test_skill_config_helpers_share_raw_config_parse_cache(tmp_path, monkeypatch
     """Repeated skill config helpers should parse config.yaml only once."""
     from agent import skill_utils
 
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
     external = tmp_path / "external-skills"
     external.mkdir()
-    config_path = renco_home / "config.yaml"
+    config_path = son_of_anton_home / "config.yaml"
     config_path.write_text(
         f"""
 skills:
@@ -61,7 +61,7 @@ skills:
         parse_count += 1
         return real_yaml_load(text)
 
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     skill_utils._external_dirs_cache_clear()
     getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
     monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
@@ -75,7 +75,7 @@ skills:
 
 
 class TestParseConfigStringList:
-    """#86661: `renco config set` and JSON-mode editor saves store lists as
+    """#86661: `son-of-anton config set` and JSON-mode editor saves store lists as
     quoted strings (e.g. '["a","b"]'). Treating such a string as a single name
     made curated disabled lists silently filter nothing."""
 
@@ -86,7 +86,7 @@ class TestParseConfigStringList:
         ]
 
     def test_python_literal_array_string_parses(self):
-        # `renco config set` can persist single-quoted Python-literal forms.
+        # `son-of-anton config set` can persist single-quoted Python-literal forms.
         assert parse_config_string_list("['skill-a']") == ["skill-a"]
 
     def test_scalar_string_means_one_name(self):
@@ -117,13 +117,13 @@ class TestDisabledSkillsJsonArrayString:
     def test_get_disabled_skill_names_parses_json_array_string(
         self, tmp_path, monkeypatch
     ):
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             "skills:\n  disabled: '[\"skill-a\",\"skill-b\"]'\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         from agent import skill_utils
 
         getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
@@ -133,13 +133,13 @@ class TestDisabledSkillsJsonArrayString:
     def test_get_disabled_skill_names_scalar_string_still_single_name(
         self, tmp_path, monkeypatch
     ):
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             "skills:\n  disabled: 'hidden-skill'\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         from agent import skill_utils
 
         getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
@@ -308,7 +308,7 @@ class TestParseFrontmatterBOM:
         "description: Does a thing.\n"
         "platforms: [macos]\n"
         "metadata:\n"
-        "  renco:\n"
+        "  son-of-anton:\n"
         "    config:\n"
         "      - key: my.key\n"
         "        description: A configured value\n"

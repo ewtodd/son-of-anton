@@ -1,4 +1,4 @@
-import { Ansi, Box, NoSelect, Text } from '@renco/ink'
+import { Ansi, Box, NoSelect, Text } from '@sonofanton/ink'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'

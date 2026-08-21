@@ -2,7 +2,7 @@
 /venv/
 /venv.old/
 /venv.stale.runtime-*/
-/.renco-runtime/
+/.son-of-anton-runtime/
 /_pycache/
 *.pyc*
 __pycache__/
@@ -19,13 +19,13 @@ act/
 .env.production.local
 .env.development
 .env.test
-.renco-docker/
+.son-of-anton-docker/
 .notebooklm-home/
 .notebooklm-cli-venv/
 .notebooklm-playwright/
 .pip-cache/
 .uv-cache/
-compose.renco.local.yml
+compose.son-of-anton.local.yml
 export*
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
@@ -33,14 +33,14 @@ logs/
 data/
 # Bundled community plugin index seed (shipped as package data) — the bare
 # `data/` pattern above would otherwise swallow it.
-!renco_cli/data/
-!renco_cli/data/plugin_index.json
+!son_of_anton_cli/data/
+!son_of_anton_cli/data/plugin_index.json
 .pytest_cache/
 test_durations.json
 .pytest-cache/
 tmp/
 temp_vision_images/
-renco-*/*
+son-of-anton-*/*
 examples/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
@@ -62,7 +62,7 @@ agent-browser/
 privvy*
 images/
 __pycache__/
-renco_agent.egg-info/
+son_of_anton_agent.egg-info/
 wandb/
 testlogs
 playwright-report/
@@ -73,14 +73,14 @@ test-results/
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
 
-# Skills Hub state (lives in ~/.renco/skills/.hub/ at runtime, but just in case)
+# Skills Hub state (lives in ~/.son-of-anton/skills/.hub/ at runtime, but just in case)
 skills/.hub/
 ignored/
 .worktrees/
 environments/benchmarks/evals/
 
 # Web UI build output
-renco_cli/web_dist/
+son_of_anton_cli/web_dist/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
 apps/desktop/build/
@@ -92,7 +92,7 @@ apps/desktop/src/**/*.js
 apps/desktop/src/**/*.js.map
 apps/desktop/src/**/*.d.ts
 # EXCEPT bundled plain-ESM plugin entries (adopted SDK-consumer plugins,
-# e.g. renco-bots): plugin.js IS the source, not tsc output. No .tsx
+# e.g. son-of-anton-bots): plugin.js IS the source, not tsc output. No .tsx
 # sibling exists, so the stale-shadow hazard above cannot apply.
 !apps/desktop/src/plugins/*/plugin.js
 !apps/desktop/src/global.d.ts
@@ -137,28 +137,28 @@ models-dev-upstream/
 opencode.json
 config/mcporter.json
 
-renco_cli/tui_dist/*
-renco_cli/scripts/
+son_of_anton_cli/tui_dist/*
+son_of_anton_cli/scripts/
 docs/superpowers/*
-# Working directory for the Renco Agent's session state (~/.renco/ at runtime;
+# Working directory for the Son of Anton Agent's session state (~/.son-of-anton/ at runtime;
 # also created in-repo when an agent operates in this checkout). Plans, audit
 # logs, and per-session caches are never artifacts of the codebase.
-.renco/
+.son-of-anton/
 
 # Desktop/bootstrap install marker written into the managed checkout root by the
-# bootstrap installer. It is Renco-managed runtime state, never a code change —
-# ignore it so `renco update`'s `git stash push --include-untracked` does not
+# bootstrap installer. It is Son of Anton-managed runtime state, never a code change —
+# ignore it so `son-of-anton update`'s `git stash push --include-untracked` does not
 # treat it as a local edit and autostash it on every run (#38529).
-.renco-bootstrap-complete
+.son-of-anton-bootstrap-complete
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
-.renco-sandbox/
+.son-of-anton-sandbox/
 # Sandbox dirs used by the install/update E2E (tests/install/). The suffix is
 # the route name, so each route gets its own tree and two can run at once.
-.renco-sandbox-e2e*/
+.son-of-anton-sandbox-e2e*/
 
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
-# by `renco update` / launch-time self-heal. Runtime state, never a code change
+# by `son-of-anton update` / launch-time self-heal. Runtime state, never a code change
 # — ignore so `git status` stays clean and update's autostash skips them.
 .update-incomplete
 .update-incomplete.lock
@@ -170,7 +170,7 @@ docs/superpowers/*
 
 # Installer-written method stamp in the managed checkout root (scripts/install.sh).
 # Runtime metadata only — never a code change. Ignore so `git status` stays clean
-# and `renco update`'s untracked autostash does not treat it as a local edit (#66189 / #54855).
+# and `son-of-anton update`'s untracked autostash does not treat it as a local edit (#66189 / #54855).
 /.install_method
 
 # Tool Search live-test harness output — non-deterministic model transcripts,
@@ -180,16 +180,16 @@ scripts/out/
 # Per-release changelog drafts. These exist only transiently during a release
 # cut (passed to `gh release create --notes-file`); the GitHub Release itself
 # stores the published notes. They are not a build artifact and must never be
-# committed to the repo root. See the renco-release skill.
+# committed to the repo root. See the son-of-anton-release skill.
 RELEASE_v*.md
 
-# Desktop demo-run scratch output (renco writes demo/*.txt during recorded
+# Desktop demo-run scratch output (son-of-anton writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
 
 # PR infographics are rendered locally and embedded in PR descriptions via the
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
-# PR body is the archive. See the renco-agent-dev skill's
+# PR body is the archive. See the son-of-anton-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 #
 # Spelling variants are listed because a single `infographic/` pattern was
@@ -201,7 +201,7 @@ infographics/
 infograficos/
 infografico/
 native/fts5_cjk/*.so
-# Runtime marker written by renco update when a lazy dependency refresh is
+# Runtime marker written by son-of-anton update when a lazy dependency refresh is
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete

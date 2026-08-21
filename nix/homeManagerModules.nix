@@ -1,11 +1,11 @@
-# nix/homeManagerModules.nix — the Home Manager module for renco-agent
+# nix/homeManagerModules.nix — the Home Manager module for son-of-anton
 #
-# This module is the user-level equivalent of nixosModules.default. Renco is
+# This module is the user-level equivalent of nixosModules.default. Son of Anton is
 # an agent for one person. The credentials, the memory, the sessions and the
 # cron jobs all belong to that person. Thus a user-level module is correct on
 # each distribution, and not only on NixOS.
 #
-# `services.renco-agent` is the same option set on both modules. All of the
+# `services.son-of-anton` is the same option set on both modules. All of the
 # options except the system-level ones come from nix/moduleCommon.nix, so an
 # example from the NixOS documentation works here without a change. Only the
 # necessary parts are different:
@@ -19,15 +19,15 @@
 #   changed   system.activationScripts -> home.activation
 #   changed   addToSystemPackages      -> installPackage and
 #                                        home.sessionVariables
-#   changed   stateDir (+ "/.renco")  -> rencoHome, set directly
+#   changed   stateDir (+ "/.son-of-anton")  -> son-of-antonHome, set directly
 #
 # To use the module:
-#   imports = [ renco-agent.homeManagerModules.default ];
-#   services.renco-agent = {
+#   imports = [ son-of-anton.homeManagerModules.default ];
+#   services.son-of-anton = {
 #     enable = true;
 #     gateway.enable = true;
 #     settings.model.default = "anthropic/claude-sonnet-4";
-#     environmentFiles = [ config.sops.secrets."renco/env".path ];
+#     environmentFiles = [ config.sops.secrets."son-of-anton/env".path ];
 #   };
 #
 # CAUTION: Enable linger for the account. Without linger, systemd stops the
@@ -47,16 +47,16 @@
     }:
 
     let
-      cfg = config.services.renco-agent;
+      cfg = config.services.son-of-anton;
       common = import ./moduleCommon.nix { inherit lib; };
 
       effectivePackage = common.effectivePackage cfg;
-      renco-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      son-of-anton = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
       inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
 
       processEnvironment = common.processEnvironment {
-        inherit (cfg) rencoHome;
+        inherit (cfg) son-of-antonHome;
         # The CLI reads this value and names it when it refuses a
         # configuration change.
         managedSystem = "home-manager";
@@ -124,42 +124,42 @@
 
     in
     {
-      options.services.renco-agent =
+      options.services.son-of-anton =
         common.sharedOptions {
-          defaultPackage = renco-agent;
-          defaultPackageText = lib.literalExpression "renco-agent.packages.\${system}.default";
+          defaultPackage = son-of-anton;
+          defaultPackageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
           defaultWorkingDirectory = config.home.homeDirectory;
           defaultWorkingDirectoryText = lib.literalExpression "config.home.homeDirectory";
         }
         // {
-          rencoHome = lib.mkOption {
+          son-of-antonHome = lib.mkOption {
             type = lib.types.str;
-            default = "${config.home.homeDirectory}/.renco";
-            defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/.renco"'';
+            default = "${config.home.homeDirectory}/.son-of-anton";
+            defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/.son-of-anton"'';
             description = ''
-              The value of RENCO_HOME. This state directory holds
+              The value of SON_OF_ANTON_HOME. This state directory holds
               config.yaml, .env, auth.json, the sessions, the skills, the
               memory and the cron jobs.
 
-              The NixOS module takes a `stateDir` and adds `/.renco` to it.
-              This module sets RENCO_HOME directly. Thus an existing
-              ~/.renco continues to work, and you can give the directory any
+              The NixOS module takes a `stateDir` and adds `/.son-of-anton` to it.
+              This module sets SON_OF_ANTON_HOME directly. Thus an existing
+              ~/.son-of-anton continues to work, and you can give the directory any
               name.
             '';
-            example = "/home/alice/.renco-work";
+            example = "/home/alice/.son-of-anton-work";
           };
 
           installPackage = lib.mkOption {
             type = lib.types.bool;
             default = true;
             description = ''
-              Add the renco CLI to home.packages, and export RENCO_HOME
+              Add the son-of-anton CLI to home.packages, and export SON_OF_ANTON_HOME
               with home.sessionVariables. Interactive shells then use the
               same state as the services.
 
               The equivalent NixOS option, `addToSystemPackages`, exports
-              RENCO_HOME with environment.variables. That variable applies
-              to the full system and replaces the RENCO_HOME of each other
+              SON_OF_ANTON_HOME with environment.variables. That variable applies
+              to the full system and replaces the SON_OF_ANTON_HOME of each other
               user. This module exports the variable for one user session
               only, which is the reason to use Home Manager.
             '';
@@ -173,26 +173,26 @@
 
           # ── Merge MCP servers into settings ────────────────────────────
           (lib.mkIf (cfg.mcpServers != { }) {
-            services.renco-agent.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
+            services.son-of-anton.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
           })
 
           {
             assertions =
               common.pluginNameAssertions {
                 inherit cfg;
-                optionPath = "services.renco-agent";
+                optionPath = "services.son-of-anton";
               }
               ++ common.workspaceFilesAssertions {
                 inherit cfg;
-                opt = options.services.renco-agent.workingDirectory;
-                optionPath = "services.renco-agent";
+                opt = options.services.son-of-anton.workingDirectory;
+                optionPath = "services.son-of-anton";
               };
           }
 
           # ── Packages and interactive-shell environment ─────────────────
           (lib.mkIf cfg.installPackage {
             home.packages = [ effectivePackage ] ++ cfg.extraPackages;
-            home.sessionVariables.RENCO_HOME = cfg.rencoHome;
+            home.sessionVariables.SON_OF_ANTON_HOME = cfg.son-of-antonHome;
           })
 
           # ── Activation: directories, config, secrets, documents ────────
@@ -201,7 +201,7 @@
             # symlinks are in place. It also runs after linkGeneration, when
             # Home Manager completes the switch. A secret that the activation
             # entry of sops-nix writes exists at that point.
-            home.activation.rencoAgentSetup =
+            home.activation.son-of-antonAgentSetup =
               lib.hm.dag.entryAfter
                 [
                   "writeBoundary"
@@ -210,7 +210,7 @@
                 (
                   common.mkStateScript {
                     inherit pkgs cfg;
-                    inherit (cfg) rencoHome workingDirectory;
+                    inherit (cfg) son-of-antonHome workingDirectory;
                     run = "$DRY_RUN_CMD ";
                     stateDirs = common.stateSubdirs;
                     managedSystem = "home-manager";
@@ -228,14 +228,14 @@
 
           # ── Linux: systemd user services ───────────────────────────────
           (lib.mkIf (isLinux && cfg.gateway.enable) {
-            systemd.user.services.renco-agent = mkUnit {
-              description = "Renco Agent Gateway";
+            systemd.user.services.son-of-anton = mkUnit {
+              description = "Son of Anton Agent Gateway";
               argv = common.gatewayArgv cfg;
             };
           })
 
           (lib.mkIf (isLinux && cfg.backend.mode != "none") {
-            systemd.user.services.renco-backend = mkUnit {
+            systemd.user.services.son-of-anton-backend = mkUnit {
               description = common.backendDescription cfg;
               argv = common.backendArgv cfg;
             };
@@ -243,16 +243,16 @@
 
           # ── Darwin: launchd agents ─────────────────────────────────────
           (lib.mkIf (isDarwin && cfg.gateway.enable) {
-            launchd.agents.renco-agent = mkAgent {
+            launchd.agents.son-of-anton = mkAgent {
               argv = common.gatewayArgv cfg;
-              logName = "renco-agent";
+              logName = "son-of-anton";
             };
           })
 
           (lib.mkIf (isDarwin && cfg.backend.mode != "none") {
-            launchd.agents.renco-backend = mkAgent {
+            launchd.agents.son-of-anton-backend = mkAgent {
               argv = common.backendArgv cfg;
-              logName = "renco-backend";
+              logName = "son-of-anton-backend";
             };
           })
         ]

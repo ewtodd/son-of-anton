@@ -1,8 +1,8 @@
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-from cli import RencoCLI
-from renco_cli.main import cmd_insights
+from cli import SonOfAntonCLI
+from son_of_anton_cli.main import cmd_insights
 
 
 class _InsightsEngineStub:
@@ -20,10 +20,10 @@ class _InsightsEngineStub:
 
 
 def _run_show_insights(command: str):
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     db = MagicMock()
     _InsightsEngineStub.calls = []
-    with patch("renco_state.SessionDB", return_value=db), \
+    with patch("son_of_anton_state.SessionDB", return_value=db), \
          patch("agent.insights.InsightsEngine", _InsightsEngineStub):
         cli_obj._show_insights(command)
     return _InsightsEngineStub.calls, db
@@ -47,7 +47,7 @@ def test_cli_insights_keeps_days_flag_and_source(capsys):
 
 def test_subcommand_insights_closes_database_when_generation_fails(capsys):
     db = MagicMock()
-    with patch("renco_state.SessionDB", return_value=db), \
+    with patch("son_of_anton_state.SessionDB", return_value=db), \
          patch("agent.insights.InsightsEngine", side_effect=RuntimeError("boom")):
         cmd_insights(SimpleNamespace(days=30, source=None))
 

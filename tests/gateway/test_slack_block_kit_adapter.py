@@ -33,7 +33,7 @@ RICH_MD = "# Title\n\n- a\n  - nested\n\n---\n\nbody text"
 RICH_TABLE_MD = (
     "| Item | Status | Note |\n"
     "|---|---:|---|\n"
-    "| Renco | ok | table |"
+    "| Son of Anton | ok | table |"
 )
 
 
@@ -87,7 +87,7 @@ class TestSendMessageBlocks:
         feedback = blocks[-1]
         assert feedback["type"] == "context_actions"
         assert feedback["elements"][0]["type"] == "feedback_buttons"
-        assert feedback["elements"][0]["action_id"] == "renco_feedback"
+        assert feedback["elements"][0]["action_id"] == "son_of_anton_feedback"
 
 
 class TestEditMessageBlocks:

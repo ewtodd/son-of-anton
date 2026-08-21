@@ -1,15 +1,15 @@
-"""Regression tests for #76414: `renco honcho peers` showed "(not set)"
+"""Regression tests for #76414: `son-of-anton honcho peers` showed "(not set)"
 for every non-default profile.
 
 _all_profile_host_configs() built the per-profile host key inline as
-f"{HOST}.{profile}" ("renco.work") while every other reader/writer —
+f"{HOST}.{profile}" ("son-of-anton.work") while every other reader/writer —
 profile_host_key(), resolve_active_host(), honcho status/enable/sync and
-the runtime plugin — uses the underscore form ("renco_work"). The lookup
+the runtime plugin — uses the underscore form ("son_of_anton_work"). The lookup
 always missed, so cmd_peers fell back to "(not set)" and leaked the raw
 malformed key into the AI-peer column.
 
 These tests drive the real cmd_peers / _all_profile_host_configs against
-a real honcho.json (temp RENCO_HOME, no network).
+a real honcho.json (temp SON_OF_ANTON_HOME, no network).
 """
 import io
 import json
@@ -27,9 +27,9 @@ def honcho_home(tmp_path, monkeypatch):
     cfg = {
         "peerName": "alice",
         "hosts": {
-            "renco": {"peerName": "alice", "aiPeer": "renco"},
-            "renco_work": {"peerName": "alice", "aiPeer": "renco"},
-            "renco_my_profile": {"peerName": "bob", "aiPeer": "renco"},
+            "son-of-anton": {"peerName": "alice", "aiPeer": "son-of-anton"},
+            "son_of_anton_work": {"peerName": "alice", "aiPeer": "son-of-anton"},
+            "son_of_anton_my_profile": {"peerName": "bob", "aiPeer": "son-of-anton"},
         },
     }
     path = tmp_path / "honcho.json"
@@ -54,21 +54,21 @@ class TestAllProfileHostConfigs:
         """The lookup key must be profile_host_key()'s underscore form —
         the same one honcho sync/enable/status and the runtime write to."""
         monkeypatch.setattr(
-            "renco_cli.profiles.list_profiles",
+            "son_of_anton_cli.profiles.list_profiles",
             lambda: [SimpleNamespace(name="default"), SimpleNamespace(name="work")],
         )
         rows = honcho_cli._all_profile_host_configs()
         by_name = {name: (host, block) for name, host, block in rows}
         host, block = by_name["work"]
-        assert host == "renco_work"  # not "renco.work"
+        assert host == "son_of_anton_work"  # not "son-of-anton.work"
         assert block.get("peerName") == "alice"  # the populated block was found
 
     def test_sanitized_profile_names_resolve(self, honcho_home, monkeypatch):
         """Profiles needing sanitization (dots/spaces in the name) also
-        resolve — profile_host_key maps 'my.profile' -> 'renco_my_profile';
+        resolve — profile_host_key maps 'my.profile' -> 'son_of_anton_my_profile';
         the inline dot form never could."""
         monkeypatch.setattr(
-            "renco_cli.profiles.list_profiles",
+            "son_of_anton_cli.profiles.list_profiles",
             lambda: [SimpleNamespace(name="default"),
                      SimpleNamespace(name="my.profile")],
         )
@@ -78,16 +78,16 @@ class TestAllProfileHostConfigs:
 
     def test_legacy_dot_form_host_key_still_readable(self, honcho_home, monkeypatch):
         """Back-compat: honcho.json files with LEGACY dot-form host keys
-        ("renco.work") must keep working — the README promises those keys
+        ("son-of-anton.work") must keep working — the README promises those keys
         stay readable, and _host_block() exists precisely for that fallback.
         A bare hosts.get(profile_host_key(...)) would regress them."""
         path = honcho_home / "honcho.json"
         cfg = json.loads(path.read_text())
-        del cfg["hosts"]["renco_work"]
-        cfg["hosts"]["renco.work"] = {"peerName": "carol", "aiPeer": "renco"}
+        del cfg["hosts"]["son_of_anton_work"]
+        cfg["hosts"]["son-of-anton.work"] = {"peerName": "carol", "aiPeer": "son-of-anton"}
         path.write_text(json.dumps(cfg))
         monkeypatch.setattr(
-            "renco_cli.profiles.list_profiles",
+            "son_of_anton_cli.profiles.list_profiles",
             lambda: [SimpleNamespace(name="default"), SimpleNamespace(name="work")],
         )
         rows = honcho_cli._all_profile_host_configs()
@@ -99,27 +99,27 @@ class TestCmdPeers:
     def test_peers_shows_populated_identity_not_host_key_leak(
             self, honcho_home, monkeypatch):
         """Issue #76414's visible symptom: the AI-peer column showed the
-        raw malformed key 'renco.work' (or '(not set)')."""
+        raw malformed key 'son-of-anton.work' (or '(not set)')."""
         monkeypatch.setattr(
-            "renco_cli.profiles.list_profiles",
+            "son_of_anton_cli.profiles.list_profiles",
             lambda: [SimpleNamespace(name="default"), SimpleNamespace(name="work")],
         )
         out = _peers_output(SimpleNamespace())
-        assert "renco.work" not in out
+        assert "son-of-anton.work" not in out
         assert "(not set)" not in out
         # work row shows the populated block's values
         work_line = [l for l in out.splitlines() if l.strip().startswith("work")][0]
-        assert "alice" in work_line and "renco" in work_line
+        assert "alice" in work_line and "son-of-anton" in work_line
 
     def test_peers_falls_back_cleanly_when_block_missing(
             self, honcho_home, monkeypatch):
         """A profile with no host block still falls back to the top-level
         peerName and the (well-formed) host key — not a crash or a leak."""
         monkeypatch.setattr(
-            "renco_cli.profiles.list_profiles",
+            "son_of_anton_cli.profiles.list_profiles",
             lambda: [SimpleNamespace(name="default"), SimpleNamespace(name="new")],
         )
         out = _peers_output(SimpleNamespace())
-        assert "renco.new" not in out  # well-formed key, no dot-form leak
+        assert "son-of-anton.new" not in out  # well-formed key, no dot-form leak
         new_line = [l for l in out.splitlines() if l.strip().startswith("new")][0]
         assert "alice" in new_line  # top-level peerName fallback

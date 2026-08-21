@@ -30,7 +30,7 @@ from agent.skill_utils import (
 @contextmanager
 def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
-    only the temp directory — not the real ~/.renco/skills/."""
+    only the temp directory — not the real ~/.son-of-anton/skills/."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
@@ -506,7 +506,7 @@ class TestSecurityScanGate:
         """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
-        with patch("renco_cli.config.load_config", side_effect=RuntimeError("boom")):
+        with patch("son_of_anton_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert _guard_agent_created_enabled() is False
 
     def test_guard_flag_quoted_false_stays_disabled(self):
@@ -514,7 +514,7 @@ class TestSecurityScanGate:
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         for quoted in ("false", "False", "0", "no", "off"):
-            with patch("renco_cli.config.load_config",
+            with patch("son_of_anton_cli.config.load_config",
                        return_value={"skills": {"guard_agent_created": quoted}}):
                 assert _guard_agent_created_enabled() is False, \
                     f"guard_agent_created={quoted!r} must coerce to False"
@@ -551,7 +551,7 @@ class TestExternalSkillMutations:
 
     Regression for issues #4759 and #4381: the read-only gate used to refuse
     with 'Skill X is in an external directory and cannot be modified', which
-    caused agents to create duplicate copies in ~/.renco/skills/ as a
+    caused agents to create duplicate copies in ~/.son-of-anton/skills/ as a
     workaround.
     """
 
@@ -665,8 +665,8 @@ class TestBackgroundOwnershipPolicyConsistency:
     def test_repeated_identical_write_gets_the_same_answer(self, tmp_path, monkeypatch):
         """The real #67140 shape: no stubbing of load_usage, so the first write's
         telemetry side effect is live. Both attempts must agree."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-        (tmp_path / ".renco" / "skills").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+        (tmp_path / ".son-of-anton" / "skills").mkdir(parents=True, exist_ok=True)
         with _skill_dir(tmp_path):
             _create_skill("flip-skill", VALID_SKILL_CONTENT)
             first = self._bg_patch(
@@ -685,7 +685,7 @@ class TestBackgroundOwnershipPolicyConsistency:
     def test_foreground_write_to_unmanaged_skill_still_allowed(self, tmp_path, monkeypatch):
         """Fail-closed applies to AUTONOMOUS writes only. A user-directed
         foreground edit to their own skill must keep working."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
         with _skill_dir(tmp_path):
             _create_skill("no-record", VALID_SKILL_CONTENT)
             with patch("tools.skill_usage.load_usage", return_value={}):
@@ -697,7 +697,7 @@ class TestBackgroundOwnershipPolicyConsistency:
 
     def test_adopted_skill_becomes_writable_by_autonomous_curation(self, tmp_path, monkeypatch):
         """Adoption is the documented path from refused to allowed."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
         with _skill_dir(tmp_path):
             _create_skill("adopt-me", VALID_SKILL_CONTENT)
             with patch("tools.skill_usage.load_usage", return_value={}):
@@ -722,7 +722,7 @@ class TestBackgroundOwnershipPolicyConsistency:
 # ---------------------------------------------------------------------------
 # Pinned-skill guard — skill_manage refuses only `delete` on pinned skills.
 # Patches and edits go through so pinned skills can still evolve as pitfalls
-# come up. The user unpins via `renco curator unpin <name>` to delete.
+# come up. The user unpins via `son-of-anton curator unpin <name>` to delete.
 # ---------------------------------------------------------------------------
 
 class TestPinnedGuard:
@@ -755,7 +755,7 @@ class TestPinnedGuard:
         assert result["success"] is False
         assert "pinned" in result["error"].lower()
         assert "cannot be deleted" in result["error"]
-        assert "renco curator unpin my-skill" in result["error"]
+        assert "son-of-anton curator unpin my-skill" in result["error"]
         # Skill still exists
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
@@ -842,8 +842,8 @@ class TestDeleteSkillRmtreeGuard:
 def _curator_pass(tmp_path, *, monkeypatch):
     """Run the body as the curator/background-review fork.
 
-    Points RENCO_HOME at ``tmp_path/.renco`` so skill_usage's archive path
-    (``get_renco_home()``) resolves into the same tree the skill manager
+    Points SON_OF_ANTON_HOME at ``tmp_path/.son-of-anton`` so skill_usage's archive path
+    (``get_son_of_anton_home()``) resolves into the same tree the skill manager
     searches, and flips ``is_background_review()`` → True so the consolidation
     guard fires.
 
@@ -856,10 +856,10 @@ def _curator_pass(tmp_path, *, monkeypatch):
     here; tests that specifically exercise the ownership guard set their own
     records instead.
     """
-    renco_home = tmp_path / ".renco"
-    skills_root = renco_home / "skills"
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    skills_root = son_of_anton_home / "skills"
     skills_root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
          patch("tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
@@ -922,7 +922,7 @@ class TestCuratorConsolidationDeleteGuard:
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
             _create_curator_skill("reviewed", _skill_content("reviewed"))
-            ref = tmp_path / ".renco" / "skills" / "reviewed" / "references"
+            ref = tmp_path / ".son-of-anton" / "skills" / "reviewed" / "references"
             ref.mkdir()
             (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")
 

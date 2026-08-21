@@ -25,10 +25,10 @@ _MAX_TEXT_CHARS = 2000
 
 
 def _store_path() -> str:
-    # Resolve via get_renco_home() so the active profile override is honored.
-    from renco_constants import get_renco_home
+    # Resolve via get_son_of_anton_home() so the active profile override is honored.
+    from son_of_anton_constants import get_son_of_anton_home
 
-    home = get_renco_home()
+    home = get_son_of_anton_home()
     return os.path.join(str(home), "state", "rich_sent_index.json")
 
 

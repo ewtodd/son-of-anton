@@ -101,7 +101,7 @@ class TestLatencyFlagResolution:
             'apiKey': 'k',
             'queryRewrite': False,
             'firstTurnBaseWait': 3,
-            'hosts': {'renco': {
+            'hosts': {'son-of-anton': {
                 'queryRewrite': True,
                 'firstTurnBaseWait': 0,
                 'firstTurnDialecticWait': 0.5,
@@ -118,7 +118,7 @@ class TestLatencyFlagResolution:
         config_path.write_text(json.dumps({
             'apiKey': 'k',
             'timeout': 30,
-            'hosts': {'renco': {'timeout': 5}},
+            'hosts': {'son-of-anton': {'timeout': 5}},
         }))
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
         assert cfg.timeout == 5.0
@@ -164,13 +164,13 @@ class TestProfileKeyIsolationWarning:
         config_path = tmp_path / 'config.json'
         config_path.write_text(json.dumps({
             'hosts': {
-                'renco': {'apiKey': 'shared-key'},
-                'renco_coder': {'baseUrl': 'http://192.168.1.50:8000'},
+                'son-of-anton': {'apiKey': 'shared-key'},
+                'son_of_anton_coder': {'baseUrl': 'http://192.168.1.50:8000'},
             },
         }))
         with caplog.at_level(logging.WARNING, logger='plugins.memory.honcho.client'):
             cfg = HonchoClientConfig.from_global_config(
-                host='renco_coder', config_path=config_path,
+                host='son_of_anton_coder', config_path=config_path,
             )
         assert cfg.api_key is None  # isolation preserved — no silent inheritance
         assert any('NOT inherited' in r.message for r in caplog.records)
@@ -181,13 +181,13 @@ class TestProfileKeyIsolationWarning:
         config_path = tmp_path / 'config.json'
         config_path.write_text(json.dumps({
             'hosts': {
-                'renco': {'apiKey': 'shared-key'},
-                'renco_coder': {'apiKey': 'coder-key'},
+                'son-of-anton': {'apiKey': 'shared-key'},
+                'son_of_anton_coder': {'apiKey': 'coder-key'},
             },
         }))
         with caplog.at_level(logging.WARNING, logger='plugins.memory.honcho.client'):
             cfg = HonchoClientConfig.from_global_config(
-                host='renco_coder', config_path=config_path,
+                host='son_of_anton_coder', config_path=config_path,
             )
         assert cfg.api_key == 'coder-key'
         assert not any('NOT inherited' in r.message for r in caplog.records)
@@ -197,10 +197,10 @@ class TestProfileKeyIsolationWarning:
         monkeypatch.delenv('HONCHO_API_KEY', raising=False)
         config_path = tmp_path / 'config.json'
         config_path.write_text(json.dumps({
-            'hosts': {'renco': {'baseUrl': 'http://localhost:8000'}},
+            'hosts': {'son-of-anton': {'baseUrl': 'http://localhost:8000'}},
         }))
         with caplog.at_level(logging.WARNING, logger='plugins.memory.honcho.client'):
             HonchoClientConfig.from_global_config(
-                host='renco', config_path=config_path,
+                host='son-of-anton', config_path=config_path,
             )
         assert not any('NOT inherited' in r.message for r in caplog.records)

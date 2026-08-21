@@ -1,20 +1,20 @@
-"""Persistent slash-command worker — one RencoCLI per TUI session.
+"""Persistent slash-command worker — one SonOfAntonCLI per TUI session.
 
 Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
 """
 
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
-# from shadowing Renco's own top-level modules.  This worker is spawned as
+# from shadowing Son of Anton's own top-level modules.  This worker is spawned as
 # ``-m tui_gateway.slash_worker`` and inherits the user's CWD, so the ``import
 # cli`` below would otherwise resolve ``utils`` to a colliding local package
-# and crash the child in a retry loop (issue #51286).  ``renco_bootstrap``
+# and crash the child in a retry loop (issue #51286).  ``son_of_anton_bootstrap``
 # lives at the repo root, so importing it is safe before the guard runs (its
 # name won't collide with a user package), and it owns the canonical
 # path-hardening logic shared with the other entry points — #51693 added the
 # guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
-import renco_bootstrap
+import son_of_anton_bootstrap
 
-renco_bootstrap.harden_import_path()
+son_of_anton_bootstrap.harden_import_path()
 
 import argparse
 import contextlib
@@ -27,7 +27,7 @@ import threading
 import time
 
 import cli as cli_mod
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 from tui_gateway._stdin_recovery import handle_spurious_eof
 from rich.console import Console
 
@@ -35,7 +35,7 @@ from rich.console import Console
 def _env_float(name: str, default: float) -> float:
     """Parse a float env knob, falling back to ``default`` on absent/malformed
     values. A bare ``float(os.environ.get(...))`` would raise ValueError at
-    import time on a typo (e.g. ``RENCO_SLASH_WATCHDOG_POLL_S=2s``) and kill
+    import time on a typo (e.g. ``SON_OF_ANTON_SLASH_WATCHDOG_POLL_S=2s``) and kill
     the worker before it can serve a single command."""
     raw = os.environ.get(name)
     if not raw:
@@ -46,8 +46,8 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-_WATCHDOG_POLL_S = max(0.05, _env_float("RENCO_SLASH_WATCHDOG_POLL_S", 2.0))
-_ORPHAN_GRACE_S = max(0.0, _env_float("RENCO_SLASH_WATCHDOG_GRACE_S", 5.0))
+_WATCHDOG_POLL_S = max(0.05, _env_float("SON_OF_ANTON_SLASH_WATCHDOG_POLL_S", 2.0))
+_ORPHAN_GRACE_S = max(0.0, _env_float("SON_OF_ANTON_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
@@ -58,14 +58,14 @@ def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
 
 
 def _prepare_slash_worker_runtime() -> None:
-    """Start bounded MCP discovery before RencoCLI snapshots tools.
+    """Start bounded MCP discovery before SonOfAntonCLI snapshots tools.
 
-    Each slash_worker child is its own process — the parent ``renco serve``
+    Each slash_worker child is its own process — the parent ``son-of-anton serve``
     discovery thread does not populate this registry (issue #61891).
     """
     import logging
 
-    from renco_cli.mcp_startup import (
+    from son_of_anton_cli.mcp_startup import (
         start_background_mcp_discovery,
         wait_for_mcp_discovery,
     )
@@ -90,7 +90,7 @@ def _start_parent_death_watchdog(original_ppid) -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
-def _run(cli: RencoCLI, command: str) -> str:
+def _run(cli: SonOfAntonCLI, command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
         return ""
@@ -131,17 +131,17 @@ def main():
     p.add_argument("--model", default="")
     args = p.parse_args()
 
-    os.environ["RENCO_SESSION_KEY"] = args.session_key
-    os.environ["RENCO_INTERACTIVE"] = "1"
+    os.environ["SON_OF_ANTON_SESSION_KEY"] = args.session_key
+    os.environ["SON_OF_ANTON_INTERACTIVE"] = "1"
 
-    # Start before the (hundreds-of-ms) RencoCLI build — that window is itself
+    # Start before the (hundreds-of-ms) SonOfAntonCLI build — that window is itself
     # an orphan risk if the gateway dies mid-spawn.
     orig_ppid = os.getppid()
     _start_parent_death_watchdog(orig_ppid)
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        cli = RencoCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
+        cli = SonOfAntonCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
 
     # Spurious stdin-EOF recovery (same O_NONBLOCK shared file-description
     # issue as the gateway entry point — any child inheriting fd 0 can flip
@@ -179,7 +179,7 @@ def main():
             # the same command boundary as other long-lived gateway processes.
             # trim_memory's shared cooldown coalesces this with nearby activity.
             try:
-                from renco_cli.mem_trim import trim_memory
+                from son_of_anton_cli.mem_trim import trim_memory
 
                 trim_memory(reason="slash worker command completion")
             except Exception as exc:

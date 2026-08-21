@@ -1,11 +1,11 @@
 """Tests for subprocess env sanitization in LocalEnvironment.
 
-Verifies that Renco-managed provider, tool, and gateway env vars are
+Verifies that Son of Anton-managed provider, tool, and gateway env vars are
 stripped from subprocess environments so external CLIs are not silently
-misrouted or handed Renco secrets.
+misrouted or handed Son of Anton secrets.
 
-See: https://github.com/ewtodd/renco/issues/1002
-See: https://github.com/ewtodd/renco/issues/1264
+See: https://github.com/ewtodd/son-of-anton/issues/1002
+See: https://github.com/ewtodd/son-of-anton/issues/1264
 """
 
 import os
@@ -19,8 +19,8 @@ import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
-    _RENCO_PROVIDER_ENV_BLOCKLIST,
-    _RENCO_PROVIDER_ENV_FORCE_PREFIX,
+    _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST,
+    _SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX,
 )
 
 
@@ -70,7 +70,7 @@ def _run_with_env(extra_os_env=None, self_env=None):
 
 
 class TestProviderEnvBlocklist:
-    """Provider env vars loaded from ~/.renco/.env must not leak."""
+    """Provider env vars loaded from ~/.son-of-anton/.env must not leak."""
 
     def test_blocked_vars_are_stripped(self):
         """OPENAI_BASE_URL and other provider vars must not appear in subprocess env."""
@@ -106,14 +106,14 @@ class TestProviderEnvBlocklist:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
     def test_bedrock_bearer_token_is_stripped(self):
-        """The Bedrock-specific bearer token is a Renco inference secret
+        """The Bedrock-specific bearer token is a Son of Anton inference secret
         (analogous to OPENAI_API_KEY) and must not leak into subprocesses.
 
         Regression for #32314: AWS_BEARER_TOKEN_BEDROCK leaked into terminal /
         execute_code children because the ``bedrock`` ProviderConfig declares
         ``api_key_env_vars=()`` (auth_type="aws_sdk") and the blocklist builder
         only consulted that field. The reporter caught it when ``opencode
-        models`` run inside a Renco terminal enumerated the entire Bedrock
+        models`` run inside a Son of Anton terminal enumerated the entire Bedrock
         catalog off the leaked bearer token.
         """
         result_env = _run_with_env(extra_os_env={
@@ -157,9 +157,9 @@ class TestProviderEnvBlocklist:
         Stripping these would (a) break every user who does AWS work in the
         agent terminal — not just Bedrock users, since the registry is iterated
         unconditionally — and (b) be unrecoverable, because env_passthrough.py
-        refuses to re-allow anything in _RENCO_PROVIDER_ENV_BLOCKLIST
+        refuses to re-allow anything in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST
         (GHSA-rhgp-j443-p4rf). Only the Bedrock inference bearer token is
-        Renco-managed; the rest belongs to the user.
+        Son of Anton-managed; the rest belongs to the user.
         """
         general_chain = {
             "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
@@ -211,7 +211,7 @@ class TestProviderEnvBlocklist:
             "HASS_TOKEN": "ha-secret",
             "EMAIL_PASSWORD": "email-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
-            "RENCO_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
+            "SON_OF_ANTON_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
             "GITHUB_TOKEN": "ghp_secret",
@@ -253,24 +253,24 @@ class TestProviderEnvBlocklist:
 
 
 class TestForceEnvOptIn:
-    """Callers can opt in to passing a blocked var via _RENCO_FORCE_ prefix."""
+    """Callers can opt in to passing a blocked var via _SON_OF_ANTON_FORCE_ prefix."""
 
     def test_force_prefix_passes_blocked_var(self):
-        """_RENCO_FORCE_OPENAI_API_KEY in self.env should inject OPENAI_API_KEY."""
+        """_SON_OF_ANTON_FORCE_OPENAI_API_KEY in self.env should inject OPENAI_API_KEY."""
         result_env = _run_with_env(self_env={
-            f"{_RENCO_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-explicit",
+            f"{_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-explicit",
         })
 
         assert "OPENAI_API_KEY" in result_env
         assert result_env["OPENAI_API_KEY"] == "sk-explicit"
         # The force-prefixed key itself must not appear
-        assert f"{_RENCO_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result_env
+        assert f"{_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result_env
 
     def test_force_prefix_overrides_os_environ_block(self):
         """Force-prefix in self.env wins even when os.environ has the blocked var."""
         result_env = _run_with_env(
             extra_os_env={"OPENAI_BASE_URL": "http://leaked/v1"},
-            self_env={f"{_RENCO_PROVIDER_ENV_FORCE_PREFIX}OPENAI_BASE_URL": "http://intended/v1"},
+            self_env={f"{_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX}OPENAI_BASE_URL": "http://intended/v1"},
         )
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
@@ -283,21 +283,21 @@ class TestActiveVenvMarkerStripping:
     VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
     agent runs against ANOTHER Python project, ``uv``/``poetry`` treat the
     inherited value as the active environment and build that project's deps
-    into the Renco venv path instead of the project's own ``.venv`` —
-    silently clobbering the Renco environment (and, when the other project
-    pins a different Python, breaking the gateway outright). The Renco venv
+    into the Son of Anton venv path instead of the project's own ``.venv`` —
+    silently clobbering the Son of Anton environment (and, when the other project
+    pins a different Python, breaking the gateway outright). The Son of Anton venv
     stays reachable via PATH, so stripping the markers is safe.
     """
 
     def test_virtualenv_marker_stripped_end_to_end(self):
         result_env = _run_with_env(extra_os_env={
-            "VIRTUAL_ENV": "/home/user/.renco/renco-agent/venv",
+            "VIRTUAL_ENV": "/home/user/.son-of-anton/son-of-anton/venv",
         })
         assert "VIRTUAL_ENV" not in result_env
 
     def test_conda_prefix_marker_stripped_end_to_end(self):
         result_env = _run_with_env(extra_os_env={
-            "CONDA_PREFIX": "/opt/conda/envs/renco",
+            "CONDA_PREFIX": "/opt/conda/envs/son-of-anton",
         })
         assert "CONDA_PREFIX" not in result_env
 
@@ -353,35 +353,35 @@ def _make_directory_link(link: Path, target: Path) -> None:
 
 def _physical_repo_root(tmp_path: Path) -> Path:
     """Create the physical repo checkout directory for junction tests."""
-    physical_root = tmp_path / "physical-home" / "renco-agent"
+    physical_root = tmp_path / "physical-home" / "son-of-anton"
     physical_root.mkdir(parents=True)
     return physical_root
 
 
 class TestPythonpathSelectiveStrip:
-    """PYTHONPATH Renco-owned entry stripping (#74817).
+    """PYTHONPATH Son of Anton-owned entry stripping (#74817).
 
-    The Desktop Electron app injects the Renco repo root and the Renco
+    The Desktop Electron app injects the Son of Anton repo root and the Son of Anton
     venv's site-packages (Python 3.11) into PYTHONPATH.  When this leaks
     into subprocesses running a different Python (e.g. 3.13), 3.11 C
     extensions appear on sys.path and crash with ImportError.
-    ``_strip_renco_owned_pythonpath`` surgically removes only the
-    entries Renco itself owns (repo root, own venv site-packages),
+    ``_strip_son_of_anton_owned_pythonpath`` surgically removes only the
+    entries Son of Anton itself owns (repo root, own venv site-packages),
     preserving user paths — including user paths whose names merely
     contain another Python version.
     """
 
     def test_owned_entries_stripped_matrix(self):
-        """Exact Renco-owned entries are removed; everything else survives
+        """Exact Son of Anton-owned entries are removed; everything else survives
         verbatim (ordering, duplicates, empty components).
 
         Covers: the running venv's site-packages, the repo root (computed
-        independently via parents[2] so an off-by-one in _renco_repo_root
-        cannot silently pass), duplicate Renco entries, all-owned input
-        (PYTHONPATH key removed), and mixed user/Renco ordering with an
+        independently via parents[2] so an off-by-one in _son_of_anton_repo_root
+        cannot silently pass), duplicate Son of Anton entries, all-owned input
+        (PYTHONPATH key removed), and mixed user/Son of Anton ordering with an
         empty component preserved.
         """
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
 
         venv_sp = str(_running_venv_site_packages())
         local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
@@ -396,7 +396,7 @@ class TestPythonpathSelectiveStrip:
         ]
         for input_entries, expected in cases:
             env = {"PYTHONPATH": os.pathsep.join(input_entries)}
-            _strip_renco_owned_pythonpath(env)
+            _strip_son_of_anton_owned_pythonpath(env)
             if expected is None:
                 assert "PYTHONPATH" not in env
             else:
@@ -412,7 +412,7 @@ class TestPythonpathSelectiveStrip:
         "",
     ])
     def test_non_owned_entries_preserved(self, user_pp):
-        """Anything not proven Renco-owned is preserved byte-for-byte.
+        """Anything not proven Son of Anton-owned is preserved byte-for-byte.
 
         One invariant, one matrix: ordinary user paths, Nix store paths,
         other-major/minor-version site-packages, paths merely containing a
@@ -421,21 +421,21 @@ class TestPythonpathSelectiveStrip:
         the same contract -- ownership is decided by provenance, never by
         path shape or version (P1/P2, #74817 follow-ups).
         """
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
         env = {"PYTHONPATH": user_pp}
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
         assert env.get("PYTHONPATH") == user_pp
 
     def test_non_owned_runtime_shaped_entries_preserved(self):
         """Runtime-derived user spellings are preserved: site-packages for a
-        different interpreter version, a descendant of the Renco venv
+        different interpreter version, a descendant of the Son of Anton venv
         site-packages, and direct/deeper children of the repo root.  The
         repo root is computed independently (parents[2] of this file) so an
-        off-by-one in _renco_repo_root cannot silently pass; no launcher
+        off-by-one in _son_of_anton_repo_root cannot silently pass; no launcher
         injects a direct child as a standalone entry, so such paths are user
         paths by contract.
         """
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
         import sys
 
         running_minor = sys.version_info[1]
@@ -453,85 +453,85 @@ class TestPythonpathSelectiveStrip:
         ]
         for user_pp in inputs:
             env = {"PYTHONPATH": user_pp}
-            _strip_renco_owned_pythonpath(env)
+            _strip_son_of_anton_owned_pythonpath(env)
             assert env["PYTHONPATH"] == user_pp
 
     def test_windows_backslash_paths(self):
-        """Windows-style backslash paths are handled for Renco-owned entries.
+        """Windows-style backslash paths are handled for Son of Anton-owned entries.
 
         On Windows, os.pathsep is ';'.  We mock it so the test runs
         correctly on POSIX CI.  On a POSIX host a backslash path is a
         single path component, so ``Path`` cannot identify it as
-        Renco-owned — the critical invariant is that user Windows paths
+        Son of Anton-owned — the critical invariant is that user Windows paths
         (including site-packages paths for another Python version) are
         never destroyed.  On a real Windows host, Path splits on
-        backslashes and Renco venv site-packages entries are stripped
-        by the same Renco-owned check (covered by the Windows-only test
+        backslashes and Son of Anton venv site-packages entries are stripped
+        by the same Son of Anton-owned check (covered by the Windows-only test
         below).
         """
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
         import sys
 
         pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
-        renco_win = f"C:\\\\Users\\\\u\\\\.renco\\\\renco-agent\\\\venv\\\\lib\\\\{pyver}\\\\site-packages"
+        son_of_anton_win = f"C:\\\\Users\\\\u\\\\.son-of-anton\\\\son-of-anton\\\\venv\\\\lib\\\\{pyver}\\\\site-packages"
         user_win = "D:\\\\user\\\\lib"
         env = {
-            "PYTHONPATH": ";".join([renco_win, user_win]),
+            "PYTHONPATH": ";".join([son_of_anton_win, user_win]),
         }
         # Mock os.pathsep to ';' (Windows) just for the strip call.
         with patch("os.pathsep", ";"):
-            _strip_renco_owned_pythonpath(env)
+            _strip_son_of_anton_owned_pythonpath(env)
         assert "PYTHONPATH" in env
         entries = env["PYTHONPATH"].split(";")
         # Both survive on POSIX: user paths must always be preserved, and
-        # the Renco-owned check cannot match a backslash path here.
-        assert renco_win in entries
+        # the Son of Anton-owned check cannot match a backslash path here.
+        assert son_of_anton_win in entries
         assert user_win in entries
 
     @pytest.mark.windows_only
-    def test_windows_renco_owned_paths_stripped(self):
-        """On Windows, a Renco venv site-packages entry written with
-        backslashes is stripped by the same Renco-owned check, while a
+    def test_windows_son_of_anton_owned_paths_stripped(self):
+        """On Windows, a Son of Anton venv site-packages entry written with
+        backslashes is stripped by the same Son of Anton-owned check, while a
         user Windows path is preserved.  Windows-only: POSIX ``Path`` does
         not split on backslashes, so this cannot be meaningfully simulated
         on a POSIX host."""
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
 
         venv_sp = str(_running_venv_site_packages())
         # Windows form: C:\...\venv\Lib\site-packages (backslashes)
-        renco_win = venv_sp
+        son_of_anton_win = venv_sp
         user_win = "D:\\\\user\\\\lib"
         env = {
-            "PYTHONPATH": ";".join([renco_win, user_win]),
+            "PYTHONPATH": ";".join([son_of_anton_win, user_win]),
         }
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
         entries = env["PYTHONPATH"].split(";")
-        assert renco_win not in entries
+        assert son_of_anton_win not in entries
         assert user_win in entries
 
     def test_empty_pythonpath_unchanged(self):
         """An empty PYTHONPATH is a no-op (falsy -> early return)."""
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
         env = {"PYTHONPATH": ""}
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
         # Empty string is falsy, so the function returns early without
         # modifying the dict.  The key stays as-is (empty string).
         assert env.get("PYTHONPATH") == ""
 
     def test_empty_component_preserved(self):
         """An empty component means cwd and must survive unchanged."""
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
 
         user_pp = os.pathsep.join(["/foo", "", "/bar"])
         env = {"PYTHONPATH": user_pp}
 
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
 
         assert env["PYTHONPATH"] == user_pp
 
     def test_raw_user_spelling_preserved(self):
         """The sanitizer does not trim, normalize, or deduplicate user entries."""
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
 
         user_pp = os.pathsep.join([
             " /opt/user-lib ",
@@ -542,7 +542,7 @@ class TestPythonpathSelectiveStrip:
         ])
         env = {"PYTHONPATH": user_pp}
 
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
 
         assert env["PYTHONPATH"] == user_pp
 
@@ -550,13 +550,13 @@ class TestPythonpathSelectiveStrip:
     def test_base_python_sanitizer_uses_validated_separate_runtime_venv(self, tmp_path, monkeypatch):
         """A base interpreter strips the exact Windows runtime site-packages.
 
-        This deliberately uses a synthetic Renco venv separate from the test
+        This deliberately uses a synthetic Son of Anton venv separate from the test
         runner: sys.prefix represents base Python, while validated VIRTUAL_ENV
-        identifies ``<repo>/venv`` as the Renco runtime producer contract.
+        identifies ``<repo>/venv`` as the Son of Anton runtime producer contract.
         """
         import tools.environments.local as local
 
-        repo_root = tmp_path / "renco-agent"
+        repo_root = tmp_path / "son-of-anton"
         runtime_venv = repo_root / "venv"
         runtime_sp = runtime_venv / "Lib" / "site-packages"
         runtime_sp.mkdir(parents=True)
@@ -564,9 +564,9 @@ class TestPythonpathSelectiveStrip:
         base_prefix = tmp_path / "base-python"
         unrelated = "/custom/lib/python3.13/site-packages"
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", (repo_root,))
         monkeypatch.setattr(local, "_in_venv", False)
-        monkeypatch.setattr(local, "_renco_site_packages", None)
+        monkeypatch.setattr(local, "_son_of_anton_site_packages", None)
         monkeypatch.setattr(local.sys, "prefix", str(base_prefix))
         monkeypatch.setattr(local.sys, "base_prefix", str(base_prefix))
 
@@ -585,42 +585,42 @@ class TestPythonpathSelectiveStrip:
         """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH ownership."""
         import tools.environments.local as local
 
-        repo_root = tmp_path / "renco-agent"
+        repo_root = tmp_path / "son-of-anton"
         repo_root.mkdir()
         unrelated_venv = tmp_path / "user-venv"
         unrelated_sp = unrelated_venv / "Lib" / "site-packages"
         unrelated_sp.mkdir(parents=True)
         (unrelated_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", (repo_root,))
         monkeypatch.setattr(local, "_in_venv", False)
-        monkeypatch.setattr(local, "_renco_site_packages", None)
+        monkeypatch.setattr(local, "_son_of_anton_site_packages", None)
 
         env = {
             "VIRTUAL_ENV": str(unrelated_venv),
             "PYTHONPATH": str(unrelated_sp),
         }
-        local._strip_renco_owned_pythonpath(env)
+        local._strip_son_of_anton_owned_pythonpath(env)
 
         assert env["PYTHONPATH"] == str(unrelated_sp)
 
 
     def test_no_pythonpath_key(self):
         """Missing PYTHONPATH key is a no-op."""
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
         env = {"PATH": "/usr/bin"}
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
         assert "PYTHONPATH" not in env
 
 
     @pytest.mark.parametrize("builder", [
         "_make_run_env",
         "_sanitize_subprocess_env",
-        "renco_subprocess_env",
+        "son_of_anton_subprocess_env",
     ])
-    def test_builders_strip_renco_venv_pythonpath(self, builder):
+    def test_builders_strip_son_of_anton_venv_pythonpath(self, builder):
         """Every subprocess env builder applies the same sanitation contract:
-        Renco venv site-packages is stripped, user entries survive.
+        Son of Anton venv site-packages is stripped, user entries survive.
         """
         from tools.environments import local as local_mod
 
@@ -636,20 +636,20 @@ class TestPythonpathSelectiveStrip:
             elif builder == "_sanitize_subprocess_env":
                 result = local_mod._sanitize_subprocess_env(dict(os.environ))
             else:
-                result = local_mod.renco_subprocess_env()
+                result = local_mod.son_of_anton_subprocess_env()
         pp = result.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert venv_sp not in entries
         assert "/home/user/my-lib" in entries
 
-    def test_scrub_child_env_strips_renco_venv_pythonpath(self):
-        """execute_code's _scrub_child_env path: after scrubbing, Renco venv
+    def test_scrub_child_env_strips_son_of_anton_venv_pythonpath(self):
+        """execute_code's _scrub_child_env path: after scrubbing, Son of Anton venv
         site-packages entries should be stripped when
-        _strip_renco_owned_pythonpath is applied (as the spawn path does),
+        _strip_son_of_anton_owned_pythonpath is applied (as the spawn path does),
         while user entries (even for another Python version) are preserved.
         """
         from tools.code_execution_tool import _scrub_child_env
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
 
         venv_sp = str(_running_venv_site_packages())
         other_sp = "/opt/other-venv/lib/python3.99/site-packages"
@@ -662,7 +662,7 @@ class TestPythonpathSelectiveStrip:
         # The scrubber passes PYTHONPATH through (it's in _SAFE_ENV_PREFIXES).
         assert "PYTHONPATH" in scrubbed
         # Now apply the selective strip (as the spawn path does).
-        _strip_renco_owned_pythonpath(scrubbed)
+        _strip_son_of_anton_owned_pythonpath(scrubbed)
         pp = scrubbed.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert venv_sp not in entries
@@ -670,15 +670,15 @@ class TestPythonpathSelectiveStrip:
         assert "/home/user/my-lib" in entries
 
     @pytest.mark.parametrize("same_env", [True, False])
-    def test_execute_code_composition_strips_inherited_renco_entries(self, same_env):
+    def test_execute_code_composition_strips_inherited_son_of_anton_entries(self, same_env):
         """Integration: execute_code's real spawn path composes a clean PYTHONPATH.
 
-        Seeds a contaminated inherited PYTHONPATH (Renco repo root + Renco
+        Seeds a contaminated inherited PYTHONPATH (Son of Anton repo root + Son of Anton
         venv site-packages + user entries) through os.environ and drives
         execute_code all the way to Popen.  Proves the #84500 conditional
         composition and the #82581 selective strip compose correctly:
 
-        * inherited Renco venv site-packages never survive into the sandbox;
+        * inherited Son of Anton venv site-packages never survive into the sandbox;
         * the staging tmpdir stays the first entry;
         * the repo root is deliberately re-added exactly once for a same-env
           child (the single occurrence proves the inherited copy was stripped
@@ -691,7 +691,7 @@ class TestPythonpathSelectiveStrip:
         def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
             return '{"output": "mock", "exit_code": 0}'
 
-        renco_root = str(Path(cet.__file__).resolve().parents[1])
+        son_of_anton_root = str(Path(cet.__file__).resolve().parents[1])
         venv_sp = str(_running_venv_site_packages())
         user_a = "/home/user/my-lib"
         user_b = "/opt/project/lib"
@@ -712,12 +712,12 @@ class TestPythonpathSelectiveStrip:
                    return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call), \
-             patch("tools.code_execution_tool._uses_renco_python_environment",
+             patch("tools.code_execution_tool._uses_son_of_anton_python_environment",
                    return_value=same_env), \
              patch("subprocess.Popen", side_effect=_fake_popen), \
              patch.dict(os.environ, {
                  "PYTHONPATH": os.pathsep.join(
-                     [renco_root, venv_sp, user_a, user_b]),
+                     [son_of_anton_root, venv_sp, user_a, user_b]),
              }):
             execute_code(code="pass", task_id="test-int", enabled_tools=[])
 
@@ -732,14 +732,14 @@ class TestPythonpathSelectiveStrip:
         # composition contract (identity on POSIX).
         norm_parts = [os.path.normcase(p) for p in parts]
         norm_staging = os.path.normcase(captured["staging"])
-        norm_root = os.path.normcase(renco_root)
+        norm_root = os.path.normcase(son_of_anton_root)
         norm_venv = os.path.normcase(venv_sp)
         norm_user_a = os.path.normcase(user_a)
         norm_user_b = os.path.normcase(user_b)
         assert norm_parts[0] == norm_staging, \
             "staging tmpdir must be the first PYTHONPATH entry"
         assert norm_venv not in norm_parts, \
-            "inherited Renco venv site-packages must be stripped"
+            "inherited Son of Anton venv site-packages must be stripped"
         assert norm_user_a in norm_parts and norm_user_b in norm_parts, \
             "user PYTHONPATH entries must survive"
         assert norm_parts.index(norm_user_a) > norm_parts.index(norm_staging), \
@@ -767,7 +767,7 @@ class TestPythonpathSelectiveStrip:
         PYTHONPATH entry.  A user path that merely happens to live under
         the repo directory must therefore be preserved.
         """
-        from tools.environments.local import _strip_renco_owned_pythonpath
+        from tools.environments.local import _strip_son_of_anton_owned_pythonpath
 
         local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
         real_repo_root = local_file.parents[2]
@@ -776,7 +776,7 @@ class TestPythonpathSelectiveStrip:
         env = {
             "PYTHONPATH": os.pathsep.join([direct_child, "/home/user/my-lib"]),
         }
-        _strip_renco_owned_pythonpath(env)
+        _strip_son_of_anton_owned_pythonpath(env)
         pp = env.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert direct_child in entries
@@ -785,7 +785,7 @@ class TestPythonpathSelectiveStrip:
     def test_configured_home_alias_matches_launcher_output(self, tmp_path, monkeypatch):
         """The real producer spelling is derived and consumed end to end."""
         import tools.environments.local as local
-        from renco_cli.gateway_windows import _preserve_renco_home_path
+        from son_of_anton_cli.gateway_windows import _preserve_son_of_anton_home_path
 
         physical_home = tmp_path / "physical-home"
         physical_root = _physical_repo_root(tmp_path)
@@ -794,19 +794,19 @@ class TestPythonpathSelectiveStrip:
             _make_directory_link(configured_home, physical_home)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
-        monkeypatch.setenv("RENCO_HOME", str(configured_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(configured_home))
 
-        launcher_entry = Path(_preserve_renco_home_path(physical_root))
-        aliases = local._build_renco_repo_root_aliases(
+        launcher_entry = Path(_preserve_son_of_anton_home_path(physical_root))
+        aliases = local._build_son_of_anton_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
 
-        assert launcher_entry == configured_home / "renco-agent"
+        assert launcher_entry == configured_home / "son-of-anton"
         assert launcher_entry in aliases
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", aliases)
         nested_user_path = launcher_entry / "user-data"
         env = {
             "PYTHONPATH": os.pathsep.join([
@@ -815,7 +815,7 @@ class TestPythonpathSelectiveStrip:
                 "/home/user/my-lib",
             ])
         }
-        local._strip_renco_owned_pythonpath(env)
+        local._strip_son_of_anton_owned_pythonpath(env)
 
         assert env["PYTHONPATH"].split(os.pathsep) == [
             str(nested_user_path),
@@ -825,18 +825,18 @@ class TestPythonpathSelectiveStrip:
     def test_profile_rehome_keeps_junction_lexical_alias(self, tmp_path, monkeypatch):
         """Profile re-home must not lose the launcher's lexical repo-root spelling.
 
-        The desktop/CLI spawn children with RENCO_HOME and PYTHONPATH in the
+        The desktop/CLI spawn children with SON_OF_ANTON_HOME and PYTHONPATH in the
         configured (junction) spelling, but --profile / sticky active_profile
-        re-home RENCO_HOME through resolve_profile_env() before the
+        re-home SON_OF_ANTON_HOME through resolve_profile_env() before the
         sanitizer loads.  Regression (junction + profile re-home): the alias
         builder must still recover the lexical root so the inherited lexical
         repo-root entry is stripped.
         """
         import tools.environments.local as local
-        from renco_cli.profiles import resolve_profile_env
+        from son_of_anton_cli.profiles import resolve_profile_env
 
         physical_home = tmp_path / "physical-home"
-        physical_root = physical_home / "renco-agent"
+        physical_root = physical_home / "son-of-anton"
         physical_root.mkdir(parents=True)
         (physical_home / "profiles" / "coder").mkdir(parents=True)
         configured_home = tmp_path / "configured-home"
@@ -846,31 +846,31 @@ class TestPythonpathSelectiveStrip:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
         # Launcher contract: the configured spelling is the env and the root.
-        monkeypatch.setenv("RENCO_HOME", str(configured_home))
-        lexical_root = configured_home / "renco-agent"
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(configured_home))
+        lexical_root = configured_home / "son-of-anton"
 
         # Profile re-home keeps the configured spelling (physically identical
         # through the link; lexically the launcher spelling is preserved).
         assert Path(resolve_profile_env("default")) == configured_home
         assert Path(resolve_profile_env("coder")) == configured_home / "profiles" / "coder"
 
-        # The sanitizer now runs under the re-homed (profile) RENCO_HOME.
-        aliases = local._build_renco_repo_root_aliases(
+        # The sanitizer now runs under the re-homed (profile) SON_OF_ANTON_HOME.
+        aliases = local._build_son_of_anton_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home / "profiles" / "coder",
         )
         assert any(local._same_path(a, lexical_root) for a in aliases)
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", aliases)
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
-        local._strip_renco_owned_pythonpath(env)
+        local._strip_son_of_anton_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
 
     def test_repo_level_junction_recovers_lexical_alias(self, tmp_path, monkeypatch):
         """The repo itself may be a junction under the configured root
-        (e.g. D:\\renco\\renco-agent -> C:\\...\\renco-agent) while the
+        (e.g. D:\\son-of-anton\\son-of-anton -> C:\\...\\son-of-anton) while the
         editable import spelling resolves to the physical location.  The
         alias builder must recover the lexical spelling via exact-identity
         proof (strict resolve), not a name-based guess.
@@ -880,23 +880,23 @@ class TestPythonpathSelectiveStrip:
         physical_root = _physical_repo_root(tmp_path)
         configured_home = tmp_path / "configured-home"
         configured_home.mkdir()
-        # repo-level link: <configured-home>/renco-agent -> physical repo
+        # repo-level link: <configured-home>/son-of-anton -> physical repo
         try:
-            _make_directory_link(configured_home / "renco-agent", physical_root)
+            _make_directory_link(configured_home / "son-of-anton", physical_root)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
-        lexical_root = configured_home / "renco-agent"
-        aliases = local._build_renco_repo_root_aliases(
+        lexical_root = configured_home / "son-of-anton"
+        aliases = local._build_son_of_anton_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
         assert any(local._same_path(a, lexical_root) for a in aliases)
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", aliases)
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
-        local._strip_renco_owned_pythonpath(env)
+        local._strip_son_of_anton_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
     def test_same_named_non_owned_directories_preserved(self, tmp_path, monkeypatch):
@@ -909,27 +909,27 @@ class TestPythonpathSelectiveStrip:
 
         physical_root = _physical_repo_root(tmp_path)
         configured_home = tmp_path / "configured-home"
-        (configured_home / "renco-agent").mkdir(parents=True)
-        unrelated = tmp_path / "user-tools" / "renco-agent"
+        (configured_home / "son-of-anton").mkdir(parents=True)
+        unrelated = tmp_path / "user-tools" / "son-of-anton"
         unrelated.mkdir(parents=True)
 
-        aliases = local._build_renco_repo_root_aliases(
+        aliases = local._build_son_of_anton_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
-        for lookalike in (configured_home / "renco-agent", unrelated):
+        for lookalike in (configured_home / "son-of-anton", unrelated):
             assert not any(local._same_path(a, lookalike) for a in aliases)
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", aliases)
-        for lookalike in (configured_home / "renco-agent", unrelated):
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", aliases)
+        for lookalike in (configured_home / "son-of-anton", unrelated):
             env = {"PYTHONPATH": os.pathsep.join([str(lookalike), "/home/user/my-lib"])}
-            local._strip_renco_owned_pythonpath(env)
+            local._strip_son_of_anton_owned_pythonpath(env)
             assert env["PYTHONPATH"].split(os.pathsep) == [str(lookalike), "/home/user/my-lib"]
 
     def test_profile_home_with_repo_level_junction(self, tmp_path, monkeypatch):
         """Profile re-home + repo-level junction together: the configured home
-        is <root>/profiles/<name> while the repo is a link at <root>/renco-agent.
+        is <root>/profiles/<name> while the repo is a link at <root>/son-of-anton.
         The root spelling must be derived (profiles -> grandparent) and then
         the lexical repo alias recovered from it.
         """
@@ -939,23 +939,23 @@ class TestPythonpathSelectiveStrip:
         configured_root = tmp_path / "configured-root"
         (configured_root / "profiles" / "coder").mkdir(parents=True)
         try:
-            _make_directory_link(configured_root / "renco-agent", physical_root)
+            _make_directory_link(configured_root / "son-of-anton", physical_root)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
         configured_home = configured_root / "profiles" / "coder"
-        lexical_root = configured_root / "renco-agent"
-        aliases = local._build_renco_repo_root_aliases(
+        lexical_root = configured_root / "son-of-anton"
+        aliases = local._build_son_of_anton_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
         assert any(local._same_path(a, lexical_root) for a in aliases)
-        assert not any(local._same_path(a, configured_home / "renco-agent") for a in aliases)
+        assert not any(local._same_path(a, configured_home / "son-of-anton") for a in aliases)
 
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", aliases)
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
-        local._strip_renco_owned_pythonpath(env)
+        local._strip_son_of_anton_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
     def test_validated_runtime_venv_lexical_after_repo_recovery(self, tmp_path, monkeypatch):
@@ -972,31 +972,31 @@ class TestPythonpathSelectiveStrip:
         configured_home = tmp_path / "configured-home"
         configured_home.mkdir()
         try:
-            _make_directory_link(configured_home / "renco-agent", physical_root)
+            _make_directory_link(configured_home / "son-of-anton", physical_root)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
-        lexical_root = configured_home / "renco-agent"
-        aliases = local._build_renco_repo_root_aliases(
+        lexical_root = configured_home / "son-of-anton"
+        aliases = local._build_son_of_anton_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
         assert any(local._same_path(a, lexical_root) for a in aliases)
-        monkeypatch.setattr(local, "_renco_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_son_of_anton_repo_root_aliases", aliases)
 
         lexical_venv = lexical_root / "venv"
         validated = local._validated_runtime_venv({"VIRTUAL_ENV": str(lexical_venv)})
         assert validated is not None
         assert local._same_path(validated, lexical_venv)
 
-        local._renco_site_packages = None
+        local._son_of_anton_site_packages = None
         env = {"PYTHONPATH": os.pathsep.join([
             str(lexical_root),
             str(lexical_venv / "Lib" / "site-packages"),
             "/home/user/my-lib",
         ]), "VIRTUAL_ENV": str(lexical_venv)}
-        local._strip_renco_owned_pythonpath(env)
+        local._strip_son_of_anton_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
 
@@ -1004,18 +1004,18 @@ class TestPythonpathSelectiveStrip:
 
 
 class TestPythonhomeSanitized:
-    """PYTHONHOME must not leak from the Renco runtime into subprocesses.
+    """PYTHONHOME must not leak from the Son of Anton runtime into subprocesses.
 
     The gateway inherits/sets PYTHONHOME in its process environment; a child
     interpreter (system Python, another venv, cron no_agent scripts) that
-    inherits it redirects its stdlib search to the Renco venv and crashes
+    inherits it redirects its stdlib search to the Son of Anton venv and crashes
     with version-mismatch errors before importing anything (#75018).
     """
 
     @pytest.mark.parametrize("builder", [
         "_make_run_env",
         "_sanitize_subprocess_env",
-        "renco_subprocess_env",
+        "son_of_anton_subprocess_env",
         "build_subprocess_env",
     ])
     def test_builders_strip_pythonhome(self, builder):
@@ -1028,15 +1028,15 @@ class TestPythonhomeSanitized:
         seed = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
-            "PYTHONHOME": "/opt/renco-venv",
+            "PYTHONHOME": "/opt/son-of-anton-venv",
         }
         with patch.dict(os.environ, seed, clear=True):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
             elif builder == "_sanitize_subprocess_env":
                 result = local_mod._sanitize_subprocess_env(dict(os.environ))
-            elif builder == "renco_subprocess_env":
-                result = local_mod.renco_subprocess_env()
+            elif builder == "son_of_anton_subprocess_env":
+                result = local_mod.son_of_anton_subprocess_env()
             else:
                 result = local_mod.build_subprocess_env()
         assert "PYTHONHOME" not in result
@@ -1060,13 +1060,13 @@ class TestPythonhomeSanitized:
         base = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
-            "PYTHONHOME": "/opt/renco-venv",
-            "VIRTUAL_ENV": "/opt/renco-venv",
+            "PYTHONHOME": "/opt/son-of-anton-venv",
+            "VIRTUAL_ENV": "/opt/son-of-anton-venv",
             "SERVICE_TOKEN": "s3cr3t",
         }
         result = build_subprocess_env(base, scrub_secrets=False)
-        assert result.get("PYTHONHOME") == "/opt/renco-venv"
-        assert result.get("VIRTUAL_ENV") == "/opt/renco-venv"
+        assert result.get("PYTHONHOME") == "/opt/son-of-anton-venv"
+        assert result.get("VIRTUAL_ENV") == "/opt/son-of-anton-venv"
         assert result.get("SERVICE_TOKEN") == "s3cr3t"
 
 
@@ -1124,41 +1124,41 @@ class TestBlocklistCoverage:
             "ANTHROPIC_API_KEY",
             "LLM_MODEL",
         }
-        assert must_block.issubset(_RENCO_PROVIDER_ENV_BLOCKLIST)
+        assert must_block.issubset(_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST)
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
         must appear in the blocklist — ensures no drift.
 
         CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
-        by the user's Claude Code install, not Renco (#55878).
+        by the user's Claude Code install, not Son of Anton (#55878).
         """
-        from renco_cli.auth import PROVIDER_REGISTRY
+        from son_of_anton_cli.auth import PROVIDER_REGISTRY
 
         exempt = {"CLAUDE_CODE_OAUTH_TOKEN"}
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:
                 if var in exempt:
                     continue
-                assert var in _RENCO_PROVIDER_ENV_BLOCKLIST, (
+                assert var in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
                 )
             if pconfig.base_url_env_var:
-                assert pconfig.base_url_env_var in _RENCO_PROVIDER_ENV_BLOCKLIST, (
+                assert pconfig.base_url_env_var in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry base_url_env_var {pconfig.base_url_env_var} "
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
 
     def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Renco-managed
+        """auth_type='aws_sdk' providers contribute their Son of Anton-managed
         inference token (the Bedrock bearer) to the blocklist, keyed off
         auth_type so any future SDK-cred provider is covered automatically."""
-        assert "AWS_BEARER_TOKEN_BEDROCK" in _RENCO_PROVIDER_ENV_BLOCKLIST
+        assert "AWS_BEARER_TOKEN_BEDROCK" in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST
 
     def test_general_aws_chain_not_in_blocklist(self):
         """The general AWS credential chain must NOT be in the blocklist —
         no-regression guard for #32314. These belong to the user's trusted
-        operator shell (SECURITY.md §3.2), not to Renco, and blocklisting
+        operator shell (SECURITY.md §3.2), not to Son of Anton, and blocklisting
         them would be unrecoverable via env_passthrough (GHSA-rhgp-j443-p4rf).
         """
         general_chain = {
@@ -1173,7 +1173,7 @@ class TestBlocklistCoverage:
             "AWS_WEB_IDENTITY_TOKEN_FILE",
             "AWS_ROLE_ARN",
         }
-        leaked_block = general_chain & _RENCO_PROVIDER_ENV_BLOCKLIST
+        leaked_block = general_chain & _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST
         assert not leaked_block, (
             f"General AWS chain vars must stay inheritable, but these are "
             f"blocklisted: {sorted(leaked_block)} (capability regression, #32314)"
@@ -1183,15 +1183,15 @@ class TestBlocklistCoverage:
         """Non-registry auth vars (ANTHROPIC_TOKEN) must also be in the
         blocklist."""
         extras = {"ANTHROPIC_TOKEN"}
-        assert extras.issubset(_RENCO_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST)
 
     def test_claude_code_oauth_token_is_inheritable(self):
         """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
-        (subscription OAuth), not a Renco inference credential. Stripping it
+        (subscription OAuth), not a Son of Anton inference credential. Stripping it
         made agent-spawned ``claude`` fall through to the shared Keychain /
         ~/.claude credential store and clobber the user's interactive login
         on auth failure (#55878). It must stay inheritable."""
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in _RENCO_PROVIDER_ENV_BLOCKLIST
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST
 
     def test_non_registry_provider_vars_are_in_blocklist(self):
         extras = {
@@ -1206,20 +1206,20 @@ class TestBlocklistCoverage:
             "XAI_API_KEY",
             "HELICONE_API_KEY",
         }
-        assert extras.issubset(_RENCO_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST)
 
     def test_optional_tool_and_messaging_vars_are_in_blocklist(self):
         """Tool/messaging vars from OPTIONAL_ENV_VARS should stay covered."""
-        from renco_cli.config import OPTIONAL_ENV_VARS
+        from son_of_anton_cli.config import OPTIONAL_ENV_VARS
 
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:
-                assert name in _RENCO_PROVIDER_ENV_BLOCKLIST, (
+                assert name in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST, (
                     f"Optional env var {name} (category={category}) missing from blocklist"
                 )
             elif category == "setting" and metadata.get("password"):
-                assert name in _RENCO_PROVIDER_ENV_BLOCKLIST, (
+                assert name in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST, (
                     f"Secret setting env var {name} missing from blocklist"
                 )
 
@@ -1253,7 +1253,7 @@ class TestBlocklistCoverage:
             "EMAIL_SMTP_HOST",
             "EMAIL_HOME_ADDRESS",
             "EMAIL_HOME_ADDRESS_NAME",
-            "RENCO_DASHBOARD_SESSION_TOKEN",
+            "SON_OF_ANTON_DASHBOARD_SESSION_TOKEN",
             "GATEWAY_ALLOWED_USERS",
             "GH_TOKEN",
             "GITHUB_APP_ID",
@@ -1267,23 +1267,23 @@ class TestBlocklistCoverage:
             "VERCEL_PROJECT_ID",
             "VERCEL_TEAM_ID",
         }
-        assert extras.issubset(_RENCO_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST)
 
 
 class TestSanePathIncludesHomebrew:
     """Verify _SANE_PATH includes macOS Homebrew directories."""
 
     @pytest.fixture(autouse=True)
-    def _disable_renco_bin_injection(self):
+    def _disable_son_of_anton_bin_injection(self):
         """These tests assert the sane-path merge in isolation. Disable the
-        renco-install-dir prepend (a separate concern, covered by
-        TestRencoBinDirOnPath) so a real ``renco`` on the test runner's PATH
+        son-of-anton-install-dir prepend (a separate concern, covered by
+        TestSonOfAntonBinDirOnPath) so a real ``son-of-anton`` on the test runner's PATH
         doesn't shift the asserted PATH layout."""
         from tools.environments import local as local_mod
-        saved = local_mod._RENCO_BIN_DIR
-        local_mod._RENCO_BIN_DIR = None  # resolved -> no dir to inject
+        saved = local_mod._SON_OF_ANTON_BIN_DIR
+        local_mod._SON_OF_ANTON_BIN_DIR = None  # resolved -> no dir to inject
         yield
-        local_mod._RENCO_BIN_DIR = saved
+        local_mod._SON_OF_ANTON_BIN_DIR = saved
 
     def test_sane_path_includes_homebrew_bin(self):
         from tools.environments.local import _SANE_PATH
@@ -1351,43 +1351,43 @@ class TestSanePathIncludesHomebrew:
         assert "PATH" not in result
 
 
-class TestRencoBinDirOnPath:
-    """The renco install dir is reachable in the terminal subshell PATH.
+class TestSonOfAntonBinDirOnPath:
+    """The son-of-anton install dir is reachable in the terminal subshell PATH.
 
-    Plugins shelling out to bare ``renco`` via the terminal tool must work
-    even when the gateway was launched without the renco install dir on
+    Plugins shelling out to bare ``son-of-anton`` via the terminal tool must work
+    even when the gateway was launched without the son-of-anton install dir on
     PATH (systemd, service managers, cron). See the discussion that motivated
-    _resolve_renco_bin_dir / _prepend_renco_bin_dir.
+    _resolve_son_of_anton_bin_dir / _prepend_son_of_anton_bin_dir.
     """
 
     def _reset_cache(self):
         from tools.environments import local as local_mod
-        local_mod._RENCO_BIN_DIR = local_mod._SENTINEL
+        local_mod._SON_OF_ANTON_BIN_DIR = local_mod._SENTINEL
 
     def test_resolves_via_which(self, monkeypatch):
         from tools.environments import local as local_mod
         self._reset_cache()
         monkeypatch.setattr(local_mod.shutil, "which",
-                            lambda name: "/opt/renco/bin/renco" if name == "renco" else None)
-        monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/renco/bin")
-        assert local_mod._resolve_renco_bin_dir() == "/opt/renco/bin"
+                            lambda name: "/opt/son-of-anton/bin/son-of-anton" if name == "son-of-anton" else None)
+        monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/son-of-anton/bin")
+        assert local_mod._resolve_son_of_anton_bin_dir() == "/opt/son-of-anton/bin"
 
 
     def test_prepend_noop_when_unresolved(self, monkeypatch):
         from tools.environments import local as local_mod
         self._reset_cache()
-        local_mod._RENCO_BIN_DIR = None
-        assert local_mod._prepend_renco_bin_dir("/usr/bin:/bin") == "/usr/bin:/bin"
+        local_mod._SON_OF_ANTON_BIN_DIR = None
+        assert local_mod._prepend_son_of_anton_bin_dir("/usr/bin:/bin") == "/usr/bin:/bin"
 
-    def test_make_run_env_injects_renco_bin_dir(self):
-        """A gateway env missing the renco dir gets it back in the subshell PATH.
+    def test_make_run_env_injects_son_of_anton_bin_dir(self):
+        """A gateway env missing the son-of-anton dir gets it back in the subshell PATH.
 
-        Platform-agnostic: ``_prepend_renco_bin_dir`` uses ``os.pathsep`` on
+        Platform-agnostic: ``_prepend_son_of_anton_bin_dir`` uses ``os.pathsep`` on
         every host, so no platform flag is faked here."""
         from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         self._reset_cache()
-        local_mod._RENCO_BIN_DIR = "/opt/renco/bin"
+        local_mod._SON_OF_ANTON_BIN_DIR = "/opt/son-of-anton/bin"
         with patch.dict(
             os.environ,
             {"PATH": os.pathsep.join(["/usr/bin", "/bin"])},
@@ -1395,15 +1395,15 @@ class TestRencoBinDirOnPath:
         ):
             result = _make_run_env({})
         entries = result["PATH"].split(os.pathsep)
-        assert entries[0] == "/opt/renco/bin"
+        assert entries[0] == "/opt/son-of-anton/bin"
         assert "/usr/bin" in entries
 
 
-class TestRencoInternalDynamicSecrets:
-    """Dynamically-named Renco secrets injected at gateway/CLI startup must
+class TestSonOfAntonInternalDynamicSecrets:
+    """Dynamically-named Son of Anton secrets injected at gateway/CLI startup must
     not leak into terminal subprocesses.
 
-    The static ``_RENCO_PROVIDER_ENV_BLOCKLIST`` is name-based and derived
+    The static ``_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST`` is name-based and derived
     from provider/tool registries, so it cannot enumerate:
 
     - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
@@ -1412,43 +1412,43 @@ class TestRencoInternalDynamicSecrets:
     - ``GATEWAY_RELAY_*_SECRET`` / ``_KEY`` / ``_TOKEN`` — relay-auth material
       provisioned by ``gateway/relay``.
 
-    ``_is_renco_internal_secret`` is the single source of truth; every spawn
+    ``_is_son_of_anton_internal_secret`` is the single source of truth; every spawn
     path (``_sanitize_subprocess_env``, ``_make_run_env``,
-    ``renco_subprocess_env``, Docker forward filter, ``env_passthrough``)
+    ``son_of_anton_subprocess_env``, Docker forward filter, ``env_passthrough``)
     consults it. These tests exercise the terminal execute path + predicate.
     """
 
     def test_predicate_matches_auxiliary_api_key(self):
-        from tools.environments.local import _is_renco_internal_secret
-        assert _is_renco_internal_secret("AUXILIARY_VISION_API_KEY")
-        assert _is_renco_internal_secret("AUXILIARY_WEB_EXTRACT_API_KEY")
-        assert _is_renco_internal_secret("AUXILIARY_APPROVAL_API_KEY")
+        from tools.environments.local import _is_son_of_anton_internal_secret
+        assert _is_son_of_anton_internal_secret("AUXILIARY_VISION_API_KEY")
+        assert _is_son_of_anton_internal_secret("AUXILIARY_WEB_EXTRACT_API_KEY")
+        assert _is_son_of_anton_internal_secret("AUXILIARY_APPROVAL_API_KEY")
         # plugin-registered task names are covered by the pattern
-        assert _is_renco_internal_secret("AUXILIARY_MY_PLUGIN_TASK_API_KEY")
+        assert _is_son_of_anton_internal_secret("AUXILIARY_MY_PLUGIN_TASK_API_KEY")
 
     def test_predicate_matches_auxiliary_base_url(self):
-        from tools.environments.local import _is_renco_internal_secret
-        assert _is_renco_internal_secret("AUXILIARY_VISION_BASE_URL")
-        assert _is_renco_internal_secret("AUXILIARY_COMPRESSION_BASE_URL")
+        from tools.environments.local import _is_son_of_anton_internal_secret
+        assert _is_son_of_anton_internal_secret("AUXILIARY_VISION_BASE_URL")
+        assert _is_son_of_anton_internal_secret("AUXILIARY_COMPRESSION_BASE_URL")
 
     def test_predicate_matches_gateway_relay_auth(self):
-        from tools.environments.local import _is_renco_internal_secret
-        assert _is_renco_internal_secret("GATEWAY_RELAY_SECRET")
-        assert _is_renco_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
-        assert _is_renco_internal_secret("GATEWAY_RELAY_SESSION_TOKEN")
+        from tools.environments.local import _is_son_of_anton_internal_secret
+        assert _is_son_of_anton_internal_secret("GATEWAY_RELAY_SECRET")
+        assert _is_son_of_anton_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
+        assert _is_son_of_anton_internal_secret("GATEWAY_RELAY_SESSION_TOKEN")
 
     def test_predicate_allows_auxiliary_non_secrets(self):
         """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY_* routing hints are
         NOT secrets and must remain visible so tooling that reads them works."""
-        from tools.environments.local import _is_renco_internal_secret
-        assert not _is_renco_internal_secret("AUXILIARY_VISION_PROVIDER")
-        assert not _is_renco_internal_secret("AUXILIARY_VISION_MODEL")
-        assert not _is_renco_internal_secret("GATEWAY_RELAY_URL")
-        assert not _is_renco_internal_secret("GATEWAY_RELAY_PLATFORMS")
-        assert not _is_renco_internal_secret("GATEWAY_RELAY_ID")  # not a secret suffix
+        from tools.environments.local import _is_son_of_anton_internal_secret
+        assert not _is_son_of_anton_internal_secret("AUXILIARY_VISION_PROVIDER")
+        assert not _is_son_of_anton_internal_secret("AUXILIARY_VISION_MODEL")
+        assert not _is_son_of_anton_internal_secret("GATEWAY_RELAY_URL")
+        assert not _is_son_of_anton_internal_secret("GATEWAY_RELAY_PLATFORMS")
+        assert not _is_son_of_anton_internal_secret("GATEWAY_RELAY_ID")  # not a secret suffix
         # unrelated vars pass through
-        assert not _is_renco_internal_secret("PATH")
-        assert not _is_renco_internal_secret("MY_APP_KEY")
+        assert not _is_son_of_anton_internal_secret("PATH")
+        assert not _is_son_of_anton_internal_secret("MY_APP_KEY")
 
     def test_auxiliary_secrets_stripped_from_subprocess(self):
         """AUXILIARY_*_API_KEY / _BASE_URL injected into os.environ must not
@@ -1507,6 +1507,6 @@ class TestRencoInternalDynamicSecrets:
     def test_gateway_relay_static_names_in_blocklist(self):
         """The static relay names are also added to the name-based blocklist so
         the exact-match path catches them independently of the predicate."""
-        assert "GATEWAY_RELAY_SECRET" in _RENCO_PROVIDER_ENV_BLOCKLIST
-        assert "GATEWAY_RELAY_DELIVERY_KEY" in _RENCO_PROVIDER_ENV_BLOCKLIST
-        assert "GATEWAY_RELAY_ID" in _RENCO_PROVIDER_ENV_BLOCKLIST
+        assert "GATEWAY_RELAY_SECRET" in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST
+        assert "GATEWAY_RELAY_DELIVERY_KEY" in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST
+        assert "GATEWAY_RELAY_ID" in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST

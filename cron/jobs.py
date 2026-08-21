@@ -1,8 +1,8 @@
 """
 Cron job storage and management.
 
-Jobs are stored in ~/.renco/cron/jobs.json
-Output is saved to ~/.renco/cron/output/{job_id}/{timestamp}.md
+Jobs are stored in ~/.son-of-anton/cron/jobs.json
+Output is saved to ~/.son-of-anton/cron/output/{job_id}/{timestamp}.md
 """
 
 import contextlib
@@ -33,12 +33,12 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from renco_constants import get_renco_home
+from son_of_anton_constants import get_son_of_anton_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
 
-from renco_time import now as _renco_now
+from son_of_anton_time import now as _son_of_anton_now
 from utils import atomic_replace, atomic_write_text
 
 # ``croniter`` compiles ~15 ms of regexes at import and only matters for
@@ -66,25 +66,25 @@ def _ensure_croniter() -> bool:
 # =============================================================================
 
 # Cron is per-profile by design (issue #4707). Each profile owns its own cron
-# store under its own RENCO_HOME, and a profile-scoped gateway runs that
-# profile's jobs under that same RENCO_HOME — so a job authored in profile
-# `coder` lives in `~/.renco/profiles/coder/cron/jobs.json` and executes with
+# store under its own SON_OF_ANTON_HOME, and a profile-scoped gateway runs that
+# profile's jobs under that same SON_OF_ANTON_HOME — so a job authored in profile
+# `coder` lives in `~/.son-of-anton/profiles/coder/cron/jobs.json` and executes with
 # `coder`'s `.env`, `config.yaml`, and skills. We deliberately anchor on
-# `get_renco_home()` (the active profile home), NOT `get_default_renco_root()`
+# `get_son_of_anton_home()` (the active profile home), NOT `get_default_son_of_anton_root()`
 # (the shared root). Anchoring at the root would funnel every profile's jobs
-# into one shared `jobs.json` and run them under whatever RENCO_HOME the
+# into one shared `jobs.json` and run them under whatever SON_OF_ANTON_HOME the
 # ticker process happens to have — leaking config/credentials/skills across
 # profiles (the security boundary #4707 was filed for). Do NOT change this to
 # the default root: that re-breaks per-profile isolation. See also the dynamic
-# `_get_renco_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
-RENCO_DIR = get_renco_home().resolve()
+# `_get_son_of_anton_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
+SON_OF_ANTON_DIR = get_son_of_anton_home().resolve()
 # These constants remain the default-profile fallback and a compatibility
 # surface for existing callers/tests. Cross-profile callers must scope paths
 # with use_cron_store() instead of mutating them process-wide.
-CRON_DIR = RENCO_DIR / "cron"
+CRON_DIR = SON_OF_ANTON_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
-# gateway process and the (separate) ``renco cron status`` process share it
+# gateway process and the (separate) ``son-of-anton cron status`` process share it
 # so status can tell whether the ticker THREAD is alive, not just whether the
 # gateway PROCESS exists — a ticker that dies silently inside a live gateway
 # would otherwise report healthy (#32612, #32895).
@@ -94,7 +94,7 @@ TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
 TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
 # Default ticker loop interval (seconds). The single source of truth shared by
 # the in-process ticker (cron/scheduler_provider.py) and the staleness
-# threshold in `renco cron status` (renco_cli/cron.py), so the two never
+# threshold in `son-of-anton cron status` (son_of_anton_cli/cron.py), so the two never
 # drift apart.
 TICKER_INTERVAL_SECONDS = 60
 
@@ -147,9 +147,9 @@ def _current_cron_store() -> _CronStorePaths:
     2. deliberately re-pointed module constants — if CRON_DIR/JOBS_FILE/
        OUTPUT_DIR no longer match their import-time values, someone chose
        the documented process-wide compatibility surface; honor it;
-    3. the ACTIVE profile home, resolved fresh via get_renco_home()
-       (context-local override, then the RENCO_HOME env var) — so a test
-       or embedder that re-points RENCO_HOME after this module was
+    3. the ACTIVE profile home, resolved fresh via get_son_of_anton_home()
+       (context-local override, then the SON_OF_ANTON_HOME env var) — so a test
+       or embedder that re-points SON_OF_ANTON_HOME after this module was
        imported reads/writes ITS OWN store, not whatever jobs.json the
        import happened to freeze (the filed incident: fixtures that patched
        the env too late silently rewrote the user's real jobs file);
@@ -162,8 +162,8 @@ def _current_cron_store() -> _CronStorePaths:
     live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
     if live_constants != _IMPORT_STORE:
         return live_constants
-    home = get_renco_home().resolve()
-    if home == RENCO_DIR:
+    home = get_son_of_anton_home().resolve()
+    if home == SON_OF_ANTON_DIR:
         return live_constants
     cron_dir = home / "cron"
     return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
@@ -192,7 +192,7 @@ def get_cron_output_dir() -> Path:
 
 
 # Fallback stale-recovery window for a one-shot's running-claim (#59229) when
-# the cron inactivity timeout is disabled (RENCO_CRON_TIMEOUT=0 → unlimited),
+# the cron inactivity timeout is disabled (SON_OF_ANTON_CRON_TIMEOUT=0 → unlimited),
 # in which case no finite run bound exists to derive from. Also acts as the
 # floor for the derived value so a very short configured timeout can't make the
 # claim expire mid-run.
@@ -200,7 +200,7 @@ ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
 
 # The derived TTL is the cron inactivity timeout times this headroom multiplier.
 # A healthy run clears its claim via mark_job_run() long before the TTL; the
-# TTL only recovers a claim left by a tick that DIED mid-run. RENCO_CRON_TIMEOUT
+# TTL only recovers a claim left by a tick that DIED mid-run. SON_OF_ANTON_CRON_TIMEOUT
 # is an *inactivity* limit, not a wall-clock cap — a job that keeps producing
 # output legitimately runs past it — so the multiplier gives comfortable
 # headroom over any healthy run before we treat a claim as stale.
@@ -212,7 +212,7 @@ _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 def _oneshot_run_claim_ttl_seconds() -> float:
     """Resolve the one-shot running-claim stale-recovery TTL.
 
-    Derived from ``RENCO_CRON_TIMEOUT`` (the cron inactivity timeout the
+    Derived from ``SON_OF_ANTON_CRON_TIMEOUT`` (the cron inactivity timeout the
     scheduler enforces on each run) so the safety valve tracks how long a run
     is actually allowed to go quiet, instead of a magic constant:
 
@@ -222,7 +222,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
     - positive N → ``max(N * headroom, ONESHOT_RUN_CLAIM_TTL_SECONDS)`` so a
       tiny configured timeout can never expire a claim mid-run.
     """
-    raw = os.getenv("RENCO_CRON_TIMEOUT", "").strip()
+    raw = os.getenv("SON_OF_ANTON_CRON_TIMEOUT", "").strip()
     timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
     if raw:
         try:
@@ -276,7 +276,7 @@ def _jobs_lock():
     Combines the in-process threading lock (cheap mutual exclusion between
     the gateway's parallel tick threads) with a cross-process advisory file
     lock on ``<cron dir>/.jobs.lock`` (mutual exclusion between the gateway process
-    and standalone ``renco`` CLI invocations, which previously shared no lock
+    and standalone ``son-of-anton`` CLI invocations, which previously shared no lock
     at all — a `cron pause` could be silently clobbered by a concurrent
     gateway write, leaving a "paused" job still firing).
 
@@ -624,7 +624,7 @@ def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> No
 
     The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
     by the *writer's* euid. When a root shell runs a state-writing cron CLI
-    command (``docker exec renco renco cron create ...`` — ``docker exec``
+    command (``docker exec son-of-anton son-of-anton cron create ...`` — ``docker exec``
     defaults to root) against a store owned by the unprivileged gateway user,
     the replace flips ``jobs.json`` to ``root:root`` mode 600 and the gateway's
     ticker (uid 1000) is silently locked out of every subsequent tick (#68483).
@@ -750,9 +750,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             # Make naive timestamps timezone-aware at parse time so the stored
             # value doesn't depend on the system timezone matching at check time.
             #
-            # Anchor to the CONFIGURED Renco timezone, not the server's local
+            # Anchor to the CONFIGURED Son of Anton timezone, not the server's local
             # timezone. The due-check (`get_due_jobs`) compares `next_run_at`
-            # against `renco_time.now()`, which uses the configured zone. If a
+            # against `son_of_anton_time.now()`, which uses the configured zone. If a
             # naive "20:07" were interpreted as server-local (e.g. UTC) while
             # now() runs in Asia/Kolkata, the stored instant would land hours
             # off from the user's wall-clock intent — far enough that one-shots
@@ -760,8 +760,8 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             # the configured zone makes "20:07" mean 20:07 on the same clock the
             # scheduler checks against (#51021).
             if dt.tzinfo is None:
-                renco_tz = _renco_now().tzinfo
-                dt = dt.replace(tzinfo=renco_tz)
+                son_of_anton_tz = _son_of_anton_now().tzinfo
+                dt = dt.replace(tzinfo=son_of_anton_tz)
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -773,7 +773,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Duration like "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
-        run_at = _renco_now() + timedelta(minutes=minutes)
+        run_at = _son_of_anton_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",
             "run_at": run_at.isoformat(),
@@ -792,18 +792,18 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
 
 
 def _ensure_aware(dt: datetime) -> datetime:
-    """Return a timezone-aware datetime in Renco configured timezone.
+    """Return a timezone-aware datetime in Son of Anton configured timezone.
 
     Backward compatibility:
     - Older stored timestamps may be naive.
     - Naive values are interpreted as *system-local wall time* (the timezone
       `datetime.now()` used when they were created), then converted to the
-      configured Renco timezone.
+      configured Son of Anton timezone.
 
     This preserves relative ordering for legacy naive timestamps across
     timezone changes and avoids false not-due results.
     """
-    target_tz = _renco_now().tzinfo
+    target_tz = _son_of_anton_now().tzinfo
     if dt.tzinfo is None:
         local_tz = datetime.now().astimezone().tzinfo
         return dt.replace(tzinfo=local_tz).astimezone(target_tz)
@@ -825,7 +825,7 @@ def _timezone_offset_mismatch(stored: datetime, current: datetime) -> bool:
 def _stored_wall_clock_is_future(stored: datetime, current: datetime) -> bool:
     """Return True when the stored local wall-clock time has not arrived yet.
 
-    Cron schedules express local wall-clock intent. If Renco/system local time
+    Cron schedules express local wall-clock intent. If Son of Anton/system local time
     changes after next_run_at was persisted, an old offset can make a future
     wall-clock run look due at the converted absolute time (for example
     21:00+10 becomes 13:00+02). Comparing naive wall-clock values lets us
@@ -976,7 +976,7 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
         if expr in _cron_cadence_cache:
             return _cron_cadence_cache[expr]
         try:
-            base = _renco_now()
+            base = _son_of_anton_now()
             it = croniter(expr, base)
             first = it.get_next(datetime)
             second = it.get_next(datetime)
@@ -1001,7 +1001,7 @@ _cron_cadence_cache: Dict[str, Optional[float]] = {}
 def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str) -> None:
     """Persist a countable, probe-visible signal for one stale-error re-arm."""
     global _persisted_error_recoveries
-    now = _renco_now()
+    now = _son_of_anton_now()
     entry = {
         "job_id": job.get("id"),
         "name": job.get("name") or job.get("id"),
@@ -1034,7 +1034,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     Returns ISO timestamp string, or None if no more runs.
     """
-    now = _renco_now()
+    now = _son_of_anton_now()
 
     if not isinstance(schedule, dict):
         return None
@@ -1068,7 +1068,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
-                "reinstall renco-agent or run 'pip install croniter' in your "
+                "reinstall son-of-anton or run 'pip install croniter' in your "
                 "runtime env.",
                 expr,
             )
@@ -1091,7 +1091,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 
 # =============================================================================
-# Ticker heartbeat (liveness signal for `renco cron status`)
+# Ticker heartbeat (liveness signal for `son-of-anton cron status`)
 # =============================================================================
 
 def _atomic_write_epoch(path: Path) -> None:
@@ -1099,7 +1099,7 @@ def _atomic_write_epoch(path: Path) -> None:
 
     Delegates to :func:`utils.atomic_write_text` (tmpfile + fsync +
     ``atomic_replace``, same pattern as ``save_jobs``) so a concurrent reader
-    in another process (``renco cron status``) never sees a torn/truncated
+    in another process (``son-of-anton cron status``) never sees a torn/truncated
     file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
@@ -1129,7 +1129,7 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 
     The ticker calls this once per loop iteration. ``success=True`` additionally
     bumps the *last successful tick* marker. We track two distinct signals so
-    `renco cron status` can tell a thread that is merely *alive and looping*
+    `son-of-anton cron status` can tell a thread that is merely *alive and looping*
     (heartbeat fresh, success stale) from one that is actually *firing jobs*
     (both fresh) — a ticker stuck failing every tick would otherwise keep the
     plain heartbeat fresh and falsely report healthy (#32612, #32895).
@@ -1168,7 +1168,7 @@ def get_ticker_heartbeat_age() -> Optional[float]:
 
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
     scoped to the active profile — critical under multiplex_profiles where
-    ``renco cron status`` must report per-profile liveness (#69377).
+    ``son-of-anton cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_heartbeat")
@@ -1179,7 +1179,7 @@ def get_ticker_success_age() -> Optional[float]:
 
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
     scoped to the active profile — critical under multiplex_profiles where
-    ``renco cron status`` must report per-profile liveness (#69377).
+    ``son-of-anton cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_last_success")
@@ -1201,7 +1201,7 @@ def record_catch_up_occurrence() -> None:
 def record_ticker_error(message: str) -> None:
     """Persist the most recent tick failure so other processes can surface it.
 
-    The ticker thread lives inside the gateway process; ``renco cron
+    The ticker thread lives inside the gateway process; ``son-of-anton cron
     status``/``list`` run in a separate process and previously could only
     infer "ticks may be failing" from marker staleness, with no clue WHY.
     A root-owned ``jobs.json`` (#68483) failed every tick for ~14h with the
@@ -1502,7 +1502,7 @@ def _save_jobs_unlocked(
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(
-                        {"jobs": jobs, "updated_at": _renco_now().isoformat()},
+                        {"jobs": jobs, "updated_at": _son_of_anton_now().isoformat()},
                         f,
                         indent=2,
                         ensure_ascii=False,
@@ -1571,7 +1571,7 @@ def _save_jobs_unlocked(
         )
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
-                {"jobs": jobs, "updated_at": _renco_now().isoformat()},
+                {"jobs": jobs, "updated_at": _son_of_anton_now().isoformat()},
                 f,
                 indent=2,
                 ensure_ascii=False,
@@ -1652,14 +1652,14 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     or resolution fails (fail-open — caller treats ``None`` as "no snapshot").
     """
     try:
-        from renco_cli.config import _expand_env_vars, read_user_config_raw
+        from son_of_anton_cli.config import _expand_env_vars, read_user_config_raw
 
-        cfg_path = get_renco_home() / "config.yaml"
+        cfg_path = get_son_of_anton_home() / "config.yaml"
         if not cfg_path.exists():
             return None
         cfg = read_user_config_raw(cfg_path)
         try:
-            from renco_cli import managed_scope
+            from son_of_anton_cli import managed_scope
             cfg = managed_scope.apply_managed_overlay(cfg)
         except Exception:
             pass
@@ -1696,7 +1696,7 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Validate a per-job reasoning effort against the canonical grammar.
 
     Spelling-only validation at the storage choke point: the SAME parser
-    every other effort surface uses (``renco_constants.parse_reasoning_effort``)
+    every other effort surface uses (``son_of_anton_constants.parse_reasoning_effort``)
     decides validity, so the cron knob can never be stricter or looser than
     its config.yaml sibling. Capability (whether the resolved model supports
     the level) is intentionally NOT checked here — the model is not knowable
@@ -1712,7 +1712,7 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     text = str(value).strip().lower()
     if not text:
         return None
-    from renco_constants import parse_reasoning_effort
+    from son_of_anton_constants import parse_reasoning_effort
 
     if parse_reasoning_effort(text) is None:
         raise ValueError(
@@ -1754,7 +1754,7 @@ def _compute_provider_model_snapshots(
     model_snapshot: Optional[str] = None
     if normalized_provider is None:
         try:
-            from renco_cli.runtime_provider import resolve_runtime_provider
+            from son_of_anton_cli.runtime_provider import resolve_runtime_provider
 
             runtime_kwargs = {"requested": None}
             if normalized_base_url:
@@ -1855,7 +1855,7 @@ def create_job(
                 delivered verbatim. Without ``no_agent``, its stdout is
                 injected into the agent's prompt as context (data-collection /
                 change-detection pattern). Paths resolve under
-                ~/.renco/scripts/; ``.sh`` / ``.bash`` files run via bash,
+                ~/.son-of-anton/scripts/; ``.sh`` / ``.bash`` files run via bash,
                 anything else via Python.
         context_from: Optional job ID (or list of job IDs) whose most recent output
                       is injected into the prompt as context before each run.
@@ -1879,7 +1879,7 @@ def create_job(
                 watchdogs and periodic alerts that don't need LLM reasoning.
         monitor_script: Optional path to a cheap monitor source script (same
                 resolution/containment rules as ``script``: relative to
-                ~/.renco/scripts/, .sh/.bash via bash, else Python). Each
+                ~/.son-of-anton/scripts/, .sh/.bash via bash, else Python). Each
                 tick the script runs FIRST and its output is hashed as exact
                 bytes: unchanged output suppresses the agent run entirely
                 (recorded as a silent 'no_change' tick); changed output
@@ -1891,7 +1891,7 @@ def create_job(
                 of a script — fetched with a bounded GET each tick. Same
                 hash-suppression semantics as ``monitor_script``.
         reasoning_effort: Optional per-job reasoning effort pin. One of the
-                canonical Renco levels (none|minimal|low|medium|high|xhigh|
+                canonical Son of Anton levels (none|minimal|low|medium|high|xhigh|
                 max|ultra, case-insensitive). When set, it wins over BOTH the
                 global ``agent.reasoning_effort`` and per-model
                 ``agent.reasoning_overrides`` at fire time. Capability is NOT
@@ -1919,7 +1919,7 @@ def create_job(
         deliver = "origin" if origin else "local"
 
     job_id = uuid.uuid4().hex[:12]
-    now = _renco_now().isoformat()
+    now = _son_of_anton_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_model = _normalize_job_optional_text(model)
@@ -1965,7 +1965,7 @@ def create_job(
     # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
     # (#30719). Enforced here (not only in the CLI layer) so the agent's
     # `cronjob` model tool — which calls create_job directly — is also
-    # covered, not just `renco cron create`.
+    # covered, not just `son-of-anton cron create`.
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, normalized_script)
 
@@ -2263,7 +2263,7 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
         {
             "enabled": False,
             "state": "paused",
-            "paused_at": _renco_now().isoformat(),
+            "paused_at": _son_of_anton_now().isoformat(),
             "paused_reason": reason,
         },
     )
@@ -2306,7 +2306,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
-            "next_run_at": _renco_now().isoformat(),
+            "next_run_at": _son_of_anton_now().isoformat(),
         },
     )
 
@@ -2446,7 +2446,7 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
                 job["last_fire_error"] = {
-                    "at": _renco_now().isoformat(),
+                    "at": _son_of_anton_now().isoformat(),
                     "detail": str(detail or "")[:500],
                 }
                 jobs[i] = job
@@ -2492,7 +2492,7 @@ def _mark_job_run_locked(
                             job_id,
                         )
                         return False
-                now = _renco_now().isoformat()
+                now = _son_of_anton_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = status or ("ok" if success else "error")
                 job["last_error"] = error if not success else None
@@ -2629,7 +2629,7 @@ def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
             f"- name: {job.get('name')}\n"
             f"- dispatch claimed: {repeat.get('completed', '?')}/{repeat.get('times', '?')}\n"
             f"- run claimed at: {claim.get('at', 'unknown')} by {claim.get('by', 'unknown')}\n"
-            f"- removed at: {_renco_now().isoformat()}\n\n"
+            f"- removed at: {_son_of_anton_now().isoformat()}\n\n"
             "This one-shot job's dispatch was claimed, but the run never "
             "completed (`last_run_at` was never written) — the scheduler "
             "process was most likely killed or restarted mid-execution. The "
@@ -2757,7 +2757,7 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
             claim = job.get("run_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_owner:
                 return False
-            claim["at"] = _renco_now().isoformat()
+            claim["at"] = _son_of_anton_now().isoformat()
             save_jobs(jobs)
             return True
     return False
@@ -2811,7 +2811,7 @@ def advance_next_runs(job_ids) -> int:
         return 0
     with _jobs_lock():
         jobs = load_jobs()
-        now = _renco_now().isoformat()
+        now = _son_of_anton_now().isoformat()
         advanced = 0
         for job in jobs:
             if job["id"] not in ids:
@@ -2848,10 +2848,10 @@ def advance_next_run(job_id: str) -> bool:
 def _machine_id() -> str:
     """Stable-ish identifier for claim attribution/debugging (NOT correctness).
 
-    Uses ``RENCO_MACHINE_ID`` if set, else hostname + pid. The CAS correctness
+    Uses ``SON_OF_ANTON_MACHINE_ID`` if set, else hostname + pid. The CAS correctness
     comes from the file lock + the fresh-claim check, not from this value.
     """
-    explicit = os.getenv("RENCO_MACHINE_ID", "").strip()
+    explicit = os.getenv("SON_OF_ANTON_MACHINE_ID", "").strip()
     if explicit:
         return explicit
     try:
@@ -2921,7 +2921,7 @@ def _claim_job_for_fire_locked(
             # gate and atomically resumes the job below.
             if not force and not is_job_runnable(job):
                 return False
-            now = _renco_now()
+            now = _son_of_anton_now()
             existing = job.get("fire_claim")
             if existing:
                 try:
@@ -2971,7 +2971,7 @@ def _completed_oneshot_retention_days() -> float:
     sweep, retaining completed one-shot records indefinitely.
     """
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         return float(
@@ -3070,7 +3070,7 @@ def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:
             claim = job.get("fire_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_owner:
                 return False
-            claim["at"] = _renco_now().isoformat()
+            claim["at"] = _son_of_anton_now().isoformat()
             save_jobs(jobs)
             return True
     return False
@@ -3096,7 +3096,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
-    now = _renco_now()
+    now = _son_of_anton_now()
     raw_jobs = load_jobs()
     needs_save = False
     intentionally_removed: Set[str] = set()
@@ -3193,7 +3193,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 needs_save = True
 
     # Resolve the one-shot running-claim stale-recovery TTL once per scan
-    # (derived from RENCO_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
+    # (derived from SON_OF_ANTON_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
     _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
 
     # Retention sweep: completed one-shots are retained (so their final
@@ -3493,7 +3493,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
                 # Durably claim a one-shot for the DURATION of its run before
                 # returning it as due, so a second scheduler process (gateway +
-                # desktop both run in-process 60s tickers on one RENCO_HOME)
+                # desktop both run in-process 60s tickers on one SON_OF_ANTON_HOME)
                 # cannot re-dispatch it while the first run is still in flight
                 # (#59229). A plain one-shot's due-state is not resolved until
                 # mark_job_run() completes it minutes later, so advancing
@@ -3505,7 +3505,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # this loop). mark_job_run() clears the claim on completion. The TTL
                 # is only a safety valve: a claiming tick that DIES mid-run leaves a
                 # stale claim that expires after the resolved run-claim TTL
-                # (_oneshot_run_claim_ttl_seconds, derived from RENCO_CRON_TIMEOUT),
+                # (_oneshot_run_claim_ttl_seconds, derived from SON_OF_ANTON_CRON_TIMEOUT),
                 # so the job is re-dispatched rather than wedged forever.
                 if kind == "once":
                     claim = {"at": now.isoformat(), "by": _machine_id()}
@@ -3531,7 +3531,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
 
 # Per-run cron output (`cron/output/<job>/<timestamp>.md`) is written once per
-# execution. Unlike the quick-snapshot store (`renco_cli.backup`, capped at 20)
+# execution. Unlike the quick-snapshot store (`son_of_anton_cli.backup`, capped at 20)
 # it had no retention, so a frequently-scheduled job on a long-running deploy
 # accumulated one file per run forever and could fill the disk (#52383). Keep the
 # most recent N files per job; a non-positive value disables pruning (opt-out).
@@ -3541,7 +3541,7 @@ _CRON_OUTPUT_DEFAULT_KEEP = 50
 def _cron_output_keep() -> int:
     """Resolve the per-job output-file retention cap from config (``cron.output_retention``)."""
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         return int(cron_cfg.get("output_retention", _CRON_OUTPUT_DEFAULT_KEEP))
@@ -3552,7 +3552,7 @@ def _cron_output_keep() -> int:
 def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     """Remove the oldest ``*.md`` run-output files beyond *keep*. Returns count deleted.
 
-    Mirrors the quick-snapshot retention in ``renco_cli.backup._prune_quick_snapshots``:
+    Mirrors the quick-snapshot retention in ``son_of_anton_cli.backup._prune_quick_snapshots``:
     output filenames are timestamp-based (``%Y-%m-%d_%H-%M-%S.md``) so a reverse
     lexical sort orders newest-first, and everything past *keep* is the tail to
     drop. A non-positive *keep* disables pruning. Pruning failures are swallowed
@@ -3585,7 +3585,7 @@ def save_job_output(job_id: str, output: str):
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
 
-    timestamp = _renco_now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = _son_of_anton_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
 
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
@@ -3616,7 +3616,7 @@ def save_job_output(job_id: str, output: str):
 def _canonical_skill_ref(raw: Any) -> str:
     """Reduce one job skill reference to the bare name the curator matches on.
 
-    A job may store an absolute path under ``RENCO_HOME/skills`` or an
+    A job may store an absolute path under ``SON_OF_ANTON_HOME/skills`` or an
     external skills dir; the scheduler resolves those through
     ``normalize_skill_lookup_name`` before handing them to ``skill_view``.
     The curator compares this set against bare skill names, so it has to

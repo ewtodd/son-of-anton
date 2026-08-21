@@ -2,7 +2,7 @@
 
 import asyncio
 
-from renco_cli.banner import format_banner_version_label
+from son_of_anton_cli.banner import format_banner_version_label
 
 
 def test_gateway_version_command_returns_release_line():

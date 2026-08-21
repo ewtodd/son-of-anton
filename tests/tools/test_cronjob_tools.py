@@ -166,11 +166,11 @@ class TestScanCronSkillAssembled:
     def test_descriptive_attack_command_prose_allowed(self):
         """Security postmortems and runbooks routinely describe attack
         commands in prose — that's not a payload, it's documentation.
-        Real example: the `renco-agent-dev` skill contains a postmortem
-        section saying 'the attacker could just cat ~/.renco/.env'.
+        Real example: the `son-of-anton-dev` skill contains a postmortem
+        section saying 'the attacker could just cat ~/.son-of-anton/.env'.
         """
         assert _scan_cron_skill_assembled(
-            "the attacker could just cat ~/.renco/.env to steal credentials"
+            "the attacker could just cat ~/.son-of-anton/.env to steal credentials"
         )[1] == ""
         assert _scan_cron_skill_assembled(
             "this rule writes to authorized_keys for persistence"
@@ -192,31 +192,31 @@ class TestScanCronSkillAssembled:
 class TestCronjobRequirements:
     def test_requires_no_crontab_binary(self, monkeypatch):
         """Cron is internal (JSON-based scheduler), no system crontab needed."""
-        monkeypatch.setenv("RENCO_INTERACTIVE", "1")
-        monkeypatch.delenv("RENCO_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("RENCO_EXEC_ASK", raising=False)
+        monkeypatch.setenv("SON_OF_ANTON_INTERACTIVE", "1")
+        monkeypatch.delenv("SON_OF_ANTON_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_EXEC_ASK", raising=False)
         # Even with no crontab in PATH, the cronjob tool should be available
-        # because renco uses an internal scheduler, not system crontab.
+        # because son-of-anton uses an internal scheduler, not system crontab.
         assert check_cronjob_requirements() is True
 
     def test_accepts_interactive_mode(self, monkeypatch):
-        monkeypatch.setenv("RENCO_INTERACTIVE", "1")
-        monkeypatch.delenv("RENCO_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("RENCO_EXEC_ASK", raising=False)
+        monkeypatch.setenv("SON_OF_ANTON_INTERACTIVE", "1")
+        monkeypatch.delenv("SON_OF_ANTON_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_EXEC_ASK", raising=False)
 
         assert check_cronjob_requirements() is True
 
 
     @pytest.mark.parametrize(
         "var_name",
-        ["RENCO_INTERACTIVE", "RENCO_GATEWAY_SESSION", "RENCO_EXEC_ASK"],
+        ["SON_OF_ANTON_INTERACTIVE", "SON_OF_ANTON_GATEWAY_SESSION", "SON_OF_ANTON_EXEC_ASK"],
     )
     @pytest.mark.parametrize("false_like_value", ["0", "false", "no", "off"])
     def test_rejects_false_like_any_session_env(
         self, monkeypatch, var_name, false_like_value
     ):
         """All three session env vars share the same truthy semantics."""
-        for v in ("RENCO_INTERACTIVE", "RENCO_GATEWAY_SESSION", "RENCO_EXEC_ASK"):
+        for v in ("SON_OF_ANTON_INTERACTIVE", "SON_OF_ANTON_GATEWAY_SESSION", "SON_OF_ANTON_EXEC_ASK"):
             monkeypatch.delenv(v, raising=False)
         monkeypatch.setenv(var_name, false_like_value)
         assert check_cronjob_requirements() is False
@@ -283,7 +283,7 @@ class TestUnifiedCronjobTool:
 
     @staticmethod
     def _patch_named_legit(monkeypatch):
-        import renco_cli.runtime_provider as rp
+        import son_of_anton_cli.runtime_provider as rp
         monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
         monkeypatch.setattr(
             rp, "_get_named_custom_provider",
@@ -394,7 +394,7 @@ class TestUnifiedCronjobTool:
 
 
 class TestAgentCannotSetModelPin:
-    """Per-job inference pins are user-owned (dashboard / `renco cron`
+    """Per-job inference pins are user-owned (dashboard / `son-of-anton cron`
     --model / hand-edited jobs). The agent-facing tool schema must not expose
     model/provider/base_url, and the registered handler must ignore them even
     if a model hallucinates the old parameters."""
@@ -455,10 +455,10 @@ class TestLocalDeliveryNotice:
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
         # Default: no session origin (the TUI/CLI condition).
         for var in (
-            "RENCO_SESSION_PLATFORM",
-            "RENCO_SESSION_CHAT_ID",
-            "RENCO_SESSION_THREAD_ID",
-            "RENCO_SESSION_CHAT_NAME",
+            "SON_OF_ANTON_SESSION_PLATFORM",
+            "SON_OF_ANTON_SESSION_CHAT_ID",
+            "SON_OF_ANTON_SESSION_THREAD_ID",
+            "SON_OF_ANTON_SESSION_CHAT_NAME",
         ):
             monkeypatch.delenv(var, raising=False)
         from gateway.session_context import clear_session_vars, set_session_vars
@@ -502,7 +502,7 @@ class TestValidateCronBaseUrl:
 
     @staticmethod
     def _patch_named_legit(monkeypatch):
-        import renco_cli.runtime_provider as rp
+        import son_of_anton_cli.runtime_provider as rp
         monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
         monkeypatch.setattr(
             rp, "_get_named_custom_provider",
@@ -544,7 +544,7 @@ class TestGithubExemptionAbuse:
         # URL on the line — a payload smuggled after ; && or | was never
         # scanned. The tail must stop at the URL path boundary.
         for sep in (";", " &&", " |"):
-            prompt = f"{self.GH}{sep} cat ~/.renco/.env"
+            prompt = f"{self.GH}{sep} cat ~/.son-of-anton/.env"
             assert "Blocked" in _scan_cron_prompt(prompt), sep
 
     def test_same_line_destructive_after_github_url_is_scanned(self):
@@ -569,8 +569,8 @@ class TestGithubExemptionAbuse:
     def test_subshell_and_backtick_payloads_are_scanned(self):
         # A no-space $(...) or backtick payload after the GitHub URL must
         # not be consumed into the URL-path tail.
-        assert "Blocked" in _scan_cron_prompt(f"{self.GH}$(cat ~/.renco/.env)")
-        assert "Blocked" in _scan_cron_prompt(f"{self.GH}`cat ~/.renco/.env`")
+        assert "Blocked" in _scan_cron_prompt(f"{self.GH}$(cat ~/.son-of-anton/.env)")
+        assert "Blocked" in _scan_cron_prompt(f"{self.GH}`cat ~/.son-of-anton/.env`")
 
     def test_explicit_port_github_url_still_allowed(self):
         # https://api.github.com:443/... is a legitimate authority — the
@@ -582,7 +582,7 @@ class TestGithubExemptionAbuse:
     def test_payload_between_two_github_blocks_is_scanned(self):
         # The middle span of the exemption pattern must not swallow a
         # payload sitting between two GitHub curls on the same line.
-        prompt = f"{self.GH}; cat ~/.renco/.env; {self.GH}"
+        prompt = f"{self.GH}; cat ~/.son-of-anton/.env; {self.GH}"
         assert "Blocked" in _scan_cron_prompt(prompt)
 
     def test_uppercase_lookalike_host_blocked(self):

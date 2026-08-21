@@ -20,28 +20,28 @@ def external_skills_dir(tmp_path):
 
 
 @pytest.fixture
-def renco_home(tmp_path):
-    """Create a minimal RENCO_HOME with config."""
-    home = tmp_path / ".renco"
+def son_of_anton_home(tmp_path):
+    """Create a minimal SON_OF_ANTON_HOME with config."""
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     (home / "skills").mkdir()
     return home
 
 
 class TestGetExternalSkillsDirs:
-    def test_empty_config(self, renco_home):
-        (renco_home / "config.yaml").write_text("skills:\n  external_dirs: []\n")
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+    def test_empty_config(self, son_of_anton_home):
+        (son_of_anton_home / "config.yaml").write_text("skills:\n  external_dirs: []\n")
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert result == []
 
 
-    def test_valid_dir_returned(self, renco_home, external_skills_dir):
-        (renco_home / "config.yaml").write_text(
+    def test_valid_dir_returned(self, son_of_anton_home, external_skills_dir):
+        (son_of_anton_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert len(result) == 1
@@ -53,25 +53,25 @@ class TestGetExternalSkillsDirs:
 
 
 class TestGetAllSkillsDirs:
-    def test_local_always_first(self, renco_home, external_skills_dir):
-        (renco_home / "config.yaml").write_text(
+    def test_local_always_first(self, son_of_anton_home, external_skills_dir):
+        (son_of_anton_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             from agent.skill_utils import get_all_skills_dirs
             result = get_all_skills_dirs()
-        assert result[0] == renco_home / "skills"
+        assert result[0] == son_of_anton_home / "skills"
         assert result[1] == external_skills_dir.resolve()
 
 
 class TestExternalSkillsInFindAll:
-    def test_external_skills_found(self, renco_home, external_skills_dir):
-        (renco_home / "config.yaml").write_text(
+    def test_external_skills_found(self, son_of_anton_home, external_skills_dir):
+        (son_of_anton_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        local_skills = renco_home / "skills"
+        local_skills = son_of_anton_home / "skills"
         with (
-            patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}),
+            patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
             from tools.skills_tool import _find_all_skills
@@ -79,19 +79,19 @@ class TestExternalSkillsInFindAll:
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
 
-    def test_local_takes_precedence(self, renco_home, external_skills_dir):
+    def test_local_takes_precedence(self, son_of_anton_home, external_skills_dir):
         """If the same skill name exists locally and externally, local wins."""
-        local_skills = renco_home / "skills"
+        local_skills = son_of_anton_home / "skills"
         local_skill = local_skills / "my-external-skill"
         local_skill.mkdir(parents=True)
         (local_skill / "SKILL.md").write_text(
             "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n"
         )
-        (renco_home / "config.yaml").write_text(
+        (son_of_anton_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
         with (
-            patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}),
+            patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
             from tools.skills_tool import _find_all_skills
@@ -102,13 +102,13 @@ class TestExternalSkillsInFindAll:
 
 
 class TestExternalSkillView:
-    def test_skill_view_finds_external(self, renco_home, external_skills_dir):
-        (renco_home / "config.yaml").write_text(
+    def test_skill_view_finds_external(self, son_of_anton_home, external_skills_dir):
+        (son_of_anton_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        local_skills = renco_home / "skills"
+        local_skills = son_of_anton_home / "skills"
         with (
-            patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}),
+            patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
             from tools.skills_tool import skill_view

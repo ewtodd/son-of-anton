@@ -54,12 +54,12 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
     job = {"id": "cleanup-sessiondb-hang", "name": "test", "prompt": "hello"}
 
     try:
-        with patch("cron.scheduler._renco_home", tmp_path), \
+        with patch("cron.scheduler._son_of_anton_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("renco_cli.env_loader.load_renco_dotenv"), \
-             patch("renco_cli.env_loader.reset_secret_source_cache"), \
-             patch("renco_state.SessionDB", return_value=fake_db), \
-             patch("renco_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
+             patch("son_of_anton_cli.env_loader.load_son_of_anton_dotenv"), \
+             patch("son_of_anton_cli.env_loader.reset_secret_source_cache"), \
+             patch("son_of_anton_state.SessionDB", return_value=fake_db), \
+             patch("son_of_anton_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
             mock_agent = MagicMock()
@@ -114,12 +114,12 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
     sched._running_job_ids.clear()
 
     try:
-        with patch("cron.scheduler._renco_home", tmp_path), \
+        with patch("cron.scheduler._son_of_anton_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("renco_cli.env_loader.load_renco_dotenv"), \
-             patch("renco_cli.env_loader.reset_secret_source_cache"), \
-             patch("renco_state.SessionDB", return_value=fake_db), \
-             patch("renco_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
+             patch("son_of_anton_cli.env_loader.load_son_of_anton_dotenv"), \
+             patch("son_of_anton_cli.env_loader.reset_secret_source_cache"), \
+             patch("son_of_anton_state.SessionDB", return_value=fake_db), \
+             patch("son_of_anton_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \

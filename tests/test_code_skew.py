@@ -60,4 +60,4 @@ class TestModelSwitchSkewGuard:
         assert msg is not None
         assert "abc1234567" in msg
         assert "def4567890" in msg
-        assert "renco gateway restart" in msg
+        assert "son-of-anton gateway restart" in msg

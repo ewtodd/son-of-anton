@@ -12,10 +12,10 @@ from gateway.session import SessionStore
 
 @pytest.mark.asyncio
 async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, monkeypatch):
-    # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.renco/state.db.
+    # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.son-of-anton/state.db.
     # (Module-level constant snapshot, see test_load_transcript_db_only.)
-    import renco_state
-    monkeypatch.setattr(renco_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import son_of_anton_state
+    monkeypatch.setattr(son_of_anton_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -83,8 +83,8 @@ async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails
     purge archived history, so it must pass active_only=True unconditionally:
     a separate existence probe can fail open or race with the rewrite.
     """
-    import renco_state
-    monkeypatch.setattr(renco_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import son_of_anton_state
+    monkeypatch.setattr(son_of_anton_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)

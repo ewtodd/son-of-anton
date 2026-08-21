@@ -13,7 +13,7 @@ from tools.self_repo_guard import (
 
 @pytest.fixture
 def repo(tmp_path):
-    root = tmp_path / "renco-agent"
+    root = tmp_path / "son-of-anton"
     root.mkdir()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "agent").mkdir()
@@ -63,7 +63,7 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
     def test_relative_cd_into_repo(self, repo):
-        hit, _ = _detect("cd renco-agent && git pull", repo.parent, repo)
+        hit, _ = _detect("cd son-of-anton && git pull", repo.parent, repo)
         assert hit is True
 
     def test_mutation_after_safe_command(self, repo):
@@ -149,7 +149,7 @@ class TestBlocksMutationsInSourceRepo:
 
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
-        hit, _ = _detect("git -C ~/renco-agent checkout main", tmp_path, repo)
+        hit, _ = _detect("git -C ~/son-of-anton checkout main", tmp_path, repo)
         assert hit is True
 
 
@@ -374,8 +374,8 @@ class TestBlockMessageGuidance:
         assert "tmpfs" in msg
         assert "Delete the clone" in msg
 
-    def test_scratch_hint_honors_renco_home(self, repo, monkeypatch):
-        monkeypatch.setenv("RENCO_HOME", "/custom/renco-home")
+    def test_scratch_hint_honors_son_of_anton_home(self, repo, monkeypatch):
+        monkeypatch.setenv("SON_OF_ANTON_HOME", "/custom/son-of-anton-home")
         hit, msg = _detect("git rebase origin/main", repo, repo)
         assert hit is True
-        assert "/custom/renco-home/scratch" in msg
+        assert "/custom/son-of-anton-home/scratch" in msg

@@ -76,15 +76,15 @@ CONTINUATION_TEXT = "[Continuing toward your standing goal]\nGoal: ship it"
 
 
 @pytest.fixture()
-def renco_home(tmp_path, monkeypatch):
+def son_of_anton_home(tmp_path, monkeypatch):
     from pathlib import Path
 
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
 
-    from renco_cli import goals
+    from son_of_anton_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -141,7 +141,7 @@ async def test_fifo_enqueued_continuation_is_drained_without_new_user_message():
 
 
 @pytest.mark.asyncio
-async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(renco_home):
+async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(son_of_anton_home):
     """_post_turn_goal_continuation resolves the FIFO key via
     _session_key_for_source; the adapter drain uses build_session_key on the
     event source. These must agree or the continuation is orphaned under a
@@ -152,7 +152,7 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(renco_h
 
     from gateway.run import GatewayRunner
     from gateway.session import SessionEntry
-    from renco_cli.goals import GoalManager
+    from son_of_anton_cli.goals import GoalManager
 
     src = _slack_thread_source()
     adapter_key = build_session_key(src)
@@ -181,7 +181,7 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(renco_h
 
     GoalManager(session_entry.session_id).set("ship it")
     with patch(
-        "renco_cli.goals.judge_goal",
+        "son_of_anton_cli.goals.judge_goal",
         return_value=("continue", "still needs work", False, None, False),
     ):
         await runner._post_turn_goal_continuation(

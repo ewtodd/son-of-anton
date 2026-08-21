@@ -29,25 +29,25 @@ def _reset_modules(prefixes: tuple[str, ...]):
 
 @pytest.fixture(autouse=True)
 def _restore_tool_modules():
-    original_renco_home = os.environ.get("RENCO_HOME")
+    original_son_of_anton_home = os.environ.get("SON_OF_ANTON_HOME")
     original_modules = {
         name: module
         for name, module in sys.modules.items()
         if name == "tools"
         or name.startswith("tools.")
-        or name == "renco_cli"
-        or name.startswith("renco_cli.")
+        or name == "son_of_anton_cli"
+        or name.startswith("son_of_anton_cli.")
         or name == "modal"
         or name.startswith("modal.")
     }
     try:
         yield
     finally:
-        if original_renco_home is None:
-            os.environ.pop("RENCO_HOME", None)
+        if original_son_of_anton_home is None:
+            os.environ.pop("SON_OF_ANTON_HOME", None)
         else:
-            os.environ["RENCO_HOME"] = original_renco_home
-        _reset_modules(("tools", "renco_cli", "modal"))
+            os.environ["SON_OF_ANTON_HOME"] = original_son_of_anton_home
+        _reset_modules(("tools", "son_of_anton_cli", "modal"))
         sys.modules.update(original_modules)
 
 
@@ -57,15 +57,15 @@ def _install_modal_test_modules(
     fail_on_snapshot_ids: set[str] | None = None,
     snapshot_id: str = "im-fresh",
 ):
-    _reset_modules(("tools", "renco_cli", "modal"))
+    _reset_modules(("tools", "son_of_anton_cli", "modal"))
 
-    renco_cli = types.ModuleType("renco_cli")
-    renco_cli.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["renco_cli"] = renco_cli
-    renco_home = tmp_path / "renco-home"
-    os.environ["RENCO_HOME"] = str(renco_home)
-    sys.modules["renco_cli.config"] = types.SimpleNamespace(
-        get_renco_home=lambda: renco_home,
+    son_of_anton_cli = types.ModuleType("son_of_anton_cli")
+    son_of_anton_cli.__path__ = []  # type: ignore[attr-defined]
+    sys.modules["son_of_anton_cli"] = son_of_anton_cli
+    son_of_anton_home = tmp_path / "son-of-anton-home"
+    os.environ["SON_OF_ANTON_HOME"] = str(son_of_anton_home)
+    sys.modules["son_of_anton_cli.config"] = types.SimpleNamespace(
+        get_son_of_anton_home=lambda: son_of_anton_home,
     )
 
     tools_package = types.ModuleType("tools")
@@ -144,7 +144,7 @@ def _install_modal_test_modules(
             return {"kind": "registry", "image": image}
 
     async def _lookup_aio(_name: str, create_if_missing: bool = False):
-        return types.SimpleNamespace(name="renco-agent", create_if_missing=create_if_missing)
+        return types.SimpleNamespace(name="son-of-anton", create_if_missing=create_if_missing)
 
     class _FakeSandboxInstance:
         def __init__(self, image):
@@ -190,7 +190,7 @@ def _install_modal_test_modules(
     )
 
     return {
-        "snapshot_store": renco_home / "modal_snapshots.json",
+        "snapshot_store": son_of_anton_home / "modal_snapshots.json",
         "create_calls": create_calls,
         "from_id_calls": from_id_calls,
         "registry_calls": registry_calls,

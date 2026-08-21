@@ -1,4 +1,4 @@
-"""Base class for all Renco execution environment backends.
+"""Base class for all Son of Anton execution environment backends.
 
 Unified spawn-per-call model: every command spawns a fresh ``bash -c`` process.
 A session snapshot (env vars, functions, aliases) is captured once at init and
@@ -22,17 +22,17 @@ from collections import deque
 from pathlib import Path
 from typing import IO, Callable, Iterable, Protocol
 
-from renco_constants import get_renco_home
-from renco_cli._subprocess_compat import windows_hide_flags
+from son_of_anton_constants import get_son_of_anton_home
+from son_of_anton_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
-# RENCO_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
+# SON_OF_ANTON_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
 # every is_interrupted() state change from _wait_for_process.  Off by default
 # to avoid flooding production gateway logs.
-_DEBUG_INTERRUPT = bool(os.getenv("RENCO_DEBUG_INTERRUPT"))
+_DEBUG_INTERRUPT = bool(os.getenv("SON_OF_ANTON_DEBUG_INTERRUPT"))
 
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
@@ -283,13 +283,13 @@ def get_sandbox_dir() -> Path:
     """Return the host-side root for all sandbox storage (Docker workspaces,
     Singularity overlays/SIF cache, etc.).
 
-    Configurable via TERMINAL_SANDBOX_DIR. Defaults to {RENCO_HOME}/sandboxes/.
+    Configurable via TERMINAL_SANDBOX_DIR. Defaults to {SON_OF_ANTON_HOME}/sandboxes/.
     """
     custom = os.getenv("TERMINAL_SANDBOX_DIR")
     if custom:
         p = Path(custom)
     else:
-        p = get_renco_home() / "sandboxes"
+        p = get_son_of_anton_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -319,14 +319,14 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     surrogateescape decode, so original bytes are restored.  For
     surrogate-free strings it is byte-identical to strict UTF-8.
     Surrogates outside the round-trip range U+DC80–U+DCFF raise and are
-    recorded on ``proc._renco_stdin_errors`` while stdin is still closed
+    recorded on ``proc._son_of_anton_stdin_errors`` while stdin is still closed
     in ``finally`` so the child sees EOF instead of hanging;
     ``_wait_for_process`` reads the recorded error and surfaces it as
     ``stdin_error`` on the result.
     """
 
     errors: list[BaseException] = []
-    proc._renco_stdin_errors = errors
+    proc._son_of_anton_stdin_errors = errors
 
     def _write():
         if proc.stdin is None:
@@ -357,7 +357,7 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
                 pass
 
     thread = threading.Thread(target=_write, daemon=True)
-    proc._renco_stdin_thread = thread
+    proc._son_of_anton_stdin_thread = thread
     thread.start()
 
 
@@ -507,7 +507,7 @@ class _ThreadedProcessHandle:
 
 
 def _cwd_marker(session_id: str) -> str:
-    return f"__RENCO_CWD_{session_id}__"
+    return f"__SON_OF_ANTON_CWD_{session_id}__"
 
 
 # Per-session variables that the gateway bridges freshly onto every command's
@@ -516,20 +516,20 @@ def _cwd_marker(session_id: str) -> str:
 # the shared bash session snapshot: a single long-lived backend serves many
 # concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
 # collapse the terminal to one "default" environment), so ``export -p`` dumping
-# the FIRST session's RENCO_SESSION_ID into the snapshot makes every LATER
+# the FIRST session's SON_OF_ANTON_SESSION_ID into the snapshot makes every LATER
 # session ``source`` that stale value and see a FOREIGN session's identity —
 # overriding the correct per-command Popen env (issue: cross-session
-# RENCO_SESSION_ID leak via the shared snapshot). Stripping them from the
+# SON_OF_ANTON_SESSION_ID leak via the shared snapshot). Stripping them from the
 # snapshot is safe because they are re-injected on every command; a snapshot
 # should only carry the user's own shell state (PATH, functions, exports they
-# set), not Renco' per-turn session identity.
+# set), not Son of Anton' per-turn session identity.
 #
 # Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
-# with one of these prefixes (or is RENCO_UI_SESSION_ID). Used by unit tests
+# with one of these prefixes (or is SON_OF_ANTON_UI_SESSION_ID). Used by unit tests
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (RENCO_SESSION_|RENCO_UI_SESSION_ID|RENCO_CRON_AUTO_DELIVER_|RENCO_CRON_SESSION)"
+    "^declare -x (SON_OF_ANTON_SESSION_|SON_OF_ANTON_UI_SESSION_ID|SON_OF_ANTON_CRON_AUTO_DELIVER_|SON_OF_ANTON_CRON_SESSION)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -546,7 +546,7 @@ def _export_dump_excluding_session_vars(
     ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
     as a multi-line ``declare -x NAME="…`` block, so only the opener matches the
     regex and continuation lines (e.g. ``curl … | bash #`` smuggled into a
-    Matrix room/display name via ``RENCO_SESSION_CHAT_NAME``) land in the
+    Matrix room/display name via ``SON_OF_ANTON_SESSION_CHAT_NAME``) land in the
     snapshot and execute on the next ``source`` (issue #71296). Unsetting first
     means ``export -p`` never emits those vars — including any continuation
     lines. ``|| true`` keeps the success contract for callers that chain on it.
@@ -572,15 +572,15 @@ def _export_dump_excluding_session_vars(
         extra_unset = f" {extra_unset}"
     return (
         "{ ( "
-        "unset ${!RENCO_SESSION_*} ${!RENCO_CRON_AUTO_DELIVER_*} "
-        # AI_AGENT / RENCO_AGENT are per-command attribution markers
+        "unset ${!SON_OF_ANTON_SESSION_*} ${!SON_OF_ANTON_CRON_AUTO_DELIVER_*} "
+        # AI_AGENT / SON_OF_ANTON_AGENT are per-command attribution markers
         # (re-exported by every _wrap_command with outer-harness-preserving
         # ${VAR:-default} semantics).  Persisting them into the snapshot
         # would make the FIRST command's value override a later outer
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
-        "AI_AGENT RENCO_AGENT "
-        f"RENCO_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        "AI_AGENT SON_OF_ANTON_AGENT "
+        f"SON_OF_ANTON_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "
         f"> {tmp_path}"
@@ -593,7 +593,7 @@ def _export_dump_excluding_session_vars(
 
 
 class BaseEnvironment(ABC):
-    """Common interface and unified execution flow for all Renco backends.
+    """Common interface and unified execution flow for all Son of Anton backends.
 
     Subclasses implement ``_run_bash()`` and ``cleanup()``.  The base class
     provides ``execute()`` with session snapshot sourcing, CWD tracking,
@@ -627,8 +627,8 @@ class BaseEnvironment(ABC):
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
-        self._snapshot_path = f"{temp_dir}/renco-snap-{self._session_id}.sh"
-        self._cwd_file = f"{temp_dir}/renco-cwd-{self._session_id}.txt"
+        self._snapshot_path = f"{temp_dir}/son-of-anton-snap-{self._session_id}.sh"
+        self._cwd_file = f"{temp_dir}/son-of-anton-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
         self._snapshot_passthrough_names: set[str] = set()
@@ -744,11 +744,11 @@ class BaseEnvironment(ABC):
         # letters, spaces) and the resulting path lives in a shell variable so
         # every later expansion is consistent.
         _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
-        _snap_tmp = '"$__renco_snap_tmp"'
+        _snap_tmp = '"$__son_of_anton_snap_tmp"'
         snapshot_excluded = self._snapshot_excluded_passthrough_names()
         bootstrap = (
             f"umask 077\n"
-            f"__renco_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
+            f"__son_of_anton_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
             f"{_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -762,8 +762,8 @@ class BaseEnvironment(ABC):
             # ``declare -f`` with no name args dumps ALL functions, so an empty
             # name list (only private funcs present) would otherwise leak the
             # very functions we meant to drop.
-            f"__renco_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
-            f"[ -n \"$__renco_fns\" ] && declare -f $__renco_fns "
+            f"__son_of_anton_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
+            f"[ -n \"$__son_of_anton_fns\" ] && declare -f $__son_of_anton_fns "
             f">> {_snap_tmp} 2>/dev/null || true\n"
             f"alias -p >> {_snap_tmp}\n"
             f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
@@ -863,7 +863,7 @@ class BaseEnvironment(ABC):
         # is shared by ``&``-launched subshells.  Template shell-quoted
         # (Windows/spaces); the allocated path lives in a shell variable.
         _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
-        _snap_tmp = '"$__renco_snap_tmp"'
+        _snap_tmp = '"$__son_of_anton_snap_tmp"'
 
         parts = []
         passthrough_names = self._snapshot_excluded_passthrough_names()
@@ -875,7 +875,7 @@ class BaseEnvironment(ABC):
         # string, so secrets are not exposed through process arguments/logs.
         saved_names: list[tuple[str, str, str]] = []
         for name in passthrough_names:
-            marker = f"_RENCO_RUNTIME_PASSTHROUGH_{name}"
+            marker = f"_SON_OF_ANTON_RUNTIME_PASSTHROUGH_{name}"
             present = f"{marker}_PRESENT"
             value = f"{marker}_VALUE"
             saved_names.append((name, present, value))
@@ -901,20 +901,20 @@ class BaseEnvironment(ABC):
             parts.append(f"unset {present} {value}")
 
         # Harness attribution: every tool subprocess advertises that it runs
-        # under Renco via the cross-agent ``AI_AGENT`` standard (read by e.g.
-        # huggingface_hub's agent detection) plus the Renco-specific
-        # ``RENCO_AGENT`` marker.  The value MUST equal our id in the public
-        # agent-harness registry (``renco-agent`` — see huggingface.js
+        # under Son of Anton via the cross-agent ``AI_AGENT`` standard (read by e.g.
+        # huggingface_hub's agent detection) plus the Son of Anton-specific
+        # ``SON_OF_ANTON_AGENT`` marker.  The value MUST equal our id in the public
+        # agent-harness registry (``son-of-anton`` — see huggingface.js
         # ``agent-harnesses.ts``); standard-var matching is exact, so any other
         # value is reported as "unknown".  Setting it here (rather than only in
         # the host process env) is what carries the marker into REMOTE backends
         # (Docker/SSH/Modal/Daytona/Singularity/Vercel), whose exec env is not
-        # inherited from the Renco process.  ``${VAR:-default}`` semantics:
+        # inherited from the Son of Anton process.  ``${VAR:-default}`` semantics:
         # never clobber an outer harness value that arrived via the inherited
-        # process env (Renco running inside another agent's terminal).
+        # process env (Son of Anton running inside another agent's terminal).
         parts.append(
-            'export AI_AGENT="${AI_AGENT:-renco-agent}" '
-            'RENCO_AGENT="${RENCO_AGENT:-true}"'
+            'export AI_AGENT="${AI_AGENT:-son-of-anton}" '
+            'SON_OF_ANTON_AGENT="${SON_OF_ANTON_AGENT:-true}"'
         )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
@@ -925,8 +925,8 @@ class BaseEnvironment(ABC):
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")
-        parts.append("__renco_ec=$?")
-        # Restrict Renco metadata files without changing the user's command
+        parts.append("__son_of_anton_ec=$?")
+        # Restrict Son of Anton metadata files without changing the user's command
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
 
@@ -940,7 +940,7 @@ class BaseEnvironment(ABC):
         # that later expands the ``mv`` operand, keeping both consistent.
         if self._snapshot_ready:
             parts.append(
-                f"__renco_snap_tmp=$(mktemp {_snap_tmp_template}) && "
+                f"__son_of_anton_snap_tmp=$(mktemp {_snap_tmp_template}) && "
                 f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
@@ -955,7 +955,7 @@ class BaseEnvironment(ABC):
         parts.append(
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\""
         )
-        parts.append("exit $__renco_ec")
+        parts.append("exit $__son_of_anton_ec")
 
         return "\n".join(parts)
 
@@ -966,7 +966,7 @@ class BaseEnvironment(ABC):
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
         """Append stdin_data as a shell heredoc to the command string."""
-        delimiter = f"RENCO_STDIN_{uuid.uuid4().hex[:12]}"
+        delimiter = f"SON_OF_ANTON_STDIN_{uuid.uuid4().hex[:12]}"
         return f"{command} << '{delimiter}'\n{stdin_data}\n{delimiter}"
 
     # ------------------------------------------------------------------
@@ -1017,7 +1017,7 @@ class BaseEnvironment(ABC):
             # truncated result is recoverable without re-running (the file
             # only gets created if output actually exceeds the cap).
             try:
-                spill_dir = get_renco_home() / "cache" / "terminal-output"
+                spill_dir = get_son_of_anton_home() / "cache" / "terminal-output"
                 spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
                 # Opportunistic cleanup of spills older than 7 days.
                 if spill_dir.is_dir():
@@ -1165,7 +1165,7 @@ class BaseEnvironment(ABC):
             "start": _now,
         }
 
-        # --- Debug tracing (opt-in via RENCO_DEBUG_INTERRUPT=1) -------------
+        # --- Debug tracing (opt-in via SON_OF_ANTON_DEBUG_INTERRUPT=1) -------------
         # Captures loop entry/exit, interrupt state changes, and periodic
         # heartbeats so we can diagnose "agent never sees the interrupt"
         # reports without reproducing locally.
@@ -1297,12 +1297,12 @@ class BaseEnvironment(ABC):
         # recorded encode failure, silently dropping it. The thread cannot
         # block long after child exit (write raises BrokenPipeError once the
         # pipe closes); the timeout is a pure safety net.
-        stdin_thread = getattr(proc, "_renco_stdin_thread", None)
+        stdin_thread = getattr(proc, "_son_of_anton_stdin_thread", None)
         if stdin_thread is not None:
             stdin_thread.join(timeout=5)
         rendered = output.render()
         result = self._finalize_wait_result(output, rendered, proc.returncode)
-        stdin_errors = getattr(proc, "_renco_stdin_errors", None)
+        stdin_errors = getattr(proc, "_son_of_anton_stdin_errors", None)
         if stdin_errors:
             err = str(stdin_errors[0])
             result["stdin_error"] = err
@@ -1336,7 +1336,7 @@ class BaseEnvironment(ABC):
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):
-        """Parse the __RENCO_CWD_{session}__ marker from stdout output.
+        """Parse the __SON_OF_ANTON_CWD_{session}__ marker from stdout output.
 
         Updates self.cwd and strips the marker from result["output"].
         Used by remote backends (Docker, SSH, Modal, Daytona, Singularity).

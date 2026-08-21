@@ -1,12 +1,12 @@
 """Global emergency stop (ESTOP) — a resumable pause for NEW work only.
 
-``renco pause`` writes a sentinel file at ``$RENCO_HOME/ESTOP``;
-``renco resume`` removes it. While the sentinel exists:
+``son-of-anton pause`` writes a sentinel file at ``$SON_OF_ANTON_HOME/ESTOP``;
+``son-of-anton resume`` removes it. While the sentinel exists:
 
 * the cron scheduler skips dispatching due jobs (``cron/scheduler.py:tick``),
 * the embedded kanban dispatcher skips spawning workers
   (``gateway/kanban_watchers.py``),
-* new gateway turns get a brief "Renco is paused" reply instead of an
+* new gateway turns get a brief "Son of Anton is paused" reply instead of an
   agent run (``gateway/run.py:_handle_message``).
 
 In-flight work is NEVER killed — this is pause-new-work, not panic/exit.
@@ -16,7 +16,7 @@ the very next check.
 
 The sentinel body is optional JSON ``{"reason": ..., "engaged_at": ...}``.
 A corrupt or empty file still counts as engaged (fail safe): the pause must
-hold even if the file was created by ``touch ~/.renco/ESTOP``.
+hold even if the file was created by ``touch ~/.son-of-anton/ESTOP``.
 
 Ported from: gastownhall/gastown estop.go (MIT). Related prior art:
 #26778 (/panic — kill/exit semantics; deliberately different, ours is
@@ -42,25 +42,25 @@ _log_lock = threading.Lock()
 _logged_components: set[str] = set()
 
 
-def _renco_home() -> Path:
-    """Resolve the active RENCO_HOME (profile-aware) at call time."""
+def _son_of_anton_home() -> Path:
+    """Resolve the active SON_OF_ANTON_HOME (profile-aware) at call time."""
     try:
-        from renco_constants import get_renco_home
-        return get_renco_home()
+        from son_of_anton_constants import get_son_of_anton_home
+        return get_son_of_anton_home()
     except Exception:
-        return Path(os.path.expanduser("~/.renco"))
+        return Path(os.path.expanduser("~/.son-of-anton"))
 
 
 def sentinel_path() -> Path:
-    """Path of the ESTOP sentinel under the active RENCO_HOME."""
-    return _renco_home() / SENTINEL_NAME
+    """Path of the ESTOP sentinel under the active SON_OF_ANTON_HOME."""
+    return _son_of_anton_home() / SENTINEL_NAME
 
 
 def is_engaged() -> bool:
     """Cheap check (one stat): is the global emergency stop engaged?
 
     Fail SAFE on stat errors: if we cannot determine whether the sentinel
-    exists (permission error, transient I/O failure on RENCO_HOME), report
+    exists (permission error, transient I/O failure on SON_OF_ANTON_HOME), report
     engaged. The module contract is that the pause must hold even when the
     sentinel is unreadable — a fail-open here would silently lift an
     operator's emergency stop exactly when the filesystem is misbehaving.
@@ -130,12 +130,12 @@ def paused_reply() -> Optional[str]:
     reason = state.get("reason")
     if reason:
         return (
-            f"⏸️ Renco is paused ({reason}). New work is on hold; "
-            "run `renco resume` to pick things back up."
+            f"⏸️ Son of Anton is paused ({reason}). New work is on hold; "
+            "run `son-of-anton resume` to pick things back up."
         )
     return (
-        "⏸️ Renco is paused. New work is on hold; "
-        "run `renco resume` to pick things back up."
+        "⏸️ Son of Anton is paused. New work is on hold; "
+        "run `son-of-anton resume` to pick things back up."
     )
 
 
@@ -160,7 +160,7 @@ def check_paused(component: str, logger: logging.Logger) -> bool:
         suffix = f" (reason: {reason})" if reason else ""
         logger.info(
             "%s dispatch paused by global emergency stop%s — remove with "
-            "`renco resume` (%s)",
+            "`son-of-anton resume` (%s)",
             component,
             suffix,
             sentinel_path(),

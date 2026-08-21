@@ -22,7 +22,7 @@ def _session(**kw) -> HonchoSession:
     return HonchoSession(
         key=kw.get("key", "cli:isolation"),
         user_peer_id="eri",
-        assistant_peer_id="renco",
+        assistant_peer_id="son-of-anton",
         honcho_session_id=kw.get("sid", "cli-isolation"),
         messages=kw.get("messages", []),
     )
@@ -60,16 +60,16 @@ class TestConstructorRace:
 
 class TestAmbientProductionConfig:
     def test_ambient_live_config_produces_zero_requests(self, tmp_path, monkeypatch):
-        """Regression 2: ambient RENCO_HOME with a live URL must not leak
+        """Regression 2: ambient SON_OF_ANTON_HOME with a live URL must not leak
         requests - hygiene (factory injection) keeps the suite green."""
-        home = tmp_path / "renco-home"
+        home = tmp_path / "son-of-anton-home"
         home.mkdir()
         (home / "honcho.json").write_text(json.dumps({
             "baseUrl": "http://localhost:8000",
             "workspace": "iris_curated_v1",
-            "hosts": {"renco": {"apiKey": "live-looking-key", "saveMessages": True}},
+            "hosts": {"son-of-anton": {"apiKey": "live-looking-key", "saveMessages": True}},
         }))
-        monkeypatch.setenv("RENCO_HOME", str(home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
         fake = MagicMock()
         monkeypatch.setattr(session_module, "get_honcho_client", lambda *a, **k: fake)
         cfg = HonchoClientConfig(write_frequency="async", api_key="live-looking-key", enabled=True)

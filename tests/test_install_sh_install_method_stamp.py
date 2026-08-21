@@ -1,18 +1,18 @@
 """Contract test: install.sh stamps the install method next to the code tree
-($INSTALL_DIR), not into the shared $RENCO_HOME.
+($INSTALL_DIR), not into the shared $SON_OF_ANTON_HOME.
 
-Background (shared-$RENCO_HOME bug)
+Background (shared-$SON_OF_ANTON_HOME bug)
 ------------------------------------
-$RENCO_HOME is a data directory users frequently bind-mount into a Docker
-gateway as well (``~/.renco:/opt/data``). The published image stamps 'docker'
+$SON_OF_ANTON_HOME is a data directory users frequently bind-mount into a Docker
+gateway as well (``~/.son-of-anton:/opt/data``). The published image stamps 'docker'
 there on boot, so if install.sh had written its 'git' marker into the same
-$RENCO_HOME the two installs would fight over one slot — and the container,
+$SON_OF_ANTON_HOME the two installs would fight over one slot — and the container,
 booting last, would win and wrongly make the host install look like 'docker'
-(blocking ``renco update``).
+(blocking ``son-of-anton update``).
 
 The fix: detect_install_method() reads a CODE-scoped stamp first, and the
 installer writes ``git`` into $INSTALL_DIR (the git checkout, e.g.
-``~/.renco/renco-agent``), which is unique to this install and immune to the
+``~/.son-of-anton/son-of-anton``), which is unique to this install and immune to the
 shared data dir.
 """
 from __future__ import annotations
@@ -33,8 +33,8 @@ def test_install_sh_stamps_code_tree_not_home() -> None:
     )
 
     # Never stamps the shared data dir.
-    assert not re.search(r'>\s*"\$RENCO_HOME/\.install_method"', text), (
-        "install.sh must not stamp $RENCO_HOME/.install_method — that data "
+    assert not re.search(r'>\s*"\$SON_OF_ANTON_HOME/\.install_method"', text), (
+        "install.sh must not stamp $SON_OF_ANTON_HOME/.install_method — that data "
         "dir may be shared with a Docker gateway whose 'docker' stamp would "
-        "clobber it and block host-side `renco update`"
+        "clobber it and block host-side `son-of-anton update`"
     )

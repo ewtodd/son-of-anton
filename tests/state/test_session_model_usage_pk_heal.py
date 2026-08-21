@@ -20,8 +20,8 @@ import sqlite3
 
 import pytest
 
-from renco_state import SessionDB
-from renco_state_common import SCHEMA_VERSION
+from son_of_anton_state import SessionDB
+from son_of_anton_state_common import SCHEMA_VERSION
 
 LEGACY_SQL = """
     CREATE TABLE session_model_usage (

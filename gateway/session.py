@@ -33,7 +33,7 @@ def _now() -> datetime:
 # ``get_or_create_session`` — while it stays within this window of when
 # ``resume_pending`` was marked.  ``gateway/run.py`` bridges
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness`` into
-# ``RENCO_AUTO_CONTINUE_FRESHNESS`` at startup.
+# ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` at startup.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
@@ -42,13 +42,13 @@ def auto_continue_freshness_window() -> float:
 
     Single source of truth for both the resume scheduler (``gateway/run.py``)
     and the routing-time zombie gate in ``get_or_create_session``.  Reads
-    ``RENCO_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
+    ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
     ``agent.gateway_auto_continue_freshness`` at gateway startup) and falls
     back to the module default when unset or malformed.  A non-positive value
     disables the freshness gate (restores the pre-fix "always fresh" behaviour
     for users who want to opt out).
     """
-    raw = os.environ.get("RENCO_AUTO_CONTINUE_FRESHNESS")
+    raw = os.environ.get("SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS")
     if raw is None or raw == "":
         return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
     try:
@@ -98,7 +98,7 @@ from utils import atomic_replace
 from agent.turn_context import extract_api_content_sidecar
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
-# ``sessions_dir / f"{session_id}.json"`` in renco_state, request-dump
+# ``sessions_dir / f"{session_id}.json"`` in son_of_anton_state, request-dump
 # filenames in agent_runtime_helpers). Any value that could escape the
 # sessions directory as a path must be rejected at the entry boundary.
 # Rejects: parent traversal (``..``), a path separator anywhere (``/`` or
@@ -364,7 +364,7 @@ def _slack_tools_loaded() -> bool:
     """True iff the agent will actually have Slack tools this session.
 
     Two independent paths grant Slack capability:
-      1. Native `slack` toolset enabled via `renco tools` (opt-in, default
+      1. Native `slack` toolset enabled via `son-of-anton tools` (opt-in, default
          OFF) AND `SLACK_BOT_TOKEN` set — the tool's `check_fn` gates on it
          at registry time, so config alone isn't enough.
       2. An MCP server that has ACTUALLY registered tools into the live
@@ -405,8 +405,8 @@ def _slack_tools_loaded() -> bool:
     if not _slack_token.strip():
         return False
     try:
-        from renco_cli.config import load_config
-        from renco_cli.tools_config import _get_platform_tools
+        from son_of_anton_cli.config import load_config
+        from son_of_anton_cli.tools_config import _get_platform_tools
         cfg = load_config()
         # include_default_mcp_servers=True (the default) so a Slack MCP
         # server that's enabled by default for this platform (not
@@ -423,7 +423,7 @@ def _discord_tools_loaded() -> bool:
 
     Two conditions must hold:
       1. The `discord` or `discord_admin` toolset is enabled for the
-         Discord platform via `renco tools` (opt-in, default OFF).
+         Discord platform via `son-of-anton tools` (opt-in, default OFF).
       2. `DISCORD_BOT_TOKEN` is set — the tool's `check_fn` gates on it
          at registry time, so the toolset being enabled in config is not
          enough if the token isn't configured.
@@ -433,8 +433,8 @@ def _discord_tools_loaded() -> bool:
     """
     try:
         from agent.secret_scope import get_secret
-        from renco_cli.config import load_config
-        from renco_cli.tools_config import _get_platform_tools
+        from son_of_anton_cli.config import load_config
+        from son_of_anton_cli.tools_config import _get_platform_tools
 
         if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
             return False
@@ -630,7 +630,7 @@ def build_session_context_prompt(
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into
-        # `discord` / `discord_admin` via `renco tools` AND the bot
+        # `discord` / `discord_admin` via `son-of-anton tools` AND the bot
         # token is configured.  Otherwise keep the stale-API disclaimer
         # honest so we never promise tools the agent lacks.
         if _discord_tools_loaded():
@@ -719,7 +719,7 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
 
-    from renco_constants import display_renco_home
+    from son_of_anton_constants import display_son_of_anton_home
 
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
@@ -733,7 +733,7 @@ def build_session_context_prompt(
 
     # Local always available
     lines.append(
-        f"- `\"local\"` → Save to local files only ({display_renco_home()}/cron/output/)"
+        f"- `\"local\"` → Save to local files only ({display_son_of_anton_home()}/cron/output/)"
     )
 
     # Platform home channels
@@ -1037,7 +1037,7 @@ def build_channel_continuity_note(
 
     where = "thread" if source.thread_id else "channel"
     return (
-        f"[System note: This {where} had an earlier Renco session "
+        f"[System note: This {where} had an earlier Son of Anton session "
         f"(session_id: {prev}) that was auto-reset. If the user refers to "
         f"earlier work here, or the request depends on this {where}'s history, "
         f"use the session_search tool to recall that prior session before "
@@ -1300,7 +1300,7 @@ class SessionStore:
         # a handle bound during __init__ is frozen to the process's own root
         # home; every profile's rows then land in the root state.db even
         # though ``_profile_runtime_scope`` has already redirected
-        # ``get_renco_home()`` for the turn (its docstring lists "sessions"
+        # ``get_son_of_anton_home()`` for the turn (its docstring lists "sessions"
         # among what it scopes).  The row still carries the right
         # ``profile_name``, so the damage is invisible in the data and shows
         # up only as the desktop listing a profile's session under the
@@ -1321,7 +1321,7 @@ class SessionStore:
         """Return the SessionDB for the profile scope active on this task.
 
         ``SessionDB(db_path=None)`` resolves ``_default_db_path()`` at call
-        time, and that helper follows the context-local RENCO_HOME override
+        time, and that helper follows the context-local SON_OF_ANTON_HOME override
         installed by ``_profile_runtime_scope``.  Resolving here rather than
         once in ``__init__`` is the whole fix for #88532: it lets the
         scoping that the multiplexed inbound path already performs actually
@@ -1337,7 +1337,7 @@ class SessionStore:
         the previous behavior where a failed startup left ``_db`` None for
         the life of the store and callers fell back to JSONL.
         """
-        from renco_state import SessionDB, _default_db_path
+        from son_of_anton_state import SessionDB, _default_db_path
 
         path = Path(_default_db_path())
         with self._db_handles_lock:
@@ -1713,11 +1713,11 @@ class SessionStore:
         data = {
             "_README": (
                 "LEGACY MIRROR of the gateway routing index (the primary copy "
-                "lives in the gateway_routing table in ~/.renco/state.db). "
+                "lives in the gateway_routing table in ~/.son-of-anton/state.db). "
                 "Maps messaging session keys (agent:main:<platform>:...) to "
                 "active session IDs. This is NOT the session list. ALL "
-                "sessions (CLI, TUI, and gateway) live in ~/.renco/state.db "
-                "and are shown by `renco sessions list` and `/sessions`. "
+                "sessions (CLI, TUI, and gateway) live in ~/.son-of-anton/state.db "
+                "and are shown by `son-of-anton sessions list` and `/sessions`. "
                 "Disable this file with `gateway.write_sessions_json: false` "
                 "in config.yaml."
             ),
@@ -1882,7 +1882,7 @@ class SessionStore:
         if source is not None and source.profile:
             return source.profile
         try:
-            from renco_cli.profiles import get_active_profile_name
+            from son_of_anton_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return None
@@ -1901,7 +1901,7 @@ class SessionStore:
     @staticmethod
     def _active_profile_name() -> str:
         try:
-            from renco_cli.profiles import get_active_profile_name
+            from son_of_anton_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
@@ -3671,7 +3671,7 @@ class SessionStore:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from renco_state import CompressionSessionClosedError
+                from son_of_anton_state import CompressionSessionClosedError
 
                 if isinstance(exc, CompressionSessionClosedError):
                     # Resolve the full continuation chain via the canonical

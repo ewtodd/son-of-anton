@@ -28,9 +28,9 @@ def test_anthropic_real_api_key_unchanged():
 
 
 def test_load_heals_legacy_row_and_exposes_it_to_resolver(tmp_path, monkeypatch):
-    renco_home = tmp_path / "renco"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    son_of_anton_home = tmp_path / "son-of-anton"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(
@@ -38,7 +38,7 @@ def test_load_heals_legacy_row_and_exposes_it_to_resolver(tmp_path, monkeypatch)
         lambda: None,
     )
     token = "sk-ant-oat-legacy-manual"
-    auth_file = renco_home / "auth.json"
+    auth_file = son_of_anton_home / "auth.json"
     auth_file.write_text(json.dumps({
         "version": 1,
         "credential_pool": {

@@ -15,24 +15,24 @@ import pytest
 
 
 @pytest.fixture
-def renco_env(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+def son_of_anton_env(tmp_path, monkeypatch):
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     (home / "scripts").mkdir()
     (home / "cron").mkdir()
     (home / "scripts" / "watch.sh").write_text("#!/bin/bash\necho alert\n")
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
 
     import importlib
-    import renco_constants
+    import son_of_anton_constants
     import cron.jobs
 
-    importlib.reload(renco_constants)
+    importlib.reload(son_of_anton_constants)
     importlib.reload(cron.jobs)
     return home
 
 
-def test_stale_empty_save_preserves_concurrent_no_agent_create(renco_env):
+def test_stale_empty_save_preserves_concurrent_no_agent_create(son_of_anton_env):
     """Gateway-style stale writer with [] must not wipe a concurrent create."""
     from cron.jobs import create_job, load_jobs, save_jobs
 
@@ -57,7 +57,7 @@ def test_stale_empty_save_preserves_concurrent_no_agent_create(renco_env):
     assert remaining[0].get("script") == "watch.sh"
 
 
-def test_remove_other_job_preserves_concurrent_create(renco_env):
+def test_remove_other_job_preserves_concurrent_create(son_of_anton_env):
     """``cron remove`` of job A must not drop job B created mid-flight."""
     from cron.jobs import create_job, load_jobs, remove_job, save_jobs
 
@@ -88,7 +88,7 @@ def test_remove_other_job_preserves_concurrent_create(renco_env):
     assert ids == {watchdog["id"]}
 
 
-def test_intentional_remove_still_deletes(renco_env):
+def test_intentional_remove_still_deletes(son_of_anton_env):
     from cron.jobs import create_job, get_job, remove_job
 
     job = create_job(
@@ -104,7 +104,7 @@ def test_intentional_remove_still_deletes(renco_env):
     assert get_job(job["id"]) is None
 
 
-def test_replace_flag_allows_wholesale_rewrite(renco_env):
+def test_replace_flag_allows_wholesale_rewrite(son_of_anton_env):
     from cron.jobs import create_job, load_jobs, save_jobs
 
     create_job(
@@ -120,7 +120,7 @@ def test_replace_flag_allows_wholesale_rewrite(renco_env):
     assert load_jobs() == []
 
 
-def test_jobs_json_on_disk_matches_merge(renco_env):
+def test_jobs_json_on_disk_matches_merge(son_of_anton_env):
     from cron.jobs import create_job, save_jobs
 
     job = create_job(
@@ -133,11 +133,11 @@ def test_jobs_json_on_disk_matches_merge(renco_env):
         repeat=0,
     )
     save_jobs([])
-    payload = json.loads((Path(renco_env) / "cron" / "jobs.json").read_text())
+    payload = json.loads((Path(son_of_anton_env) / "cron" / "jobs.json").read_text())
     assert [j["id"] for j in payload["jobs"]] == [job["id"]]
 
 
-def test_stamp_fast_path_skips_merge_when_file_unchanged(renco_env, monkeypatch):
+def test_stamp_fast_path_skips_merge_when_file_unchanged(son_of_anton_env, monkeypatch):
     """Inside a critical section whose load stamp still matches, the save
     must not re-read jobs.json at all (#80703's single-stat fast path)."""
     import cron.jobs as jobs
@@ -182,7 +182,7 @@ def test_stamp_fast_path_skips_merge_when_file_unchanged(renco_env, monkeypatch)
     assert ids == {job["id"], "bbbbbbbbbbbb"}
 
 
-def test_merge_does_not_mutate_caller_list(renco_env):
+def test_merge_does_not_mutate_caller_list(son_of_anton_env):
     """The shrink-merge returns a new list; the caller's payload object must
     not grow as a side effect of save_jobs()."""
     from cron.jobs import create_job, save_jobs
@@ -201,7 +201,7 @@ def test_merge_does_not_mutate_caller_list(renco_env):
     assert my_payload == [], "caller's list was mutated in place by the merge"
 
 
-def test_corrupt_disk_file_does_not_break_save(renco_env):
+def test_corrupt_disk_file_does_not_break_save(son_of_anton_env):
     """A corrupt jobs.json under a save must not recurse or crash: the
     non-repairing peek returns None and the save overwrites cleanly."""
     import cron.jobs as jobs
@@ -214,7 +214,7 @@ def test_corrupt_disk_file_does_not_break_save(renco_env):
     assert [j["id"] for j in load_jobs()] == ["aaaaaaaaaaaa"]
 
 
-def test_nested_create_survives_outer_stale_save(renco_env):
+def test_nested_create_survives_outer_stale_save(son_of_anton_env):
     """A save inside a critical section invalidates the section's stamp, so
     an outer caller's later save with a pre-create payload must re-merge and
     keep the nested create (stamp refresh here would deterministically

@@ -23,9 +23,9 @@ _spec.loader.exec_module(_mod)
 def _lock(packages: dict[str, dict]) -> str:
     return json.dumps(
         {
-            "name": "renco",
+            "name": "son-of-anton",
             "lockfileVersion": 3,
-            "packages": {"": {"name": "renco"}, **packages},
+            "packages": {"": {"name": "son-of-anton"}, **packages},
         }
     )
 

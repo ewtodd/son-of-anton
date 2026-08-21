@@ -1,16 +1,16 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@renco/ink'
+import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@sonofanton/ink'
 import React, { useLayoutEffect, useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import SourceBox from '../../packages/renco-ink/src/ink/components/Box.js'
-import SourceScrollBox from '../../packages/renco-ink/src/ink/components/ScrollBox.js'
-import SourceText from '../../packages/renco-ink/src/ink/components/Text.js'
-import type { DOMElement } from '../../packages/renco-ink/src/ink/dom.js'
-import Output from '../../packages/renco-ink/src/ink/output.js'
-import { scrollFastPathStats as sourceScrollFastPathStats } from '../../packages/renco-ink/src/ink/render-node-to-output.js'
-import { renderSync as renderSourceSync } from '../../packages/renco-ink/src/ink/root.js'
+import SourceBox from '../../packages/son-of-anton-ink/src/ink/components/Box.js'
+import SourceScrollBox from '../../packages/son-of-anton-ink/src/ink/components/ScrollBox.js'
+import SourceText from '../../packages/son-of-anton-ink/src/ink/components/Text.js'
+import type { DOMElement } from '../../packages/son-of-anton-ink/src/ink/dom.js'
+import Output from '../../packages/son-of-anton-ink/src/ink/output.js'
+import { scrollFastPathStats as sourceScrollFastPathStats } from '../../packages/son-of-anton-ink/src/ink/render-node-to-output.js'
+import { renderSync as renderSourceSync } from '../../packages/son-of-anton-ink/src/ink/root.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 
 interface Item {

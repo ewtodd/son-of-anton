@@ -49,7 +49,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     }
 
     // Registry-first fallback: widget apps registered AFTER the static
-    // command table was built (user widgets from $RENCO_HOME/tui-widgets,
+    // command table was built (user widgets from $SON_OF_ANTON_HOME/tui-widgets,
     // /widgets-reload) dispatch straight off the live registry.
     if (getWidgetApp(parsed.name)) {
       const err = launchWidget(parsed.name, parsed.arg)

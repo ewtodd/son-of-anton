@@ -36,15 +36,15 @@ def _write_skill(skills_dir: Path, name: str, description: str = "") -> Path:
 
 
 @pytest.fixture
-def renco_home(monkeypatch):
-    """Isolate RENCO_HOME for ``reload_skills`` tests.
+def son_of_anton_home(monkeypatch):
+    """Isolate SON_OF_ANTON_HOME for ``reload_skills`` tests.
 
     Rather than popping cache-bearing modules from ``sys.modules``,
-    we monkeypatch the module-level ``RENCO_HOME`` / ``SKILLS_DIR``
+    we monkeypatch the module-level ``SON_OF_ANTON_HOME`` / ``SKILLS_DIR``
     constants in place so the isolation is local to this fixture's scope.
     """
-    td = tempfile.mkdtemp(prefix="renco-reload-skills-")
-    monkeypatch.setenv("RENCO_HOME", td)
+    td = tempfile.mkdtemp(prefix="son-of-anton-reload-skills-")
+    monkeypatch.setenv("SON_OF_ANTON_HOME", td)
     home = Path(td)
     (home / "skills").mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +53,7 @@ def renco_home(monkeypatch):
     import tools.skills_tool as _st
     import agent.skill_commands as _sc
 
-    monkeypatch.setattr(_st, "RENCO_HOME", home, raising=False)
+    monkeypatch.setattr(_st, "SON_OF_ANTON_HOME", home, raising=False)
     monkeypatch.setattr(_st, "SKILLS_DIR", home / "skills", raising=False)
     # Reset the in-process slash-command cache so each test starts from zero.
     monkeypatch.setattr(_sc, "_skill_commands", {}, raising=False)
@@ -68,10 +68,10 @@ class TestReloadSkillsHelper:
 
 
 
-    def test_detects_removed_skill_carries_description(self, renco_home):
+    def test_detects_removed_skill_carries_description(self, son_of_anton_home):
         from agent.skill_commands import reload_skills
 
-        skill_dir = _write_skill(renco_home / "skills", "demo", "soon to be gone")
+        skill_dir = _write_skill(son_of_anton_home / "skills", "demo", "soon to be gone")
         # First reload: demo present
         first = reload_skills()
         assert first["total"] == 1
@@ -88,7 +88,7 @@ class TestReloadSkillsHelper:
 
 
 
-    def test_does_not_invalidate_prompt_cache_snapshot(self, renco_home):
+    def test_does_not_invalidate_prompt_cache_snapshot(self, son_of_anton_home):
         """reload_skills must NOT delete the skills prompt-cache snapshot.
 
         Skills are called at runtime — the system prompt doesn't need to

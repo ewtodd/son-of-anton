@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { InputEvent } from '../../packages/renco-ink/src/ink/events/input-event.js'
-import { INITIAL_STATE, parseMultipleKeypresses } from '../../packages/renco-ink/src/ink/parse-keypress.js'
+import { InputEvent } from '../../packages/son-of-anton-ink/src/ink/events/input-event.js'
+import { INITIAL_STATE, parseMultipleKeypresses } from '../../packages/son-of-anton-ink/src/ink/parse-keypress.js'
 import { deleteWordForward } from '../components/textInput.js'
 
 function parseOne(sequence: string) {
@@ -12,7 +12,7 @@ function parseOne(sequence: string) {
 }
 
 // The web dashboard maps Ctrl+Delete to ESC d (see
-// web/src/lib/pty-keyboard-shortcuts.ts). renco-ink decodes that bare
+// web/src/lib/pty-keyboard-shortcuts.ts). son-of-anton-ink decodes that bare
 // meta-letter form via META_KEY_CODE_RE. If this contract ever changes the
 // `wordMod && inp === 'd'` binding in textInput.tsx stops firing and
 // Ctrl+Delete regresses to typing a literal "d".

@@ -13,7 +13,7 @@ or a linked OpenViking CLI config:
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
   OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
   OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
-  OPENVIKING_AGENT     — Renco peer ID in OpenViking (default: renco)
+  OPENVIKING_AGENT     — Son of Anton peer ID in OpenViking (default: son-of-anton)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -64,8 +64,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
-_DEFAULT_AGENT = "renco"
-_AGENT_PROMPT_LABEL = "Renco peer ID in OpenViking"
+_DEFAULT_AGENT = "son-of-anton"
+_AGENT_PROMPT_LABEL = "Son of Anton peer ID in OpenViking"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -81,7 +81,7 @@ _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _SESSION_MESSAGE_BATCH_LIMIT = 100
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
-_SYNC_TRACE_ENV = "RENCO_OPENVIKING_SYNC_TRACE"
+_SYNC_TRACE_ENV = "SON_OF_ANTON_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
@@ -218,7 +218,7 @@ def _format_openviking_exception(error: Exception) -> str:
 
 
 def _derive_openviking_user_text(content: Any) -> str:
-    """Strip Renco slash-skill scaffolding before sending content to OpenViking.
+    """Strip Son of Anton slash-skill scaffolding before sending content to OpenViking.
 
     Defense-in-depth: MemoryManager already strips skill scaffolding for the
     whole provider fan-out (see ``MemoryManager._strip_skill_scaffolding``), so
@@ -927,7 +927,7 @@ def _normalize_openviking_url(url: str) -> str:
     # Local / LAN self-host remains allowed; reject cloud-metadata and other
     # always-blocked floors so a poisoned endpoint cannot SSRF via memory sync.
     # Never silently replace an explicitly unsafe endpoint with localhost: that
-    # could attach Renco to an unrelated deployment and forward credentials to
+    # could attach Son of Anton to an unrelated deployment and forward credentials to
     # a destination the user did not configure.
     try:
         check_url = candidate
@@ -941,7 +941,7 @@ def _normalize_openviking_url(url: str) -> str:
     except Exception as exc:
         logger.debug("OpenViking endpoint safety validation failed", exc_info=True)
         raise _OpenVikingEndpointError(
-            "OpenViking endpoint safety validation failed; Renco refused the connection."
+            "OpenViking endpoint safety validation failed; Son of Anton refused the connection."
         ) from exc
 
     return candidate
@@ -1094,9 +1094,9 @@ def _is_local_openviking_url(value: str) -> bool:
     return scheme == "http" and (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
 
 
-def _load_renco_openviking_config() -> dict:
+def _load_son_of_anton_openviking_config() -> dict:
     try:
-        from renco_cli.config import load_config_readonly
+        from son_of_anton_cli.config import load_config_readonly
 
         config = load_config_readonly()
         memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
@@ -1448,10 +1448,10 @@ def _local_openviking_bind(endpoint: str) -> tuple[str, int]:
 
 def _openviking_server_log_path() -> Path:
     try:
-        from renco_constants import get_renco_home
-        home = get_renco_home()
+        from son_of_anton_constants import get_son_of_anton_home
+        home = get_son_of_anton_home()
     except Exception:
-        home = Path(os.environ.get("RENCO_HOME", "")).expanduser() if os.environ.get("RENCO_HOME") else Path.home() / ".renco"
+        home = Path(os.environ.get("SON_OF_ANTON_HOME", "")).expanduser() if os.environ.get("SON_OF_ANTON_HOME") else Path.home() / ".son-of-anton"
     return home / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
 
 
@@ -1536,7 +1536,7 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
         listener = _describe_local_port_listener(host, port)
         return (
             _LOCAL_SERVER_OCCUPIED,
-            f"Port {host}:{port} is occupied by {listener}. Renco did not start "
+            f"Port {host}:{port} is occupied by {listener}. Son of Anton did not start "
             "openviking-server because the listener has not passed OpenViking's /health check.",
         )
     server_cmd = shutil.which("openviking-server")
@@ -1549,13 +1549,13 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Do not let the server child inherit this process's PYTHONPATH.
-        # The Renco Desktop backend can include the Renco venv's
+        # The Son of Anton Desktop backend can include the Son of Anton venv's
         # site-packages in PYTHONPATH. If inherited, openviking-server would
-        # import aiohttp and friends from the Renco venv instead of its own
+        # import aiohttp and friends from the Son of Anton venv instead of its own
         # (its venv's site-packages are shadowed because PYTHONPATH precedes
         # them) —
-        # and on Windows the loaded DLLs then lock the Renco venv,
-        # aborting `renco update` with access-denied on .pyd files.
+        # and on Windows the loaded DLLs then lock the Son of Anton venv,
+        # aborting `son-of-anton update` with access-denied on .pyd files.
         # Strip PYTHONPATH so the server resolves packages from its own
         # venv. (#78153)
         child_env = os.environ.copy()
@@ -1671,7 +1671,7 @@ def _runtime_openviking_timeout_message(endpoint: str) -> str:
         f"Local OpenViking server at {endpoint} is not reachable. "
         "Tried to start openviking-server, but it did not become reachable "
         f"within {_LOCAL_OPENVIKING_AUTOSTART_TIMEOUT:.0f} seconds. "
-        "OpenViking memory is temporarily unavailable; Renco will retry on a later access or when "
+        "OpenViking memory is temporarily unavailable; Son of Anton will retry on a later access or when "
         "the config changes."
     )
 
@@ -2013,7 +2013,7 @@ def _link_ovcli_profile(
         os.environ.pop(key, None)
 
 
-def _save_renco_only_config(
+def _save_son_of_anton_only_config(
     *,
     config: dict,
     provider_config: dict,
@@ -2053,7 +2053,7 @@ def _print_openviking_ready(message: str, path: Optional[Path] = None) -> None:
     print(f"  {message}")
     if path is not None:
         print(f"  Config file: {path}")
-    print("  Start a new Renco session to activate.\n")
+    print("  Start a new Son of Anton session to activate.\n")
 
 
 def _run_existing_profile_setup(
@@ -2171,7 +2171,7 @@ def _run_create_profile_setup(
     save_choice = select(
         "  Save OpenViking config",
         [
-            ("Keep in Renco only", "write values only to Renco .env"),
+            ("Keep in Son of Anton only", "write values only to Son of Anton .env"),
             ("Mirror to OpenViking store", "write ~/.openviking/ovcli.conf.<name> and link it"),
         ],
         default=1,
@@ -2198,13 +2198,13 @@ def _run_create_profile_setup(
         _print_openviking_ready("Created and linked OpenViking profile.", ovcli_path)
         return True
 
-    _save_renco_only_config(
+    _save_son_of_anton_only_config(
         config=config,
         provider_config=provider_config,
         env_path=env_path,
         values=values,
     )
-    _print_openviking_ready("Connection saved to Renco .env.")
+    _print_openviking_ready("Connection saved to Son of Anton .env.")
     return True
 
 
@@ -2237,7 +2237,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
-        self._renco_home = ""
+        self._son_of_anton_home = ""
         self._run_id = uuid.uuid4().hex
         self._run_lock_file: Optional[Any] = None
         self._run_lock_path: Optional[Path] = None
@@ -2250,7 +2250,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # MemoryManager's background sync executor while on_session_end /
         # on_session_switch run on the caller's thread, so the snapshot+reset
         # of the turn counter and the session-id rotation must be atomic
-        # against a concurrent increment. See renco-agent#28296 review.
+        # against a concurrent increment. See son-of-anton#28296 review.
         self._session_state_lock = threading.Lock()
         # Commit only after session writes drain. The set is keyed by the sid
         # the writer is POSTing under (snapshotted at spawn), so on_session_end
@@ -2295,7 +2295,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         """Check if OpenViking endpoint is configured. No network calls."""
         if os.environ.get("OPENVIKING_ENDPOINT"):
             return True
-        provider_config = _load_renco_openviking_config()
+        provider_config = _load_son_of_anton_openviking_config()
         # A non-secret endpoint saved to config.yaml (e.g. via the Dashboard)
         # counts as configured even without an env var or ovcli config.
         if _clean_config_value(provider_config.get("endpoint")):
@@ -2339,10 +2339,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             {
                 "key": "agent",
                 "description": (
-                    "Renco peer ID in OpenViking, sent as the actor peer and "
+                    "Son of Anton peer ID in OpenViking, sent as the actor peer and "
                     "used for peer-scoped memories"
                 ),
-                "default": "renco",
+                "default": "son-of-anton",
                 "env_var": "OPENVIKING_AGENT",
             },
             {
@@ -2427,7 +2427,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
         ]
 
-    def save_config(self, values: Dict[str, Any], renco_home: str) -> None:
+    def save_config(self, values: Dict[str, Any], son_of_anton_home: str) -> None:
         """Validate and persist Dashboard configuration for the active profile."""
         normalized = dict(values or {})
         normalized.pop("api_key", None)
@@ -2436,7 +2436,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if endpoint:
             normalized["endpoint"] = _normalize_openviking_url(endpoint)
 
-        from renco_cli.config import load_config, save_config
+        from son_of_anton_cli.config import load_config, save_config
 
         config = load_config()
         memory_config = config.get("memory")
@@ -2484,13 +2484,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 display[key] = "(set)"
         return display
 
-    def post_setup(self, renco_home: str, config: dict) -> None:
+    def post_setup(self, son_of_anton_home: str, config: dict) -> None:
         """Custom setup that can reuse OpenViking's shared CLI config."""
-        from renco_cli.config import save_config
-        from renco_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup, _prompt
+        from son_of_anton_cli.config import save_config
+        from son_of_anton_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup, _prompt
 
-        renco_home_path = Path(renco_home)
-        env_path = renco_home_path / ".env"
+        son_of_anton_home_path = Path(son_of_anton_home)
+        env_path = son_of_anton_home_path / ".env"
         if not isinstance(config.get("memory"), dict):
             config["memory"] = {}
         provider_config = config["memory"].get("openviking", {})
@@ -2611,7 +2611,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 if not healthy:
                     warning_message = (
                         f"OpenViking server at {endpoint} is still not reachable after auto-start. "
-                        "OpenViking memory is temporarily unavailable; Renco will retry on a later access or when "
+                        "OpenViking memory is temporarily unavailable; Son of Anton will retry on a later access or when "
                         "the config changes."
                     )
                 else:
@@ -2630,7 +2630,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             except Exception as e:
                 warning_message = (
                     f"OpenViking server at {endpoint} could not be attached after auto-start: {e}. "
-                    "OpenViking memory is temporarily unavailable; Renco will retry on a later access or when "
+                    "OpenViking memory is temporarily unavailable; Son of Anton will retry on a later access or when "
                     "the config changes."
                 )
 
@@ -2656,7 +2656,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not _is_local_openviking_url(endpoint):
             _emit_runtime_warning(
                 f"Remote OpenViking server at {endpoint} is not reachable. "
-                "OpenViking memory is temporarily unavailable; Renco will retry on a later access or when "
+                "OpenViking memory is temporarily unavailable; Son of Anton will retry on a later access or when "
                 "the config changes. "
                 "Check the configured endpoint and network connectivity.",
                 warning_callback,
@@ -2682,7 +2682,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 self._runtime_start_pending = False
                 warning_message = (
                     f"Local OpenViking server at {endpoint} is not reachable. {start_message} "
-                    "OpenViking memory is temporarily unavailable; Renco will retry on a later access or when "
+                    "OpenViking memory is temporarily unavailable; Son of Anton will retry on a later access or when "
                     "the config changes."
                 )
                 self._client = None
@@ -2725,7 +2725,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
         connection_error = ""
         try:
-            settings = _resolve_connection_settings(_load_renco_openviking_config())
+            settings = _resolve_connection_settings(_load_son_of_anton_openviking_config())
         except _OpenVikingEndpointError as exc:
             connection_error = str(exc)
             settings = {
@@ -2747,14 +2747,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
-        renco_home = str(kwargs.get("renco_home") or "").strip()
-        if not renco_home:
+        son_of_anton_home = str(kwargs.get("son_of_anton_home") or "").strip()
+        if not son_of_anton_home:
             try:
-                from renco_constants import get_renco_home
-                renco_home = str(get_renco_home())
+                from son_of_anton_constants import get_son_of_anton_home
+                son_of_anton_home = str(get_son_of_anton_home())
             except Exception:
-                renco_home = str(Path.home() / ".renco")
-        self._renco_home = renco_home
+                son_of_anton_home = str(Path.home() / ".son-of-anton")
+        self._son_of_anton_home = son_of_anton_home
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
 
@@ -2787,7 +2787,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 elif health_state != "healthy":
                     _emit_runtime_warning(
                         f"{health_message} OpenViking memory is temporarily unavailable; "
-                        "Renco will retry on a later access or when the config changes.",
+                        "Son of Anton will retry on a later access or when the config changes.",
                         warning_callback,
                     )
                     self._client = None
@@ -2810,8 +2810,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         ``/reload`` only refreshes ``os.environ`` — the existing provider
         instance is not re-initialized — so OPENVIKING_* values added to
-        ``~/.renco/.env`` after startup never reach the live client and tools
-        keep running against stale auth until the user restarts renco (#21130).
+        ``~/.son-of-anton/.env`` after startup never reach the live client and tools
+        keep running against stale auth until the user restarts son-of-anton (#21130).
 
         Re-resolve the connection settings on each access (same layering as
         ``initialize``) and rebuild + health-check only when a value actually
@@ -2833,7 +2833,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return None
 
         try:
-            settings = _resolve_connection_settings(_load_renco_openviking_config())
+            settings = _resolve_connection_settings(_load_son_of_anton_openviking_config())
         except _OpenVikingEndpointError as exc:
             failed_key = ("invalid-endpoint", str(exc))
             failed = self._failed_refresh
@@ -2911,7 +2911,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._failed_refresh = (settings_key, time.monotonic())
         if health_state == "responded":
             logger.warning(
-                "%s OpenViking memory is temporarily unavailable; Renco will retry on a "
+                "%s OpenViking memory is temporarily unavailable; Son of Anton will retry on a "
                 "later access (after cooldown) or when the config changes.",
                 health_message,
             )
@@ -3201,9 +3201,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._committed_session_ids.discard(sid)
 
     def _pending_session_dir(self) -> Optional[Path]:
-        if not self._renco_home:
+        if not self._son_of_anton_home:
             return None
-        return Path(self._renco_home) / _PENDING_SESSIONS_RELATIVE_DIR
+        return Path(self._son_of_anton_home) / _PENDING_SESSIONS_RELATIVE_DIR
 
     def _pending_session_marker_path(self, sid: str) -> Optional[Path]:
         sid = str(sid or "").strip()
@@ -3213,9 +3213,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return directory / f"{quote(sid, safe='')}.json"
 
     def _run_lock_dir(self) -> Optional[Path]:
-        if not self._renco_home:
+        if not self._son_of_anton_home:
             return None
-        return Path(self._renco_home) / _RUN_LOCKS_RELATIVE_DIR
+        return Path(self._son_of_anton_home) / _RUN_LOCKS_RELATIVE_DIR
 
     def _run_lock_path_for(self, run_id: str) -> Optional[Path]:
         run_id = str(run_id or "").strip()
@@ -3713,7 +3713,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _recall_config(self) -> Dict[str, Any]:
         # Read from config.yaml → memory.openviking as primary source, env vars
         # as override. Behavioural settings belong in config.yaml (AGENTS.md).
-        provider_config = _load_renco_openviking_config()
+        provider_config = _load_son_of_anton_openviking_config()
         cfg = provider_config
 
         return {
@@ -3766,7 +3766,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         }
 
     def _profile_token_budget(self) -> int:
-        cfg = _load_renco_openviking_config()
+        cfg = _load_son_of_anton_openviking_config()
         return self._setting_int(
             "OPENVIKING_PROFILE_TOKEN_BUDGET",
             cfg.get("profile_token_budget", _DEFAULT_PROFILE_TOKEN_BUDGET),
@@ -4267,7 +4267,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         user_content: str,
         assistant_content: str,
     ) -> List[Dict[str, Any]]:
-        """Slice the completed turn out of Renco' full canonical transcript."""
+        """Slice the completed turn out of Son of Anton' full canonical transcript."""
         if not messages:
             return []
 
@@ -4386,7 +4386,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         *,
         assistant_peer_id: str = "",
     ) -> List[Dict[str, Any]]:
-        """Convert Renco canonical messages into OpenViking batch payloads."""
+        """Convert Son of Anton canonical messages into OpenViking batch payloads."""
         assistant_peer_id = str(assistant_peer_id or "").strip()
         tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
         completed_tool_ids: set[str] = set()
@@ -4701,7 +4701,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         ``initialize()`` cached, so subsequent ``sync_turn()`` writes land in
         the already-closed old session and ``on_session_end()`` tries to
         commit it a second time. The new session never accumulates messages,
-        and memory extraction never fires for it. See renco-agent#28296.
+        and memory extraction never fires for it. See son-of-anton#28296.
 
         Flushes any in-flight sync under the old session_id, commits the old
         session if it has pending turns (same extraction semantics as
@@ -4982,7 +4982,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     ) -> Dict[str, Any]:
         summary_level = level in {"abstract", "overview"}
         # OpenViking expects directory URIs for pseudo summary files
-        # (e.g. viking://user/renco/.overview.md).
+        # (e.g. viking://user/son-of-anton/.overview.md).
         resolved_uri = self._normalize_summary_uri(uri) if summary_level else uri
         used_fallback = False
 

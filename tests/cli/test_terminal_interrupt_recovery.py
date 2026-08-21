@@ -6,7 +6,7 @@ reply (``ESC[<row>;<col>R``) arrives on stdin after the input parser has torn
 down. The reply then leaks as literal text (``^[[19;1R``) and the VT100 parser
 can stall, accepting no further keystrokes — the terminal appears frozen.
 
-The recovery path lives in ``RencoCLI._recover_terminal_after_interrupt()``,
+The recovery path lives in ``SonOfAntonCLI._recover_terminal_after_interrupt()``,
 which is invoked from ``process_loop``'s ``finally`` block only when
 ``self._last_turn_interrupted`` is set. It must:
   1. Drain stray escape bytes from the OS input buffer (``flush_stdin``).
@@ -24,22 +24,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import cli as cli_mod
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 @pytest.fixture
 def bare_cli():
-    """A RencoCLI with no __init__ — we only exercise the recovery helper."""
-    return object.__new__(RencoCLI)
+    """A SonOfAntonCLI with no __init__ — we only exercise the recovery helper."""
+    return object.__new__(SonOfAntonCLI)
 
 
 class TestRecoverTerminalAfterInterrupt:
-    """Directly exercise RencoCLI._recover_terminal_after_interrupt()."""
+    """Directly exercise SonOfAntonCLI._recover_terminal_after_interrupt()."""
 
     def test_drains_stdin_then_redraws(self, bare_cli):
         """Happy path: flush_stdin runs, then a full redraw is forced."""
         bare_cli._force_full_redraw = MagicMock()
-        with patch("renco_cli.curses_ui.flush_stdin") as mock_flush:
+        with patch("son_of_anton_cli.curses_ui.flush_stdin") as mock_flush:
             bare_cli._recover_terminal_after_interrupt()
 
         mock_flush.assert_called_once()
@@ -53,7 +53,7 @@ class TestRecoverTerminalAfterInterrupt:
         """
         bare_cli._force_full_redraw = MagicMock()
         with patch(
-            "renco_cli.curses_ui.flush_stdin", side_effect=OSError("no tty")
+            "son_of_anton_cli.curses_ui.flush_stdin", side_effect=OSError("no tty")
         ):
             bare_cli._recover_terminal_after_interrupt()  # must not raise
 
@@ -66,7 +66,7 @@ class TestRecoverTerminalAfterInterrupt:
             side_effect=lambda: events.append("redraw")
         )
         with patch(
-            "renco_cli.curses_ui.flush_stdin",
+            "son_of_anton_cli.curses_ui.flush_stdin",
             side_effect=lambda: events.append("flush"),
         ):
             bare_cli._recover_terminal_after_interrupt()
@@ -79,7 +79,7 @@ class TestRecoverTerminalAfterInterrupt:
         Under pytest stdin is not a TTY, so this must return cleanly without
         touching termios.
         """
-        from renco_cli.curses_ui import flush_stdin
+        from son_of_anton_cli.curses_ui import flush_stdin
 
         flush_stdin()  # must not raise in a non-TTY test environment
 
@@ -93,7 +93,7 @@ class TestFinallyBlockWiring:
     """
 
     def test_recovery_is_invoked_behind_interrupt_guard(self):
-        src = inspect.getsource(RencoCLI.run)
+        src = inspect.getsource(SonOfAntonCLI.run)
         # The recovery call must be gated on _last_turn_interrupted so it only
         # fires after an actual interrupt, not on every normal turn.
         guard = re.search(
@@ -108,5 +108,5 @@ class TestFinallyBlockWiring:
         )
 
     def test_recovery_helper_exists(self):
-        assert hasattr(RencoCLI, "_recover_terminal_after_interrupt")
-        assert callable(RencoCLI._recover_terminal_after_interrupt)
+        assert hasattr(SonOfAntonCLI, "_recover_terminal_after_interrupt")
+        assert callable(SonOfAntonCLI._recover_terminal_after_interrupt)

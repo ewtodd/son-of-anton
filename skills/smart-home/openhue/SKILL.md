@@ -6,7 +6,7 @@ author: community
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Smart-Home, Hue, Lights, IoT, Automation]
     homepage: https://www.openhue.io/cli
 prerequisites:
@@ -105,7 +105,7 @@ openhue set room "Living Room" --off
 
 ## Notes
 
-- Bridge must be on the same local network as the machine running Renco
+- Bridge must be on the same local network as the machine running Son of Anton
 - First run requires physically pressing the button on the Hue Bridge to authorize
 - Colors only work on color-capable bulbs (not white-only models)
 - Light and room names are case-sensitive — use `openhue get light` to check exact names

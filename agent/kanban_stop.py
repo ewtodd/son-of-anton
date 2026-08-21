@@ -3,7 +3,7 @@
 Kanban workers must end with ``kanban_complete`` or ``kanban_block``. Models
 (especially GLM / Qwen families) sometimes narrate the next step
 ("Let me write the report now") and stop with ``finish_reason=stop`` and no
-tool calls. Renco treats that as a clean exit → ``rc=0`` → dispatcher
+tool calls. Son of Anton treats that as a clean exit → ``rc=0`` → dispatcher
 ``protocol_violation``.
 
 This module is policy-only: when a kanban worker tries to finish without a
@@ -25,13 +25,13 @@ _DEFAULT_MAX_ATTEMPTS = 2
 def kanban_stop_nudge_enabled() -> bool:
     """Return whether the kanban stop-guard is active for this process.
 
-    On when ``RENCO_KANBAN_TASK`` is set (dispatcher-spawned worker), unless
-    ``RENCO_KANBAN_STOP_NUDGE`` explicitly disables it.
+    On when ``SON_OF_ANTON_KANBAN_TASK`` is set (dispatcher-spawned worker), unless
+    ``SON_OF_ANTON_KANBAN_STOP_NUDGE`` explicitly disables it.
     """
-    env = os.environ.get("RENCO_KANBAN_STOP_NUDGE")
+    env = os.environ.get("SON_OF_ANTON_KANBAN_STOP_NUDGE")
     if env is not None and env.strip().lower() in {"0", "false", "no", "off"}:
         return False
-    task = (os.environ.get("RENCO_KANBAN_TASK") or "").strip()
+    task = (os.environ.get("SON_OF_ANTON_KANBAN_TASK") or "").strip()
     return bool(task)
 
 
@@ -85,9 +85,9 @@ def build_kanban_stop_nudge(
     if session_called_kanban_terminal(messages):
         return None
 
-    tid = (task_id or os.environ.get("RENCO_KANBAN_TASK") or "").strip() or "this task"
+    tid = (task_id or os.environ.get("SON_OF_ANTON_KANBAN_TASK") or "").strip() or "this task"
     return (
-        "[System: You are a Renco kanban worker. A plain-text reply is NOT a "
+        "[System: You are a Son of Anton kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
         f"Task `{tid}` is still `running`. Ending now without a board tool "
         "causes a protocol violation (clean exit with no "

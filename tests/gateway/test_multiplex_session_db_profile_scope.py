@@ -4,7 +4,7 @@ A multiplexed gateway serves every profile from one process.  ``SessionStore``
 used to bind a single ``SessionDB`` during ``__init__``, freezing it to the
 process's own root home, so a named profile's sessions were physically written
 to the root ``state.db`` even though ``_profile_runtime_scope`` had already
-redirected ``get_renco_home()`` for that turn.  The rows carried the correct
+redirected ``get_son_of_anton_home()`` for that turn.  The rows carried the correct
 ``profile_name``, which is why the only visible symptom was the desktop listing
 a profile's session under the default bot: the desktop reads
 ``profiles/<name>/state.db``, which never received the write.
@@ -23,36 +23,36 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
-from renco_constants import reset_renco_home_override, set_renco_home_override
+from son_of_anton_constants import reset_son_of_anton_home_override, set_son_of_anton_home_override
 
 
 @pytest.fixture
 def multiplex_homes(tmp_path, monkeypatch):
-    """A root home plus a named profile home, with RENCO_HOME on the root.
+    """A root home plus a named profile home, with SON_OF_ANTON_HOME on the root.
 
     Mirrors the reported layout: one gateway process launched under the root
     home, serving a ``fitness`` profile whose store lives under
     ``profiles/fitness``.
     """
-    import renco_state
+    import son_of_anton_state
 
-    root = tmp_path / "renco"
+    root = tmp_path / "son-of-anton"
     profile = root / "profiles" / "fitness"
     root.mkdir(parents=True)
     profile.mkdir(parents=True)
-    monkeypatch.setenv("RENCO_HOME", str(root))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(root))
 
-    # The suite-wide fixture in conftest re-points ``renco_state.DEFAULT_DB_PATH``
+    # The suite-wide fixture in conftest re-points ``son_of_anton_state.DEFAULT_DB_PATH``
     # at a fake home, which trips the deliberate escape hatch in
     # ``_default_db_path()``: a re-pointed constant wins over everything,
     # including the context-local override.  That is correct for tests that
     # want one fixed DB, but it would pin every lookup here to a single path
     # and make these assertions vacuous.  Restore the import-time snapshot so
-    # the hatch is closed and resolution goes through ``get_renco_home()``,
-    # which is what production does.  ``RENCO_HOME`` above still keeps that
+    # the hatch is closed and resolution goes through ``get_son_of_anton_home()``,
+    # which is what production does.  ``SON_OF_ANTON_HOME`` above still keeps that
     # resolution inside ``tmp_path``, so no real store is ever opened.
     monkeypatch.setattr(
-        renco_state, "DEFAULT_DB_PATH", renco_state._IMPORT_DEFAULT_DB_PATH
+        son_of_anton_state, "DEFAULT_DB_PATH", son_of_anton_state._IMPORT_DEFAULT_DB_PATH
     )
     return root, profile
 
@@ -95,11 +95,11 @@ def test_db_handle_follows_the_active_profile_scope(multiplex_homes):
     # Constructed outside any scope, exactly as the gateway constructs it.
     assert Path(store._db.db_path) == root / "state.db"
 
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         assert Path(store._db.db_path) == profile / "state.db"
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     # And the scope is restored once the turn's scope exits.
     assert Path(store._db.db_path) == root / "state.db"
@@ -115,11 +115,11 @@ def test_write_under_profile_scope_lands_in_profile_store(multiplex_homes):
     root, profile = multiplex_homes
     store = _make_store(root)
 
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         store._db.create_session("20260817_233028_542fda58", "feishu")
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     assert _session_ids(profile / "state.db") == {"20260817_233028_542fda58"}
     assert _session_ids(root / "state.db") == set()
@@ -134,12 +134,12 @@ def test_handles_are_cached_per_path(multiplex_homes):
     root_second = store._db
     assert root_first is root_second
 
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         profile_first = store._db
         profile_second = store._db
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     assert profile_first is profile_second
     assert profile_first is not root_first
@@ -157,19 +157,19 @@ def test_explicitly_pinned_handle_still_wins(multiplex_homes):
 
     sentinel = object()
     store._db = sentinel
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         assert store._db is sentinel
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     # Disabling the DB (the JSONL-fallback path) must survive scope changes.
     store._db = None
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         assert store._db is None
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
 
 def test_close_all_db_handles_sweeps_every_profile_handle(multiplex_homes):
@@ -185,11 +185,11 @@ def test_close_all_db_handles_sweeps_every_profile_handle(multiplex_homes):
     store = _make_store(root)
 
     root_db = store._db
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         profile_db = store._db
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
     assert root_db is not profile_db
 
     store.close_all_db_handles()
@@ -227,24 +227,24 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
     root_db = runner._session_db
     assert Path(root_db._db.db_path) == root / "state.db"
 
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         profile_db = runner._session_db
         assert Path(profile_db._db.db_path) == profile / "state.db"
         # Cached per path: same wrapper identity on re-access.
         assert runner._session_db is profile_db
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     assert runner._session_db is root_db
 
     # Pinning (how suites install fakes / disable the DB) wins across scopes.
     runner._session_db = None
-    token = set_renco_home_override(str(profile))
+    token = set_son_of_anton_home_override(str(profile))
     try:
         assert runner._session_db is None
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
     runner._session_db_pinned = _SESSION_DB_UNPINNED
 
     runner.close_all_session_db_handles()

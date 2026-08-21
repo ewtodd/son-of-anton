@@ -106,7 +106,7 @@ let
   # Python source: everything except JS/TS/docs/infra directories.
   pythonSrc = lib.cleanSourceWith {
     src = repoRoot;
-    name = "renco-python-source";
+    name = "son-of-anton-python-source";
     filter =
       path: type:
       let
@@ -135,16 +135,16 @@ let
             "plans"
             # Nix build definitions (Python build doesn't need these)
             "nix"
-            # Skills are shipped via RENCO_BUNDLED_SKILLS /
-            # RENCO_OPTIONAL_SKILLS (see renco-agent.nix), not via the
+            # Skills are shipped via SON_OF_ANTON_BUNDLED_SKILLS /
+            # SON_OF_ANTON_OPTIONAL_SKILLS (see son-of-anton.nix), not via the
             # wheel's data_files — setup.py's _data_file_tree returns []
             # for a missing dir, so the wheel builds fine without them.
             # This keeps SKILL.md edits from rebuilding the Python venv.
             "skills"
             "optional-skills"
             # locales/ and optional-mcps/ are bare data dirs (no
-            # __init__.py) shipped via symlinks + RENCO_BUNDLED_LOCALES
-            # / RENCO_OPTIONAL_MCPS, not via the wheel. Excluding them
+            # __init__.py) shipped via symlinks + SON_OF_ANTON_BUNDLED_LOCALES
+            # / SON_OF_ANTON_OPTIONAL_MCPS, not via the wheel. Excluding them
             # keeps catalog edits from rebuilding the Python venv.
             "locales"
             "optional-mcps"
@@ -169,7 +169,7 @@ let
           "SECURITY.md"
           "README.zh-CN.md"
           ".gitignore"
-          "setup-renco.sh"
+          "setup-son-of-anton.sh"
         ];
       in
       if relPath == "" then
@@ -235,7 +235,7 @@ let
   # e.g. apps/desktop depends on apps/shared.
   #
   # Usage:
-  #   rencoNpmLib.buildNpmPackage {
+  #   son-of-antonNpmLib.buildNpmPackage {
   #     dirs = [ "apps/desktop" "apps/shared" ];
   #     buildPhase = '' ... '';
   #     installPhase = '' ... '';

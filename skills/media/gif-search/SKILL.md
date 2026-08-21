@@ -2,14 +2,14 @@
 name: gif-search
 description: "Search/download GIFs from Tenor via curl + jq."
 version: 1.1.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [TENOR_API_KEY]
   commands: [curl, jq]
 metadata:
-  renco:
+  son-of-anton:
     tags: [GIF, Media, Search, Tenor, API]
 ---
 
@@ -23,7 +23,7 @@ Useful for finding reaction GIFs, creating visual content, and sending GIFs in c
 
 ## Setup
 
-Set your Tenor API key in your environment (add to `${RENCO_HOME:-~/.renco}/.env`):
+Set your Tenor API key in your environment (add to `${SON_OF_ANTON_HOME:-~/.son-of-anton}/.env`):
 
 ```bash
 TENOR_API_KEY=your_key_here

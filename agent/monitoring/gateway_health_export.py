@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DIAGNOSTIC_SCOPE = "renco.gateway.diagnostics"
+_DEFAULT_DIAGNOSTIC_SCOPE = "son-of-anton.gateway.diagnostics"
 
 _RESOURCE_ATTRIBUTE_KEYS = frozenset({
     "service.name",
@@ -82,7 +82,7 @@ def _runtime_resource_attributes(
     attrs = _safe_resource_attributes(gh.get("resource_attributes"))
     from agent.monitoring.gateway_health import _safe_instance_id
 
-    attrs["service.name"] = "renco-gateway"
+    attrs["service.name"] = "son-of-anton-gateway"
     attrs["service.instance.id"] = _safe_instance_id(_install_id(config))
     attrs["telemetry.scope"] = telemetry_scope
     return attrs
@@ -94,7 +94,7 @@ def _diagnostic_log_attributes(event: Dict[str, Any]) -> Dict[str, Any]:
         value = event.get(key)
         if value is None:
             continue
-        attrs[f"renco.{key}"] = _redact_string(value) if isinstance(value, str) else value
+        attrs[f"son-of-anton.{key}"] = _redact_string(value) if isinstance(value, str) else value
     return attrs
 
 
@@ -151,7 +151,7 @@ class GatewayHealthExportRuntime:
         if closeables:
             worker = threading.Thread(
                 target=_close,
-                name="renco-gateway-health-export-shutdown",
+                name="son-of-anton-gateway-health-export-shutdown",
                 daemon=True,
             )
             worker.start()
@@ -244,7 +244,7 @@ def _logs_endpoint(endpoint: str) -> str:
 
 def _version() -> str:
     try:
-        from renco_cli import __version__
+        from son_of_anton_cli import __version__
         return str(__version__)
     except Exception:
         return "unknown"
@@ -252,7 +252,7 @@ def _version() -> str:
 
 def _profile() -> str:
     try:
-        from renco_cli.profiles import get_active_profile_name
+        from son_of_anton_cli.profiles import get_active_profile_name
         return str(get_active_profile_name() or "default")
     except Exception:
         return "default"
@@ -304,7 +304,7 @@ def _read_cron_snapshot():
 def _read_background_work_count() -> int:
     """Count live background/subagent work that ``active_agents`` does NOT include.
 
-    ``renco.gateway.active_agents`` counts foreground turns + in-flight cron
+    ``son-of-anton.gateway.active_agents`` counts foreground turns + in-flight cron
     jobs + API runs, but deliberately excludes backgrounded ``delegate_task``
     subagents, ``terminal(background=true)`` processes, kanban workers, and the
     runner's own background tasks (they are tracked only for the scale-to-zero
@@ -366,14 +366,14 @@ def _read_runtime_snapshot(config: Dict[str, Any]):
         base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
         gateway_snapshot.metrics.append(
             GatewayMetric(
-                name="renco.gateway.background_work",
+                name="son-of-anton.gateway.background_work",
                 value=_read_background_work_count(),
                 attributes=base,
             )
         )
         gateway_snapshot.metrics.append(
             GatewayMetric(
-                name="renco.gateway.background_delegations",
+                name="son-of-anton.gateway.background_delegations",
                 value=_read_background_delegations_count(),
                 attributes=base,
             )
@@ -431,26 +431,26 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
         metric_readers=[reader],
         resource=sdk["Resource"].create(resource_attrs),
     )
-    meter = provider.get_meter("renco.gateway.health")
+    meter = provider.get_meter("son-of-anton.gateway.health")
     Observation = sdk["Observation"]
 
     metric_names = [
-        "renco.gateway.up",
-        "renco.gateway.state",
-        "renco.gateway.active_agents",
-        "renco.gateway.busy",
-        "renco.gateway.drainable",
-        "renco.gateway.restart_requested",
-        "renco.gateway.background_work",
-        "renco.gateway.background_delegations",
-        "renco.platform.up",
-        "renco.platform.degraded",
-        "renco.cron.scheduler.heartbeat_age_seconds",
-        "renco.cron.scheduler.last_success_age_seconds",
-        "renco.cron.scheduler.catch_up_occurrences",
-        "renco.cron.jobs.enabled",
-        "renco.cron.jobs.running",
-        "renco.cron.jobs.overdue",
+        "son-of-anton.gateway.up",
+        "son-of-anton.gateway.state",
+        "son-of-anton.gateway.active_agents",
+        "son-of-anton.gateway.busy",
+        "son-of-anton.gateway.drainable",
+        "son-of-anton.gateway.restart_requested",
+        "son-of-anton.gateway.background_work",
+        "son-of-anton.gateway.background_delegations",
+        "son-of-anton.platform.up",
+        "son-of-anton.platform.degraded",
+        "son-of-anton.cron.scheduler.heartbeat_age_seconds",
+        "son-of-anton.cron.scheduler.last_success_age_seconds",
+        "son-of-anton.cron.scheduler.catch_up_occurrences",
+        "son-of-anton.cron.jobs.enabled",
+        "son-of-anton.cron.jobs.running",
+        "son-of-anton.cron.jobs.overdue",
     ]
 
     def callback(name: str):
@@ -563,7 +563,7 @@ def _start_snapshot_thread(config: Dict[str, Any], stop_event: threading.Event) 
         while not stop_event.wait(interval):
             _emit_snapshot_events(config)
 
-    thread = threading.Thread(target=_run, name="renco-gateway-health-export", daemon=True)
+    thread = threading.Thread(target=_run, name="son-of-anton-gateway-health-export", daemon=True)
     thread.start()
     return thread
 
@@ -598,7 +598,7 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
         except Exception:
             logger.warning(
                 "monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; "
-                "install 'renco-agent[otlp]'",
+                "install 'son-of-anton[otlp]'",
                 exc_info=True,
             )
             return GatewayHealthExportRuntime(enabled=False, reason="otlp_unavailable")

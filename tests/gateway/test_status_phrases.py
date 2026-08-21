@@ -27,7 +27,7 @@ def test_status_phrase_does_not_leak_raw_preview_or_args():
 
 
 def test_status_phrase_path_can_load_relative_directory(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     phrase_dir = tmp_path / "phrase-catalog"
     phrase_dir.mkdir()
     (phrase_dir / "01-status.yaml").write_text("status:\n  - relative dir status text\n", encoding="utf-8")

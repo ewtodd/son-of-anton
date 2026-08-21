@@ -16,16 +16,16 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
-    """Redirect RENCO_HOME so load_config() reads our test config.yaml."""
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
-    (renco_home / "config.yaml").write_text("model:\n  default: test-model\n")
+    """Redirect SON_OF_ANTON_HOME so load_config() reads our test config.yaml."""
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
+    (son_of_anton_home / "config.yaml").write_text("model:\n  default: test-model\n")
 
 
 def _write_config(tmp_path, config_dict):
     import yaml
-    (tmp_path / ".renco" / "config.yaml").write_text(yaml.dump(config_dict))
+    (tmp_path / ".son-of-anton" / "config.yaml").write_text(yaml.dump(config_dict))
 
 
 class TestApplyUserDefaultHeadersHelper:

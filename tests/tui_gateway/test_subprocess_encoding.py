@@ -41,8 +41,8 @@ def test_slash_worker_popen_uses_utf8_replace():
     UnicodeDecodeError inside the drain threads (#53137).
     """
     with patch.dict("sys.modules", {
-        "renco_constants": MagicMock(
-            get_renco_home=MagicMock(return_value="/tmp/renco_test")
+        "son_of_anton_constants": MagicMock(
+            get_son_of_anton_home=MagicMock(return_value="/tmp/son_of_anton_test")
         ),
     }):
         with patch("subprocess.Popen") as mock_popen:
@@ -69,7 +69,7 @@ def test_slash_worker_popen_uses_utf8_replace():
 # ── cli.exec handler ─────────────────────────────────────────────────────
 
 def test_cli_exec_uses_utf8_replace():
-    """The cli.exec RPC handler runs `python -m renco_cli.main` via
+    """The cli.exec RPC handler runs `python -m son_of_anton_cli.main` via
     subprocess.run; it must pass encoding="utf-8" and errors="replace"
     (#53137)."""
     handler = server._methods["cli.exec"]

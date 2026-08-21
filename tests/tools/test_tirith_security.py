@@ -447,14 +447,14 @@ class TestInstallArchiveMemberValidation:
         member.size = len(payload)
         archive, checksums = self._write_archive(tmp_path, member, payload)
 
-        renco_home = tmp_path / "renco-home"
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / "son-of-anton-home"
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         with patch("tools.tirith_security._download_file",
                    side_effect=self._download_side_effect(archive, checksums)):
             path, reason = _install_tirith(log_failures=False)
 
         assert reason == ""
-        assert path == str(renco_home / "bin" / "tirith")
+        assert path == str(son_of_anton_home / "bin" / "tirith")
         assert os.path.isfile(path)
         assert not os.path.islink(path)
         with open(path, "rb") as f:
@@ -474,15 +474,15 @@ class TestInstallArchiveMemberValidation:
         member.linkname = "/bin/sh"
         archive, checksums = self._write_archive(tmp_path, member)
 
-        renco_home = tmp_path / "renco-home"
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / "son-of-anton-home"
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         with patch("tools.tirith_security._download_file",
                    side_effect=self._download_side_effect(archive, checksums)):
             path, reason = _install_tirith(log_failures=False)
 
         assert path is None
         assert reason == "binary_not_regular_file"
-        assert not os.path.lexists(renco_home / "bin" / "tirith")
+        assert not os.path.lexists(son_of_anton_home / "bin" / "tirith")
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +498,7 @@ class TestBackgroundInstall:
                    return_value={"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}), \
              patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._renco_bin_dir", return_value="/nonexistent"), \
+             patch("tools.tirith_security._son_of_anton_bin_dir", return_value="/nonexistent"), \
              patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
              patch("tools.tirith_security.threading.Thread") as MockThread:
             mock_thread = MagicMock()
@@ -521,7 +521,7 @@ class TestBackgroundInstall:
         _tirith_mod._install_thread = mock_thread
 
         with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._renco_bin_dir", return_value="/nonexistent"):
+             patch("tools.tirith_security._son_of_anton_bin_dir", return_value="/nonexistent"):
             result = _resolve_tirith_path("tirith")
             assert result == "tirith"  # returns configured default, doesn't block
 
@@ -557,7 +557,7 @@ class TestDiskFailureMarker:
         _tirith_mod._install_failure_reason = "cosign_exec_failed"
 
         with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._renco_bin_dir", return_value="/nonexistent"), \
+             patch("tools.tirith_security._son_of_anton_bin_dir", return_value="/nonexistent"), \
              patch("tools.tirith_security._install_tirith") as mock_install:
             result = _resolve_tirith_path("tirith")
             assert result == "tirith"  # fallback
@@ -567,17 +567,17 @@ class TestDiskFailureMarker:
 
 
 # ---------------------------------------------------------------------------
-# RENCO_HOME isolation
+# SON_OF_ANTON_HOME isolation
 # ---------------------------------------------------------------------------
 
-class TestRencoHomeIsolation:
-    def test_renco_bin_dir_respects_renco_home(self):
-        """_renco_bin_dir must use RENCO_HOME, not hardcoded ~/.renco."""
-        from tools.tirith_security import _renco_bin_dir
+class TestSonOfAntonHomeIsolation:
+    def test_son_of_anton_bin_dir_respects_son_of_anton_home(self):
+        """_son_of_anton_bin_dir must use SON_OF_ANTON_HOME, not hardcoded ~/.son-of-anton."""
+        from tools.tirith_security import _son_of_anton_bin_dir
         import tempfile
         tmpdir = tempfile.mkdtemp()
-        with patch.dict(os.environ, {"RENCO_HOME": tmpdir}):
-            result = _renco_bin_dir()
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": tmpdir}):
+            result = _son_of_anton_bin_dir()
         assert result == os.path.join(tmpdir, "bin")
         assert os.path.isdir(result)
 

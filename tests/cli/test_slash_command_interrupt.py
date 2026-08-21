@@ -13,11 +13,11 @@ through a thin wrapper that mirrors the real dispatch shape.
 
 from unittest.mock import patch
 
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 def _make_cli():
-    cli = RencoCLI.__new__(RencoCLI)
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli._should_exit = False
     cli.conversation_history = []
     cli.agent = None

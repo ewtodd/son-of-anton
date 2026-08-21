@@ -1,6 +1,6 @@
 """Pet generation — base-draft → hatch pipeline.
 
-Public surface used by the gateway RPCs, the CLI ``renco pets generate``
+Public surface used by the gateway RPCs, the CLI ``son-of-anton pets generate``
 command, and tests:
 
 - :func:`generate_base_drafts` / :func:`hatch_pet` — the two-step flow.

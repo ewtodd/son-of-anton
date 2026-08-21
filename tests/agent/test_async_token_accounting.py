@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 @pytest.fixture()
@@ -365,7 +365,7 @@ class TestDurability:
         import time
         import weakref
 
-        from renco_cli.sqlite_safe_read import has_live_connection
+        from son_of_anton_cli.sqlite_safe_read import has_live_connection
 
         db_path = tmp_path / "abandoned.db"
         monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)
@@ -454,7 +454,7 @@ class TestWriterFailure:
 
         db._coalesce_token_deltas = broken
         try:
-            with caplog.at_level("WARNING", logger="renco_state"):
+            with caplog.at_level("WARNING", logger="son_of_anton_state"):
                 db.queue_token_counts("s-co", input_tokens=3, api_call_count=1)
                 db.queue_token_counts("s-co", input_tokens=4, api_call_count=1)
                 assert db.flush_token_counts()

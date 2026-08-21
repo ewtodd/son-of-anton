@@ -35,11 +35,11 @@ class TestHandleDebugCommand:
         runner = _make_runner()
         event = _make_event()
 
-        with patch("renco_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
-             patch("renco_cli.debug._capture_dump", return_value="dump"), \
-             patch("renco_cli.debug.collect_debug_report", return_value="report"), \
-             patch("renco_cli.debug.upload_to_pastebin", return_value="https://paste.rs/report"), \
-             patch("renco_cli.debug._schedule_auto_delete"):
+        with patch("son_of_anton_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
+             patch("son_of_anton_cli.debug._capture_dump", return_value="dump"), \
+             patch("son_of_anton_cli.debug.collect_debug_report", return_value="report"), \
+             patch("son_of_anton_cli.debug.upload_to_pastebin", return_value="https://paste.rs/report"), \
+             patch("son_of_anton_cli.debug._schedule_auto_delete"):
             result = await runner._handle_debug_command(event)
 
         mock_sweep.assert_called_once()

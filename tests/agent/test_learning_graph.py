@@ -9,7 +9,7 @@ change-detector.
 from __future__ import annotations
 
 from agent import learning_graph
-from renco_constants import reset_renco_home_override, set_renco_home_override
+from son_of_anton_constants import reset_son_of_anton_home_override, set_son_of_anton_home_override
 
 
 def _node(name: str, category: str, related=None):
@@ -36,17 +36,17 @@ def test_density_stats_count_isolated_nodes():
 
 
 def test_memory_is_cards_split_on_separator(tmp_path):
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     (home / "memories").mkdir(parents=True)
     (home / "memories" / "MEMORY.md").write_text(
         "Project uses pytest with xdist\n§\nUser prefers concise responses",
         encoding="utf-8",
     )
-    token = set_renco_home_override(home)
+    token = set_son_of_anton_home_override(home)
     try:
         graph = learning_graph.build_learning_graph()
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     titles = [c["title"] for c in graph["memory"]]
     assert "Project uses pytest with xdist" in titles
@@ -62,13 +62,13 @@ def test_memory_is_cards_split_on_separator(tmp_path):
 
 
 def test_full_payload_shape_and_edge_integrity(tmp_path):
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    token = set_renco_home_override(home)
+    token = set_son_of_anton_home_override(home)
     try:
         graph = learning_graph.build_learning_graph()
     finally:
-        reset_renco_home_override(token)
+        reset_son_of_anton_home_override(token)
 
     ids = {n["id"] for n in graph["nodes"]}
     assert all(e["source"] in ids and e["target"] in ids for e in graph["edges"])

@@ -1,6 +1,6 @@
 """
 SQLite-backed fact store with entity resolution and trust scoring.
-Single-user Renco memory store plugin.
+Single-user Son of Anton memory store plugin.
 """
 
 import os
@@ -121,8 +121,8 @@ class MemoryStore:
         hrr_dim: int = 1024,
     ) -> None:
         if db_path is None:
-            from renco_constants import get_renco_home
-            db_path = str(get_renco_home() / "memory_store.db")
+            from son_of_anton_constants import get_son_of_anton_home
+            db_path = str(get_son_of_anton_home() / "memory_store.db")
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
@@ -171,9 +171,9 @@ class MemoryStore:
     def _init_db(self) -> None:
         """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
         # Use the shared WAL-fallback helper so memory_store.db degrades
-        # gracefully on NFS/SMB/FUSE-mounted RENCO_HOME (same issue as
-        # state.db / kanban.db — see renco_state._WAL_INCOMPAT_MARKERS).
-        from renco_state import apply_wal_with_fallback
+        # gracefully on NFS/SMB/FUSE-mounted SON_OF_ANTON_HOME (same issue as
+        # state.db / kanban.db — see son_of_anton_state._WAL_INCOMPAT_MARKERS).
+        from son_of_anton_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)

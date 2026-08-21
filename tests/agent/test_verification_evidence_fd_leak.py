@@ -68,7 +68,7 @@ def _python_project(root):
 
 def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     """Recording, editing, and status reads must close every connection opened."""
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
     _point_ledger(monkeypatch, tmp_path)
     _python_project(tmp_path)
     opened, closed = _track_connections(monkeypatch)

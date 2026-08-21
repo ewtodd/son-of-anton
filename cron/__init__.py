@@ -1,5 +1,5 @@
 """
-Cron job scheduling system for Renco Agent.
+Cron job scheduling system for Son of Anton Agent.
 
 This module provides scheduled task execution, allowing the agent to:
 - Run automated tasks on schedules (cron expressions, intervals, one-shot)
@@ -7,9 +7,9 @@ This module provides scheduled task execution, allowing the agent to:
 - Execute tasks in isolated sessions (no prior context)
 
 Cron jobs are executed automatically by the gateway daemon:
-    renco gateway install    # Install as a user service
-    sudo renco gateway install --system  # Linux servers: boot-time system service
-    renco gateway            # Or run in foreground
+    son-of-anton gateway install    # Install as a user service
+    sudo son-of-anton gateway install --system  # Linux servers: boot-time system service
+    son-of-anton gateway            # Or run in foreground
 
 The gateway ticks the scheduler every 60 seconds. A file lock prevents
 duplicate execution if multiple processes overlap.

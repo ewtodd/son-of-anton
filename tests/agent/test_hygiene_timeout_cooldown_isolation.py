@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 _HYGIENE_TIMEOUT_ERROR = (
     "session hygiene compression timed out with no output from the summary model"

@@ -17,10 +17,10 @@ import tui_gateway.server as srv
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
-    return renco_home
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
+    return son_of_anton_home
 
 
 def _configure(ui_meta, expected=None):

@@ -10,25 +10,25 @@ Server-side LLM fact extraction with semantic search and hybrid multi-signal ret
 ## Setup
 
 ```bash
-renco memory setup    # select "mem0"
+son-of-anton memory setup    # select "mem0"
 ```
 
 Or manually:
 ```bash
-renco config set memory.provider mem0
-echo "MEM0_API_KEY=your-key" >> ~/.renco/.env
+son-of-anton config set memory.provider mem0
+echo "MEM0_API_KEY=your-key" >> ~/.son-of-anton/.env
 ```
 
 ## Config
 
-Behavioral settings live in `$RENCO_HOME/mem0.json` (set them via `renco memory setup`). Only the secret `MEM0_API_KEY` belongs in `~/.renco/.env`.
+Behavioral settings live in `$SON_OF_ANTON_HOME/mem0.json` (set them via `son-of-anton memory setup`). Only the secret `MEM0_API_KEY` belongs in `~/.son-of-anton/.env`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-managed, in-process) |
 | `host` | — | Self-hosted Mem0 server URL (the Docker dashboard). When set, connects over HTTP with `X-API-Key`. Don't combine with `mode: oss` |
-| `user_id` | `renco-user` | User identifier on Mem0 |
-| `agent_id` | `renco` | Agent identifier |
+| `user_id` | `son-of-anton-user` | User identifier on Mem0 |
+| `agent_id` | `son-of-anton` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
 
 The plugin has three connection modes:
@@ -44,23 +44,23 @@ Connect the plugin to a standalone Mem0 server you run yourself — the Docker-s
 1. Run the Mem0 server (FastAPI + pgvector) from its Docker image and note its URL and `ADMIN_API_KEY`.
 2. Point the plugin at it — via the setup wizard:
    ```bash
-   renco memory setup    # select "mem0" → "Self-hosted server"
+   son-of-anton memory setup    # select "mem0" → "Self-hosted server"
    # Or non-interactive:
-   renco memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
+   son-of-anton memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
    ```
    or via env vars:
    ```bash
-   echo "MEM0_HOST=http://localhost:8888" >> ~/.renco/.env
-   echo "MEM0_API_KEY=your-admin-api-key" >> ~/.renco/.env
+   echo "MEM0_HOST=http://localhost:8888" >> ~/.son-of-anton/.env
+   echo "MEM0_API_KEY=your-admin-api-key" >> ~/.son-of-anton/.env
    ```
-   or in `$RENCO_HOME/mem0.json`:
+   or in `$SON_OF_ANTON_HOME/mem0.json`:
    ```json
    {
      "host": "http://localhost:8888",
      "api_key": "your-admin-api-key"
    }
    ```
-3. Start a fresh Renco session and call `mem0_search` — it connects to your server.
+3. Start a fresh Son of Anton session and call `mem0_search` — it connects to your server.
 
 The plugin authenticates with `X-API-Key` and uses the server's `/search` and `/memories` routes. `api_key` is optional — omit it only for servers running with `AUTH_DISABLED`.
 
@@ -73,7 +73,7 @@ Run Mem0 locally with your own LLM, embedder, and vector store. This is the in-p
 ### Interactive Setup
 
 ```bash
-renco memory setup
+son-of-anton memory setup
 # Select "mem0" → "Open Source (self-hosted)"
 # Follow prompts for LLM, embedder, and vector store
 ```
@@ -81,7 +81,7 @@ renco memory setup
 ### Agent-Driven Setup (Flags)
 
 ```bash
-renco memory setup mem0 --mode oss \
+son-of-anton memory setup mem0 --mode oss \
   --oss-llm openai --oss-llm-key sk-... \
   --oss-vector qdrant
 ```
@@ -111,17 +111,17 @@ renco memory setup mem0 --mode oss \
 ### Platform to OSS
 
 ```bash
-renco memory setup mem0 --mode oss --oss-llm-key sk-...
+son-of-anton memory setup mem0 --mode oss --oss-llm-key sk-...
 ```
 
-Or edit `$RENCO_HOME/mem0.json` directly:
+Or edit `$SON_OF_ANTON_HOME/mem0.json` directly:
 ```json
 {
   "mode": "oss",
   "oss": {
     "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
     "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
-    "vector_store": {"provider": "qdrant", "config": {"path": "~/.renco/mem0_qdrant"}}
+    "vector_store": {"provider": "qdrant", "config": {"path": "~/.son-of-anton/mem0_qdrant"}}
   }
 }
 ```
@@ -129,13 +129,13 @@ Or edit `$RENCO_HOME/mem0.json` directly:
 ### OSS to Platform
 
 ```bash
-renco memory setup mem0 --mode platform --api-key sk-...
+son-of-anton memory setup mem0 --mode platform --api-key sk-...
 ```
 
 ### Dry Run (preview without writing)
 
 ```bash
-renco memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
+son-of-anton memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 ```
 
 ## Tools
@@ -160,7 +160,7 @@ Circuit breaker tripped after 5 consecutive failures. Resets after 2 minutes.
 
 ```bash
 # If using local Qdrant, check the storage path is writable:
-ls -la ~/.renco/mem0_qdrant
+ls -la ~/.son-of-anton/mem0_qdrant
 
 # If using Qdrant server, check it's reachable:
 curl http://localhost:6333/healthz
@@ -184,4 +184,4 @@ curl http://localhost:11434/api/tags
 
 - `mem0_add` stores verbatim (no extraction). Use `sync_turn` for LLM extraction.
 - Search uses semantic matching — try broader queries.
-- Check `user_id` matches between sessions (`$RENCO_HOME/mem0.json`).
+- Check `user_id` matches between sessions (`$SON_OF_ANTON_HOME/mem0.json`).

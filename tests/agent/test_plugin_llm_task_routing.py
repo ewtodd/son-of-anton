@@ -81,13 +81,13 @@ def _async_capturing_caller(captured: Dict[str, Any]):
 def _set_registry(monkeypatch, entries: List[Dict[str, Any]]) -> None:
     """Point ``_resolve_task_ownership`` at a controlled plugin registry."""
     monkeypatch.setattr(
-        "renco_cli.plugins.get_plugin_auxiliary_tasks", lambda: list(entries)
+        "son_of_anton_cli.plugins.get_plugin_auxiliary_tasks", lambda: list(entries)
     )
 
 
 def _set_builtins(monkeypatch, keys: List[str]) -> None:
     monkeypatch.setattr(
-        "renco_cli.main._AUX_TASKS", [(k, k.title(), "") for k in keys]
+        "son_of_anton_cli.main._AUX_TASKS", [(k, k.title(), "") for k in keys]
     )
 
 
@@ -420,14 +420,14 @@ class TestForwardsToCallLlm:
 
 class TestOwnershipIntegration:
     def _make_manager(self):
-        from renco_cli.plugins import PluginManager
+        from son_of_anton_cli.plugins import PluginManager
 
         manager = PluginManager()
         manager._discovered = True
         return manager
 
     def _register(self, manager, *, name: str, key: str, task_key: str):
-        from renco_cli.plugins import PluginContext, PluginManifest
+        from son_of_anton_cli.plugins import PluginContext, PluginManifest
 
         manifest = PluginManifest(name=name, key=key)
         ctx = PluginContext(manifest, manager)
@@ -442,7 +442,7 @@ class TestOwnershipIntegration:
         manager = self._make_manager()
         self._register(manager, name="Display Name", key="my_key", task_key="classifier")
         monkeypatch.setattr(
-            "renco_cli.plugins._ensure_plugins_discovered", lambda: manager
+            "son_of_anton_cli.plugins._ensure_plugins_discovered", lambda: manager
         )
         _set_builtins(monkeypatch, ["vision"])
 
@@ -457,7 +457,7 @@ class TestOwnershipIntegration:
         manager = self._make_manager()
         self._register(manager, name="p", key="", task_key="classifier")
         monkeypatch.setattr(
-            "renco_cli.plugins._ensure_plugins_discovered", lambda: manager
+            "son_of_anton_cli.plugins._ensure_plugins_discovered", lambda: manager
         )
         _set_builtins(monkeypatch, ["vision"])
 
@@ -472,11 +472,11 @@ class TestOwnershipIntegration:
 
     def test_auto_task_reports_configured_fallback_provider_and_model(self, tmp_path, monkeypatch):
         from agent import auxiliary_client as auxiliary_mod
-        from renco_cli import config as config_mod
+        from son_of_anton_cli import config as config_mod
 
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             """
 auxiliary:
   classifier:
@@ -487,13 +487,13 @@ auxiliary:
 """,
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         monkeypatch.setattr(config_mod, "_LOAD_CONFIG_CACHE", {})
         monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
 
         manager = self._make_manager()
         ctx = self._register(manager, name="my-plugin", key="my-plugin", task_key="classifier")
-        monkeypatch.setattr("renco_cli.plugins._ensure_plugins_discovered", lambda: manager)
+        monkeypatch.setattr("son_of_anton_cli.plugins._ensure_plugins_discovered", lambda: manager)
         _set_builtins(monkeypatch, [])
         monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "")
         monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "")
@@ -555,11 +555,11 @@ auxiliary:
         assert model == "fallback-model"
 
     def test_sync_fallback_reports_the_successful_route(self, tmp_path, monkeypatch):
-        from renco_cli import config as config_mod
+        from son_of_anton_cli import config as config_mod
 
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             """
 auxiliary:
   classifier:
@@ -571,7 +571,7 @@ auxiliary:
 """,
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         monkeypatch.setattr(config_mod, "_LOAD_CONFIG_CACHE", {})
         monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
@@ -603,11 +603,11 @@ auxiliary:
         assert (result.provider, result.model) == ("fallback-provider", "fallback-model")
 
     def test_async_fallback_reports_the_successful_route(self, tmp_path, monkeypatch):
-        from renco_cli import config as config_mod
+        from son_of_anton_cli import config as config_mod
 
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             """
 auxiliary:
   classifier:
@@ -619,7 +619,7 @@ auxiliary:
 """,
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         monkeypatch.setattr(config_mod, "_LOAD_CONFIG_CACHE", {})
         monkeypatch.setattr(config_mod, "_RAW_CONFIG_CACHE", {})
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])

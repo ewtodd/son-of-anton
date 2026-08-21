@@ -66,8 +66,8 @@ class TestStaleWatchdogNeverClosesSharedClient:
     ):
         """Stale-stream watchdog fires → request-local client is aborted, the
         shared primary is never replaced (poll thread must not close it)."""
-        monkeypatch.setenv("RENCO_STREAM_STALE_TIMEOUT", "0.05")
-        monkeypatch.setenv("RENCO_STREAM_RETRIES", "1")
+        monkeypatch.setenv("SON_OF_ANTON_STREAM_STALE_TIMEOUT", "0.05")
+        monkeypatch.setenv("SON_OF_ANTON_STREAM_RETRIES", "1")
 
         unblock = threading.Event()
 
@@ -120,7 +120,7 @@ class TestStaleWatchdogNeverClosesSharedClient:
     ):
         """Connection drop before first delta → retry path closes only the
         request-local client; the shared primary is left alone."""
-        monkeypatch.setenv("RENCO_STREAM_RETRIES", "1")
+        monkeypatch.setenv("SON_OF_ANTON_STREAM_RETRIES", "1")
 
         attempts = {"n": 0}
 
@@ -162,7 +162,7 @@ class TestStaleWatchdogNeverClosesSharedClient:
         request-local client; the shared primary is left alone."""
         from tests.run_agent.test_streaming import _make_tool_call_delta
 
-        monkeypatch.setenv("RENCO_STREAM_RETRIES", "2")
+        monkeypatch.setenv("SON_OF_ANTON_STREAM_RETRIES", "2")
 
         attempts = {"n": 0}
 

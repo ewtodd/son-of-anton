@@ -1,4 +1,4 @@
-import { Box, Text, useStdout } from '@renco/ink'
+import { Box, Text, useStdout } from '@sonofanton/ink'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
@@ -281,7 +281,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   // MCP headline counts *connected* servers, not configured-but-disabled ones,
   // so it matches the classic CLI banner (`sum(s.connected)` in
-  // renco_cli/banner.py) and the "connected" label on the collapse toggle.
+  // son_of_anton_cli/banner.py) and the "connected" label on the collapse toggle.
   const mcpServers = info.mcp_servers ?? []
   const mcpConnected = mcpServers.filter(s => s.connected).length
 
@@ -472,7 +472,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             - run{' '}
           </Text>
           <Text bold color={t.color.warn}>
-            {info.update_command || 'renco update'}
+            {info.update_command || 'son-of-anton update'}
           </Text>
           <Text bold={false} color={t.color.warn} dimColor>
             {' '}

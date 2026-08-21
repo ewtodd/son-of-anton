@@ -1,4 +1,4 @@
-"""Profile-scoped NeMo Relay runtimes owned by the Renco agent core."""
+"""Profile-scoped NeMo Relay runtimes owned by the Son of Anton agent core."""
 
 from __future__ import annotations
 
@@ -18,21 +18,21 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable
 
-from renco_constants import get_renco_home
-from renco_cli.relay_plugin_cutover import (
+from son_of_anton_constants import get_son_of_anton_home
+from son_of_anton_cli.relay_plugin_cutover import (
     RELAY_PLUGINS_CONFIG_ENV,
     configured_legacy_relay_env_vars,
 )
 
 logger = logging.getLogger(__name__)
 
-SESSION_SCOPE = "renco.session"
-TURN_SCOPE = "renco.turn"
-LOGICAL_LLM_SCOPE = "renco.logical_llm_call"
-RUNTIME_SCHEMA_KEY = "renco.relay.schema_version"
-RUNTIME_SCHEMA_VERSION = "renco.relay.runtime.v1"
-RUNTIME_INSTANCE_KEY = "renco.relay.runtime_instance"
-RELAY_PLUGINS_EXECUTION_CONSUMER = "renco.nemo_relay.plugins"
+SESSION_SCOPE = "son-of-anton.session"
+TURN_SCOPE = "son-of-anton.turn"
+LOGICAL_LLM_SCOPE = "son-of-anton.logical_llm_call"
+RUNTIME_SCHEMA_KEY = "son-of-anton.relay.schema_version"
+RUNTIME_SCHEMA_VERSION = "son-of-anton.relay.runtime.v1"
+RUNTIME_INSTANCE_KEY = "son-of-anton.relay.runtime_instance"
+RELAY_PLUGINS_EXECUTION_CONSUMER = "son-of-anton.nemo_relay.plugins"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
 
 # Bound for native scope lifecycle operations (push/pop/flush) that gate
@@ -115,7 +115,7 @@ def pop_relay_scope(
 
     NeMo Relay ``scope.pop`` gained ``metadata`` in 0.4+. Older wheels (e.g.
     0.3.x) raise ``TypeError: pop() got an unexpected keyword argument
-    'metadata'`` when Renco finalization forwards runtime metadata. Filter to
+    'metadata'`` when Son of Anton finalization forwards runtime metadata. Filter to
     parameters the live binding accepts so turn/session close can complete.
     """
     pop = relay.scope.pop
@@ -153,7 +153,7 @@ class _RelayPluginConfigurationLoadError(RuntimeError):
 
 @dataclass
 class RelaySession:
-    """One isolated Relay scope stack owned by a Renco session."""
+    """One isolated Relay scope stack owned by a Son of Anton session."""
 
     session_id: str
     parent_session_id: str = ""
@@ -240,7 +240,7 @@ class RelayOperationLease:
         with self._lock:
             runtime = self._runtime
             if runtime is None:
-                raise RuntimeError("Renco Relay operation lease is released")
+                raise RuntimeError("Son of Anton Relay operation lease is released")
             return runtime._run_in_session_untracked(
                 session,
                 callback,
@@ -283,7 +283,7 @@ class _ProcessRelayPluginConfiguration:
                 return self._state
             if self._active and not self._clear_active():
                 logger.warning(
-                    "Renco Relay plugin cleanup is still pending; refusing to "
+                    "Son of Anton Relay plugin cleanup is still pending; refusing to "
                     "replace the process-global configuration"
                 )
                 return self._remember(
@@ -295,7 +295,7 @@ class _ProcessRelayPluginConfiguration:
                 existing_report = relay.plugin.report()
             except Exception:
                 logger.warning(
-                    "Renco could not determine whether a process-global Relay "
+                    "Son of Anton could not determine whether a process-global Relay "
                     "plugin configuration is already active; refusing to replace it",
                     exc_info=True,
                 )
@@ -306,8 +306,8 @@ class _ProcessRelayPluginConfiguration:
             if existing_report is not None:
                 logger.warning(
                     "A process-global Relay plugin configuration is already active "
-                    "outside Renco native ownership; leaving it unchanged and "
-                    "disabling Renco-managed Relay middleware for this process"
+                    "outside Son of Anton native ownership; leaving it unchanged and "
+                    "disabling Son of Anton-managed Relay middleware for this process"
                 )
                 return self._remember(
                     owner_id,
@@ -338,18 +338,18 @@ class _ProcessRelayPluginConfiguration:
                         self._activation = activation
                     except Exception as exc:
                         raise RuntimeError(
-                            "Renco Relay dynamic plugin activation failed"
+                            "Son of Anton Relay dynamic plugin activation failed"
                         ) from exc
 
                 if self._activation is None:
-                    # Renco only enters Relay's initialization path after an
+                    # Son of Anton only enters Relay's initialization path after an
                     # explicit opt-in. Relay currently owns any subsequent ambient
                     # layering; a future discovery=False API can make this exact.
                     _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
             except Exception as exc:
                 self._activation = None
                 logger.warning(
-                    "Renco Relay plugin initialization failed: %s",
+                    "Son of Anton Relay plugin initialization failed: %s",
                     exc,
                     exc_info=True,
                 )
@@ -366,7 +366,7 @@ class _ProcessRelayPluginConfiguration:
             )
             logger.info(
                 "Relay plugins are active process-wide and apply to all profiles "
-                "hosted by this Renco process."
+                "hosted by this Son of Anton process."
             )
             return state
 
@@ -416,7 +416,7 @@ class _ProcessRelayPluginConfiguration:
             _flush_relay_subscribers(relay)
         except Exception:
             logger.warning(
-                "Renco Relay plugin subscriber flush failed",
+                "Son of Anton Relay plugin subscriber flush failed",
                 exc_info=True,
             )
             return False
@@ -432,7 +432,7 @@ class _ProcessRelayPluginConfiguration:
                 _clear_relay_plugins(relay)
         except Exception:
             logger.warning(
-                "Renco Relay plugin configuration cleanup failed",
+                "Son of Anton Relay plugin configuration cleanup failed",
                 exc_info=True,
             )
             return False
@@ -491,7 +491,7 @@ class RelayRuntime:
             self._execution_consumers.discard(consumer)
 
     def managed_execution_enabled(self) -> bool:
-        """Return whether a Renco-managed consumer needs the Relay pipeline."""
+        """Return whether a Son of Anton-managed consumer needs the Relay pipeline."""
         with self._execution_consumers_lock:
             return bool(self._execution_consumers)
 
@@ -592,7 +592,7 @@ class RelayRuntime:
                     session,
                     self.relay.scope.pop,
                     old_handle,
-                    output={"renco.session.segment_reason": reason},
+                    output={"son-of-anton.session.segment_reason": reason},
                     metadata={
                         RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                         RUNTIME_INSTANCE_KEY: self.runtime_id,
@@ -601,7 +601,7 @@ class RelayRuntime:
                 )
             except Exception:
                 logger.warning(
-                    "Renco Relay segment close failed (session=%s segment=%d); "
+                    "Son of Anton Relay segment close failed (session=%s segment=%d); "
                     "abandoning the old segment span",
                     session.session_id,
                     session.segment - 1,
@@ -610,8 +610,8 @@ class RelayRuntime:
             scope_metadata = {
                 RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                 RUNTIME_INSTANCE_KEY: self.runtime_id,
-                "renco.session.segment": session.segment,
-                "renco.session.segment_reason": reason,
+                "son-of-anton.session.segment": session.segment,
+                "son-of-anton.session.segment_reason": reason,
             }
             parent_handle = None
             if session.parent_session_id:
@@ -634,7 +634,7 @@ class RelayRuntime:
                 session.context = context
             except Exception:
                 logger.warning(
-                    "Renco Relay segment open failed (session=%s segment=%d); "
+                    "Son of Anton Relay segment open failed (session=%s segment=%d); "
                     "keeping the prior scope handle",
                     session.session_id,
                     session.segment,
@@ -690,7 +690,7 @@ class RelayRuntime:
             self._subagent_parent_handles.pop(child_session_id, None)
 
     def get_session(self, session_id: str) -> RelaySession | None:
-        """Return an active Renco Relay session without creating one."""
+        """Return an active Son of Anton Relay session without creating one."""
         with self._sessions_lock:
             if self._closing:
                 return None
@@ -701,7 +701,7 @@ class RelayRuntime:
             return None if session.closing else session
 
     def get_session_handle(self, session_id: str) -> Any:
-        """Return the Relay parent handle for a Renco session, if active."""
+        """Return the Relay parent handle for a Son of Anton session, if active."""
         session = self.get_session(session_id)
         return None if session is None else session.handle
 
@@ -752,9 +752,9 @@ class RelayRuntime:
         """Run inside a session whose host-level lifetime is already held."""
         with session.lock:
             if session.closing and not allow_closing:
-                raise RuntimeError("Renco Relay session is closing")
+                raise RuntimeError("Son of Anton Relay session is closing")
             if session.context is None or session.handle is None:
-                raise RuntimeError("Renco Relay session context is unavailable")
+                raise RuntimeError("Son of Anton Relay session context is unavailable")
             relay_context = session.context.copy()
 
         context = contextvars.copy_context()
@@ -802,9 +802,9 @@ class RelayRuntime:
         try:
             with session.lock:
                 if session.closing and not allow_closing:
-                    raise RuntimeError("Renco Relay session is closing")
+                    raise RuntimeError("Son of Anton Relay session is closing")
                 if session.context is None or session.handle is None:
-                    raise RuntimeError("Renco Relay session context is unavailable")
+                    raise RuntimeError("Son of Anton Relay session context is unavailable")
                 relay_context = session.context.copy()
 
             context = contextvars.copy_context()
@@ -827,7 +827,7 @@ class RelayRuntime:
         """Admit one Relay call while keeping process plugins alive."""
         with self._sessions_lock:
             if self._closing:
-                raise RuntimeError("Renco Relay runtime is shutting down")
+                raise RuntimeError("Son of Anton Relay runtime is shutting down")
             self._active_operations += 1
             self._operations_idle.clear()
 
@@ -850,7 +850,7 @@ class RelayRuntime:
         data: Any = None,
         metadata: Any = None,
     ) -> bool:
-        """Emit a mark parented to the Renco session identified by ``event``."""
+        """Emit a mark parented to the Son of Anton session identified by ``event``."""
         session = self.ensure_session(event)
         if session is None:
             return False
@@ -871,7 +871,7 @@ class RelayRuntime:
         tool_name: str,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        """Apply Relay request rewriting before Renco authorizes a tool call."""
+        """Apply Relay request rewriting before Son of Anton authorizes a tool call."""
         if not self.managed_execution_enabled():
             return args
         request_intercepts = getattr(
@@ -986,7 +986,7 @@ class RelayRuntime:
                         top,
                         output={
                             "outcome": "cancelled",
-                            "renco.orphan_drain": True,
+                            "son-of-anton.orphan_drain": True,
                         },
                         metadata=metadata,
                     )
@@ -994,14 +994,14 @@ class RelayRuntime:
                 except Exception as drain_exc:
                     error_holder["drain"] = drain_exc
                     logger.warning(
-                        "Renco Relay orphaned scope drain failed",
+                        "Son of Anton Relay orphaned scope drain failed",
                         exc_info=True,
                     )
                     break
 
             if drained_holder["count"]:
                 logger.warning(
-                    "Renco Relay drained %d orphaned scope(s) before closing %s",
+                    "Son of Anton Relay drained %d orphaned scope(s) before closing %s",
                     drained_holder["count"],
                     handle,
                 )
@@ -1087,7 +1087,7 @@ class RelayRuntime:
             self._subagent_parent_handles.pop(session_id, None)
         if failures:
             logger.warning(
-                "Renco Relay session %s closed with errors: %s",
+                "Son of Anton Relay session %s closed with errors: %s",
                 session_id,
                 "; ".join(failures),
             )
@@ -1103,7 +1103,7 @@ class RelayRuntime:
         if has_active_operations:
             thread = threading.Thread(
                 target=self._finish_shutdown_after_operations,
-                name=f"renco-nemo-relay-shutdown-{self.runtime_id[:8]}",
+                name=f"son-of-anton-nemo-relay-shutdown-{self.runtime_id[:8]}",
                 daemon=True,
             )
             try:
@@ -1112,7 +1112,7 @@ class RelayRuntime:
                 with self._sessions_lock:
                     self._shutdown_started = False
                 logger.warning(
-                    "Renco Relay deferred shutdown could not start",
+                    "Son of Anton Relay deferred shutdown could not start",
                     exc_info=True,
                 )
             return
@@ -1147,7 +1147,7 @@ class RelayRuntime:
         except Exception:
             with self._sessions_lock:
                 self._shutdown_started = False
-            logger.warning("Renco Relay shutdown failed", exc_info=True)
+            logger.warning("Son of Anton Relay shutdown failed", exc_info=True)
             return
         with self._sessions_lock:
             self._shutdown_complete.set()
@@ -1157,7 +1157,7 @@ class RelayRuntime:
         try:
             return callback(*args, **kwargs)
         except Exception:
-            logger.warning("Renco Relay runtime operation failed", exc_info=True)
+            logger.warning("Son of Anton Relay runtime operation failed", exc_info=True)
             return None
 
 
@@ -1202,7 +1202,7 @@ RelayHost = RelayRuntime | NoopRelayRuntime
 
 
 class RelayHostRegistry:
-    """Own exactly one Relay host for each canonical Renco profile."""
+    """Own exactly one Relay host for each canonical Son of Anton profile."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -1226,7 +1226,7 @@ class RelayHostRegistry:
                 host = RelayRuntime(profile_key=key)
             except Exception as exc:
                 logger.warning(
-                    "Renco Relay runtime initialization failed", exc_info=True
+                    "Son of Anton Relay runtime initialization failed", exc_info=True
                 )
                 host = NoopRelayRuntime(profile_key=key, reason=str(exc))
             self._hosts[key] = host
@@ -1264,7 +1264,7 @@ class ConversationLease:
 
 @dataclass
 class RelayTurnContext:
-    """Runtime-only context for one Renco turn or top-level task."""
+    """Runtime-only context for one Son of Anton turn or top-level task."""
 
     lease: ConversationLease
     turn_id: str
@@ -1286,18 +1286,18 @@ class RelayTurnContext:
 
 
 _CURRENT_TURN: contextvars.ContextVar[RelayTurnContext | None] = contextvars.ContextVar(
-    "renco_relay_turn", default=None
+    "son_of_anton_relay_turn", default=None
 )
 
 # Depth of managed Relay callbacks executing on the current logical call path.
-# Set >0 while the native Relay pipeline is mid-dispatch of a Renco callback
+# Set >0 while the native Relay pipeline is mid-dispatch of a Son of Anton callback
 # (tool or LLM). Nested managed execution inside that window is structurally
 # broken — the native pipeline binds its Futures to the outer, blocked event
 # loop — so resolve_execution_context() bypasses Relay while the flag is set.
 # ContextVar so the marker follows contextvars.copy_context() into the worker
 # threads / per-thread loops that tools use for their internal async work.
 _MANAGED_CALLBACK_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "renco_relay_managed_callback_depth", default=0
+    "son_of_anton_relay_managed_callback_depth", default=0
 )
 
 
@@ -1319,7 +1319,7 @@ class managed_callback_guard:
 
 
 class RelaySessionCoordinator:
-    """Own semantic conversation and turn lifetimes for Renco core."""
+    """Own semantic conversation and turn lifetimes for Son of Anton core."""
 
     def __init__(self, registry: RelayHostRegistry = HOST_REGISTRY) -> None:
         self.registry = registry
@@ -1357,7 +1357,7 @@ class RelaySessionCoordinator:
                 callback(host, context)
             except Exception:
                 logger.warning(
-                    "Renco Relay session initializer failed: %s",
+                    "Son of Anton Relay session initializer failed: %s",
                     name,
                     exc_info=True,
                 )
@@ -1385,7 +1385,7 @@ class RelaySessionCoordinator:
                     "model": model,
                 }
                 self._prepare_session(host, session_context)
-                metadata = {"renco.execution_surface": platform or "unknown"}
+                metadata = {"son-of-anton.execution_surface": platform or "unknown"}
                 if parent_session_id and parent_session_id != session_id:
                     session = host.register_subagent(
                         {
@@ -1401,7 +1401,7 @@ class RelaySessionCoordinator:
                     )
             except Exception:
                 logger.warning(
-                    "Renco Relay conversation initialization failed",
+                    "Son of Anton Relay conversation initialization failed",
                     exc_info=True,
                 )
         return ConversationLease(
@@ -1421,18 +1421,18 @@ class RelaySessionCoordinator:
         task_id: str,
     ) -> RelayTurnContext:
         if lease.released:
-            raise RuntimeError("Renco Relay conversation lease is released")
+            raise RuntimeError("Son of Anton Relay conversation lease is released")
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
         key = (lease.profile_key, lease.session_id)
         with self._active_turns_lock:
             active = self._active_turns.get(key)
             if active:
                 # A Relay session owns one physical scope stack. Concurrent
-                # Renco turns would create sibling scopes on that stack, but
+                # Son of Anton turns would create sibling scopes on that stack, but
                 # their completion order is not guaranteed to be LIFO.
                 turn.relay_enabled = False
                 logger.warning(
-                    "Skipping Relay instrumentation for concurrent Renco turn "
+                    "Skipping Relay instrumentation for concurrent Son of Anton turn "
                     "%s in session %s",
                     turn_id,
                     lease.session_id,
@@ -1464,7 +1464,7 @@ class RelaySessionCoordinator:
                     lease.host.rotate_session_scope(session, reason=reason)
             except Exception:
                 logger.warning(
-                    "Renco Relay segment rotation failed", exc_info=True
+                    "Son of Anton Relay segment rotation failed", exc_info=True
                 )
             try:
                 turn.handle = lease.host.run_in_session(
@@ -1477,12 +1477,12 @@ class RelaySessionCoordinator:
                     metadata={
                         RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                         RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                        "renco.execution_surface": lease.platform or "unknown",
+                        "son-of-anton.execution_surface": lease.platform or "unknown",
                     },
                     timeout=_SCOPE_OP_TIMEOUT,
                 )
             except Exception:
-                logger.warning("Renco Relay turn initialization failed", exc_info=True)
+                logger.warning("Son of Anton Relay turn initialization failed", exc_info=True)
         turn._previous_turn = _CURRENT_TURN.get()
         _CURRENT_TURN.set(turn)
         return turn
@@ -1511,7 +1511,7 @@ class RelaySessionCoordinator:
                         )
                         if failure:
                             logger.warning(
-                                "Renco Relay turn finalization failed: %s",
+                                "Son of Anton Relay turn finalization failed: %s",
                                 failure,
                             )
             finally:
@@ -1539,7 +1539,7 @@ class RelaySessionCoordinator:
                         })
                 except Exception:
                     logger.warning(
-                        "Renco Relay child conversation finalization failed",
+                        "Son of Anton Relay child conversation finalization failed",
                         exc_info=True,
                     )
                 finally:
@@ -1575,7 +1575,7 @@ class RelaySessionCoordinator:
             lease.host.close_session({"session_id": lease.session_id})
         except Exception:  # noqa: BLE001 - telemetry must never block end_turn
             logger.warning(
-                "Renco Relay deferred session close failed", exc_info=True
+                "Son of Anton Relay deferred session close failed", exc_info=True
             )
 
     def notify_session_compacted(
@@ -1636,7 +1636,7 @@ class RelaySessionCoordinator:
                     session.rotate_pending = True
         except Exception:  # noqa: BLE001 - telemetry must never block compaction
             logger.warning(
-                "Renco Relay compaction notification failed", exc_info=True
+                "Son of Anton Relay compaction notification failed", exc_info=True
             )
 
     def has_active_turn(self, *, profile_key: str, session_id: str) -> bool:
@@ -1707,7 +1707,7 @@ class RelaySessionCoordinator:
                         pending_request_id,
                         pending_handle,
                     )
-            logger.warning("Renco Relay logical LLM finalization failed: %s", failure)
+            logger.warning("Son of Anton Relay logical LLM finalization failed: %s", failure)
             break
 
     @staticmethod
@@ -1787,7 +1787,7 @@ def resolve_execution_context(
     if _MANAGED_CALLBACK_DEPTH.get() > 0:
         # A managed Relay callback is already executing on this logical call
         # path (e.g. the native ``tools.execute`` pipeline is mid-dispatch of
-        # a Renco tool). Nested managed execution here is structurally
+        # a Son of Anton tool). Nested managed execution here is structurally
         # impossible: the native pipeline binds its Futures to the OUTER
         # call's event loop, which is blocked inside the synchronous tool
         # callback until the tool returns. A nested managed LLM call (the
@@ -1832,7 +1832,7 @@ def emit_mark(
     data: Any = None,
     metadata: Any = None,
 ) -> bool:
-    """Emit a fail-open Relay mark under a Renco session."""
+    """Emit a fail-open Relay mark under a Son of Anton session."""
     runtime = get_runtime(create=False)
     if runtime is None:
         return False
@@ -1844,7 +1844,7 @@ def emit_mark(
             metadata=metadata,
         )
     except Exception:
-        logger.warning("Renco Relay mark failed: %s", name, exc_info=True)
+        logger.warning("Son of Anton Relay mark failed: %s", name, exc_info=True)
         return False
 
 
@@ -1854,7 +1854,7 @@ def apply_tool_request_intercepts(
     tool_name: str,
     args: dict[str, Any],
 ) -> dict[str, Any]:
-    """Return Relay-rewritten arguments at Renco's authorization boundary."""
+    """Return Relay-rewritten arguments at Son of Anton's authorization boundary."""
     if not session_id:
         return args
     runtime = get_runtime(create=False)
@@ -1868,14 +1868,14 @@ def apply_tool_request_intercepts(
 
 
 def ensure_session(*, session_id: str, **context: Any) -> RelaySession | None:
-    """Create or return the shared Relay session used by Renco core."""
+    """Create or return the shared Relay session used by Son of Anton core."""
     runtime = get_runtime()
     if runtime is None:
         return None
     try:
         return runtime.ensure_session({"session_id": session_id, **context})
     except Exception:
-        logger.warning("Renco Relay session initialization failed", exc_info=True)
+        logger.warning("Son of Anton Relay session initialization failed", exc_info=True)
         return None
 
 
@@ -1885,15 +1885,15 @@ def run_in_session(
     *args: Any,
     **kwargs: Any,
 ) -> Any:
-    """Run a scope, LLM, or tool API against a shared Renco session."""
+    """Run a scope, LLM, or tool API against a shared Son of Anton session."""
     runtime = get_runtime()
     if runtime is None:
-        raise RuntimeError("Renco Relay runtime is unavailable")
+        raise RuntimeError("Son of Anton Relay runtime is unavailable")
     session = runtime.get_session(session_id)
     if session is None:
         session = runtime.ensure_session({"session_id": session_id})
     if session is None:
-        raise RuntimeError("Renco Relay session is unavailable")
+        raise RuntimeError("Son of Anton Relay session is unavailable")
     return runtime.run_in_session(session, callback, *args, **kwargs)
 
 
@@ -1903,15 +1903,15 @@ async def run_in_session_async(
     *args: Any,
     **kwargs: Any,
 ) -> Any:
-    """Await a Relay operation inside a shared Renco session context."""
+    """Await a Relay operation inside a shared Son of Anton session context."""
     runtime = get_runtime()
     if runtime is None:
-        raise RuntimeError("Renco Relay runtime is unavailable")
+        raise RuntimeError("Son of Anton Relay runtime is unavailable")
     session = runtime.get_session(session_id)
     if session is None:
         session = runtime.ensure_session({"session_id": session_id})
     if session is None:
-        raise RuntimeError("Renco Relay session is unavailable")
+        raise RuntimeError("Son of Anton Relay session is unavailable")
     return await runtime.run_in_session_async(session, callback, *args, **kwargs)
 
 
@@ -1948,7 +1948,7 @@ def get_runtime(
     create: bool = True,
     profile_key: str | None = None,
 ) -> RelayRuntime | None:
-    """Return the Relay host for the active Renco profile."""
+    """Return the Relay host for the active Son of Anton profile."""
     host = HOST_REGISTRY.for_profile(profile_key, create=create)
     return host if isinstance(host, RelayRuntime) else None
 
@@ -1964,7 +1964,7 @@ def get_host(
 
 def current_profile_key() -> str:
     """Return the canonical profile identity used for runtime isolation."""
-    home = get_renco_home().expanduser()
+    home = get_son_of_anton_home().expanduser()
     if not home.is_absolute():
         return str(home.resolve())
     raw = str(home)
@@ -2003,7 +2003,7 @@ def _configured_plugin_inputs(
             config = tomllib.load(config_file)
         if "dynamic_plugins" in config:
             raise ValueError(
-                "Renco [[dynamic_plugins]] records are unsupported; use Relay "
+                "Son of Anton [[dynamic_plugins]] records are unsupported; use Relay "
                 "[[plugins.dynamic]] records"
             )
         dynamic_plugins: list[Any] = []
@@ -2016,7 +2016,7 @@ def _configured_plugin_inputs(
         return plugin_config, dynamic_plugins
     except Exception as exc:
         raise _RelayPluginConfigurationLoadError(
-            "Renco Relay plugin configuration could not be loaded from "
+            "Son of Anton Relay plugin configuration could not be loaded from "
             f"{config_path}; continuing without Relay plugins"
         ) from exc
 
@@ -2051,7 +2051,7 @@ def _resolve_plugin_awaitable(value: Any) -> Any:
 
     thread = threading.Thread(
         target=_runner,
-        name="renco-nemo-relay-plugin-lifecycle",
+        name="son-of-anton-nemo-relay-plugin-lifecycle",
         daemon=True,
     )
     thread.start()

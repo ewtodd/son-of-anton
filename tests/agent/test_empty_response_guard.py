@@ -348,7 +348,7 @@ class TestResolveGuardSettings:
     def test_default_config_schema_matches(self):
         """The shipped DEFAULT_CONFIG section resolves to the module
         defaults — keeps config_defaults.py and this module in sync."""
-        from renco_cli.config_defaults import DEFAULT_CONFIG
+        from son_of_anton_cli.config_defaults import DEFAULT_CONFIG
 
         section = DEFAULT_CONFIG["agent"]["empty_response_guard"]
         assert guard.resolve_guard_settings(section) == (

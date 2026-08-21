@@ -22,12 +22,12 @@ def server():
     with patch.dict(
         "sys.modules",
         {
-            "renco_constants": MagicMock(
-                get_renco_home=MagicMock(return_value="/tmp/renco_test_compaction")
+            "son_of_anton_constants": MagicMock(
+                get_son_of_anton_home=MagicMock(return_value="/tmp/son_of_anton_test_compaction")
             ),
-            "renco_cli.env_loader": MagicMock(),
-            "renco_cli.banner": MagicMock(),
-            "renco_state": MagicMock(),
+            "son_of_anton_cli.env_loader": MagicMock(),
+            "son_of_anton_cli.banner": MagicMock(),
+            "son_of_anton_state": MagicMock(),
         },
     ):
         mod = importlib.import_module("tui_gateway.server")

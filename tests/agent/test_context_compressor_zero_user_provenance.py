@@ -20,7 +20,7 @@ from agent.conversation_compression import (
     _ensure_compressed_has_user_turn,
     compress_context,
 )
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 from tools.process_registry import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -384,8 +384,8 @@ def test_real_task_wins_over_trailing_dropped_tools_continuation_nudge(compresso
 def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
     tmp_path, monkeypatch
 ):
-    renco_home = tmp_path / "renco-home"
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    son_of_anton_home = tmp_path / "son-of-anton-home"
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "zero-user-todo-lifecycle"
     db.create_session(session_id, source="cron", model="test/model")

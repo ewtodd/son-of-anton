@@ -2,7 +2,7 @@
 
 Covers the store (add/dedup/cap/accept/dismiss/latch), catalog seeding, the
 blueprint->suggestion bridge, and the shared command handler. Uses an isolated
-RENCO_HOME so the real suggestions.json is never touched.
+SON_OF_ANTON_HOME so the real suggestions.json is never touched.
 """
 
 import importlib
@@ -15,13 +15,13 @@ import pytest
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """A cron.suggestions module bound to an isolated RENCO_HOME."""
-    home = tmp_path / ".renco"
+    """A cron.suggestions module bound to an isolated SON_OF_ANTON_HOME."""
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     # Reload so module-level CRON_DIR/SUGGESTIONS_FILE pick up the temp home.
-    import renco_constants
-    importlib.reload(renco_constants)
+    import son_of_anton_constants
+    importlib.reload(son_of_anton_constants)
     import cron.suggestions as s
     importlib.reload(s)
     return s
@@ -180,7 +180,7 @@ class TestCommandHandler:
     def test_bare_lists_pending(self, store):
         _add(store, key="c1", title="Daily thing")
         with patch("cron.suggestions.list_pending", store.list_pending):
-            from renco_cli.suggestions_cmd import handle_suggestions_command
+            from son_of_anton_cli.suggestions_cmd import handle_suggestions_command
             # Patch the module the handler imports.
             with patch.dict("sys.modules"):
                 out = handle_suggestions_command("")
@@ -188,13 +188,13 @@ class TestCommandHandler:
 
 
     def test_empty_list_message(self, store):
-        from renco_cli.suggestions_cmd import handle_suggestions_command
+        from son_of_anton_cli.suggestions_cmd import handle_suggestions_command
 
         out = handle_suggestions_command("")
         assert "No suggested automations" in out
 
     def test_aux_monitor_config_default(self):
-        from renco_cli.config import DEFAULT_CONFIG
+        from son_of_anton_cli.config import DEFAULT_CONFIG
 
         assert "monitor" in DEFAULT_CONFIG["auxiliary"]
         assert DEFAULT_CONFIG["auxiliary"]["monitor"]["provider"] == "auto"

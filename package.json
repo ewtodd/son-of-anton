@@ -1,5 +1,5 @@
 {
-  "name": "renco-agent",
+  "name": "son-of-anton",
   "version": "1.0.0",
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
@@ -21,13 +21,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ewtodd/renco.git"
+    "url": "git+https://github.com/ewtodd/son-of-anton.git"
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/ewtodd/renco/issues"
+    "url": "https://github.com/ewtodd/son-of-anton/issues"
   },
-  "homepage": "https://github.com/ewtodd/renco#readme",
+  "homepage": "https://github.com/ewtodd/son-of-anton#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
     "typescript-eslint": "8.64.0",

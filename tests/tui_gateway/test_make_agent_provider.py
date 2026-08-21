@@ -36,7 +36,7 @@ def test_make_agent_passes_resolved_provider():
         patch("tui_gateway.server._load_service_tier", return_value=None),
         patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
         patch(
-            "renco_cli.runtime_provider.resolve_runtime_provider",
+            "son_of_anton_cli.runtime_provider.resolve_runtime_provider",
             return_value=fake_runtime,
         ) as mock_resolve,
         patch("run_agent.AIAgent") as mock_agent,
@@ -103,21 +103,21 @@ def test_apply_model_switch_does_not_leak_process_env():
             self.provider = kw["new_provider"]
 
     env_keys = (
-        "RENCO_MODEL",
-        "RENCO_INFERENCE_MODEL",
-        "RENCO_TUI_PROVIDER",
-        "RENCO_INFERENCE_PROVIDER",
+        "SON_OF_ANTON_MODEL",
+        "SON_OF_ANTON_INFERENCE_MODEL",
+        "SON_OF_ANTON_TUI_PROVIDER",
+        "SON_OF_ANTON_INFERENCE_PROVIDER",
     )
 
     sess_b = {"agent": _FakeAgent(), "session_key": "k-B", "model_override": None}
     sess_a = {"agent": _FakeAgent(), "session_key": "k-A", "model_override": None}
 
     with (
-        patch("renco_cli.model_switch.parse_model_flags",
+        patch("son_of_anton_cli.model_switch.parse_model_flags",
               return_value=("glm-5.1", None, False, False, True)),
-        patch("renco_cli.model_switch.resolve_persist_behavior",
+        patch("son_of_anton_cli.model_switch.resolve_persist_behavior",
               return_value=False),
-        patch("renco_cli.model_switch.switch_model", return_value=_FakeResult()),
+        patch("son_of_anton_cli.model_switch.switch_model", return_value=_FakeResult()),
         patch("tui_gateway.server._emit"),
         patch("tui_gateway.server._restart_slash_worker"),
         patch("tui_gateway.server._session_info", return_value={}),

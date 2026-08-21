@@ -20,7 +20,7 @@ def test_parse_restart_after_turn_timeout_defaults_and_clamps():
 def test_default_restart_after_turn_timeout_is_human_tolerable():
     """The shipped default must not make interactive restarts block for hours.
 
-    A wedged turn must not pin `renco gateway restart` for 6h — the
+    A wedged turn must not pin `son-of-anton gateway restart` for 6h — the
     default is a safety valve for hung agents, not a target latency
     (#79133). 900-1800s protects long autonomous turns while keeping
     worst-case interactive restart in human-tolerable territory.
@@ -43,13 +43,13 @@ def test_load_restart_after_turn_timeout_preserves_zero(tmp_path, monkeypatch):
     """Config/env ``0`` must disable after-turn wait, not fall back to default."""
     import gateway.run as gateway_run
 
-    monkeypatch.delenv("RENCO_RESTART_AFTER_TURN_TIMEOUT", raising=False)
-    monkeypatch.setattr(gateway_run, "_renco_home", tmp_path)
+    monkeypatch.delenv("SON_OF_ANTON_RESTART_AFTER_TURN_TIMEOUT", raising=False)
+    monkeypatch.setattr(gateway_run, "_son_of_anton_home", tmp_path)
     (tmp_path / "config.yaml").write_text(
         "agent:\n  restart_after_turn_timeout: 0\n",
         encoding="utf-8",
     )
     assert GatewayRunner._load_restart_after_turn_timeout() == 0.0
 
-    monkeypatch.setenv("RENCO_RESTART_AFTER_TURN_TIMEOUT", "0")
+    monkeypatch.setenv("SON_OF_ANTON_RESTART_AFTER_TURN_TIMEOUT", "0")
     assert GatewayRunner._load_restart_after_turn_timeout() == 0.0

@@ -237,7 +237,7 @@ def _build_cron_agent(monkeypatch):
     agent._stream_callback = None
     agent.reasoning_callback = None
     agent.status_callback = None
-    monkeypatch.setenv("RENCO_API_CALL_STALE_TIMEOUT", "0.3")
+    monkeypatch.setenv("SON_OF_ANTON_API_CALL_STALE_TIMEOUT", "0.3")
     return agent
 
 

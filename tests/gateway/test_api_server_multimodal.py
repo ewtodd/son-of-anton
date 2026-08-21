@@ -114,7 +114,7 @@ class TestChatCompletionsMultimodalHTTP:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "renco-agent",
+                        "model": "son-of-anton",
                         "messages": [{"role": "user", "content": image_payload}],
                     },
                 )
@@ -140,7 +140,7 @@ class TestResponsesMultimodalHTTP:
                 resp = await cli.post(
                     "/v1/responses",
                     json={
-                        "model": "renco-agent",
+                        "model": "son-of-anton",
                         "input": [
                             {
                                 "role": "user",

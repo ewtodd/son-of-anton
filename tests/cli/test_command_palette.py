@@ -2,12 +2,12 @@
 
 from types import SimpleNamespace
 
-from cli import RencoCLI
-from renco_cli.commands import HELP_SESSION_SUBGROUPS
+from cli import SonOfAntonCLI
+from son_of_anton_cli.commands import HELP_SESSION_SUBGROUPS
 
 
 def _bare_cli():
-    cli = RencoCLI.__new__(RencoCLI)
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     return cli
 
 

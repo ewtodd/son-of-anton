@@ -110,19 +110,19 @@ def tool_progress_hint_cli() -> str:
 
 
 def openclaw_residue_hint_cli() -> str:
-    """Banner shown the first time Renco starts and finds ``~/.openclaw/``.
+    """Banner shown the first time Son of Anton starts and finds ``~/.openclaw/``.
 
-    Points users at ``renco claw migrate`` (non-destructive port of config,
-    memory, and skills) first. ``renco claw cleanup`` is mentioned as the
+    Points users at ``son-of-anton claw migrate`` (non-destructive port of config,
+    memory, and skills) first. ``son-of-anton claw cleanup`` is mentioned as the
     follow-up step for users who have already migrated and want to archive
     the old directory — with a warning that archiving breaks OpenClaw.
     """
     return (
         "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Renco, run "
-        "`renco claw migrate`.\n"
+        "To port your config, memory, and skills over to Son of Anton, run "
+        "`son-of-anton claw migrate`.\n"
         "If you've already migrated and want to archive the old directory, "
-        "run `renco claw cleanup` (renames it to ~/.openclaw.pre-migration — "
+        "run `son-of-anton claw cleanup` (renames it to ~/.openclaw.pre-migration — "
         "OpenClaw will stop working after this).\n"
         "This tip only shows once."
     )
@@ -222,7 +222,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
     """
     try:
         import yaml
-        from renco_cli.config import atomic_config_write
+        from son_of_anton_cli.config import atomic_config_write
     except Exception as e:  # pragma: no cover — dependency issue
         logger.debug("onboarding: failed to import yaml/utils: %s", e)
         return False

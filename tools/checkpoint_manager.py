@@ -13,10 +13,10 @@ controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
 Storage layout (single shared store, git objects deduplicated across projects)
 -----------------------------------------------------------------------------
 
-    ~/.renco/checkpoints/
+    ~/.son-of-anton/checkpoints/
         store/                          — single bare-ish git repo
             HEAD, config, objects/      — standard git internals (shared)
-            refs/renco/<hash16>        — per-project branch tip
+            refs/son-of-anton/<hash16>        — per-project branch tip
             indexes/<hash16>            — per-project git index
             projects/<hash16>.json      — {workdir, created_at, last_touch}
             info/exclude                — default excludes (shared)
@@ -57,8 +57,8 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from renco_constants import get_renco_home
-from renco_cli._subprocess_compat import windows_hide_flags
+from son_of_anton_constants import get_son_of_anton_home
+from son_of_anton_cli._subprocess_compat import windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
@@ -69,11 +69,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-CHECKPOINT_BASE = get_renco_home() / "checkpoints"
+CHECKPOINT_BASE = get_son_of_anton_home() / "checkpoints"
 
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
-_REFS_PREFIX = "refs/renco"
+_REFS_PREFIX = "refs/son-of-anton"
 _INDEXES_DIRNAME = "indexes"
 _PROJECTS_DIRNAME = "projects"
 _LEDGERS_DIRNAME = "ledgers"
@@ -109,7 +109,7 @@ DEFAULT_EXCLUDES = [
     ".git/",
     ".hg/",
     ".svn/",
-    # Worktrees (Renco convention — don't recursively snapshot siblings)
+    # Worktrees (Son of Anton convention — don't recursively snapshot siblings)
     ".worktrees/",
     # Native / compiled binaries
     "*.so",
@@ -146,7 +146,7 @@ DEFAULT_EXCLUDES = [
 ]
 
 # Git subprocess timeout (seconds).
-_GIT_TIMEOUT: int = max(10, min(60, env_int("RENCO_CHECKPOINT_TIMEOUT", 30)))
+_GIT_TIMEOUT: int = max(10, min(60, env_int("SON_OF_ANTON_CHECKPOINT_TIMEOUT", 30)))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -248,7 +248,7 @@ def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
     """Load the agent-write ledger: {relpath: {"sha256": ..., "ts": ...}}.
 
     The ledger records the content hash of every file the last successful
-    ``write_file`` / ``patch`` produced, so restores can tell "Renco wrote
+    ``write_file`` / ``patch`` produced, so restores can tell "Son of Anton wrote
     this" apart from "the user hand-edited this afterwards".
     """
     try:
@@ -297,7 +297,7 @@ def _git_env(
 ) -> dict:
     """Build env dict that redirects git to the shared store.
 
-    The shared store is internal Renco infrastructure — it must NOT inherit
+    The shared store is internal Son of Anton infrastructure — it must NOT inherit
     the user's global or system git config.  User-level settings like
     ``commit.gpgsign = true``, signing hooks, or credential helpers would
     either break background snapshots or, worse, spawn interactive prompts
@@ -432,7 +432,7 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     Rather than delete the old data (users might want to recover), rename
     everything except our own v2 entries into ``legacy-<timestamp>/``.  The
     legacy dir is subject to the same retention sweep and can be manually
-    cleared with ``renco checkpoints clear-legacy``.
+    cleared with ``son-of-anton checkpoints clear-legacy``.
 
     Returns the legacy-archive path, or None if nothing to migrate.
     """
@@ -466,7 +466,7 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     if legacy_root is not None:
         logger.info(
             "Migrated pre-v2 checkpoint repos to %s. "
-            "Clear with `renco checkpoints clear-legacy` when safe.",
+            "Clear with `son-of-anton checkpoints clear-legacy` when safe.",
             legacy_root,
         )
     return legacy_root
@@ -525,8 +525,8 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # Use the base dir as the working_dir for config commands — it always
     # exists since we just created the store inside it.
     cfg_wd = str(base)
-    _run_git(["config", "user.email", "renco@local"], store, cfg_wd)
-    _run_git(["config", "user.name", "Renco Checkpoint"], store, cfg_wd)
+    _run_git(["config", "user.email", "son-of-anton@local"], store, cfg_wd)
+    _run_git(["config", "user.name", "Son of Anton Checkpoint"], store, cfg_wd)
     _run_git(["config", "commit.gpgsign", "false"], store, cfg_wd)
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
@@ -674,7 +674,7 @@ def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
             continue
         workdir: Optional[str] = None
         marker_unreadable = False
-        wd_marker = child / "RENCO_WORKDIR"
+        wd_marker = child / "SON_OF_ANTON_WORKDIR"
         if wd_marker.exists():
             try:
                 workdir = wd_marker.read_text(encoding="utf-8").strip()
@@ -721,7 +721,7 @@ def _dir_size_bytes(path: Path) -> int:
 
 
 # Backwards-compatibility shim — some tests import ``_init_shadow_repo`` and
-# look for ``HEAD``/``info/exclude``/``RENCO_WORKDIR``.  In v2 we also write
+# look for ``HEAD``/``info/exclude``/``SON_OF_ANTON_WORKDIR``.  In v2 we also write
 # those markers, but inside the shared store + under ``projects/<hash>.json``.
 # The shim initialises the store and registers the project so the old
 # surface keeps roughly the same shape.
@@ -737,10 +737,10 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
     if err:
         return err
     _register_project(shadow_repo, working_dir)
-    # Compat marker for tests that look at RENCO_WORKDIR
+    # Compat marker for tests that look at SON_OF_ANTON_WORKDIR
     # (write in addition to the JSON metadata).
     try:
-        (shadow_repo / "RENCO_WORKDIR").write_text(
+        (shadow_repo / "SON_OF_ANTON_WORKDIR").write_text(
             str(_normalize_path(working_dir)) + "\n", encoding="utf-8"
         )
     except OSError:
@@ -801,11 +801,11 @@ class CheckpointManager:
     # ------------------------------------------------------------------
 
     def record_agent_write(self, file_path: str) -> None:
-        """Record the content hash of a file Renco just successfully wrote.
+        """Record the content hash of a file Son of Anton just successfully wrote.
 
         Feeds the agent-write ledger used by :meth:`restore` in safe mode:
         at restore time, a file whose current content no longer matches the
-        recorded hash was hand-edited by the user after Renco last touched
+        recorded hash was hand-edited by the user after Son of Anton last touched
         it, and is skipped instead of clobbered.
 
         Never raises — the ledger is best-effort bookkeeping.
@@ -831,9 +831,9 @@ class CheckpointManager:
 
         Returns ``{"success", "restore": [rel...], "skipped": [rel...],
         "error"?}`` where ``restore`` lists files whose current content
-        still matches what Renco last wrote (per the agent-write ledger)
-        and ``skipped`` lists files the user hand-edited after Renco'
-        last write or that Renco never wrote at all.
+        still matches what Son of Anton last wrote (per the agent-write ledger)
+        and ``skipped`` lists files the user hand-edited after Son of Anton'
+        last write or that Son of Anton never wrote at all.
         """
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
@@ -862,7 +862,7 @@ class CheckpointManager:
 
         ledger = _load_ledger(store, dir_hash)
         if not ledger:
-            # No agent-write ledger yet (pre-existing store, or Renco has
+            # No agent-write ledger yet (pre-existing store, or Son of Anton has
             # not written any files here since the ledger was introduced).
             # Signal callers to fall back to a full restore rather than
             # skipping every file.
@@ -878,14 +878,14 @@ class CheckpointManager:
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
             if recorded is None:
-                # Renco never wrote this file (or the ledger predates it) —
+                # Son of Anton never wrote this file (or the ledger predates it) —
                 # do not touch it in safe mode.
                 skipped.append(rel)
                 continue
             current = _hash_file(abs_path)
             if current is None:
-                # File deleted since Renco wrote it: restoring it back is
-                # safe — its last content was Renco-authored.
+                # File deleted since Son of Anton wrote it: restoring it back is
+                # safe — its last content was Son of Anton-authored.
                 restore.append(rel)
             elif current == recorded:
                 restore.append(rel)
@@ -1057,7 +1057,7 @@ class CheckpointManager:
     def session_diff(self, working_dir: str) -> Dict:
         """Show the cumulative diff of everything changed in this directory.
 
-        This powers ``/diff session``.  It answers "what has Renco changed
+        This powers ``/diff session``.  It answers "what has Son of Anton changed
         here?" by diffing the *earliest retained checkpoint* — the snapshot
         taken before the first recorded edit — against the current working
         tree.  Because checkpoints are captured just before each file-mutating
@@ -1067,7 +1067,7 @@ class CheckpointManager:
         Note: checkpoints are a persistent per-project ref, so the earliest
         *retained* checkpoint may predate the current session (or, after
         pruning, postdate its true start).  It is an approximation of "what
-        Renco changed", not an exact per-session ledger.
+        Son of Anton changed", not an exact per-session ledger.
 
         Returns the same shape as :meth:`diff` (``{"success", "stat",
         "diff"}``).  When no checkpoints exist yet — nothing has been edited —
@@ -1096,8 +1096,8 @@ class CheckpointManager:
         """Restore files to a checkpoint state.
 
         With ``safe=True`` (full-directory restores only), files the user
-        hand-edited after Renco' last write — per the agent-write ledger —
-        are left untouched, and only Renco-authored changes are reverted.
+        hand-edited after Son of Anton' last write — per the agent-write ledger —
+        are left untouched, and only Son of Anton-authored changes are reverted.
         The result gains ``skipped_user_edits`` listing the preserved paths.
         """
         hash_err = _validate_commit_hash(commit_hash)
@@ -1154,7 +1154,7 @@ class CheckpointManager:
 
         if restore_paths is not None:
             # Split into files present in the checkpoint (checkout) and
-            # Renco-created files absent from it (delete to restore state).
+            # Son of Anton-created files absent from it (delete to restore state).
             checkout_targets: List[str] = []
             delete_targets: List[str] = []
             for rel in restore_paths:
@@ -2068,7 +2068,7 @@ def maybe_auto_prune_checkpoints(
 
 
 # ---------------------------------------------------------------------------
-# Public helpers for `renco checkpoints` CLI
+# Public helpers for `son-of-anton checkpoints` CLI
 # ---------------------------------------------------------------------------
 
 def store_status(checkpoint_base: Optional[Path] = None) -> Dict:

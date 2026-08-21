@@ -1,9 +1,9 @@
 """Tests for tui_gateway/entry.py sys.path hardening (issues #15989, #51286).
 
 When the TUI backend is spawned by Node.js, the launch directory may shadow
-Renco's own top-level modules (``utils``, ``proxy``, ``ui``).  entry.py must
+Son of Anton's own top-level modules (``utils``, ``proxy``, ``ui``).  entry.py must
 neutralize this before any non-stdlib import is resolved, by delegating to the
-shared ``renco_bootstrap.harden_import_path`` guard.
+shared ``son_of_anton_bootstrap.harden_import_path`` guard.
 
 These tests assert the entry point wires up the real guard (rather than
 re-implementing it inline) and that the guard's behavior covers both the
@@ -14,7 +14,7 @@ failure.
 import ast
 import pathlib
 
-import renco_bootstrap
+import son_of_anton_bootstrap
 
 
 def _entry_source() -> str:
@@ -24,7 +24,7 @@ def _entry_source() -> str:
 
 
 def test_entry_calls_shared_harden_guard_before_heavy_imports():
-    """entry.py must call renco_bootstrap.harden_import_path() before it
+    """entry.py must call son_of_anton_bootstrap.harden_import_path() before it
     imports tui_gateway.server (which pulls ``from utils import ...``)."""
     source = _entry_source()
     tree = ast.parse(source)
@@ -45,7 +45,7 @@ def test_entry_calls_shared_harden_guard_before_heavy_imports():
                 server_import_line = node.lineno
 
     assert harden_call_line is not None, (
-        "entry.py must call renco_bootstrap.harden_import_path()"
+        "entry.py must call son_of_anton_bootstrap.harden_import_path()"
     )
     assert server_import_line is not None, "entry.py must import from tui_gateway"
     assert harden_call_line < server_import_line, (
@@ -55,16 +55,16 @@ def test_entry_calls_shared_harden_guard_before_heavy_imports():
 
 def test_guard_handles_absolute_cwd_path():
     """The #51286 case: the launch dir is on sys.path as its own absolute
-    path, ahead of the Renco root.  harden_import_path must relocate the
-    Renco root to the front so ``from utils import ...`` resolves to Renco."""
+    path, ahead of the Son of Anton root.  harden_import_path must relocate the
+    Son of Anton root to the front so ``from utils import ...`` resolves to Son of Anton."""
     import sys
 
     original = sys.path[:]
     try:
-        sys.path[:] = ["/home/user/tg-ws-proxy", "/opt/renco", "/usr/lib"]
-        renco_bootstrap.harden_import_path(src_root="/opt/renco")
-        assert sys.path[0] == "/opt/renco"
-        assert sys.path.index("/opt/renco") < sys.path.index(
+        sys.path[:] = ["/home/user/tg-ws-proxy", "/opt/son-of-anton", "/usr/lib"]
+        son_of_anton_bootstrap.harden_import_path(src_root="/opt/son-of-anton")
+        assert sys.path[0] == "/opt/son-of-anton"
+        assert sys.path.index("/opt/son-of-anton") < sys.path.index(
             "/home/user/tg-ws-proxy"
         )
     finally:

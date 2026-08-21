@@ -2,12 +2,12 @@
 name: ascii-art
 description: "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii."
 version: 4.0.0
-author: 0xbyt4, Renco Agent
+author: 0xbyt4, Son of Anton Agent
 license: MIT
 dependencies: []
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [ASCII, Art, Banners, Creative, Unicode, Text-Art, pyfiglet, figlet, cowsay, boxes]
     related_skills: [excalidraw]
 
@@ -156,9 +156,9 @@ boxes -l                                       # List all 70+ designs
 ### Combine with pyfiglet or asciified
 
 ```bash
-python -m pyfiglet "RENCO" -f slant | boxes -d stone
+python -m pyfiglet "SON_OF_ANTON" -f slant | boxes -d stone
 # Or without pyfiglet installed:
-curl -s "https://asciified.thelicato.io/api/v2/ascii?text=RENCO&font=Slant" | boxes -d stone
+curl -s "https://asciified.thelicato.io/api/v2/ascii?text=SON_OF_ANTON&font=Slant" | boxes -d stone
 ```
 
 ## Tool 5: TOIlet (Colored Text Art)
@@ -279,8 +279,8 @@ These free services return ASCII art directly — great for fun extras.
 ### QR Codes as ASCII Art
 
 ```bash
-curl -s "qrenco.de/Hello+World"
-curl -s "qrenco.de/https://example.com"
+curl -s "qson-of-anton.de/Hello+World"
+curl -s "qson-of-anton.de/https://example.com"
 ```
 
 ### Weather as ASCII Art
@@ -316,7 +316,7 @@ When tools above don't have what's needed, generate ASCII art directly using the
 3. **Add decorative border/frame** → boxes (can combine with pyfiglet/asciified)
 4. **Art of a specific thing** (cat, rocket, dragon) → ascii.co.uk via curl + parsing
 5. **Convert an image to ASCII** → ascii-image-converter or jp2a
-6. **QR code** → qrenco.de via curl
+6. **QR code** → qson-of-anton.de via curl
 7. **Weather/moon art** → wttr.in via curl
 8. **Something custom/creative** → LLM generation with Unicode palette
 9. **Any tool not installed** → install it, or fall back to next option

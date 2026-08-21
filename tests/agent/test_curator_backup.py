@@ -15,16 +15,16 @@ import pytest
 
 @pytest.fixture
 def backup_env(monkeypatch, tmp_path):
-    """Isolate RENCO_HOME + reload modules so every test starts clean."""
-    home = tmp_path / ".renco"
+    """Isolate SON_OF_ANTON_HOME + reload modules so every test starts clean."""
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     (home / "skills").mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Reload so get_renco_home picks up the env var fresh.
-    import renco_constants
-    importlib.reload(renco_constants)
+    # Reload so get_son_of_anton_home picks up the env var fresh.
+    import son_of_anton_constants
+    importlib.reload(son_of_anton_constants)
     from agent import curator_backup
     importlib.reload(curator_backup)
     return {"home": home, "skills": home / "skills", "cb": curator_backup}
@@ -200,7 +200,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
     skills = backup_env["skills"]
     _write_skill(skills, "alpha")
 
-    # Reload curator module against the freshly-env'd renco_constants
+    # Reload curator module against the freshly-env'd son_of_anton_constants
     from agent import curator
     importlib.reload(curator)
 
@@ -232,7 +232,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
 
 
 def _write_cron_jobs(home: Path, jobs: list) -> Path:
-    """Write a synthetic cron/jobs.json under RENCO_HOME. Returns the path.
+    """Write a synthetic cron/jobs.json under SON_OF_ANTON_HOME. Returns the path.
     Mirrors cron.jobs.save_jobs() wrapper shape: `{"jobs": [...], "updated_at": ...}`.
     """
     cron_dir = home / "cron"
@@ -246,9 +246,9 @@ def _write_cron_jobs(home: Path, jobs: list) -> Path:
 
 
 def _reload_cron_jobs(home: Path):
-    """Reload cron.jobs so its module-level RENCO_DIR picks up the tmp HOME."""
-    import renco_constants
-    importlib.reload(renco_constants)
+    """Reload cron.jobs so its module-level SON_OF_ANTON_DIR picks up the tmp HOME."""
+    import son_of_anton_constants
+    importlib.reload(son_of_anton_constants)
     if "cron.jobs" in sys.modules:
         import cron.jobs as _cj
         importlib.reload(_cj)

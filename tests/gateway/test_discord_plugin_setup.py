@@ -1,13 +1,13 @@
 """Tests for the Discord plugin's interactive_setup wizard home-channel flow.
 
 The interactive_setup wizard lazy-imports its CLI helpers from
-``renco_cli.config`` (get_env_value / save_env_value / remove_env_value) and
-``renco_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
+``son_of_anton_cli.config`` (get_env_value / save_env_value / remove_env_value) and
+``son_of_anton_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
 source modules. Covers the home-channel clear-on-blank behavior added in
 PR #58421 and extended in the follow-up.
 """
-import renco_cli.config as config_mod
-import renco_cli.cli_output as cli_output_mod
+import son_of_anton_cli.config as config_mod
+import son_of_anton_cli.cli_output as cli_output_mod
 from plugins.platforms.discord.adapter import interactive_setup
 
 
@@ -43,7 +43,7 @@ class TestDiscordHomeChannelClear:
     """Blank home-channel answer must clear DISCORD_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         saved, removed = {}, []
         _patch_setup_io(
             monkeypatch,
@@ -61,7 +61,7 @@ class TestDiscordSetupPrivilegedIntentsGuidance:
     """Setup must name Privileged Gateway Intents before asking for the token (#79430)."""
 
     def test_setup_mentions_message_content_intent(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         saved, removed, infos = {}, [], []
         _patch_setup_io(
             monkeypatch,

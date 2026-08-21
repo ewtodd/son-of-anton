@@ -14,7 +14,7 @@ import contextlib
 import io
 from pathlib import Path
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -36,7 +36,7 @@ def _config(**prune_keys) -> dict:
 
 
 def _make_agent(monkeypatch, tmp_path: Path, **prune_keys):
-    from renco_cli import config as config_mod
+    from son_of_anton_cli import config as config_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(**prune_keys))
 

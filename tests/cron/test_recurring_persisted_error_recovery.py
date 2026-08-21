@@ -42,18 +42,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 @pytest.fixture
 def cron_env(tmp_path, monkeypatch):
     """Isolated cron env + a recurring no_agent interval job."""
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    (renco_home / "cron").mkdir()
-    (renco_home / "cron" / "output").mkdir()
-    (renco_home / "scripts").mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    (son_of_anton_home / "cron").mkdir()
+    (son_of_anton_home / "cron" / "output").mkdir()
+    (son_of_anton_home / "scripts").mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
     import cron.jobs as jobs_mod
-    monkeypatch.setattr(jobs_mod, "RENCO_DIR", renco_home)
-    monkeypatch.setattr(jobs_mod, "CRON_DIR", renco_home / "cron")
-    monkeypatch.setattr(jobs_mod, "JOBS_FILE", renco_home / "cron" / "jobs.json")
-    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", renco_home / "cron" / "output")
+    monkeypatch.setattr(jobs_mod, "SON_OF_ANTON_DIR", son_of_anton_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", son_of_anton_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", son_of_anton_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", son_of_anton_home / "cron" / "output")
 
     job = jobs_mod.create_job(
         prompt="probe",
@@ -61,9 +61,9 @@ def cron_env(tmp_path, monkeypatch):
         no_agent=True,
         script="probe.py",
     )
-    script = renco_home / "scripts" / "probe.py"
+    script = son_of_anton_home / "scripts" / "probe.py"
     script.write_text("print('ok')\n")
-    return {"home": renco_home, "job_id": job["id"]}
+    return {"home": son_of_anton_home, "job_id": job["id"]}
 
 
 def _setup(cron_env, monkeypatch):
@@ -73,7 +73,7 @@ def _setup(cron_env, monkeypatch):
 
     env = cron_env
     monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
-    monkeypatch.setattr(S, "_renco_home", env["home"])
+    monkeypatch.setattr(S, "_son_of_anton_home", env["home"])
     return S, E, J, env
 
 

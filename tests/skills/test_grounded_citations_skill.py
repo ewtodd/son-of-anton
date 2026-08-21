@@ -65,7 +65,7 @@ def test_required_frontmatter_fields(frontmatter: dict) -> None:
     assert frontmatter["name"] == "grounded-citations"
     for field in ("version", "author", "license", "platforms"):
         assert frontmatter.get(field), f"missing frontmatter field: {field}"
-    assert frontmatter["metadata"]["renco"]["category"] == "research"
+    assert frontmatter["metadata"]["son-of-anton"]["category"] == "research"
 
 
 def test_skill_body_has_modern_sections() -> None:
@@ -317,15 +317,15 @@ def test_cli_verify_missing_draft_returns_2(sources_mod, tmp_path: Path) -> None
 
 
 def test_cli_ledger_path_prefers_flag_over_env(sources_mod, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("RENCO_CITATION_LEDGER", str(tmp_path / "env.json"))
+    monkeypatch.setenv("SON_OF_ANTON_CITATION_LEDGER", str(tmp_path / "env.json"))
     flagged = tmp_path / "flag.json"
     assert sources_mod.resolve_ledger_path(str(flagged)) == flagged
     assert sources_mod.resolve_ledger_path(None) == tmp_path / "env.json"
 
 
-def test_cli_ledger_path_defaults_under_renco_home(sources_mod, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("RENCO_CITATION_LEDGER", raising=False)
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+def test_cli_ledger_path_defaults_under_son_of_anton_home(sources_mod, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SON_OF_ANTON_CITATION_LEDGER", raising=False)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
     path = sources_mod.resolve_ledger_path(None)
     assert path.parts[-3:] == ("cache", "citations", "ledger.json")
     assert str(tmp_path) in str(path)

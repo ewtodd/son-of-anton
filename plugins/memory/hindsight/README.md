@@ -11,15 +11,15 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 ## Setup
 
 ```bash
-renco memory setup    # select "hindsight"
+son-of-anton memory setup    # select "hindsight"
 ```
 
 The setup wizard installs dependencies automatically via `uv`, walks you through configuration, and offers to seed the bank with a **starter memory template** (a curated set of dispositions/instructions for common agent roles) — you can skip it, and it warns before overwriting an already-configured bank.
 
 Or manually (cloud mode with defaults):
 ```bash
-renco config set memory.provider hindsight
-echo "HINDSIGHT_API_KEY=your-key" >> ~/.renco/.env
+son-of-anton config set memory.provider hindsight
+echo "HINDSIGHT_API_KEY=your-key" >> ~/.son-of-anton/.env
 ```
 
 ### Cloud
@@ -28,16 +28,16 @@ Connects to the Hindsight Cloud API. Requires an API key from [ui.hindsight.vect
 
 ### Local Embedded
 
-Renco spins up a local Hindsight daemon with built-in PostgreSQL. Requires an LLM API key for memory extraction and synthesis. The daemon starts automatically in the background on first use and stops after 5 minutes of inactivity.
+Son of Anton spins up a local Hindsight daemon with built-in PostgreSQL. Requires an LLM API key for memory extraction and synthesis. The daemon starts automatically in the background on first use and stops after 5 minutes of inactivity.
 
 Supports any OpenAI-compatible LLM endpoint (llama.cpp, vLLM, LM Studio, etc.) — pick `openai_compatible` as the provider and enter the base URL.
 
-Daemon startup logs: `~/.renco/logs/hindsight-embed.log`
+Daemon startup logs: `~/.son-of-anton/logs/hindsight-embed.log`
 Daemon runtime logs: `~/.hindsight/profiles/<profile>.log`
 
 To open the Hindsight web UI (local embedded mode only):
 ```bash
-hindsight-embed -p renco ui start
+hindsight-embed -p son-of-anton ui start
 ```
 
 ### Local External
@@ -46,7 +46,7 @@ Points the plugin at an existing Hindsight instance you're already running (Dock
 
 ## Config
 
-Config file: `~/.renco/hindsight/config.json`
+Config file: `~/.son-of-anton/hindsight/config.json`
 
 ### Connection
 
@@ -59,8 +59,8 @@ Config file: `~/.renco/hindsight/config.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `bank_id` | `renco` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
-| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `renco-{profile}` isolates memory per active Renco profile. Empty placeholders collapse cleanly (e.g. `renco-{user}` with no user becomes `renco`). |
+| `bank_id` | `son-of-anton` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
+| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `son-of-anton-{profile}` isolates memory per active Son of Anton profile. Empty placeholders collapse cleanly (e.g. `son-of-anton-{user}` with no user becomes `son-of-anton`). |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
 
@@ -86,7 +86,7 @@ Config file: `~/.renco/hindsight/config.json`
 >
 > Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes.
 >
-> Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.renco/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
+> Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.son-of-anton/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
 
 ### Retain
 
@@ -95,9 +95,9 @@ Config file: `~/.renco/hindsight/config.json`
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `retain_async` | `true` | Process retain asynchronously on the Hindsight server |
 | `retain_every_n_turns` | `1` | Retain every N turns (1 = every turn) |
-| `retain_context` | `conversation between Renco Agent and the User` | Context label for retained memories |
+| `retain_context` | `conversation between Son of Anton Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
-| `retain_source` | — | Opt-in `metadata.source` attached to retained memories (identifies the storing client, e.g. `renco`). Empty by default — no attribution tag ships unless you set it. |
+| `retain_source` | — | Opt-in `metadata.source` attached to retained memories (identifies the storing client, e.g. `son-of-anton`). Empty by default — no attribution tag ships unless you set it. |
 | `retain_indicator` | `true` | Show a `👁️ Hindsight — saving to memory…` status line when a turn is saved. Turn off for customer-facing agents. |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
@@ -121,7 +121,7 @@ Config file: `~/.renco/hindsight/config.json`
 | `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `qwen/qwen3.5-9b`) |
 | `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
 
-The LLM API key is stored in `~/.renco/.env` as `HINDSIGHT_LLM_API_KEY`.
+The LLM API key is stored in `~/.son-of-anton/.env` as `HINDSIGHT_LLM_API_KEY`.
 
 ## Tools
 

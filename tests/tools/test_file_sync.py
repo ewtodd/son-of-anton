@@ -25,7 +25,7 @@ def tmp_files(tmp_path):
     return files
 
 
-def _make_get_files(tmp_files, remote_base="/root/.renco"):
+def _make_get_files(tmp_files, remote_base="/root/.son-of-anton"):
     """Return a get_files_fn that maps local files to remote paths."""
     mapping = [(hp, f"{remote_base}/{name}") for name, hp in tmp_files.items()]
 
@@ -35,7 +35,7 @@ def _make_get_files(tmp_files, remote_base="/root/.renco"):
     return get_files
 
 
-def _make_manager(tmp_files, remote_base="/root/.renco", upload=None, delete=None):
+def _make_manager(tmp_files, remote_base="/root/.son-of-anton", upload=None, delete=None):
     """Create a FileSyncManager with test callbacks."""
     return FileSyncManager(
         get_files_fn=_make_get_files(tmp_files, remote_base),
@@ -251,7 +251,7 @@ class TestEdgeCases:
 
         upload = MagicMock()
         mgr = FileSyncManager(
-            get_files_fn=lambda: [(str(f), "/root/.renco/ephemeral.txt")],
+            get_files_fn=lambda: [(str(f), "/root/.son-of-anton/ephemeral.txt")],
             upload_fn=upload,
             delete_fn=MagicMock(),
         )
@@ -276,7 +276,7 @@ class TestConcurrency:
 
         def get_files():
             return [
-                (str(path), f"/root/.renco/cache/images/{path.name}")
+                (str(path), f"/root/.son-of-anton/cache/images/{path.name}")
                 for path in sorted(tmp_path.glob("*.png"))
             ]
 
@@ -307,7 +307,7 @@ class TestConcurrency:
             sync_future = executor.submit(mgr.sync, force=True)
             assert upload_started.wait(timeout=2.0)
 
-            sync_back_future = executor.submit(mgr.sync_back, renco_home=tmp_path)
+            sync_back_future = executor.submit(mgr.sync_back, son_of_anton_home=tmp_path)
 
             sync_future.result(timeout=3.0)
             sync_back_future.result(timeout=3.0)
@@ -328,13 +328,13 @@ class TestSyncBackSecurity:
             lambda: [
                 {
                     "host_path": str(credential),
-                    "container_path": "/root/.renco/credentials/token.json",
+                    "container_path": "/root/.son-of-anton/credentials/token.json",
                 }
             ],
         )
         monkeypatch.setattr(
             "tools.credential_files.iter_skills_files",
-            lambda container_base="/root/.renco": [
+            lambda container_base="/root/.son-of-anton": [
                 {
                     "host_path": str(skill),
                     "container_path": f"{container_base}/skills/skill.py",
@@ -343,28 +343,28 @@ class TestSyncBackSecurity:
         )
         monkeypatch.setattr(
             "tools.credential_files.iter_cache_files",
-            lambda container_base="/root/.renco": [],
+            lambda container_base="/root/.son-of-anton": [],
         )
 
         def bulk_download(dest: Path) -> None:
             with tarfile.open(dest, "w") as tar:
                 for name, data in {
-                    "root/.renco/credentials/token.json": b"remote-token",
-                    "root/.renco/skills/skill.py": b"remote-skill",
+                    "root/.son-of-anton/credentials/token.json": b"remote-token",
+                    "root/.son-of-anton/skills/skill.py": b"remote-skill",
                 }.items():
                     info = tarfile.TarInfo(name)
                     info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
 
         mgr = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files("/root/.renco"),
+            get_files_fn=lambda: iter_sync_files("/root/.son-of-anton"),
             upload_fn=MagicMock(),
             delete_fn=MagicMock(),
             bulk_download_fn=bulk_download,
         )
 
         mgr.sync(force=True)
-        mgr.sync_back(renco_home=tmp_path)
+        mgr.sync_back(son_of_anton_home=tmp_path)
 
         assert credential.read_text(encoding="utf-8") == "host-token"
         assert skill.read_text(encoding="utf-8") == "remote-skill"

@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout } from '@renco/ink'
+import { Box, Text, useInput, useStdout } from '@sonofanton/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'

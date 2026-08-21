@@ -1,4 +1,4 @@
-"""Tests for background-review session-store isolation (renco_state).
+"""Tests for background-review session-store isolation (son_of_anton_state).
 
 The background skill/memory review fork shares the parent's ``session_id`` for
 prompt-cache warmth. Without the ``_persist_disabled`` isolation it wrote its
@@ -12,7 +12,7 @@ removes any such stray harness message (and the assistant reply that followed
 it) so a polluted session resumes clean.
 """
 
-from renco_state import (
+from son_of_anton_state import (
     _is_background_review_harness_message,
     _strip_background_review_harness,
 )
@@ -67,7 +67,7 @@ class TestGetMessagesAsConversationStripsHarness:
     def test_polluted_session_resumes_without_harness(self):
         import tempfile
         from pathlib import Path
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")
@@ -107,7 +107,7 @@ class TestPersistDisabledHardStop:
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmp:
             db = SessionDB(db_path=Path(tmp) / "t.db")

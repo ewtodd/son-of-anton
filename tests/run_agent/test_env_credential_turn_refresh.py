@@ -1,6 +1,6 @@
-"""Per-turn adoption of ~/.renco/.env credential edits (#67821).
+"""Per-turn adoption of ~/.son-of-anton/.env credential edits (#67821).
 
-A Settings save (desktop ``PUT /api/env``, ``renco setup``) updates .env and
+A Settings save (desktop ``PUT /api/env``, ``son-of-anton setup``) updates .env and
 the saving process's os.environ, but a live session worker keeps the
 base_url/api_key captured at agent init until restart — an open chat silently
 kept calling the old endpoint (e.g. a local-server key sent to
@@ -234,7 +234,7 @@ CUSTOM_BASE = "https://api.longcat.example/openai/v1"
 def named_custom_provider(monkeypatch):
     """Register a named custom provider (config `providers.longcat` block)."""
     block = {"name": "longcat", "base_url": CUSTOM_BASE, "key_env": "LONGCAT_API_KEY"}
-    import renco_cli.runtime_provider as rp
+    import son_of_anton_cli.runtime_provider as rp
 
     monkeypatch.setattr(
         rp,

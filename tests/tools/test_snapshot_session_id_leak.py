@@ -1,16 +1,16 @@
-"""Cross-session RENCO_SESSION_ID leak via the shared bash snapshot.
+"""Cross-session SON_OF_ANTON_SESSION_ID leak via the shared bash snapshot.
 
 Regression coverage for the bug where a single long-lived backend serves many
 sessions through ONE ``_active_environments["default"]`` LocalEnvironment (the
 messaging gateway, TUI, and desktop/web dashboard all collapse the terminal to
 "default"). That environment persists a bash *session snapshot* file and
 ``source``s it before every command. ``export -p`` dumped the FIRST session's
-``RENCO_SESSION_ID`` into the snapshot, so every LATER session ``source``d that
-stale value and its ``echo $RENCO_SESSION_ID`` reported a FOREIGN session's id
+``SON_OF_ANTON_SESSION_ID`` into the snapshot, so every LATER session ``source``d that
+stale value and its ``echo $SON_OF_ANTON_SESSION_ID`` reported a FOREIGN session's id
 — overriding the correct per-command Popen env injected by
 ``_inject_session_context_env``.
 
-The fix strips the per-session bridged vars (RENCO_SESSION_* / UI /
+The fix strips the per-session bridged vars (SON_OF_ANTON_SESSION_* / UI /
 CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
 ``tools/environments/base.py``; they are re-injected fresh on every command.
 """
@@ -42,16 +42,16 @@ def test_regex_matches_bridged_session_vars():
 
 
 def test_export_snippet_shape():
-    snippet = _export_dump_excluding_session_vars('"$__renco_snap_tmp"')
+    snippet = _export_dump_excluding_session_vars('"$__son_of_anton_snap_tmp"')
     assert "export -p" in snippet
     # Unset-by-name (not line-grep): multi-line declare values must not leave
     # continuation lines in the snapshot (issue #71296).
     assert "unset" in snippet
-    assert "${!RENCO_SESSION_*}" in snippet
-    assert "${!RENCO_CRON_AUTO_DELIVER_*}" in snippet
-    assert "RENCO_UI_SESSION_ID" in snippet
+    assert "${!SON_OF_ANTON_SESSION_*}" in snippet
+    assert "${!SON_OF_ANTON_CRON_AUTO_DELIVER_*}" in snippet
+    assert "SON_OF_ANTON_UI_SESSION_ID" in snippet
     assert "grep -vE" not in snippet
-    assert '"$__renco_snap_tmp"' in snippet
+    assert '"$__son_of_anton_snap_tmp"' in snippet
     # The redirection must be attached to a brace group wrapping the dump,
     # NOT to a pipeline segment: a redirect on a pipeline segment expands the
     # temp-path variable inside that segment's subshell (potentially
@@ -60,7 +60,7 @@ def test_export_snippet_shape():
     # persistence entirely.
     assert snippet.lstrip().startswith("{ ")
     assert "|| true; }" in snippet
-    assert snippet.rstrip().endswith('> "$__renco_snap_tmp"')
+    assert snippet.rstrip().endswith('> "$__son_of_anton_snap_tmp"')
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
                 for v in _VAR_MAP.values():
                     v.set(_UNSET)
                 set_session_vars(session_key="k" + sid, session_id=sid, source="desktop")
-                out["r"] = env.execute('echo "[$RENCO_SESSION_ID]"')
+                out["r"] = env.execute('echo "[$SON_OF_ANTON_SESSION_ID]"')
 
             t = threading.Thread(target=worker)
             t.start()
@@ -103,6 +103,6 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
         snap = env._snapshot_path
         if os.path.exists(snap):
             with open(snap) as f:
-                assert "RENCO_SESSION_ID" not in f.read()
+                assert "SON_OF_ANTON_SESSION_ID" not in f.read()
     finally:
         env.cleanup()

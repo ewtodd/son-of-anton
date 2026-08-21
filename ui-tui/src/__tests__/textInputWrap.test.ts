@@ -1,4 +1,4 @@
-import { wrapAnsi } from '@renco/ink'
+import { wrapAnsi } from '@sonofanton/ink'
 import { describe, expect, it } from 'vitest'
 
 import { offsetFromPosition } from '../components/textInput.js'

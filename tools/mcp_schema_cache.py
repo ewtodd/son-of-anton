@@ -1,6 +1,6 @@
 """Persistent MCP tool-schema cache for lazy server startup.
 
-Stores per-server tool manifests on disk so Renco can register MCP tools
+Stores per-server tool manifests on disk so Son of Anton can register MCP tools
 into the agent snapshot without spawning the stdio child process at idle
 dashboard startup. Cache entries are keyed by server name + a fingerprint
 of the connection config (command/args/url/tools filters).
@@ -23,9 +23,9 @@ _cache_lock = threading.Lock()
 
 
 def _cache_path() -> Path:
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    return get_renco_home() / "cache" / _CACHE_FILENAME
+    return get_son_of_anton_home() / "cache" / _CACHE_FILENAME
 
 
 def config_fingerprint(config: dict) -> str:

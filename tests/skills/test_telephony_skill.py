@@ -27,7 +27,7 @@ def load_module():
 
 def test_save_twilio_writes_env_and_state(tmp_path: Path, monkeypatch):
     mod = load_module()
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
 
     result = mod.save_twilio(
         "AC123",
@@ -36,8 +36,8 @@ def test_save_twilio_writes_env_and_state(tmp_path: Path, monkeypatch):
         phone_sid="PN123",
     )
 
-    env_text = (tmp_path / ".renco" / ".env").read_text(encoding="utf-8")
-    state = json.loads((tmp_path / ".renco" / "telephony_state.json").read_text(encoding="utf-8"))
+    env_text = (tmp_path / ".son-of-anton" / ".env").read_text(encoding="utf-8")
+    state = json.loads((tmp_path / ".son-of-anton" / "telephony_state.json").read_text(encoding="utf-8"))
 
     assert result["success"] is True
     assert "TWILIO_ACCOUNT_SID=AC123" in env_text
@@ -104,8 +104,8 @@ def test_twilio_buy_number_saves_env_and_state(tmp_path: Path):
 
 def test_diagnose_includes_decision_tree_and_saved_state(tmp_path: Path, monkeypatch):
     mod = load_module()
-    renco_home = tmp_path / ".renco"
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     mod._save_state(
         {
             "version": 1,
@@ -117,10 +117,10 @@ def test_diagnose_includes_decision_tree_and_saved_state(tmp_path: Path, monkeyp
                 "phone_number_id": "vapi-abc",
             },
         },
-        renco_home / "telephony_state.json",
+        son_of_anton_home / "telephony_state.json",
     )
-    (renco_home / ".env").parent.mkdir(parents=True, exist_ok=True)
-    (renco_home / ".env").write_text(
+    (son_of_anton_home / ".env").parent.mkdir(parents=True, exist_ok=True)
+    (son_of_anton_home / ".env").write_text(
         "TWILIO_ACCOUNT_SID=AC123\nTWILIO_AUTH_TOKEN=token\nBLAND_API_KEY=bland\n",
         encoding="utf-8",
     )

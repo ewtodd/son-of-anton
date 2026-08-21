@@ -1,9 +1,9 @@
-"""The conftest WAL gate must agree with renco_state, and must not import it.
+"""The conftest WAL gate must agree with son_of_anton_state, and must not import it.
 
 ``tests/conftest.py::_wal_is_usable`` duplicates the SQLite WAL-reset version
-predicate instead of importing ``renco_state``. That is deliberate: importing
-``renco_state`` during collection caches ``DEFAULT_DB_PATH`` from the real
-``~/.renco`` before the per-test ``RENCO_HOME`` redirect, which makes tests
+predicate instead of importing ``son_of_anton_state``. That is deliberate: importing
+``son_of_anton_state`` during collection caches ``DEFAULT_DB_PATH`` from the real
+``~/.son-of-anton`` before the per-test ``SON_OF_ANTON_HOME`` redirect, which makes tests
 read the developer's live production database.
 
 Duplication needs a guard, so these tests pin the two implementations in
@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from renco_state import is_sqlite_wal_reset_vulnerable
+from son_of_anton_state import is_sqlite_wal_reset_vulnerable
 from tests.conftest import _wal_is_usable
 
 
@@ -34,21 +34,21 @@ from tests.conftest import _wal_is_usable
         (3, 53, 1),   # the managed runtime
     ],
 )
-def test_conftest_gate_agrees_with_renco_state(version_info, monkeypatch):
+def test_conftest_gate_agrees_with_son_of_anton_state(version_info, monkeypatch):
     """``_wai_is_usable`` must be the exact inverse of the canonical predicate."""
     monkeypatch.setattr(sqlite3, "sqlite_version_info", version_info)
     assert _wal_is_usable() is not is_sqlite_wal_reset_vulnerable(version_info), (
-        f"conftest gate and renco_state disagree for SQLite {version_info}"
+        f"conftest gate and son_of_anton_state disagree for SQLite {version_info}"
     )
 
 
-def test_conftest_does_not_import_renco_state_at_collection():
-    """The gate must stay import-free of renco_state.
+def test_conftest_does_not_import_son_of_anton_state_at_collection():
+    """The gate must stay import-free of son_of_anton_state.
 
     Importing it during collection caches DEFAULT_DB_PATH from the real
-    ~/.renco, so tests read live production sessions instead of a tempdir.
+    ~/.son-of-anton, so tests read live production sessions instead of a tempdir.
     Reading the source is not an option here (banned), so assert on behavior:
-    the gate must work with ``renco_state`` absent from ``sys.modules`` and
+    the gate must work with ``son_of_anton_state`` absent from ``sys.modules`` and
     blocked from being imported.
     """
     import builtins
@@ -58,20 +58,20 @@ def test_conftest_does_not_import_renco_state_at_collection():
     blocked: list[str] = []
 
     def guard(name, *args, **kwargs):
-        if name == "renco_state" or name.startswith("renco_state."):
+        if name == "son_of_anton_state" or name.startswith("son_of_anton_state."):
             blocked.append(name)
             raise AssertionError(
-                "conftest._wal_is_usable imported renco_state — this caches "
-                "DEFAULT_DB_PATH from the real ~/.renco during collection"
+                "conftest._wal_is_usable imported son_of_anton_state — this caches "
+                "DEFAULT_DB_PATH from the real ~/.son-of-anton during collection"
             )
         return real_import(name, *args, **kwargs)
 
-    saved = sys.modules.pop("renco_state", None)
+    saved = sys.modules.pop("son_of_anton_state", None)
     builtins.__import__ = guard
     try:
         _wal_is_usable()  # must not raise
     finally:
         builtins.__import__ = real_import
         if saved is not None:
-            sys.modules["renco_state"] = saved
+            sys.modules["son_of_anton_state"] = saved
     assert not blocked

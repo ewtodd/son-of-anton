@@ -25,15 +25,15 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from renco_cli import goals
+from son_of_anton_cli import goals
 
 
 @pytest.fixture
-def renco_home(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+def son_of_anton_home(tmp_path, monkeypatch):
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     goals._DB_CACHE.clear()
     yield home
     goals._DB_CACHE.clear()
@@ -44,7 +44,7 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
     mgr = goals.GoalManager(session_id)
     mgr.set(goal_text, max_turns=1)
     with patch(
-        "renco_cli.goals.judge_goal",
+        "son_of_anton_cli.goals.judge_goal",
         return_value=("continue", "needs more steps", False, None, False),
     ):
         decision = mgr.evaluate_after_turn("worked a bit")
@@ -60,9 +60,9 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
 
 
 def _make_cli(session_id: str):
-    from cli import RencoCLI
+    from cli import SonOfAntonCLI
 
-    cli = RencoCLI.__new__(RencoCLI)
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli._pending_input = queue.Queue()
     cli.session_id = session_id
     cli.agent = MagicMock()
@@ -71,7 +71,7 @@ def _make_cli(session_id: str):
 
 
 class TestCliResumeRestartsWork:
-    def test_resume_after_budget_exhaustion_queues_continuation(self, renco_home):
+    def test_resume_after_budget_exhaustion_queues_continuation(self, son_of_anton_home):
         sid = f"sid-cli-resume-{uuid.uuid4().hex}"
         cli = _make_cli(sid)
         _exhaust_budget(sid)
@@ -89,7 +89,7 @@ class TestCliResumeRestartsWork:
         assert state.status == "active"
         assert state.turns_used == 0
 
-    def test_resume_without_goal_queues_nothing(self, renco_home):
+    def test_resume_without_goal_queues_nothing(self, son_of_anton_home):
         sid = f"sid-cli-noresume-{uuid.uuid4().hex}"
         cli = _make_cli(sid)
 
@@ -155,7 +155,7 @@ def _resume_event() -> MessageEvent:
 class TestGatewayResumeRestartsWork:
     @pytest.mark.asyncio
     async def test_resume_after_budget_exhaustion_enqueues_continuation(
-        self, renco_home
+        self, son_of_anton_home
     ):
         runner, adapter = _make_runner()
         _exhaust_budget(_GW_SID)
@@ -178,7 +178,7 @@ class TestGatewayResumeRestartsWork:
         assert state.turns_used == 0
 
     @pytest.mark.asyncio
-    async def test_resume_without_goal_enqueues_nothing(self, renco_home):
+    async def test_resume_without_goal_enqueues_nothing(self, son_of_anton_home):
         runner, adapter = _make_runner()
 
         response = await GatewayRunner._handle_goal_command(runner, _resume_event())

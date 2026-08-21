@@ -267,7 +267,7 @@ def _pending_reaction_notes(session: dict) -> str:
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
-    from renco_cli.input_sanitize import sanitize_user_prompt_text
+    from son_of_anton_cli.input_sanitize import sanitize_user_prompt_text
 
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
@@ -285,7 +285,7 @@ def _(rid, params: dict) -> dict:
     # Which window this message was typed into. Rewritten on every
     # submit, because one session can be driven from the app window and the HUD
     # in turn: a stale "hud" would tell the model the user is still floating
-    # over another app when they are back in Renco.
+    # over another app when they are back in Son of Anton.
     session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     has_truncation = (
         truncate_user_ordinal is not None
@@ -403,7 +403,7 @@ def _(rid, params: dict) -> dict:
                     4029,
                     "truncation parameters require confirm_truncate=true; "
                     "an ordinary prompt.submit must not drop session history "
-                    "(update your Renco client if a rewind was intended)",
+                    "(update your Son of Anton client if a rewind was intended)",
                 )
             # Desktop/TUI ordinals count the full displayed lineage. After
             # compression, session["history"] holds only the tip segment while
@@ -694,7 +694,7 @@ def _(rid, params: dict) -> dict:
         # resumes with full context (the agent won't persist the seed itself).
         _persist_branch_seed(session)
     except Exception as exc:
-        from renco_state import is_disk_full_error
+        from son_of_anton_state import is_disk_full_error
 
         with session["history_lock"]:
             session["running"] = False
@@ -781,7 +781,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.clipboard import has_clipboard_image, save_clipboard_image
+        from son_of_anton_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
@@ -1002,7 +1002,7 @@ def _(rid, params: dict) -> dict:
             "-f", str(first_page), "-l", str(last_page),
             str(pdf_path), str(out_prefix),
         ]
-        from renco_cli._subprocess_compat import windows_hide_flags
+        from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
         try:
             res = subprocess.run(
@@ -1175,14 +1175,14 @@ def _(rid, params: dict) -> dict:
             from run_agent import AIAgent
 
             # Bug #50233: ephemeral agent threads don't inherit the session's
-            # RENCO_HOME override (the ContextVar set on the session-create
+            # SON_OF_ANTON_HOME override (the ContextVar set on the session-create
             # thread doesn't propagate here), so a background turn under a
             # non-default profile would run against the wrong home. Re-bind the
             # override for the duration of this turn, exactly as the normal
             # prompt turn does, and restore it afterward.
             _profile_home_str = session.get("profile_home")
             home_token = (
-                set_renco_home_override(_profile_home_str)
+                set_son_of_anton_home_override(_profile_home_str)
                 if _profile_home_str
                 else None
             )
@@ -1195,7 +1195,7 @@ def _(rid, params: dict) -> dict:
                 )
             finally:
                 if home_token is not None:
-                    reset_renco_home_override(home_token)
+                    reset_son_of_anton_home_override(home_token)
             _emit(
                 "background.complete",
                 parent,
@@ -1253,14 +1253,14 @@ def _(rid, params: dict) -> dict:
                 if has_history
                 else None
             ),
-            "Restart exactly the app intended for the Preview URL, not Renco itself.",
+            "Restart exactly the app intended for the Preview URL, not Son of Anton itself.",
             "The Preview URL and port are the target. Preserve that target unless you conclude it is impossible.",
             "If the prior conversation shows a specific command that bound this URL/port, prefer re-running THAT exact command (in the same cwd) over guessing a new one.",
-            "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Renco process cwd.",
+            "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Son of Anton process cwd.",
             "The Current working directory is only a hint. Do not assume it is the preview app root when the port owner or files indicate another root.",
             "If the console shows a module-script MIME error for src/main.tsx or similar, a static server is serving source files. Do not restart python -m http.server or any dumb static server for that app.",
             "For module-script MIME failures, inspect package.json/vite config in the candidate app root and start the real dev server/bundler (for example npm/pnpm/yarn dev) so module transforms happen.",
-            "Before declaring success, verify the Preview URL responds with the intended app, not Renco. If it serves Renco UI or another unrelated app, stop that process and report failure.",
+            "Before declaring success, verify the Preview URL responds with the intended app, not Son of Anton. If it serves Son of Anton UI or another unrelated app, stop that process and report failure.",
             "Do not modify files. Do not ask the user unless blocked.",
             "Prefer existing project scripts or commands when they are clear.",
             "If a stale process owns the needed port, handle it safely.",
@@ -1302,7 +1302,7 @@ def _(rid, params: dict) -> dict:
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
             # Bug #50233: ephemeral preview-restart agent threads don't inherit
-            # the session's RENCO_HOME override (the ContextVar set on the
+            # the session's SON_OF_ANTON_HOME override (the ContextVar set on the
             # session-create thread doesn't propagate here). Re-bind it for the
             # duration of the turn, mirroring the normal prompt turn, then
             # restore it. NOTE: we deliberately do NOT close this agent through
@@ -1312,7 +1312,7 @@ def _(rid, params: dict) -> dict:
             # down the very server the restart just started.
             _profile_home_str = session.get("profile_home")
             home_token = (
-                set_renco_home_override(_profile_home_str)
+                set_son_of_anton_home_override(_profile_home_str)
                 if _profile_home_str
                 else None
             )
@@ -1327,7 +1327,7 @@ def _(rid, params: dict) -> dict:
                 )
             finally:
                 if home_token is not None:
-                    reset_renco_home_override(home_token)
+                    reset_son_of_anton_home_override(home_token)
             text = (
                 result.get("final_response", str(result))
                 if isinstance(result, dict)
@@ -1390,7 +1390,7 @@ def _(rid, params: dict) -> dict:
 
 @method("window.read.respond")
 def _(rid, params: dict) -> dict:
-    # `text` is a JSON string describing the OS window underneath the Renco
+    # `text` is a JSON string describing the OS window underneath the Son of Anton
     # window (read_window_below tool). allow_expired=True for the same reason
     # as terminal.read: the tool's bounded wait can expire while the renderer's
     # round-trip to the main process is still in flight.

@@ -30,12 +30,12 @@ const buildUiState = (): UiState => ({
   sessionTitle: '',
   showReasoning: false,
   sid: null,
-  status: 'summoning renco…',
+  status: 'summoning son-of-anton…',
   statusBar: 'top',
   streaming: true,
   timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
-  // the desktop's renco-boot-* keys); DEFAULT_THEME only on first launch.
+  // the desktop's son-of-anton-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,
   usage: ZERO
 })

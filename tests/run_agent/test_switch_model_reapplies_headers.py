@@ -69,8 +69,8 @@ def test_switch_away_from_headered_provider_clears_stale_headers(mock_ctx_len):
     must not carry the old provider's headers along."""
     agent = _make_agent(provider="openrouter", base_url="https://openrouter.ai/api/v1")
     agent._client_kwargs["default_headers"] = {
-        "HTTP-Referer": "https://renco-agent.nousresearch.com",
-        "X-Title": "Renco Agent",
+        "HTTP-Referer": "https://son-of-anton.nousresearch.com",
+        "X-Title": "Son of Anton Agent",
     }
 
     agent.switch_model(

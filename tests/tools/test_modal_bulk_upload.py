@@ -98,8 +98,8 @@ class TestModalBulkUpload:
         src_b.write_text("skill_content")
 
         files = [
-            (str(src_a), "/root/.renco/credentials/a.json"),
-            (str(src_b), "/root/.renco/skills/b.py"),
+            (str(src_a), "/root/.son-of-anton/credentials/a.json"),
+            (str(src_b), "/root/.son-of-anton/skills/b.py"),
         ]
 
         exec_calls, _, stdin_mock = _wire_async_exec(env)
@@ -122,13 +122,13 @@ class TestModalBulkUpload:
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             names = sorted(tar.getnames())
-            assert "root/.renco/credentials/a.json" in names
-            assert "root/.renco/skills/b.py" in names
+            assert "root/.son-of-anton/credentials/a.json" in names
+            assert "root/.son-of-anton/skills/b.py" in names
 
             # Verify content
-            a_content = tar.extractfile("root/.renco/credentials/a.json").read()
+            a_content = tar.extractfile("root/.son-of-anton/credentials/a.json").read()
             assert a_content == b"cred_content"
-            b_content = tar.extractfile("root/.renco/skills/b.py").read()
+            b_content = tar.extractfile("root/.son-of-anton/skills/b.py").read()
             assert b_content == b"skill_content"
 
         # Verify stdin was closed
@@ -144,7 +144,7 @@ class TestModalBulkUpload:
         import os as _os
         src = tmp_path / "large.bin"
         src.write_bytes(_os.urandom(1024 * 1024 + 512 * 1024))
-        files = [(str(src), "/root/.renco/large.bin")]
+        files = [(str(src), "/root/.son-of-anton/large.bin")]
 
         exec_calls, _, stdin_mock = _wire_async_exec(env)
         env._modal_bulk_upload(files)
@@ -158,4 +158,4 @@ class TestModalBulkUpload:
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             names = tar.getnames()
-            assert "root/.renco/large.bin" in names
+            assert "root/.son-of-anton/large.bin" in names

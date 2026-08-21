@@ -3,7 +3,7 @@
 **Target:** {target_url}
 **Date:** {date}
 **Scope:** {scope_description}
-**Tester:** Renco Agent (automated exploratory QA)
+**Tester:** Son of Anton Agent (automated exploratory QA)
 
 ---
 

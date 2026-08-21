@@ -19,15 +19,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_renco(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-    (tmp_path / ".renco").mkdir(exist_ok=True)
+def _isolate_son_of_anton(tmp_path, monkeypatch):
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+    (tmp_path / ".son-of-anton").mkdir(exist_ok=True)
 
 
 def _make_agent(monkeypatch):
     """Minimal AIAgent-like stub, mirroring test_start_order_gate.py."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
-    monkeypatch.setenv("RENCO_INFERENCE_PROVIDER", "")
+    monkeypatch.setenv("SON_OF_ANTON_INFERENCE_PROVIDER", "")
     import run_agent as _ra
 
     class _Stub:

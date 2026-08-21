@@ -23,17 +23,17 @@ from agent.secret_scope import (
     reset_secret_scope,
     set_secret_scope,
 )
-from renco_constants import (
+from son_of_anton_constants import (
     DEFAULT_INDICATOR_STYLE,
     INDICATOR_STYLES,
-    get_renco_home,
-    get_renco_home_override,
-    reset_renco_home_override,
-    set_renco_home_override,
+    get_son_of_anton_home,
+    get_son_of_anton_home_override,
+    reset_son_of_anton_home_override,
+    set_son_of_anton_home_override,
 )
-from renco_cli.env_loader import load_renco_dotenv
+from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
 from utils import is_truthy_value
-from tools.environments.local import renco_subprocess_env
+from tools.environments.local import son_of_anton_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
@@ -53,9 +53,9 @@ from tui_gateway.transport import (
 
 logger = logging.getLogger(__name__)
 
-_renco_home = get_renco_home()
-load_renco_dotenv(
-    renco_home=_renco_home, project_env=Path(__file__).parent.parent / ".env"
+_son_of_anton_home = get_son_of_anton_home()
+load_son_of_anton_dotenv(
+    son_of_anton_home=_son_of_anton_home, project_env=Path(__file__).parent.parent / ".env"
 )
 
 
@@ -64,10 +64,10 @@ load_renco_dotenv(
 # JSON-RPC pipe (TUI side parses it, doesn't log raw), the root logger
 # only catches handled warnings, and the subprocess exits before stderr
 # flushes through the stderr->gateway.stderr event pump. This hook
-# appends every unhandled exception to ~/.renco/logs/tui_gateway_crash.log
+# appends every unhandled exception to ~/.son-of-anton/logs/tui_gateway_crash.log
 # AND re-emits a one-line summary to stderr so the TUI can surface it in
 # Activity.
-_CRASH_LOG = os.path.join(_renco_home, "logs", "tui_gateway_crash.log")
+_CRASH_LOG = os.path.join(_son_of_anton_home, "logs", "tui_gateway_crash.log")
 
 
 def _panic_hook(exc_type, exc_value, exc_tb):
@@ -131,7 +131,7 @@ def _thread_panic_hook(args):
 threading.excepthook = _thread_panic_hook
 
 try:
-    from renco_cli.banner import prefetch_update_check
+    from son_of_anton_cli.banner import prefetch_update_check
 
     prefetch_update_check()
 except Exception:
@@ -163,7 +163,7 @@ _cfg_mtime: float | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
 try:
-    _slash_timeout = float(os.environ.get("RENCO_TUI_SLASH_TIMEOUT_S") or "45")
+    _slash_timeout = float(os.environ.get("SON_OF_ANTON_TUI_SLASH_TIMEOUT_S") or "45")
 except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
@@ -180,7 +180,7 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # Set to 0 to disable (park forever, pre-fix behaviour).
 try:
     _ws_orphan_reap_grace = float(
-        os.environ.get("RENCO_TUI_WS_ORPHAN_REAP_GRACE_S") or "20"
+        os.environ.get("SON_OF_ANTON_TUI_WS_ORPHAN_REAP_GRACE_S") or "20"
     )
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
@@ -308,7 +308,7 @@ _LONG_HANDLERS = frozenset(
 
 try:
     _rpc_pool_workers = max(
-        2, int(os.environ.get("RENCO_TUI_RPC_POOL_WORKERS") or "8")
+        2, int(os.environ.get("SON_OF_ANTON_TUI_RPC_POOL_WORKERS") or "8")
     )
 except (ValueError, TypeError):
     _rpc_pool_workers = 8
@@ -321,7 +321,7 @@ atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 # Exact in-memory session generation executing on the current turn thread.
 # Unlike a public session id, this object identity cannot be supplied by RPC.
 _current_runtime_session_record: contextvars.ContextVar[dict | None] = (
-    contextvars.ContextVar("renco_gateway_runtime_session_record", default=None)
+    contextvars.ContextVar("son_of_anton_gateway_runtime_session_record", default=None)
 )
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
@@ -353,17 +353,17 @@ _detached_ws_transport = _DropTransport()
 
 
 def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
-    """Prepend Renco' managed bin, the venv bin dir, and the user-local
+    """Prepend Son of Anton' managed bin, the venv bin dir, and the user-local
     bin dir to PATH so slash_worker child processes can resolve
-    Renco-managed CLIs (browser-use, uvx, uv) even when the parent
+    Son of Anton-managed CLIs (browser-use, uvx, uv) even when the parent
     gateway was launched with a minimal PATH (e.g. by the
     Desktop/Dashboard app). Managed bin leads, matching the managed-first
     resolution policy for the Browser Use CLI."""
     managed_bin = ""
     try:
-        from renco_constants import get_renco_home
+        from son_of_anton_constants import get_son_of_anton_home
 
-        managed_bin = str(Path(get_renco_home()) / "bin")
+        managed_bin = str(Path(get_son_of_anton_home()) / "bin")
     except Exception:
         pass
     venv_bin = str(Path(sys.executable).parent)  # <venv>/bin (POSIX) or <venv>/Scripts (Windows)
@@ -377,7 +377,7 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
 
 
 class _SlashWorker:
-    """Persistent RencoCLI subprocess for slash commands."""
+    """Persistent SonOfAntonCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str, profile_home: str | None = None):
         self._lock = threading.Lock()
@@ -396,24 +396,24 @@ class _SlashWorker:
             argv += ["--model", model]
 
         self._closed = False
-        from renco_cli._subprocess_compat import windows_hide_flags
+        from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
-        # slash_worker runs the Renco agent → needs provider credentials.
+        # slash_worker runs the Son of Anton agent → needs provider credentials.
         # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
         # Global-remote / multi-profile sessions: the worker must resolve
         # config/skills/state against the session's profile home, not the
-        # gateway's launch RENCO_HOME (#40677). The override goes through the
+        # gateway's launch SON_OF_ANTON_HOME (#40677). The override goes through the
         # build_subprocess_env factory's `extra` (applied last, always wins)
-        # instead of a hand-rolled env["RENCO_HOME"] assignment.
+        # instead of a hand-rolled env["SON_OF_ANTON_HOME"] assignment.
         from tools.environments.local import build_subprocess_env
         env = build_subprocess_env(
-            renco_subprocess_env(inherit_credentials=True),
+            son_of_anton_subprocess_env(inherit_credentials=True),
             scrub_secrets=False,
             inherit_profile_home=False,  # base already carries the HOME contract
-            extra={"RENCO_HOME": str(profile_home)} if profile_home else None,
+            extra={"SON_OF_ANTON_HOME": str(profile_home)} if profile_home else None,
         )
-        # Prepend the Renco venv bin dir and the user-local bin dir to PATH so
-        # slash_worker child processes can resolve Renco-managed CLIs
+        # Prepend the Son of Anton venv bin dir and the user-local bin dir to PATH so
+        # slash_worker child processes can resolve Son of Anton-managed CLIs
         # (browser-use, uvx) even when the parent gateway was launched with a
         # minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
         env = _prepend_tool_paths(env)
@@ -544,7 +544,7 @@ def _notify_session_boundary(
 ) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     try:
-        from renco_cli.lifecycle import finalize_session, invoke_hook
+        from son_of_anton_cli.lifecycle import finalize_session, invoke_hook
 
         if event_type == "on_session_finalize":
             finalize_session(
@@ -568,7 +568,7 @@ def _claim_active_session_slot(
     surface: str = "tui",
 ) -> tuple[Any, str | None]:
     try:
-        from renco_cli.active_sessions import try_acquire_active_session
+        from son_of_anton_cli.active_sessions import try_acquire_active_session
 
         return try_acquire_active_session(
             session_id=session_key,
@@ -632,7 +632,7 @@ def _transfer_active_session_slot(
     if lease is None:
         return True
     try:
-        from renco_cli.active_sessions import transfer_active_session
+        from son_of_anton_cli.active_sessions import transfer_active_session
 
         if transfer_active_session(
             lease,
@@ -766,7 +766,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # the user Ctrl‑C's mid‑turn.
     if agent is not None:
         try:
-            from renco_cli.lifecycle import invoke_hook
+            from son_of_anton_cli.lifecycle import invoke_hook
 
             invoke_hook(
                 "on_session_end",
@@ -1173,7 +1173,7 @@ def _close_sessions_for_transport(
         else:
             # Point detached sessions at the drop sentinel (NOT real stdio) so
             # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `renco --tui` keeps real _stdio.
+            # actually fire; a standalone `son-of-anton --tui` keeps real _stdio.
             session["transport"] = _detached_ws_transport
             detached += 1
             try:
@@ -1194,7 +1194,7 @@ def _shutdown_sessions() -> None:
 # hours-scale because last_active freezes during a long turn and on passive
 # viewing — running/pending/starting/live-transport are hard exemptions instead.
 try:
-    _SESSION_TTL_S = float(os.environ.get("RENCO_TUI_SESSION_TTL_S") or 6 * 3600)
+    _SESSION_TTL_S = float(os.environ.get("SON_OF_ANTON_TUI_SESSION_TTL_S") or 6 * 3600)
 except (TypeError, ValueError):
     _SESSION_TTL_S = float(6 * 3600)
 _SESSION_TTL_S = max(0.0, _SESSION_TTL_S)
@@ -1204,7 +1204,7 @@ _REAPER_SCAN_S = 300.0
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-WS-disconnect drop sentinel; a session
     # parked on it has no live client. _stdio_transport is the REAL transport
-    # for a standalone `renco --tui`, so it must NOT count as dead here (doing
+    # for a standalone `son-of-anton --tui`, so it must NOT count as dead here (doing
     # so let the idle reaper evict healthy standalone TUI sessions).
     if transport is _detached_ws_transport:
         return True
@@ -1248,7 +1248,7 @@ def _reap_idle_sessions() -> None:
     # Calling trim_memory here ensures every reaper scan (default every 5 min)
     # returns releasable pages, preventing unbounded RSS growth over days/weeks.
     try:
-        from renco_cli.mem_trim import trim_memory
+        from son_of_anton_cli.mem_trim import trim_memory
 
         trim_memory(reason="idle reaper periodic trim")
     except Exception as exc:
@@ -1262,7 +1262,7 @@ def _reap_idle_sessions() -> None:
 def _reclaim_orphaned_leases() -> None:
     """Hand the registry the lease ids we still own so it can drop the rest."""
     try:
-        from renco_cli.active_sessions import release_orphaned_leases
+        from son_of_anton_cli.active_sessions import release_orphaned_leases
 
         with _sessions_lock:
             live = {
@@ -1286,7 +1286,7 @@ def _reclaim_orphaned_leases() -> None:
 # mid-build / live-transport one. 0/null disables.
 def _max_live_sessions() -> int:
     try:
-        from renco_cli.active_sessions import coerce_max_concurrent_sessions
+        from son_of_anton_cli.active_sessions import coerce_max_concurrent_sessions
 
         cfg = _load_cfg() or {}
         raw = cfg.get("max_live_sessions")
@@ -1378,7 +1378,7 @@ _start_idle_reaper()
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
 
         try:
             _db = SessionDB()
@@ -1407,7 +1407,7 @@ def _db_for_profile(profile: str | None = None):
     if profile_home is None:
         return _get_db(), False
     try:
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
 
         return SessionDB(db_path=Path(profile_home) / "state.db"), True
     except Exception as exc:
@@ -1487,7 +1487,7 @@ def _db_unavailable_error(rid, *, code: int):
 # One gateway normally serves its launch profile. But the app-global remote
 # mode points every profile at this single backend, so resume/prompt must be
 # able to act on ANOTHER local profile's state.db + home. The client passes
-# ``profile`` on those calls; we open that profile's db and bind its RENCO_HOME
+# ``profile`` on those calls; we open that profile's db and bind its SON_OF_ANTON_HOME
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the
 # launch profile (unchanged for single-profile and per-profile-remote setups).
@@ -1497,22 +1497,22 @@ def _profile_home(profile: str | None) -> Path | None:
     if not name:
         return None
     try:
-        from renco_cli import profiles as profiles_mod
+        from son_of_anton_cli import profiles as profiles_mod
 
         home = Path(profiles_mod.get_profile_dir(name))
     except Exception:
         return None
     # Already the launch profile? No override needed.
-    if home.resolve() == Path(_renco_home).resolve():
+    if home.resolve() == Path(_son_of_anton_home).resolve():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s RENCO_HOME around a handler.
+    """Bind ``params['profile']``'s SON_OF_ANTON_HOME around a handler.
 
     Pets (config + sprites) and projects (projects.db, discovery policy) both
-    resolve via ``get_renco_home``. The desktop sends ``profile`` so a single
+    resolve via ``get_son_of_anton_home``. The desktop sends ``profile`` so a single
     backend serving every profile in app-global remote mode still hits the
     focused profile's home. No-op for the launch profile.
     """
@@ -1521,11 +1521,11 @@ def _profile_scoped(handler):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
         if home is None:
             return handler(rid, params)
-        token = set_renco_home_override(home)
+        token = set_son_of_anton_home_override(home)
         try:
             return handler(rid, params)
         finally:
-            reset_renco_home_override(token)
+            reset_son_of_anton_home_override(token)
 
     return wrapper
 
@@ -1566,7 +1566,7 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     if profile_home is None:
         return None
     try:
-        from renco_cli.config import _expand_env_vars, read_user_config_raw
+        from son_of_anton_cli.config import _expand_env_vars, read_user_config_raw
 
         p = Path(profile_home) / "config.yaml"
         if not p.exists():
@@ -1694,7 +1694,7 @@ _compute_host_supervisor_lock = threading.Lock()
 
 
 def _inside_compute_host_child() -> bool:
-    return os.environ.get("RENCO_COMPUTE_HOST_CHILD") == "1"
+    return os.environ.get("SON_OF_ANTON_COMPUTE_HOST_CHILD") == "1"
 
 
 def _turn_isolation_enabled(cfg: dict | None = None) -> bool:
@@ -2250,7 +2250,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
-    Classic `renco` shows the prompt before constructing AIAgent; the TUI used
+    Classic `son-of-anton` shows the prompt before constructing AIAgent; the TUI used
     to eagerly build it during session.create, making startup feel blocked on
     tool discovery/model metadata even though the composer was visible.  Keep
     the shell responsive by deferring this work until the first prompt (or any
@@ -2303,11 +2303,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         return
             tokens = _set_session_context(key)
             # Build against the session's profile (global-remote): bind its
-            # RENCO_HOME so config/skills/model resolve to it, and hand the
+            # SON_OF_ANTON_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
             session_db = None
             if profile_home:
-                home_token = set_renco_home_override(profile_home)
+                home_token = set_son_of_anton_home_override(profile_home)
                 try:
                     from agent.secret_scope import build_profile_secret_scope, set_secret_scope
 
@@ -2315,7 +2315,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 except Exception:
                     pass
                 try:
-                    from renco_state import SessionDB
+                    from son_of_anton_state import SessionDB
 
                     # DEDICATED handle — ours until _transfer_db_to_agent hands
                     # it to the built agent in the finally below. Every path
@@ -2446,7 +2446,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
             if home_token is not None:
-                reset_renco_home_override(home_token)
+                reset_son_of_anton_home_override(home_token)
             if secret_token is not None:
                 try:
                     from agent.secret_scope import reset_secret_scope
@@ -2896,7 +2896,7 @@ def _ensure_session_db_row(session: dict) -> None:
       or the user's home), so stamping that would file every unpicked chat under
       a folder the user never chose. Those stay null and group under "No
       workspace", which is the desired default.
-    * A terminal session (``renco`` / ``renco --tui`` / CLI) is started from a
+    * A terminal session (``son-of-anton`` / ``son-of-anton --tui`` / CLI) is started from a
       directory the user deliberately ``cd``'d into — that IS the workspace, and
       it is also where the agent's terminal actually runs. Dropping it stranded
       the session with no cwd AND no git_repo_root, so the sidebar could never
@@ -2910,7 +2910,7 @@ def _ensure_session_db_row(session: dict) -> None:
     # unified list mis-tags it, and resume 404s ("session not found").
     profile_home = session.get("profile_home")
     if profile_home:
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
 
         try:
             db = SessionDB(db_path=Path(profile_home) / "state.db")
@@ -2955,7 +2955,7 @@ def _ensure_session_db_row(session: dict) -> None:
     # start (matches _runtime_model_config's normalization).
     if str(model_config.get("provider") or "").strip().lower() == "custom":
         try:
-            from renco_cli.runtime_provider import canonical_custom_identity
+            from son_of_anton_cli.runtime_provider import canonical_custom_identity
 
             healed = canonical_custom_identity(
                 base_url=model_config.get("base_url") or None,
@@ -3007,7 +3007,7 @@ def _ensure_session_db_row(session: dict) -> None:
         # Disk-full is not a soft failure: if we swallow it here, prompt.submit
         # returns {"status":"streaming"} and the user's message vanishes with
         # no toast. Re-raise so the submit handler can return a real RPC error.
-        from renco_state import is_disk_full_error
+        from son_of_anton_state import is_disk_full_error
 
         if is_disk_full_error(exc):
             raise
@@ -3076,7 +3076,7 @@ def _persist_branch_seed(session: dict) -> None:
             )
             session["_branch_seed_persisted"] = True
         except Exception as exc:
-            from renco_state import is_disk_full_error
+            from son_of_anton_state import is_disk_full_error
 
             if is_disk_full_error(exc):
                 raise
@@ -3095,7 +3095,7 @@ def _session_db(session: dict):
     db, close_db = None, False
     profile_home = session.get("profile_home")
     if profile_home:
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
 
         try:
             db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
@@ -3192,7 +3192,7 @@ def _persist_session_cwd_and_schedule_git_meta(
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
-    from renco_constants import translate_cwd_for_wsl_backend
+    from son_of_anton_constants import translate_cwd_for_wsl_backend
 
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = os.path.abspath(os.path.expanduser(cwd))
@@ -3242,17 +3242,17 @@ def _load_cfg_raw() -> dict:
     try:
         # Honor a per-session profile override (see session.resume) so a resumed
         # remote profile loads ITS config (model, skills, prompt); otherwise the
-        # launch profile's _renco_home. Cache is keyed on the resolved path, so
+        # launch profile's _son_of_anton_home. Cache is keyed on the resolved path, so
         # profiles don't clobber each other.
-        override = get_renco_home_override()
-        home = override if isinstance(override, str) and override else _renco_home
+        override = get_son_of_anton_home_override()
+        home = override if isinstance(override, str) and override else _son_of_anton_home
         p = Path(home) / "config.yaml"
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
-            from renco_cli.config import read_user_config_raw
+            from son_of_anton_cli.config import read_user_config_raw
             data = read_user_config_raw(p)
         else:
             data = {}
@@ -3275,7 +3275,7 @@ def _load_cfg() -> dict:
 
     Delegates the disk read to :func:`_load_cfg_raw` (shared cache), then
     applies the same read-side pipeline as the canonical
-    ``renco_cli.config.load_config_readonly`` — managed-scope overlay and
+    ``son_of_anton_cli.config.load_config_readonly`` — managed-scope overlay and
     ``${ENV_VAR}`` expansion — minus the DEFAULT_CONFIG merge (callers here
     treat a missing key as "unset" and apply their own defaults; merging
     would also break ``_load_cfg() == {}`` sentinels). Do NOT pass the
@@ -3285,7 +3285,7 @@ def _load_cfg() -> dict:
     """
     cfg = _apply_managed(_load_cfg_raw())
     try:
-        from renco_cli.config import _expand_env_vars
+        from son_of_anton_cli.config import _expand_env_vars
 
         expanded = _expand_env_vars(cfg)
         if isinstance(expanded, dict):
@@ -3299,12 +3299,12 @@ def _apply_managed(cfg: dict) -> dict:
     """Overlay administrator-pinned managed-scope values on a config dict.
 
     The TUI/desktop backend builds config independently of
-    renco_cli.config.load_config, so without this a managed skin / reasoning_effort
+    son_of_anton_cli.config.load_config, so without this a managed skin / reasoning_effort
     / service_tier / provider_routing would be silently ignored here. Read-side
     only — the raw user config is what gets cached and saved. Fail-open.
     """
     try:
-        from renco_cli import managed_scope
+        from son_of_anton_cli import managed_scope
 
         return managed_scope.apply_managed_overlay(cfg if isinstance(cfg, dict) else {})
     except Exception:
@@ -3316,7 +3316,7 @@ def _save_cfg(cfg: dict):
 
     from utils import atomic_roundtrip_yaml_save
 
-    path = _renco_home / "config.yaml"
+    path = _son_of_anton_home / "config.yaml"
     # Comment-, ordering-, and Unicode-preserving full-state write.
     # Replaces the previous `yaml.safe_dump(cfg, f)` (and later
     # `atomic_config_write`, which is not comment-preserving) which clobbered
@@ -3367,11 +3367,11 @@ def _set_session_context(
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
         # Derive the live conversation id so terminal/execute_code subprocesses
-        # can read RENCO_SESSION_ID. Without this, set_session_vars leaves the
+        # can read SON_OF_ANTON_SESSION_ID. Without this, set_session_vars leaves the
         # session-id contextvar as "" (explicitly empty), and the subprocess-env
         # bridge treats that as authoritative — NOT falling back to os.environ —
         # so every command in a TUI/web session saw an empty
-        # RENCO_SESSION_ID even though agent_init set it via
+        # SON_OF_ANTON_SESSION_ID even though agent_init set it via
         # set_current_session_id(). Prefer the agent's durable session_id, then
         # fall back to the session_key (matching the id derivation used at
         # session-finalize), so an identified session is never left blank.
@@ -3409,9 +3409,9 @@ def _clear_session_context(tokens: list) -> None:
 
 def _enable_gateway_prompts() -> None:
     """Route approvals through gateway callbacks instead of CLI input()."""
-    os.environ["RENCO_GATEWAY_SESSION"] = "1"
-    os.environ["RENCO_EXEC_ASK"] = "1"
-    os.environ["RENCO_INTERACTIVE"] = "1"
+    os.environ["SON_OF_ANTON_GATEWAY_SESSION"] = "1"
+    os.environ["SON_OF_ANTON_EXEC_ASK"] = "1"
+    os.environ["SON_OF_ANTON_INTERACTIVE"] = "1"
 
 
 # ── Blocking prompt factory ──────────────────────────────────────────
@@ -3569,10 +3569,10 @@ _TOUR_BRIDGE_UNAVAILABLE = json.dumps(
     {
         "success": False,
         "error": (
-            "No Renco Desktop window answered the tour request. The tour is "
+            "No Son of Anton Desktop window answered the tour request. The tour is "
             "driven by the desktop app's renderer, which updates separately "
             "from this backend, so an app build older than the tour tool has "
-            "nothing listening. Update the Renco Desktop app and start a new "
+            "nothing listening. Update the Son of Anton Desktop app and start a new "
             "session. Do not retry tour in this session."
         ),
     }
@@ -3645,7 +3645,7 @@ def _clear_pending(sid: str | None = None) -> None:
 
 def resolve_skin() -> dict:
     try:
-        from renco_cli.skin_engine import init_skin_from_config, get_active_skin
+        from son_of_anton_cli.skin_engine import init_skin_from_config, get_active_skin
 
         init_skin_from_config(_load_cfg())
         skin = get_active_skin()
@@ -3676,8 +3676,8 @@ def _skin_sig() -> tuple[str, float | None]:
     """(active skin name, its user-file mtime). Built-ins have no file, so only
     their name moves; a user skin's mtime lets an in-place color edit repaint too."""
     name = str((_load_cfg().get("display") or {}).get("skin") or "default")
-    override = get_renco_home_override()
-    home = override if isinstance(override, str) and override else _renco_home
+    override = get_son_of_anton_home_override()
+    home = override if isinstance(override, str) and override else _son_of_anton_home
     try:
         mtime: float | None = (Path(home) / "skins" / f"{name}.yaml").stat().st_mtime
     except OSError:
@@ -3697,7 +3697,7 @@ def _note_skin_broadcast() -> None:
 
 def _broadcast_skin_if_changed() -> None:
     """Emit ``skin.changed`` when the active skin moved — the agent switched it
-    (``renco config set display.skin``) OR edited the active skin's colors in
+    (``son-of-anton config set display.skin``) OR edited the active skin's colors in
     place ("I don't like that coral" → tweak the YAML).
 
     Routes through the SAME live path as ``/skin`` so every surface (TUI + desktop)
@@ -3720,8 +3720,8 @@ def _broadcast_skin_if_changed() -> None:
 
 def _watcher_home() -> Path:
     """Active profile home for the change watcher's signature probes."""
-    override = get_renco_home_override()
-    return Path(override if isinstance(override, str) and override else _renco_home)
+    override = get_son_of_anton_home_override()
+    return Path(override if isinstance(override, str) and override else _son_of_anton_home)
 
 
 def _pet_sig() -> tuple:
@@ -3895,7 +3895,7 @@ _skin_watcher_started = False
 
 def _ensure_skin_watcher() -> None:
     """Watch cheap on-disk signatures and broadcast change events — so a skin
-    Renco activates, a pet ``/pet`` adopts, a cron the scheduler fires, or a
+    Son of Anton activates, a pet ``/pet`` adopts, a cron the scheduler fires, or a
     messaging turn another process writes goes live on every surface within a
     couple seconds, on its own, with no client-side poll in the loop.
     Idempotent; started at gateway.ready. (Named for its original skin-only
@@ -3912,13 +3912,13 @@ def _ensure_skin_watcher() -> None:
             _broadcast_skin_if_changed()
             _broadcast_watched_changes()
 
-    threading.Thread(target=_loop, name="renco-change-watcher", daemon=True).start()
+    threading.Thread(target=_loop, name="son-of-anton-change-watcher", daemon=True).start()
 
 
 def _resolve_model() -> str:
     env = (
-        os.environ.get("RENCO_MODEL", "")
-        or os.environ.get("RENCO_INFERENCE_MODEL", "")
+        os.environ.get("SON_OF_ANTON_MODEL", "")
+        or os.environ.get("SON_OF_ANTON_INFERENCE_MODEL", "")
     ).strip()
     if env:
         return env
@@ -3931,7 +3931,7 @@ def _resolve_model() -> str:
     # default (catalog-labeled, cache-only read), never an expensive Anthropic
     # flagship the user didn't pick.
     try:
-        from renco_cli.models import get_preferred_silent_default_model
+        from son_of_anton_cli.models import get_preferred_silent_default_model
 
         return get_preferred_silent_default_model()
     except Exception:
@@ -3966,9 +3966,9 @@ def _resolve_agent_platform(source: str | None) -> str:
 def _config_model_target() -> tuple[str, str]:
     """(model, provider) currently selected by config.yaml — and ONLY config.
 
-    Unlike `_resolve_model()`, this never reads RENCO_MODEL /
-    RENCO_INFERENCE_MODEL. Those env vars are a launch-scoped seed
-    (`renco --tui -m <model>`, hosted-instance provisioning); if they
+    Unlike `_resolve_model()`, this never reads SON_OF_ANTON_MODEL /
+    SON_OF_ANTON_INFERENCE_MODEL. Those env vars are a launch-scoped seed
+    (`son-of-anton --tui -m <model>`, hosted-instance provisioning); if they
     fed the per-turn sync, the seed would be replayed as a /model switch
     and persisted globally, or would pin the session so CLI model changes
     never reach an open chat.
@@ -3983,8 +3983,8 @@ def _config_model_target() -> tuple[str, str]:
             provider = ""
     elif isinstance(cfg_model, str):
         model = cfg_model.strip()
-    # No fallback to _resolve_model() here: that reads RENCO_MODEL /
-    # RENCO_INFERENCE_MODEL, which `renco --tui -m <model>` sets as a
+    # No fallback to _resolve_model() here: that reads SON_OF_ANTON_MODEL /
+    # SON_OF_ANTON_INFERENCE_MODEL, which `son-of-anton --tui -m <model>` sets as a
     # session-scoped seed for THIS launch. When config.yaml has no
     # model.default (custom-provider-only setups), falling back to the env
     # seed made the per-turn sync treat the -m flag as "the configured
@@ -3997,19 +3997,19 @@ def _config_model_target() -> tuple[str, str]:
 
 def _resolve_startup_runtime() -> tuple[str, str | None]:
     model = _resolve_model()
-    explicit_provider = os.environ.get("RENCO_TUI_PROVIDER", "").strip()
+    explicit_provider = os.environ.get("SON_OF_ANTON_TUI_PROVIDER", "").strip()
     if explicit_provider:
         return model, explicit_provider
 
     explicit_model = (
-        os.environ.get("RENCO_MODEL", "")
-        or os.environ.get("RENCO_INFERENCE_MODEL", "")
+        os.environ.get("SON_OF_ANTON_MODEL", "")
+        or os.environ.get("SON_OF_ANTON_INFERENCE_MODEL", "")
     ).strip()
     if not explicit_model:
         return model, None
 
     try:
-        from renco_cli.models import detect_static_provider_for_model
+        from son_of_anton_cli.models import detect_static_provider_for_model
 
         cfg = _load_cfg().get("model") or {}
         current_provider = (
@@ -4018,7 +4018,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
                 if isinstance(cfg, dict)
                 else ""
             )
-            or os.environ.get("RENCO_INFERENCE_PROVIDER", "").strip().lower()
+            or os.environ.get("SON_OF_ANTON_INFERENCE_PROVIDER", "").strip().lower()
             or "auto"
         )
         detected = detect_static_provider_for_model(explicit_model, current_provider)
@@ -4039,7 +4039,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 # ``billing_provider="openrouter"``; dropping it forces resume to the current
 # global model (e.g. a custom endpoint), which is the wrong provider for the
 # stored model. See #57588.
-from renco_state import _BARE_BILLING_PROVIDERS
+from son_of_anton_state import _BARE_BILLING_PROVIDERS
 
 
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
@@ -4099,7 +4099,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if provider.strip().lower() == "custom":
         healed = None
         try:
-            from renco_cli.runtime_provider import canonical_custom_identity
+            from son_of_anton_cli.runtime_provider import canonical_custom_identity
 
             healed = canonical_custom_identity(
                 base_url=base_url or None, model=model or None
@@ -4162,7 +4162,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             # bare "custom" with no base_url was persisted verbatim and routed
             # to OpenRouter with no key on the next resume).
             try:
-                from renco_cli.runtime_provider import (
+                from son_of_anton_cli.runtime_provider import (
                     canonical_custom_identity,
                 )
 
@@ -4249,14 +4249,14 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     if db is None or not hasattr(db, "update_system_prompt"):
         return
 
-    # Re-bind RENCO_HOME to the session's profile so load_soul_md() and
+    # Re-bind SON_OF_ANTON_HOME to the session's profile so load_soul_md() and
     # build_skills_system_prompt() resolve to the correct profile.  Without
     # this, _start_agent_build's finally block has already reset the
     # override and the rebuilt prompt silently uses the root profile's
     # SOUL.md and skills.  See issue #50233.
     profile_home = session.get("profile_home")
     home_token = (
-        set_renco_home_override(profile_home) if profile_home else None
+        set_son_of_anton_home_override(profile_home) if profile_home else None
     )
     try:
         prompt = agent._build_system_prompt(None)
@@ -4270,7 +4270,7 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
         )
     finally:
         if home_token is not None:
-            reset_renco_home_override(home_token)
+            reset_son_of_anton_home_override(home_token)
 
 
 # Stable leading text of the model-switch marker, shared by the builder and the
@@ -4398,7 +4398,7 @@ def _load_approval_mode() -> str:
     Previously this re-read the config raw via ``_load_cfg`` +
     ``_deep_merge(DEFAULT_CONFIG, ...)`` and normalized locally, which
     could disagree with the gate's own view of the mode (e.g. the
-    canonical ``renco_cli.config.load_config`` path applies managed-scope
+    canonical ``son_of_anton_cli.config.load_config`` path applies managed-scope
     overlays and ``${VAR}`` env expansion that the TUI's raw YAML read did
     not fully mirror).
     """
@@ -4466,11 +4466,11 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     """Load reasoning effort from config.yaml, respecting per-model overrides.
 
     Thin wrapper over the shared chokepoint
-    :func:`renco_constants.resolve_reasoning_config` (per-model override >
+    :func:`son_of_anton_constants.resolve_reasoning_config` (per-model override >
     global ``agent.reasoning_effort``; YAML boolean False = disabled).
     Closes #21256.
     """
-    from renco_constants import resolve_reasoning_config
+    from son_of_anton_constants import resolve_reasoning_config
 
     return resolve_reasoning_config(_load_cfg(), model)
 
@@ -4525,7 +4525,7 @@ def _load_memory_notifications() -> str:
 
 
 def _load_tool_progress_mode() -> str:
-    env = os.environ.get("RENCO_TUI_TOOL_PROGRESS", "").strip().lower()
+    env = os.environ.get("SON_OF_ANTON_TUI_TOOL_PROGRESS", "").strip().lower()
     if env in {"off", "new", "all", "verbose"}:
         return env
     raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
@@ -4542,13 +4542,13 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
     explicit = [
         item.strip()
-        for item in os.environ.get("RENCO_TUI_TOOLSETS", "").split(",")
+        for item in os.environ.get("SON_OF_ANTON_TUI_TOOLSETS", "").split(",")
         if item.strip()
     ]
     cfg = None
     fallback_notice = None
 
-    # Coding posture (base Renco): with no explicit pin, collapse to the
+    # Coding posture (base Son of Anton): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
     # See agent/coding_context.py. No config is loaded yet at this point, so we
     # let coding_selection() load it lazily (cli.py passes its already-resolved
@@ -4578,7 +4578,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
 
         if unresolved:
             try:
-                from renco_cli.plugins import discover_plugins
+                from son_of_anton_cli.plugins import discover_plugins
 
                 discover_plugins()
                 plugin_valid = [name for name in unresolved if validate_toolset(name)]
@@ -4593,7 +4593,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             ignored = [name for name in explicit if name not in {"all", "*"}]
             if ignored:
                 print(
-                    "[tui] RENCO_TUI_TOOLSETS=all enables every toolset; "
+                    "[tui] SON_OF_ANTON_TUI_TOOLSETS=all enables every toolset; "
                     f"ignoring additional entries: {', '.join(ignored)}",
                     file=sys.stderr,
                     flush=True,
@@ -4606,8 +4606,8 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         mcp_names: set[str] = set()
         mcp_disabled: set[str] = set()
         try:
-            from renco_cli.config import read_raw_config
-            from renco_cli.tools_config import _parse_enabled_flag
+            from son_of_anton_cli.config import read_raw_config
+            from son_of_anton_cli.tools_config import _parse_enabled_flag
 
             raw_cfg = read_raw_config()
             mcp_servers = (
@@ -4637,13 +4637,13 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
 
         if unknown:
             print(
-                f"[tui] ignoring unknown RENCO_TUI_TOOLSETS entries: {', '.join(unknown)}",
+                f"[tui] ignoring unknown SON_OF_ANTON_TUI_TOOLSETS entries: {', '.join(unknown)}",
                 file=sys.stderr,
                 flush=True,
             )
         if disabled:
             print(
-                "[tui] ignoring disabled MCP servers in RENCO_TUI_TOOLSETS "
+                "[tui] ignoring disabled MCP servers in SON_OF_ANTON_TUI_TOOLSETS "
                 "(set enabled: true in config.yaml to use): "
                 f"{', '.join(disabled)}",
                 file=sys.stderr,
@@ -4654,12 +4654,12 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             return valid
 
         fallback_notice = (
-            "[tui] no valid RENCO_TUI_TOOLSETS entries; using configured CLI toolsets"
+            "[tui] no valid SON_OF_ANTON_TUI_TOOLSETS entries; using configured CLI toolsets"
         )
 
     try:
-        from renco_cli.config import load_config
-        from renco_cli.tools_config import _get_platform_tools
+        from son_of_anton_cli.config import load_config
+        from son_of_anton_cli.tools_config import _get_platform_tools
 
         cfg = cfg if cfg is not None else load_config()
 
@@ -4674,9 +4674,9 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             print(fallback_notice, file=sys.stderr, flush=True)
         if not enabled:
             return None
-        # The client-surface toolsets are off _RENCO_CORE_TOOLS (every other
+        # The client-surface toolsets are off _SON_OF_ANTON_CORE_TOOLS (every other
         # platform would carry their schema for nothing), so the platform
-        # recovery above — which keys off renco-cli's tool universe — can't
+        # recovery above — which keys off son-of-anton-cli's tool universe — can't
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding them in here is the gate that exposes them on exactly the
         # surface that can answer them.
@@ -4684,7 +4684,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     except Exception:
         if fallback_notice is not None:
             print(
-                "[tui] no valid RENCO_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
+                "[tui] no valid SON_OF_ANTON_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
                 file=sys.stderr,
                 flush=True,
             )
@@ -4806,14 +4806,14 @@ def _apply_model_switch(
     parsed_flags: Any | None = None,
     persist_override: bool | None = None,
 ) -> dict:
-    from renco_cli.model_switch import (
+    from son_of_anton_cli.model_switch import (
         parse_model_switch_args,
         resolve_persist_behavior,
         switch_model,
         MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
         MODEL_SWITCH_ERROR_TEXT,
     )
-    from renco_cli.runtime_provider import resolve_runtime_provider
+    from son_of_anton_cli.runtime_provider import resolve_runtime_provider
 
     if parsed_flags is None:
         parsed_flags = parse_model_switch_args(raw_input)
@@ -4878,7 +4878,7 @@ def _apply_model_switch(
     custom_provs = None
     cfg = None
     try:
-        from renco_cli.config import get_compatible_custom_providers, load_config
+        from son_of_anton_cli.config import get_compatible_custom_providers, load_config
 
         cfg = load_config()
         user_provs = cfg.get("providers")
@@ -4904,7 +4904,7 @@ def _apply_model_switch(
 
     if agent:
         try:
-            from renco_cli.context_switch_guard import merge_preflight_compression_warning
+            from son_of_anton_cli.context_switch_guard import merge_preflight_compression_warning
 
             _cfg_ctx = None
             if isinstance(cfg, dict):
@@ -4923,7 +4923,7 @@ def _apply_model_switch(
 
     if not confirm_expensive_model:
         try:
-            from renco_cli.model_selection_guards import combined_selection_warning
+            from son_of_anton_cli.model_selection_guards import combined_selection_warning
 
             warning = combined_selection_warning(
                 result.new_model,
@@ -4983,8 +4983,8 @@ def _apply_model_switch(
     # session (e.g. /new via _reset_session_agent, or resume) re-derives the
     # user's chosen model/provider instead of falling back to global config.
     #
-    # We deliberately do NOT write process-global env vars (RENCO_MODEL /
-    # RENCO_INFERENCE_MODEL / RENCO_TUI_PROVIDER / RENCO_INFERENCE_PROVIDER)
+    # We deliberately do NOT write process-global env vars (SON_OF_ANTON_MODEL /
+    # SON_OF_ANTON_INFERENCE_MODEL / SON_OF_ANTON_TUI_PROVIDER / SON_OF_ANTON_INFERENCE_PROVIDER)
     # here. The desktop backend hosts every same-profile session in ONE process,
     # so mutating os.environ on a /model switch leaked the new model/provider
     # into every OTHER live session's next agent rebuild — switching the model
@@ -5107,7 +5107,7 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             # This sync ADOPTS a config.yaml change into the live session; it
             # must never write config back. Without this, the flag/config
             # default (persist_switch_by_default=True) re-persisted whatever
-            # target the sync computed — the path that leaked `renco --tui -m`
+            # target the sync computed — the path that leaked `son-of-anton --tui -m`
             # into config.yaml as the permanent global model.
             persist_override=False,
         )
@@ -5190,7 +5190,7 @@ def _compress_session_history(
         finalize_context_engine_compression_notification,
     )
     from agent.model_metadata import estimate_request_tokens_rough
-    from renco_cli.partial_compress import (
+    from son_of_anton_cli.partial_compress import (
         parse_partial_compress_args,
         rejoin_compressed_head_and_tail,
         split_history_for_partial_compress,
@@ -5441,8 +5441,8 @@ def _get_usage(agent) -> dict:
     except Exception:
         pass
     # Dev-only live credits-spent readout (L0 usage-aware-credits). Gated on
-    # RENCO_DEV_CREDITS so the payload stays clean when the flag is off.
-    if is_truthy_value(os.environ.get("RENCO_DEV_CREDITS")):
+    # SON_OF_ANTON_DEV_CREDITS so the payload stays clean when the flag is off.
+    if is_truthy_value(os.environ.get("SON_OF_ANTON_DEV_CREDITS")):
         try:
             spent = agent.get_credits_spent_micros()
             if spent is not None:
@@ -5490,7 +5490,7 @@ def _probe_config_health(cfg: dict) -> str:
         personality = str(display_cfg.get("personality", "") or "").strip().lower()
         if personality and personality not in {"default", "none", "neutral"}:
             try:
-                from renco_cli.personality import available_personalities
+                from son_of_anton_cli.personality import available_personalities
 
                 if personality not in available_personalities(cfg):
                     warnings.append(
@@ -5506,7 +5506,7 @@ def _probe_config_health(cfg: dict) -> str:
 
 def _current_profile_name() -> str:
     try:
-        from renco_cli.profiles import get_active_profile_name
+        from son_of_anton_cli.profiles import get_active_profile_name
 
         return get_active_profile_name() or "default"
     except Exception:
@@ -5535,7 +5535,7 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
     if not str(cwd or "").strip():
         return None
     try:
-        from renco_cli import projects_db as pdb
+        from son_of_anton_cli import projects_db as pdb
 
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)
@@ -5647,7 +5647,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         else _current_profile_name(),
     }
     try:
-        from renco_cli import __version__, __release_date__
+        from son_of_anton_cli import __version__, __release_date__
 
         info["version"] = __version__
         info["release_date"] = __release_date__
@@ -5666,7 +5666,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         except Exception:
             pass
         try:
-            from renco_cli.banner import get_available_skills
+            from son_of_anton_cli.banner import get_available_skills
 
             info["skills"] = get_available_skills()
         except Exception:
@@ -5686,8 +5686,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     except Exception:
         pass
     try:
-        from renco_cli.banner import get_update_result
-        from renco_cli.config import recommended_update_command
+        from son_of_anton_cli.banner import get_update_result
+        from son_of_anton_cli.config import recommended_update_command
 
         info["update_behind"] = get_update_result(timeout=0.5)
         info["update_command"] = recommended_update_command()
@@ -6214,7 +6214,7 @@ def _agent_cbs(sid: str) -> dict:
         ),
         # read_window_below tool (desktop GUI): the renderer asks its main
         # process (which owns native window enumeration) which OS window sits
-        # directly underneath the Renco window, and answers
+        # directly underneath the Son of Anton window, and answers
         # window.read.respond with the serialized metadata.
         "read_window_below_callback": lambda: _block(
             "window.read.request",
@@ -6333,7 +6333,7 @@ def _wire_callbacks(sid: str):
                 "skipped": True,
                 "message": "skipped",
             }
-        from renco_cli.config import save_env_value_secure
+        from son_of_anton_cli.config import save_env_value_secure
 
         return {
             **save_env_value_secure(env_var, val),
@@ -6345,15 +6345,15 @@ def _wire_callbacks(sid: str):
 
 
 def _render_personality_prompt(value) -> str:
-    """Delegates to renco_cli.personality (single owner of rendering)."""
-    from renco_cli.personality import render_personality_prompt
+    """Delegates to son_of_anton_cli.personality (single owner of rendering)."""
+    from son_of_anton_cli.personality import render_personality_prompt
 
     return render_personality_prompt(value)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    """Built-ins + user overrides, via renco_cli.personality (single owner)."""
-    from renco_cli.personality import available_personalities
+    """Built-ins + user overrides, via son_of_anton_cli.personality (single owner)."""
+    from son_of_anton_cli.personality import available_personalities
 
     if cfg is None:
         cfg = _load_cfg()
@@ -6363,12 +6363,12 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     """Resolve a requested personality against _available_personalities.
 
-    Same contract as renco_cli.personality.resolve_personality — (name,
+    Same contract as son_of_anton_cli.personality.resolve_personality — (name,
     prompt) or ValueError — but resolves through the module-level
     _available_personalities so tests (and future gateway-side overrides)
     keep a single patch point.
     """
-    from renco_cli.personality import normalize_personality_name
+    from son_of_anton_cli.personality import normalize_personality_name
 
     name = normalize_personality_name(value)
     if not name:
@@ -6385,9 +6385,9 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
 def _prompt_text(value) -> str:
     """Normalize config prompt values from YAML before handing them to AIAgent.
 
-    Delegates to renco_cli.personality (single owner).
+    Delegates to son_of_anton_cli.personality (single owner).
     """
-    from renco_cli.personality import prompt_text
+    from son_of_anton_cli.personality import prompt_text
 
     return prompt_text(value)
 
@@ -6448,9 +6448,9 @@ def _apply_personality_to_session(
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
-    from renco_cli.config import resolve_turn_limit as _resolve_turn_limit
+    from son_of_anton_cli.config import resolve_turn_limit as _resolve_turn_limit
     # Env var override (highest priority)
-    env_val = os.environ.get("RENCO_TUI_MAX_TURNS")
+    env_val = os.environ.get("SON_OF_ANTON_TUI_MAX_TURNS")
     if env_val:
         return _resolve_turn_limit(env_val, default=default)
     # Config file value — route through resolve_turn_limit so that
@@ -6465,7 +6465,7 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
 
 
 def _parse_tui_skills_env() -> list[str]:
-    raw = os.environ.get("RENCO_TUI_SKILLS", "")
+    raw = os.environ.get("SON_OF_ANTON_TUI_SKILLS", "")
     skills: list[str] = []
     seen: set[str] = set()
     for part in raw.replace("\n", ",").split(","):
@@ -6480,12 +6480,12 @@ def _load_fallback_model():
     """Return the configured fallback chain for TUI-created agents.
 
     Delegates to the shared ``get_fallback_chain`` helper so the TUI path
-    stays in parity with ``RencoCLI.__init__`` and ``gateway/run.py``:
+    stays in parity with ``SonOfAntonCLI.__init__`` and ``gateway/run.py``:
     ``fallback_providers`` is the primary source of truth and keeps its
     order, with legacy ``fallback_model`` entries merged in afterwards
     (deduped on provider/model/base_url).
     """
-    from renco_cli.fallback_config import get_fallback_chain
+    from son_of_anton_cli.fallback_config import get_fallback_chain
 
     return get_fallback_chain(_load_cfg())
 
@@ -6801,8 +6801,8 @@ def _resolve_runtime_with_fallback(
     into a different runtime. ``used_fallback`` remains explicit rather than
     overloading a nullable model as control flow.
     """
-    from renco_cli.auth import AuthError
-    from renco_cli.runtime_provider import resolve_runtime_provider
+    from son_of_anton_cli.auth import AuthError
+    from son_of_anton_cli.runtime_provider import resolve_runtime_provider
 
     kwargs = resolve_kwargs or {}
     try:
@@ -6821,7 +6821,7 @@ def _resolve_runtime_with_fallback(
             if not fb_provider or not fb_model:
                 continue
             try:
-                from renco_cli.fallback_config import resolve_entry_api_key
+                from son_of_anton_cli.fallback_config import resolve_entry_api_key
 
                 fb_kwargs: dict = {
                     "requested": fb_provider,
@@ -6873,10 +6873,10 @@ def _make_agent(
     # dead server can't freeze the shell.  The agent snapshots its tool list
     # once here and never re-reads it, so briefly wait for in-flight discovery
     # to land before building — bounded, so a slow/dead server still can't
-    # block. Dashboard /api/ws uses renco_cli.mcp_startup; TUI stdio keeps
+    # block. Dashboard /api/ws uses son_of_anton_cli.mcp_startup; TUI stdio keeps
     # its existing tui_gateway.entry-owned thread.
     try:
-        from renco_cli.mcp_startup import wait_for_mcp_discovery
+        from son_of_anton_cli.mcp_startup import wait_for_mcp_discovery
 
         wait_for_mcp_discovery()
     except Exception:
@@ -6889,7 +6889,7 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
-    from renco_cli.config import resolve_ephemeral_system_prompt_from_config
+    from son_of_anton_cli.config import resolve_ephemeral_system_prompt_from_config
 
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
@@ -6909,7 +6909,7 @@ def _make_agent(
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "
                     "Continuing with: %s. "
-                    "List available skills with `renco skills list`.",
+                    "List available skills with `son-of-anton skills list`.",
                     missing_display,
                     ", ".join(loaded_skills),
                 )
@@ -6941,7 +6941,7 @@ def _make_agent(
             # the entry identity from the persisted base_url, falling back to
             # the configured provider when the override carries no base_url
             # (the recurring Desktop/TUI regression vector).
-            from renco_cli.runtime_provider import canonical_custom_identity
+            from son_of_anton_cli.runtime_provider import canonical_custom_identity
 
             recovered = canonical_custom_identity(
                 base_url=override_base_url or None, model=model or None
@@ -7026,10 +7026,10 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("RENCO_TUI_CHECKPOINTS")),
-        pass_session_id=is_truthy_value(os.environ.get("RENCO_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("RENCO_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("RENCO_IGNORE_RULES")),
+        checkpoints_enabled=is_truthy_value(os.environ.get("SON_OF_ANTON_TUI_CHECKPOINTS")),
+        pass_session_id=is_truthy_value(os.environ.get("SON_OF_ANTON_TUI_PASS_SESSION_ID")),
+        skip_context_files=is_truthy_value(os.environ.get("SON_OF_ANTON_IGNORE_RULES")),
+        skip_memory=is_truthy_value(os.environ.get("SON_OF_ANTON_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
@@ -7068,7 +7068,7 @@ def _init_session(
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
-            # Profile-scoped RENCO_HOME for app-global remote mode; None =
+            # Profile-scoped SON_OF_ANTON_HOME for app-global remote mode; None =
             # launch profile. SessionBranch copies the parent's value so the
             # child stays on the same state.db.
             "profile_home": profile_home,
@@ -7085,7 +7085,7 @@ def _init_session(
         db = session_db
     elif profile_home:
         try:
-            from renco_state import SessionDB
+            from son_of_anton_state import SessionDB
 
             db = SessionDB(db_path=Path(profile_home) / "state.db")
             _init_owns_db = True
@@ -7222,7 +7222,7 @@ def _build_image_ref_message(user_text: str, image_paths: list[str]) -> str:
 def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str]) -> str:
     """Build the clean, UI-recognizable version of the user's message for
     persisting to session history. Uses ``@image:<path>`` directives — the
-    format the desktop client (directive-text.tsx / RENCO_DIRECTIVE_RE)
+    format the desktop client (directive-text.tsx / SON_OF_ANTON_DIRECTIVE_RE)
     actually parses and renders as an image — unlike
     ``_build_image_ref_message``, which embeds an
     ``image_url:`` hint meant only for the model and must never be
@@ -7777,9 +7777,9 @@ def _auto_continue_config() -> tuple[bool, float, int]:
 
 
 def _session_home(session: dict) -> Path:
-    """The RENCO_HOME the session's durable state lives in (profile-aware)."""
+    """The SON_OF_ANTON_HOME the session's durable state lives in (profile-aware)."""
     profile_home = session.get("profile_home")
-    return Path(profile_home) if profile_home else Path(_renco_home)
+    return Path(profile_home) if profile_home else Path(_son_of_anton_home)
 
 
 def _retire_turn_marker(session: dict, *keys: str) -> None:
@@ -8900,7 +8900,7 @@ def _pet_config_scale() -> float:
     from agent.pet import constants
 
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
 
         cfg = load_config()
         display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
@@ -8958,7 +8958,7 @@ def _pet_active_selection():
     from agent.pet import constants, store
 
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
 
         cfg = load_config()
         display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
@@ -8976,7 +8976,7 @@ def _pet_active_selection():
 def _pet_state_rows(spritesheet) -> list[str]:
     """Row taxonomy for the concrete active pet sheet.
 
-    Renco has to support both the legacy 8-row petdex atlas and the current
+    Son of Anton has to support both the legacy 8-row petdex atlas and the current
     Codex/petdex 9-row atlas. The desktop canvas gets this list and indexes it
     with the same `PetState` names the Python renderer uses.
     """
@@ -8996,9 +8996,9 @@ def _pet_state_rows(spritesheet) -> list[str]:
 
 def _pet_gen_root():
     """Profile-scoped staging dir for in-progress generation drafts."""
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    root = get_renco_home() / "cache" / "pet-gen"
+    root = get_son_of_anton_home() / "cache" / "pet-gen"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -9048,7 +9048,7 @@ _PET_REFERENCE_MIME_EXT = {
 try:
     _PET_REFERENCE_MAX_BYTES = max(
         1,
-        int(os.environ.get("RENCO_PET_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)),
+        int(os.environ.get("SON_OF_ANTON_PET_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)),
     )
 except (TypeError, ValueError):
     _PET_REFERENCE_MAX_BYTES = 16 * 1024 * 1024
@@ -9117,12 +9117,12 @@ def _pet_cancel_release(token: str) -> None:
 # Ink side can branch on the typed billing error code (insufficient_scope,
 # rate_limited, no_payment_method, …) to render the right affordance instead of
 # landing in a generic catch. The data-building lives in the shared core
-# (agent/billing_view.py + renco_cli/nous_billing.py) — same as /topup.
+# (agent/billing_view.py + son_of_anton_cli/nous_billing.py) — same as /topup.
 
 
 def _serialize_billing_error(exc) -> dict:
     """Map a BillingError into the result.error envelope the TUI branches on."""
-    from renco_cli.nous_billing import (
+    from son_of_anton_cli.nous_billing import (
         BillingRemoteSpendingRevoked,
         BillingScopeRequired,
         BillingSessionRevoked,
@@ -9418,14 +9418,14 @@ def _serialize_subscription_preview(p) -> dict:
 # from the event stream).  On turn-complete it posts the final tree here;
 # /replay and /replay-diff fetch past snapshots by session_id + filename.
 #
-# Layout:  $RENCO_HOME/spawn-trees/<session_id>/<timestamp>.json
+# Layout:  $SON_OF_ANTON_HOME/spawn-trees/<session_id>/<timestamp>.json
 # Each file contains { session_id, started_at, finished_at, subagents: [...] }.
 
 
 def _spawn_trees_root():
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    root = get_renco_home() / "spawn-trees"
+    root = get_son_of_anton_home() / "spawn-trees"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -9658,7 +9658,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     in the turn dispatcher completes the tick.
     """
     try:
-        from renco_cli.loops import LoopManager, goal_blocks_loop_tick
+        from son_of_anton_cli.loops import LoopManager, goal_blocks_loop_tick
     except Exception:
         return
 
@@ -10130,7 +10130,7 @@ def _plan_goal_compression_recovery(
             session.pop(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS, None)
         return None, None
 
-    from renco_cli.goals import GoalManager
+    from son_of_anton_cli.goals import GoalManager
 
     sid_key = str(session.get("session_key") or "")
     if not sid_key:
@@ -10320,7 +10320,7 @@ def _run_prompt_submit(
         agent = session["agent"]
         approval_token = None
         session_tokens = []
-        home_token = None  # per-turn RENCO_HOME override for a resumed remote profile
+        home_token = None  # per-turn SON_OF_ANTON_HOME override for a resumed remote profile
         secret_token = None
         goal_followup = None  # set by the post-turn goal hook below
         result = None  # turn outcome; read after the finally for leftover /steer
@@ -10353,7 +10353,7 @@ def _run_prompt_submit(
             )
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
-                home_token = set_renco_home_override(_profile_home_str)
+                home_token = set_son_of_anton_home_override(_profile_home_str)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
@@ -10437,7 +10437,7 @@ def _run_prompt_submit(
                         decide_image_input_mode,
                         build_native_content_parts,
                     )
-                    from renco_cli.config import load_config as _tui_load_config
+                    from son_of_anton_cli.config import load_config as _tui_load_config
 
                     _cfg = _tui_load_config()
                     _provider, _model = _active_image_routing_identity(agent)
@@ -10769,7 +10769,7 @@ def _run_prompt_submit(
                 result, status, raw
             ):
                 try:
-                    from renco_cli.goals import GoalManager
+                    from son_of_anton_cli.goals import GoalManager
 
                     sid_key = session.get("session_key") or ""
                     if sid_key:
@@ -10784,7 +10784,7 @@ def _run_prompt_submit(
                         )
                         if goal_mgr.is_active():
                             try:
-                                from renco_cli.goals import gather_background_processes as _gather_bg
+                                from son_of_anton_cli.goals import gather_background_processes as _gather_bg
                                 _bg_procs = _gather_bg()
                             except Exception:
                                 _bg_procs = None
@@ -10817,7 +10817,7 @@ def _run_prompt_submit(
             # --until judge, --times / max_ticks caps, next-tick schedule.
             if status == "complete":
                 try:
-                    from renco_cli.loops import LoopManager
+                    from son_of_anton_cli.loops import LoopManager
 
                     loop_sid_key = session.get("session_key") or ""
                     if loop_sid_key:
@@ -10908,10 +10908,10 @@ def _run_prompt_submit(
             if isinstance(local_run_kwargs, dict):
                 local_run_kwargs.clear()
 
-            # Run while any profile-specific RENCO_HOME override is still active
+            # Run while any profile-specific SON_OF_ANTON_HOME override is still active
             # so context.memory_trim is resolved from the session's own config.
             try:
-                from renco_cli.mem_trim import trim_memory
+                from son_of_anton_cli.mem_trim import trim_memory
 
                 trim_memory(reason="tui turn completion")
             except Exception:
@@ -10931,7 +10931,7 @@ def _run_prompt_submit(
             except Exception:
                 pass
             if home_token is not None:
-                reset_renco_home_override(home_token)
+                reset_son_of_anton_home_override(home_token)
             if secret_token is not None:
                 reset_secret_scope(secret_token)
             _clear_session_context(session_tokens)
@@ -11160,8 +11160,8 @@ def _session_images_dir(session: dict) -> Path:
     """Resolve the uploads ``images/`` dir against the session's effective home.
 
     Attach RPCs (``image.attach_bytes``, ``clipboard.paste``, ``pdf.attach``)
-    run BEFORE ``prompt.submit`` installs the session's profile RENCO_HOME
-    override, so ``get_renco_home()`` here would return the gateway's launch
+    run BEFORE ``prompt.submit`` installs the session's profile SON_OF_ANTON_HOME
+    override, so ``get_son_of_anton_home()`` here would return the gateway's launch
     home. In a multi-profile / root-gateway deployment that writes the upload to
     the launch home's ``images/`` while the sandbox mount and the vision host-
     read allowlist both resolve the *session profile's* ``images/`` at run time
@@ -11172,7 +11172,7 @@ def _session_images_dir(session: dict) -> Path:
     per-profile isolation: a profile's uploads stay under that profile's home.
     """
     profile_home = session.get("profile_home")
-    base = Path(profile_home) if profile_home else _renco_home
+    base = Path(profile_home) if profile_home else _son_of_anton_home
     return base / "images"
 
 
@@ -11237,14 +11237,14 @@ def _desktop_attachment_dir(session: dict) -> Path:
 
     Anchored on the session profile's ``attachments/`` dir (same rule as
     ``_session_images_dir``): ``file.attach`` runs BEFORE ``prompt.submit``
-    installs the session's profile RENCO_HOME override, while the docker/ssh
+    installs the session's profile SON_OF_ANTON_HOME override, while the docker/ssh
     sandbox mounts are resolved against the *session profile's* home at run
     time — so the staged file must land where the bind mount points, or the
     container can never see it (#76577). ``attachments/`` is registered in
     ``tools.credential_files._CACHE_DIRS`` and auto-mounted into containers.
     """
     profile_home = session.get("profile_home")
-    base = Path(profile_home) if profile_home else _renco_home
+    base = Path(profile_home) if profile_home else _son_of_anton_home
     root = base / "attachments"
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -11403,7 +11403,7 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
-                from renco_cli.model_switch import parse_model_switch_args
+                from son_of_anton_cli.model_switch import parse_model_switch_args
 
                 # A live swap can't run in-place while a turn streams:
                 # agent.switch_model() mutates self.model / self.provider /
@@ -11519,7 +11519,7 @@ def _(rid, params: dict) -> dict:
 
         overrides = None
         if nv == "fast":
-            from renco_cli.models import resolve_fast_mode_overrides
+            from son_of_anton_cli.models import resolve_fast_mode_overrides
 
             if agent is not None:
                 target_model = getattr(agent, "model", None)
@@ -11617,7 +11617,7 @@ def _(rid, params: dict) -> dict:
         # pins tool_progress to "off" (the same value /verbose off uses) after
         # stashing the configured mode, and disabling it restores that mode.
         # Nothing about the request payload changes.
-        from renco_cli.focus_view import (
+        from son_of_anton_cli.focus_view import (
             FOCUS_TOOL_PROGRESS_MODE,
             normalize_tool_progress_mode,
             resolve_focus_arg,
@@ -11756,13 +11756,13 @@ def _(rid, params: dict) -> dict:
                         _session_info(agent, session),
                     )
             else:
-                current = is_truthy_value(os.environ.get("RENCO_YOLO_MODE"))
+                current = is_truthy_value(os.environ.get("SON_OF_ANTON_YOLO_MODE"))
                 enable = _resolve_toggle(current)
                 if enable:
-                    os.environ["RENCO_YOLO_MODE"] = "1"
+                    os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
                     nv = "1"
                 else:
-                    os.environ.pop("RENCO_YOLO_MODE", None)
+                    os.environ.pop("SON_OF_ANTON_YOLO_MODE", None)
                     nv = "0"
             return _ok(rid, {"key": key, "value": nv, "scope": "session"})
         except Exception as e:
@@ -11770,7 +11770,7 @@ def _(rid, params: dict) -> dict:
 
     if key == "reasoning":
         try:
-            from renco_constants import parse_reasoning_effort
+            from son_of_anton_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
             scope = str(params.get("scope") or "").strip().lower()
@@ -12061,9 +12061,9 @@ def _(rid, params: dict) -> dict:
                 sid_key = params.get("session_id", "")
                 pname, new_prompt = _validate_personality(str(value or ""), cfg)
                 # Personality text is an in-session overlay. Persistence goes
-                # through renco_cli.personality (single owner) and never
+                # through son_of_anton_cli.personality (single owner) and never
                 # touches the user-owned global system prompt.
-                from renco_cli.personality import persist_personality
+                from son_of_anton_cli.personality import persist_personality
 
                 persist_personality(pname)
                 nv = str(value or "none")
@@ -12107,7 +12107,7 @@ class _NoProject(Exception):
 
 
 def _projects_payload(conn) -> dict:
-    from renco_cli import projects_db as pdb
+    from son_of_anton_cli import projects_db as pdb
 
     return {
         "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
@@ -12128,7 +12128,7 @@ def _projects_method(name: str):
         @_profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
-                from renco_cli import projects_db as pdb
+                from son_of_anton_cli import projects_db as pdb
 
                 with pdb.connect_closing() as conn:
                     return fn(rid, params, pdb, conn)
@@ -12269,21 +12269,21 @@ def _non_workspace_dirs() -> set[str]:
 
 def _is_repo_junk(root: str) -> bool:
     """A git root we never auto-surface as a project: a non-workspace dir (see
-    :func:`_non_workspace_dirs`) or anything under RENCO_HOME (~/.renco by
+    :func:`_non_workspace_dirs`) or anything under SON_OF_ANTON_HOME (~/.son-of-anton by
     default) — config/sessions/skills, not a workspace. User-created projects
     pointing there are still honored."""
     if not root:
         return True
 
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
     real = os.path.realpath(root)
-    renco_home = os.path.realpath(str(get_renco_home()))
+    son_of_anton_home = os.path.realpath(str(get_son_of_anton_home()))
 
     return (
         os.path.normcase(real) in _non_workspace_dirs()
-        or real == renco_home
-        or real.startswith(renco_home + os.sep)
+        or real == son_of_anton_home
+        or real.startswith(son_of_anton_home + os.sep)
     )
 
 
@@ -12291,18 +12291,18 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     """A non-git cwd that should stay in flat Recents rather than auto-group.
 
     Unlike discovered git roots, an explicitly selected descendant of
-    RENCO_HOME may be an intentional prose/data workspace. Exclude only the
-    broad defaults that would create catch-all projects: RENCO_HOME itself
+    SON_OF_ANTON_HOME may be an intentional prose/data workspace. Exclude only the
+    broad defaults that would create catch-all projects: SON_OF_ANTON_HOME itself
     and the dirs in :func:`_non_workspace_dirs`.
     """
     if not cwd:
         return True
 
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
     real = os.path.normcase(os.path.realpath(cwd))
-    renco_home = os.path.normcase(os.path.realpath(str(get_renco_home())))
-    return real in _non_workspace_dirs() or real == renco_home
+    son_of_anton_home = os.path.normcase(os.path.realpath(str(get_son_of_anton_home())))
+    return real in _non_workspace_dirs() or real == son_of_anton_home
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
@@ -12370,7 +12370,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
 
     The desktop's native repo scan only runs on the local filesystem. On a
     remote gateway connection the host must scan its own disk so repos with
-    zero Renco sessions still appear in the sidebar (#81723). Mirrors the
+    zero Son of Anton sessions still appear in the sidebar (#81723). Mirrors the
     desktop's behavior: walk each root (bounded depth), find `.git`
     directories, record (root, label) pairs into the discovery cache.
 
@@ -12384,7 +12384,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     a failed remote refresh can't blank the previously cached repos into the
     silent, unpopulated sidebar of #81723.
     """
-    from renco_cli import projects_db as pdb
+    from son_of_anton_cli import projects_db as pdb
 
     roots = policy.get("roots") or []
     excludes = policy.get("exclude_paths") or []
@@ -12422,7 +12422,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
                     # Don't descend into the repo's own .git to hunt nested repos.
                     dirnames[:] = []
                 else:
-                    # Not a repo: skip hidden dirs (e.g. .renco) and node_modules.
+                    # Not a repo: skip hidden dirs (e.g. .son-of-anton) and node_modules.
                     dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in ("node_modules",)]
                 if len(pairs) >= 500:
                     break
@@ -12454,8 +12454,8 @@ def _discover_repos_payload(
     """Merge filesystem-scanned repos (cached) with session-derived repo roots.
 
     Repo-first: the disk scan (persisted by `projects.record_repos`) surfaces
-    repos even with zero renco sessions. Session-derived roots cover repos
-    outside the scan roots. Both are junk-filtered (renco home subtree + bare
+    repos even with zero son-of-anton sessions. Session-derived roots cover repos
+    outside the scan roots. Both are junk-filtered (son-of-anton home subtree + bare
     home) and carry their session totals for the overview.
 
     ``conn`` reuses an already-open projects.db connection (the tree path holds
@@ -12507,7 +12507,7 @@ def _discover_repos_payload(
     # Filesystem-scanned roots from the cache (may have zero sessions). Reuse the
     # caller's projects.db connection when given, else open a short-lived one.
     try:
-        from renco_cli import projects_db as pdb
+        from son_of_anton_cli import projects_db as pdb
 
         def _read(c) -> None:
             for entry in pdb.list_discovered_repos(c):
@@ -12520,7 +12520,7 @@ def _discover_repos_payload(
                 # NOTE: `last_seen` is when the disk scan last saw the directory,
                 # not when the user last worked in it. Folding it into
                 # `last_active` stamped every scanned repo with the scan time —
-                # i.e. "just now" — so a git checkout with zero Renco sessions
+                # i.e. "just now" — so a git checkout with zero Son of Anton sessions
                 # outranked the repos the user actually works in. Activity stays
                 # session-derived; a repo with no sessions has no activity.
 
@@ -12611,7 +12611,7 @@ def _project_tree_inputs(
     # skips the discovery warm-up below).
     git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
 
-    from renco_cli import projects_db as pdb
+    from son_of_anton_cli import projects_db as pdb
 
     policy = _repo_discovery_policy()
     policy_key = _repo_discovery_policy_key(policy)
@@ -12878,7 +12878,7 @@ def _rank_slash_completions(
     ``usage``/``origin_of`` are the callables :func:`_skill_usage_lookup`
     returns. Registry commands keep their existing order — only the skill
     block is reordered, most-used first and A-Z within a tie, so the handful
-    of skills someone invokes daily lead the ones that shipped with Renco
+    of skills someone invokes daily lead the ones that shipped with Son of Anton
     and were never opened.
 
     ``score_of`` (optional) is the fuzzy-match scorer from
@@ -12926,22 +12926,22 @@ def _rank_slash_completions(
 def _cli_exec_blocked(argv: list[str]) -> str | None:
     """Return user hint if this argv must not run headless in the gateway process."""
     if not argv:
-        return "bare `renco` is interactive — use `/renco chat -q …` or run `renco` in another terminal"
+        return "bare `son-of-anton` is interactive — use `/son-of-anton chat -q …` or run `son-of-anton` in another terminal"
     a0 = argv[0].lower()
     if a0 == "setup":
-        return "`renco setup` needs a full terminal — run it outside the TUI"
+        return "`son-of-anton setup` needs a full terminal — run it outside the TUI"
     if a0 == "gateway":
-        return "`renco gateway` is long-running — run it in another terminal"
+        return "`son-of-anton gateway` is long-running — run it in another terminal"
     if a0 == "sessions" and len(argv) > 1 and argv[1].lower() == "browse":
-        return "`renco sessions browse` is interactive — use /resume here, or run browse in another terminal"
+        return "`son-of-anton sessions browse` is interactive — use /resume here, or run browse in another terminal"
     if a0 == "config" and len(argv) > 1 and argv[1].lower() == "edit":
-        return "`renco config edit` needs $EDITOR in a real terminal"
+        return "`son-of-anton config edit` needs $EDITOR in a real terminal"
     return None
 
 
 def _resolve_name(name: str) -> str:
     try:
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         r = resolve_command(name)
         return r.name if r else name
@@ -13000,7 +13000,7 @@ def _list_repo_files(root: str) -> list[str]:
             return cached[1]
 
     files: list[str] = []
-    from renco_cli._subprocess_compat import windows_hide_flags
+    from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
     _creationflags = windows_hide_flags()
     try:
@@ -13249,14 +13249,14 @@ def _details_completions(text: str) -> list[dict] | None:
 
 def _model_picker_context(agent):
     """Layer live session state onto config without losing custom identity."""
-    from renco_cli.inventory import load_picker_context
+    from son_of_anton_cli.inventory import load_picker_context
 
     ctx = load_picker_context()
     provider = getattr(agent, "provider", "") if agent else ""
     base_url = getattr(agent, "base_url", "") if agent else ""
     if str(provider or "").strip().lower() == "custom":
         try:
-            from renco_cli.runtime_provider import canonical_custom_identity
+            from son_of_anton_cli.runtime_provider import canonical_custom_identity
 
             provider = (
                 canonical_custom_identity(
@@ -13365,7 +13365,7 @@ def _format_live_history_output(session: dict) -> str:
     lines = ["Conversation History", "────────────────────────────────────────"]
     for idx, message in enumerate(messages, start=1):
         role = str(message.get("role") or "unknown")
-        label = "You" if role == "user" else "Renco" if role == "assistant" else role.title()
+        label = "You" if role == "user" else "Son of Anton" if role == "assistant" else role.title()
         text = str(message.get("text") or message.get("context") or "").strip()
         if len(text) > 400:
             text = f"{text[:400]}..."
@@ -13458,7 +13458,7 @@ def _format_live_tools_output(session: dict) -> str:
 
 def _format_live_help_output() -> str:
     try:
-        from renco_cli.commands import COMMANDS_BY_CATEGORY
+        from son_of_anton_cli.commands import COMMANDS_BY_CATEGORY
 
         lines = ["Available commands:", ""]
         for category, commands in COMMANDS_BY_CATEGORY.items():
@@ -13596,7 +13596,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             # Persist through the single owner so this surface can never
             # drift from the others (the old TUI slash path applied the
             # overlay in-session but skipped persistence entirely).
-            from renco_cli.personality import persist_personality
+            from son_of_anton_cli.personality import persist_personality
 
             persist_personality(pname)
             _apply_personality_to_session(sid, session, new_prompt, pname)

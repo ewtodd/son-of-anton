@@ -148,14 +148,14 @@ class TestComputeRelativeDest:
 
 class TestRmtreeWritableScopeGuard:
     """``_rmtree_writable`` must refuse to remove anything outside
-    ``RENCO_HOME/skills/``.
+    ``SON_OF_ANTON_HOME/skills/``.
 
     The previous implementation called ``shutil.rmtree(path)`` on whatever
     argument the caller passed. If any of the five call sites in
     ``tools/skills_sync.py`` ever computes a path outside the skills
     root — through a bad join, a missing default, a malicious
     bundled-manifest entry, or a stale path in scope after an
-    exception — the result is a silent ``shutil.rmtree(~/.renco/)``
+    exception — the result is a silent ``shutil.rmtree(~/.son-of-anton/)``
     that destroys the user's ``.env``, ``MEMORY.md``, ``kanban.db``,
     custom skills, scripts, and the rest of the install in one go
     (#48200).
@@ -166,20 +166,20 @@ class TestRmtreeWritableScopeGuard:
     """
 
     def test_refuses_anything_that_is_not_a_strict_child_of_skills(self, tmp_path):
-        """``/``, ``~/.renco`` itself, a sibling dir, and the skills root
+        """``/``, ``~/.son-of-anton`` itself, a sibling dir, and the skills root
         are all rejected — the root because a ``dest`` that collapses to it
         would wipe every installed skill (the degenerate #48200 path)."""
         from tools.skills_sync import _rmtree_writable
 
-        renco = tmp_path / "home"
-        renco.mkdir()
-        skills = renco / "skills"
+        son_of_anton = tmp_path / "home"
+        son_of_anton.mkdir()
+        skills = son_of_anton / "skills"
         (skills / "keep").mkdir(parents=True)
-        sibling = renco / "kanban.db"  # any non-skills path
+        sibling = son_of_anton / "kanban.db"  # any non-skills path
         sibling.mkdir()
 
         with patch("tools.skills_sync.SKILLS_DIR", skills):
-            for target in (Path("/"), renco, sibling, skills):
+            for target in (Path("/"), son_of_anton, sibling, skills):
                 with pytest.raises(ValueError, match="refusing to rmtree"):
                     _rmtree_writable(target)
 
@@ -526,13 +526,13 @@ class TestGetBundledDir:
     def test_env_var_override_with_default_fallback(self, tmp_path, monkeypatch):
         custom_dir = tmp_path / "custom_skills"
         custom_dir.mkdir()
-        monkeypatch.setenv("RENCO_BUNDLED_SKILLS", str(custom_dir))
+        monkeypatch.setenv("SON_OF_ANTON_BUNDLED_SKILLS", str(custom_dir))
         assert _get_bundled_dir() == custom_dir
 
         # Empty or unset falls back to the relative path from __file__.
-        monkeypatch.setenv("RENCO_BUNDLED_SKILLS", "")
+        monkeypatch.setenv("SON_OF_ANTON_BUNDLED_SKILLS", "")
         assert _get_bundled_dir().name == "skills"
-        monkeypatch.delenv("RENCO_BUNDLED_SKILLS", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_BUNDLED_SKILLS", raising=False)
         assert _get_bundled_dir().name == "skills"
 
 
@@ -706,9 +706,9 @@ class TestResetBundledSkill:
 class TestNoBundledSkillsOptOut:
     """The .no-bundled-skills marker makes sync_skills() a no-op.
 
-    This is what `renco profile create --no-skills` (named profiles) and the
-    installer's `--no-skills` flag (default ~/.renco) rely on so bundled
-    skills are never seeded at install time NOR re-injected by `renco update`.
+    This is what `son_of_anton profile create --no-skills` (named profiles) and the
+    installer's `--no-skills` flag (default ~/.son_of_anton) rely on so bundled
+    skills are never seeded at install time NOR re-injected by `son_of_anton update`.
     """
 
     def test_marker_skips_sync_and_removal_seeds_normally(self, tmp_path):
@@ -719,9 +719,9 @@ class TestNoBundledSkillsOptOut:
 
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
-        renco_home = tmp_path / "home"
-        renco_home.mkdir()
-        marker = renco_home / ".no-bundled-skills"
+        son_of_anton_home = tmp_path / "home"
+        son_of_anton_home.mkdir()
+        marker = son_of_anton_home / ".no-bundled-skills"
         marker.write_text("opted out\n")
 
         from contextlib import ExitStack
@@ -732,7 +732,7 @@ class TestNoBundledSkillsOptOut:
             stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
             stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
             stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
-            stack.enter_context(patch("tools.skills_sync.RENCO_HOME", renco_home))
+            stack.enter_context(patch("tools.skills_sync.SON_OF_ANTON_HOME", son_of_anton_home))
             return stack
 
         with _patches():
@@ -754,7 +754,7 @@ class TestNoBundledSkillsOptOut:
 
 
 class TestOptOutToggleAndRemove:
-    """`renco skills opt-out/opt-in` core: marker toggle + safe removal."""
+    """`son_of_anton skills opt-out/opt-in` core: marker toggle + safe removal."""
 
     def _setup_bundled(self, tmp_path):
         bundled = tmp_path / "bundled"
@@ -770,7 +770,7 @@ class TestOptOutToggleAndRemove:
         )
         home = tmp_path / "home"
         home.mkdir()
-        with patch("tools.skills_sync.RENCO_HOME", home):
+        with patch("tools.skills_sync.SON_OF_ANTON_HOME", home):
             assert is_bundled_skills_opt_out() is False
             r = set_bundled_skills_opt_out(True)
             assert r["ok"] and r["changed"]
@@ -796,7 +796,7 @@ class TestOptOutToggleAndRemove:
              patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
              patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
              patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
-             patch("tools.skills_sync.RENCO_HOME", home):
+             patch("tools.skills_sync.SON_OF_ANTON_HOME", home):
             sync_skills(quiet=True)
             # User edits 'beta'
             (skills_dir / "beta" / "SKILL.md").write_text("---\nname: beta\n---\nEDITED\n")
@@ -940,40 +940,40 @@ class TestUpdateBackupRecovery:
 
 class TestCallTimeDirResolution:
     """Regression for #65828: skills_sync bound SKILLS_DIR/MANIFEST_FILE/
-    RENCO_HOME at import, so a long-lived dashboard/TUI process serving a
+    SON_OF_ANTON_HOME at import, so a long-lived dashboard/TUI process serving a
     console skills command for another profile resolved (and for
     reset_bundled_skill DELETED) against whichever home was live at import.
-    The accessors must follow set_renco_home_override() at call time, while
+    The accessors must follow set_son_of_anton_home_override() at call time, while
     an explicitly patched module global (tests, _profile_scope retargeting)
     still wins.
     """
 
-    def test_accessors_follow_renco_home_override(self, tmp_path):
-        from renco_constants import set_renco_home_override, reset_renco_home_override
+    def test_accessors_follow_son_of_anton_home_override(self, tmp_path):
+        from son_of_anton_constants import set_son_of_anton_home_override, reset_son_of_anton_home_override
         import tools.skills_sync as ss
 
         profile_home = tmp_path / "profiles" / "research"
-        token = set_renco_home_override(str(profile_home))
+        token = set_son_of_anton_home_override(str(profile_home))
         try:
-            assert ss._renco_home() == profile_home
+            assert ss._son_of_anton_home() == profile_home
             assert ss._skills_dir() == profile_home / "skills"
             assert ss._manifest_file() == profile_home / "skills" / ".bundled_manifest"
         finally:
-            reset_renco_home_override(token)
+            reset_son_of_anton_home_override(token)
 
     def test_explicit_module_patch_wins_over_override(self, tmp_path):
-        from renco_constants import set_renco_home_override, reset_renco_home_override
+        from son_of_anton_constants import set_son_of_anton_home_override, reset_son_of_anton_home_override
         import tools.skills_sync as ss
 
         patched = tmp_path / "patched-skills"
-        token = set_renco_home_override(str(tmp_path / "other-profile"))
+        token = set_son_of_anton_home_override(str(tmp_path / "other-profile"))
         try:
             with patch("tools.skills_sync.SKILLS_DIR", patched):
                 assert ss._skills_dir() == patched
                 # MANIFEST_FILE unpatched -> derives from the patched skills dir.
                 assert ss._manifest_file() == patched / ".bundled_manifest"
         finally:
-            reset_renco_home_override(token)
+            reset_son_of_anton_home_override(token)
 
     def test_rmtree_guard_anchors_on_overridden_profile(self, tmp_path):
         """The #48200 strict-child rmtree guard must anchor on the OVERRIDDEN
@@ -981,7 +981,7 @@ class TestCallTimeDirResolution:
         was computed against the wrong home (#65828's sharpest edge): a
         legitimate delete in the scoped profile would be refused, and a stale
         path under the import-time home would pass the guard."""
-        from renco_constants import set_renco_home_override, reset_renco_home_override
+        from son_of_anton_constants import set_son_of_anton_home_override, reset_son_of_anton_home_override
         import tools.skills_sync as ss
 
         profile_home = tmp_path / "profiles" / "worker"
@@ -989,7 +989,7 @@ class TestCallTimeDirResolution:
         victim.mkdir(parents=True)
         (victim / "SKILL.md").write_text("---\nname: doomed-skill\n---\n", encoding="utf-8")
 
-        token = set_renco_home_override(str(profile_home))
+        token = set_son_of_anton_home_override(str(profile_home))
         try:
             # Allowed: strict child of the overridden profile's skills root.
             ss._rmtree_writable(victim)
@@ -1001,4 +1001,4 @@ class TestCallTimeDirResolution:
             with pytest.raises(ValueError):
                 ss._rmtree_writable(foreign)
         finally:
-            reset_renco_home_override(token)
+            reset_son_of_anton_home_override(token)

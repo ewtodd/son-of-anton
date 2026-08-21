@@ -1,9 +1,9 @@
 """Guard test for the MEDIA:<path> caption chokepoint (_media_caption_split).
 
-`renco send` strips the MEDIA: tag and leaves the remaining prose as the
+`son-of-anton send` strips the MEDIA: tag and leaves the remaining prose as the
 accompanying text. Historically every standalone sender posted that text as a
 *separate* message before an uncaptioned media bubble, splitting
-``renco send --to whatsapp "MEDIA:/x.png This Caption"`` into two parts.
+``son-of-anton send --to whatsapp "MEDIA:/x.png This Caption"`` into two parts.
 
 `_media_caption_split` is the single enforced decision point that all standalone
 senders (WhatsApp, Telegram, Discord) consult to decide whether the text should

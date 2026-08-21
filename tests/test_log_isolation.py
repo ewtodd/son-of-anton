@@ -1,11 +1,11 @@
-"""The test suite must never write into the operator's real Renco logs.
+"""The test suite must never write into the operator's real Son of Anton logs.
 
-`renco_cli/main.py` calls `setup_logging()` at module scope, which resolves
-`get_renco_home()` and attaches rotating file handlers to the ROOT logger.
+`son_of_anton_cli/main.py` calls `setup_logging()` at module scope, which resolves
+`get_son_of_anton_home()` and attaches rotating file handlers to the ROOT logger.
 Importing it - which many test modules do, directly or transitively - wires
-the whole pytest session's logging to `<RENCO_HOME>/logs/agent.log`.
+the whole pytest session's logging to `<SON_OF_ANTON_HOME>/logs/agent.log`.
 
-If RENCO_HOME is not already sandboxed at that moment, that is the
+If SON_OF_ANTON_HOME is not already sandboxed at that moment, that is the
 operator's real log. Measured on a live install, 126 warnings in a personal
 `agent.log` came from test runs rather than the running gateway: phantom
 `FakeTree` Discord failures and `rejected invalid API key` entries from
@@ -14,7 +14,7 @@ find precisely when someone is debugging.
 
 The per-test env fixture cannot close this: fixtures run after collection has
 imported the test modules, and by then the handler holds an absolute path.
-`tests/conftest.py` sets RENCO_HOME at module scope for that reason - this
+`tests/conftest.py` sets SON_OF_ANTON_HOME at module scope for that reason - this
 guards the property so a refactor cannot quietly undo it.
 """
 
@@ -25,9 +25,9 @@ from pathlib import Path
 import pytest
 
 
-def _real_renco_home() -> Path:
+def _real_son_of_anton_home() -> Path:
     """Where the operator's logs live, ignoring any test sandboxing."""
-    return Path.home() / ".renco"
+    return Path.home() / ".son-of-anton"
 
 
 def _all_file_destinations() -> list[str]:
@@ -51,9 +51,9 @@ def _all_file_destinations() -> list[str]:
     collect(logging.getLogger().handlers)
 
     try:
-        import renco_logging
+        import son_of_anton_logging
 
-        listener = getattr(renco_logging, "_queue_listener", None)
+        listener = getattr(son_of_anton_logging, "_queue_listener", None)
         if listener is not None:
             collect(getattr(listener, "handlers", ()))
     except Exception:
@@ -63,26 +63,26 @@ def _all_file_destinations() -> list[str]:
 
 
 class TestLogIsolation:
-    def test_renco_home_is_sandboxed_before_imports(self):
+    def test_son_of_anton_home_is_sandboxed_before_imports(self):
         # Deliberately NOT os.environ: by test time the per-test `_isolate_env`
-        # fixture has sandboxed RENCO_HOME, so reading it here would pass even
+        # fixture has sandboxed SON_OF_ANTON_HOME, so reading it here would pass even
         # with the conftest block deleted. Assert the value captured at conftest
         # import, which is the moment that actually matters.
-        from tests.conftest import RENCO_HOME_AT_CONFTEST_IMPORT as home
+        from tests.conftest import SON_OF_ANTON_HOME_AT_CONFTEST_IMPORT as home
 
-        assert home, "conftest must set RENCO_HOME before test modules import"
-        assert Path(home).resolve() != _real_renco_home().resolve(), (
-            f"RENCO_HOME pointed at the operator's real home ({home}) when "
+        assert home, "conftest must set SON_OF_ANTON_HOME before test modules import"
+        assert Path(home).resolve() != _real_son_of_anton_home().resolve(), (
+            f"SON_OF_ANTON_HOME pointed at the operator's real home ({home}) when "
             "conftest loaded; import-time setup_logging() writes to their agent.log"
         )
 
     def test_importing_the_cli_does_not_target_the_real_logs(self):
-        pytest.importorskip("renco_cli.main")
+        pytest.importorskip("son_of_anton_cli.main")
 
-        real_logs = str(_real_renco_home() / "logs")
+        real_logs = str(_real_son_of_anton_home() / "logs")
         offenders = [p for p in _all_file_destinations() if p.startswith(real_logs)]
 
         assert offenders == [], (
-            "the test session is writing into the operator's real Renco logs:\n  "
+            "the test session is writing into the operator's real Son of Anton logs:\n  "
             + "\n  ".join(offenders)
         )

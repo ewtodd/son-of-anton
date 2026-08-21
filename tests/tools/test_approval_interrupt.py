@@ -44,12 +44,12 @@ class TestApprovalInterrupt:
         set_interrupt(False)
         self._saved_env = {
             k: os.environ.get(k)
-            for k in ("RENCO_GATEWAY_SESSION", "RENCO_YOLO_MODE",
-                      "RENCO_SESSION_KEY")
+            for k in ("SON_OF_ANTON_GATEWAY_SESSION", "SON_OF_ANTON_YOLO_MODE",
+                      "SON_OF_ANTON_SESSION_KEY")
         }
-        os.environ.pop("RENCO_YOLO_MODE", None)
-        os.environ["RENCO_GATEWAY_SESSION"] = "1"
-        os.environ["RENCO_SESSION_KEY"] = self.SESSION_KEY
+        os.environ.pop("SON_OF_ANTON_YOLO_MODE", None)
+        os.environ["SON_OF_ANTON_GATEWAY_SESSION"] = "1"
+        os.environ["SON_OF_ANTON_SESSION_KEY"] = self.SESSION_KEY
 
     def teardown_method(self):
         from tools.interrupt import set_interrupt

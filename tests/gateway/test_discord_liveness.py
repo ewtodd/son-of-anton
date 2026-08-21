@@ -96,8 +96,8 @@ def _make_adapter(
     max_ack_age=1.0,
     max_latency=1.0,
 ) -> DiscordAdapter:
-    monkeypatch.setenv("RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
-    monkeypatch.setenv("RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
+    monkeypatch.setenv("SON_OF_ANTON_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
+    monkeypatch.setenv("SON_OF_ANTON_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
     return DiscordAdapter(
         PlatformConfig(
             enabled=True,
@@ -134,8 +134,8 @@ def test_nonfinite_liveness_config_disables_that_probe_dimension(monkeypatch, ke
 
 def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
     for key in (
-        "RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS",
-        "RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        "SON_OF_ANTON_DISCORD_LIVENESS_INTERVAL_SECONDS",
+        "SON_OF_ANTON_DISCORD_LIVENESS_FAILURE_THRESHOLD",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -148,8 +148,8 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
 
 
 def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
-    monkeypatch.setenv("RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS", "99")
-    monkeypatch.setenv("RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD", "9")
+    monkeypatch.setenv("SON_OF_ANTON_DISCORD_LIVENESS_INTERVAL_SECONDS", "99")
+    monkeypatch.setenv("SON_OF_ANTON_DISCORD_LIVENESS_FAILURE_THRESHOLD", "9")
 
     adapter = DiscordAdapter(
         PlatformConfig(

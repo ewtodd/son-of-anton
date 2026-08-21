@@ -19,7 +19,7 @@ from cron.jobs import (
     load_jobs,
 )
 from cron.scheduler import get_running_job_ids
-from renco_time import now as _renco_now
+from son_of_anton_time import now as _son_of_anton_now
 
 logger = logging.getLogger(__name__)
 _KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown"}
@@ -34,7 +34,7 @@ class CronHealthSnapshot:
 
 
 def _now() -> datetime:
-    return _renco_now()
+    return _son_of_anton_now()
 
 
 def _job_key(raw: Any) -> str:
@@ -148,8 +148,8 @@ def _is_overdue(job: dict[str, Any], now: datetime) -> bool:
 def build_cron_health_snapshot() -> CronHealthSnapshot:
     metrics: list[GatewayMetric] = []
     for name, reader in (
-        ("renco.cron.scheduler.heartbeat_age_seconds", get_ticker_heartbeat_age),
-        ("renco.cron.scheduler.last_success_age_seconds", get_ticker_success_age),
+        ("son-of-anton.cron.scheduler.heartbeat_age_seconds", get_ticker_heartbeat_age),
+        ("son-of-anton.cron.scheduler.last_success_age_seconds", get_ticker_success_age),
     ):
         try:
             value = reader()
@@ -161,7 +161,7 @@ def build_cron_health_snapshot() -> CronHealthSnapshot:
     try:
         metrics.append(
             GatewayMetric(
-                "renco.cron.scheduler.catch_up_occurrences",
+                "son-of-anton.cron.scheduler.catch_up_occurrences",
                 get_catch_up_occurrence_count(),
                 {},
             )
@@ -172,10 +172,10 @@ def build_cron_health_snapshot() -> CronHealthSnapshot:
     try:
         jobs = load_jobs()
         enabled = [job for job in jobs if job.get("enabled", True)]
-        metrics.append(GatewayMetric("renco.cron.jobs.enabled", len(enabled), {}))
+        metrics.append(GatewayMetric("son-of-anton.cron.jobs.enabled", len(enabled), {}))
         metrics.append(
             GatewayMetric(
-                "renco.cron.jobs.overdue",
+                "son-of-anton.cron.jobs.overdue",
                 sum(1 for job in enabled if _is_overdue(job, _now())),
                 {},
             )
@@ -185,7 +185,7 @@ def build_cron_health_snapshot() -> CronHealthSnapshot:
 
     try:
         metrics.append(
-            GatewayMetric("renco.cron.jobs.running", len(get_running_job_ids()), {})
+            GatewayMetric("son-of-anton.cron.jobs.running", len(get_running_job_ids()), {})
         )
     except Exception:
         logger.debug("cron running-job metric unavailable", exc_info=True)

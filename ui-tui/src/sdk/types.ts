@@ -1,4 +1,4 @@
-import type { Key } from '@renco/ink'
+import type { Key } from '@sonofanton/ink'
 import type { ReactNode } from 'react'
 
 import type { Theme } from '../theme.js'

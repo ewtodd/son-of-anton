@@ -21,7 +21,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 
-def _make_email_adapter(address="renco@test.com"):
+def _make_email_adapter(address="son-of-anton@test.com"):
     from gateway.config import PlatformConfig
 
     with patch.dict(os.environ, {

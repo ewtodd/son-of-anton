@@ -42,7 +42,7 @@ def _clear_terminal_env(monkeypatch):
 
 
 def test_local_terminal_requirements(monkeypatch, caplog):
-    """Local backend uses Renco' own LocalEnvironment wrapper."""
+    """Local backend uses Son of Anton' own LocalEnvironment wrapper."""
     _clear_terminal_env(monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "local")
 

@@ -4,7 +4,7 @@ Provides the agent with the ability to interact with Discord servers
 when running on the Discord gateway. Uses Discord REST API directly
 with the bot token — no dependency on the gateway adapter's client.
 
-Only included in the renco-discord toolset, so it has zero cost
+Only included in the son-of-anton-discord toolset, so it has zero cost
 for users on other platforms.
 
 The schema exposed to the model is filtered by two gates:
@@ -100,7 +100,7 @@ def _discord_request(
         headers={
             "Authorization": f"Bot {token}",
             "Content-Type": "application/json",
-            "User-Agent": "Renco-Agent (https://github.com/ewtodd/renco)",
+            "User-Agent": "Son of Anton-Agent (https://github.com/ewtodd/son-of-anton)",
         },
     )
 
@@ -173,9 +173,9 @@ _capability_bg_lock = threading.Lock()
 
 def _capability_disk_cache_path() -> "Path":
 
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    return get_renco_home() / "cache" / "discord_capabilities.json"
+    return get_son_of_anton_home() / "cache" / "discord_capabilities.json"
 
 
 def _token_cache_key(token: str) -> str:
@@ -710,7 +710,7 @@ def _load_allowed_actions_config() -> Optional[List[str]]:
     Unknown action names are dropped with a log warning.
     """
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
         cfg = load_config()
     except Exception as exc:
         logger.debug("discord: could not load config (%s); allowing all actions.", exc)

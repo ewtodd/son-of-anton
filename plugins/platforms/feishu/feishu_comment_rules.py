@@ -3,8 +3,8 @@ Feishu document comment access-control rules.
 
 3-tier rule resolution: exact doc > wildcard "*" > top-level > code defaults.
 Each field (enabled/policy/allow_from) falls back independently.
-Config: ~/.renco/feishu_comment_rules.json (mtime-cached, hot-reload).
-Pairing store: ~/.renco/feishu_comment_pairing.json.
+Config: ~/.son-of-anton/feishu_comment_rules.json (mtime-cached, hot-reload).
+Pairing store: ~/.son-of-anton/feishu_comment_pairing.json.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from renco_constants import get_renco_home
+from son_of_anton_constants import get_son_of_anton_home
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +24,13 @@ logger = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 #
-# Uses the canonical ``get_renco_home()`` helper (RENCO_HOME-aware and
+# Uses the canonical ``get_son_of_anton_home()`` helper (SON_OF_ANTON_HOME-aware and
 # profile-safe). Resolved at import time; this module is lazy-imported by
 # the Feishu comment event handler, which runs long after profile overrides
 # have been applied, so freezing paths here is safe.
 
-RULES_FILE = get_renco_home() / "feishu_comment_rules.json"
-PAIRING_FILE = get_renco_home() / "feishu_comment_pairing.json"
+RULES_FILE = get_son_of_anton_home() / "feishu_comment_rules.json"
+PAIRING_FILE = get_son_of_anton_home() / "feishu_comment_pairing.json"
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -351,8 +351,8 @@ def _main() -> int:
     import sys
 
     try:
-        from renco_cli.env_loader import load_renco_dotenv
-        load_renco_dotenv()
+        from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
+        load_son_of_anton_dotenv()
     except Exception:
         pass
 

@@ -477,7 +477,7 @@ class WebhookAdapter(BasePlatformAdapter):
         Set via ``platforms.webhook.extra.routes.<name>.toolsets`` in
         config.yaml or a ``toolsets`` key on a subscription in
         ``webhook_subscriptions.json`` (manual edit — deliberately NOT
-        exposed through `renco webhook subscribe`, so an agent-created
+        exposed through `son-of-anton webhook subscribe`, so an agent-created
         subscription cannot self-grant elevated tools).
         """
         chat_id = str(getattr(source, "chat_id", "") or "")
@@ -503,9 +503,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
-        from renco_constants import get_renco_home
-        renco_home = get_renco_home()
-        subs_path = renco_home / _DYNAMIC_ROUTES_FILENAME
+        from son_of_anton_constants import get_son_of_anton_home
+        son_of_anton_home = get_son_of_anton_home()
+        subs_path = son_of_anton_home / _DYNAMIC_ROUTES_FILENAME
         if not subs_path.exists():
             if self._dynamic_routes:
                 self._dynamic_routes = {}
@@ -581,7 +581,7 @@ class WebhookAdapter(BasePlatformAdapter):
             # the single-profile gateway (don't 404 a would-be valid route).
             return None
         try:
-            from renco_cli.profiles import profiles_to_serve
+            from son_of_anton_cli.profiles import profiles_to_serve
             served = {
                 name
                 for name, _ in profiles_to_serve(

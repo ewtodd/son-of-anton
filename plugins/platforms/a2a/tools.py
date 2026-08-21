@@ -1,5 +1,5 @@
 """
-A2A client tools — let the Renco agent talk to *other* agents as a peer.
+A2A client tools — let the Son of Anton agent talk to *other* agents as a peer.
 
 Tools (registered in the ``a2a`` toolset):
   - a2a_discover(url)         -> fetch + summarize a peer's Agent Card
@@ -44,7 +44,7 @@ _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
 
 def _load_config() -> dict:
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
         return load_config() or {}
     except Exception:
         return {}
@@ -340,7 +340,7 @@ def a2a_history(args: dict, **_: Any) -> str:
     """Recall a persisted A2A conversation by context_id.
 
     This is how prior A2A exchanges survive compaction/restarts: every turn is
-    written to ~/.renco/a2a_conversations/<context>.jsonl and can be reloaded
+    written to ~/.son-of-anton/a2a_conversations/<context>.jsonl and can be reloaded
     here.
     """
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()

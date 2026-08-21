@@ -23,12 +23,12 @@ def server():
     with patch.dict(
         "sys.modules",
         {
-            "renco_constants": MagicMock(
-                get_renco_home=MagicMock(return_value="/tmp/renco_test_review_summary")
+            "son_of_anton_constants": MagicMock(
+                get_son_of_anton_home=MagicMock(return_value="/tmp/son_of_anton_test_review_summary")
             ),
-            "renco_cli.env_loader": MagicMock(),
-            "renco_cli.banner": MagicMock(),
-            "renco_state": MagicMock(),
+            "son_of_anton_cli.env_loader": MagicMock(),
+            "son_of_anton_cli.banner": MagicMock(),
+            "son_of_anton_state": MagicMock(),
         },
     ):
         import importlib
@@ -87,7 +87,7 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     captured_emits.clear()
 
     # Invoke the callback the way AIAgent._spawn_background_review would.
-    cb("💾 Self-improvement review: Skill 'renco-release' patched")
+    cb("💾 Self-improvement review: Skill 'son-of-anton-release' patched")
 
     # Exactly one review.summary event should have been emitted, bound to
     # the session id we passed in, carrying the full message text.
@@ -96,7 +96,7 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     event, sid, payload = matched[0]
     assert sid == "sid-abc"
     assert payload == {
-        "text": "💾 Self-improvement review: Skill 'renco-release' patched"
+        "text": "💾 Self-improvement review: Skill 'son-of-anton-release' patched"
     }
 
 

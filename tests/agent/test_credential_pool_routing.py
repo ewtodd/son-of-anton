@@ -37,8 +37,8 @@ class TestCliTurnRoutePool:
             service_tier=None,
         )
 
-        from cli import RencoCLI
-        bound = RencoCLI._resolve_turn_agent_config.__get__(shell)
+        from cli import SonOfAntonCLI
+        bound = SonOfAntonCLI._resolve_turn_agent_config.__get__(shell)
         route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
@@ -290,9 +290,9 @@ class TestApiKeyHintRealPool:
     def _seed_pool(self, tmp_path, monkeypatch):
         import json
 
-        renco_home = tmp_path / "renco"
-        renco_home.mkdir(parents=True, exist_ok=True)
-        (renco_home / "auth.json").write_text(
+        son_of_anton_home = tmp_path / "son-of-anton"
+        son_of_anton_home.mkdir(parents=True, exist_ok=True)
+        (son_of_anton_home / "auth.json").write_text(
             json.dumps(
                 {
                     "version": 1,
@@ -320,7 +320,7 @@ class TestApiKeyHintRealPool:
                 }
             )
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         from agent.credential_pool import load_pool
 
         return load_pool("openrouter")
@@ -371,9 +371,9 @@ class TestFailureAttribution:
     """
 
     def _make_pool(self, tmp_path, monkeypatch, entries):
-        renco_home = tmp_path / "renco"
-        renco_home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / "son-of-anton"
+        son_of_anton_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         # Keep host Anthropic/Claude credentials out of this fixture. load_pool()
         # auto-seeds ~/.claude/.credentials.json and env keys when anthropic is
         # explicitly configured on the machine, which turns a deliberate
@@ -386,10 +386,10 @@ class TestFailureAttribution:
         ):
             monkeypatch.delenv(env_var, raising=False)
         monkeypatch.setattr(
-            "renco_cli.auth.is_provider_explicitly_configured",
+            "son_of_anton_cli.auth.is_provider_explicitly_configured",
             lambda provider: False,
         )
-        (renco_home / "auth.json").write_text(
+        (son_of_anton_home / "auth.json").write_text(
             json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
             encoding="utf-8",
         )

@@ -2,14 +2,14 @@
 
 Starting the CLI and immediately quitting (or rotating sessions with /new)
 used to leave empty untitled rows in the session DB that clutter /resume
-and `renco sessions list`. ``SessionDB.delete_session_if_empty`` removes
+and `son-of-anton sessions list`. ``SessionDB.delete_session_if_empty`` removes
 a just-ended session row only when it never gained resumable content:
 no messages, no title, and no child sessions.
 """
 
 import pytest
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 @pytest.fixture()
@@ -81,12 +81,12 @@ class TestDeleteSessionIfEmpty:
 
 
 class TestCLIDiscardSessionIfEmpty:
-    """Wiring tests for RencoCLI._discard_session_if_empty."""
+    """Wiring tests for SonOfAntonCLI._discard_session_if_empty."""
 
     def _make_cli(self, db):
-        from cli import RencoCLI
+        from cli import SonOfAntonCLI
 
-        cli = RencoCLI.__new__(RencoCLI)
+        cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
         cli._session_db = db
         cli.conversation_history = []
         return cli

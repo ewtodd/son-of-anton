@@ -1,12 +1,12 @@
 """Per-reasoning-model stale-timeout floor for known reasoning models.
 
 Reasoning models (those that emit extended thinking blocks before their
-first content token) routinely exceed Renco's default chat-model
+first content token) routinely exceed Son of Anton's default chat-model
 stale detectors:
 
-* Stream stale detector:   ``RENCO_STREAM_STALE_TIMEOUT``     default 180s
+* Stream stale detector:   ``SON_OF_ANTON_STREAM_STALE_TIMEOUT``     default 180s
                            ``agent/chat_completion_helpers.py:2544``
-* Non-stream stale detector: ``RENCO_API_CALL_STALE_TIMEOUT``  default 90s
+* Non-stream stale detector: ``SON_OF_ANTON_API_CALL_STALE_TIMEOUT``  default 90s
                            ``run_agent.py:1140``
 
 For NVIDIA Nemotron 3 Ultra on the hosted NIM gateway the empirical

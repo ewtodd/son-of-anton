@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@renco/ink'
+import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@sonofanton/ink'
 import React, { useLayoutEffect, useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 

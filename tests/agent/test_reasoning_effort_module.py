@@ -1,7 +1,7 @@
 """Tests for agent.reasoning_effort — the canonical effort ladder + clamp.
 
 This module is the single source of truth every transport and provider
-profile uses to translate Renco' internal effort ladder onto a wire's
+profile uses to translate Son of Anton' internal effort ladder onto a wire's
 supported vocabulary. The policy under test:
 
 - supported levels pass through verbatim
@@ -28,7 +28,7 @@ from agent.reasoning_effort import (
     kimi_supported_efforts,
     requested_effort,
 )
-from renco_constants import VALID_REASONING_EFFORTS
+from son_of_anton_constants import VALID_REASONING_EFFORTS
 
 
 class TestLadderContract:

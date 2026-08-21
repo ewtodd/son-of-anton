@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { performHeapDump } from './memory.js'
 
-const ENV_KEYS = ['RENCO_AUTO_HEAPDUMP', 'RENCO_HEAPDUMP_DIR', 'RENCO_HEAPDUMP_MAX_BYTES'] as const
+const ENV_KEYS = ['SON_OF_ANTON_AUTO_HEAPDUMP', 'SON_OF_ANTON_HEAPDUMP_DIR', 'SON_OF_ANTON_HEAPDUMP_MAX_BYTES'] as const
 
 describe('performHeapDump auto opt-in gate (#21767)', () => {
   let saved: Record<string, string | undefined>
@@ -20,8 +20,8 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
       delete process.env[k]
     }
 
-    dir = mkdtempSync(join(tmpdir(), 'renco-heapdump-test-'))
-    process.env.RENCO_HEAPDUMP_DIR = dir
+    dir = mkdtempSync(join(tmpdir(), 'son-of-anton-heapdump-test-'))
+    process.env.SON_OF_ANTON_HEAPDUMP_DIR = dir
   })
 
   afterEach(() => {
@@ -36,7 +36,7 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
     rmSync(dir, { force: true, recursive: true })
   })
 
-  it('writes diagnostics only for auto-high without RENCO_AUTO_HEAPDUMP', async () => {
+  it('writes diagnostics only for auto-high without SON_OF_ANTON_AUTO_HEAPDUMP', async () => {
     const result = await performHeapDump('auto-high')
 
     expect(result.success).toBe(true)
@@ -49,7 +49,7 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
     expect(files.some(f => f.endsWith('.heapsnapshot'))).toBe(false)
   })
 
-  it('writes diagnostics only for auto-critical without RENCO_AUTO_HEAPDUMP', async () => {
+  it('writes diagnostics only for auto-critical without SON_OF_ANTON_AUTO_HEAPDUMP', async () => {
     const result = await performHeapDump('auto-critical')
 
     expect(result.success).toBe(true)
@@ -60,8 +60,8 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
     expect(files.some(f => f.endsWith('.heapsnapshot'))).toBe(false)
   })
 
-  it('writes both diagnostics and snapshot for auto-high when RENCO_AUTO_HEAPDUMP=1', async () => {
-    process.env.RENCO_AUTO_HEAPDUMP = '1'
+  it('writes both diagnostics and snapshot for auto-high when SON_OF_ANTON_AUTO_HEAPDUMP=1', async () => {
+    process.env.SON_OF_ANTON_AUTO_HEAPDUMP = '1'
 
     const result = await performHeapDump('auto-high')
 
@@ -76,7 +76,7 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
 
   it('accepts truthy spellings (true|yes|on, case-insensitive) as opt-in', async () => {
     for (const value of ['true', 'YES', 'On']) {
-      process.env.RENCO_AUTO_HEAPDUMP = value
+      process.env.SON_OF_ANTON_AUTO_HEAPDUMP = value
       const result = await performHeapDump('auto-high')
 
       expect(result.success).toBe(true)
@@ -86,7 +86,7 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
 
   it('treats other values (0, off, garbage) as opt-out for auto triggers', async () => {
     for (const value of ['0', 'off', 'nope']) {
-      process.env.RENCO_AUTO_HEAPDUMP = value
+      process.env.SON_OF_ANTON_AUTO_HEAPDUMP = value
       const result = await performHeapDump('auto-high')
 
       expect(result.success).toBe(true)
@@ -95,7 +95,7 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
     }
   })
 
-  it('writes both for manual triggers regardless of RENCO_AUTO_HEAPDUMP', async () => {
+  it('writes both for manual triggers regardless of SON_OF_ANTON_AUTO_HEAPDUMP', async () => {
     const result = await performHeapDump('manual')
 
     expect(result.success).toBe(true)
@@ -113,24 +113,24 @@ describe('heapdump retention guard (#21767)', () => {
   let dir: string
 
   beforeEach(() => {
-    savedDir = process.env.RENCO_HEAPDUMP_DIR
-    savedMax = process.env.RENCO_HEAPDUMP_MAX_BYTES
-    delete process.env.RENCO_AUTO_HEAPDUMP
-    dir = mkdtempSync(join(tmpdir(), 'renco-heapdump-prune-'))
-    process.env.RENCO_HEAPDUMP_DIR = dir
+    savedDir = process.env.SON_OF_ANTON_HEAPDUMP_DIR
+    savedMax = process.env.SON_OF_ANTON_HEAPDUMP_MAX_BYTES
+    delete process.env.SON_OF_ANTON_AUTO_HEAPDUMP
+    dir = mkdtempSync(join(tmpdir(), 'son-of-anton-heapdump-prune-'))
+    process.env.SON_OF_ANTON_HEAPDUMP_DIR = dir
   })
 
   afterEach(() => {
     if (savedDir === undefined) {
-      delete process.env.RENCO_HEAPDUMP_DIR
+      delete process.env.SON_OF_ANTON_HEAPDUMP_DIR
     } else {
-      process.env.RENCO_HEAPDUMP_DIR = savedDir
+      process.env.SON_OF_ANTON_HEAPDUMP_DIR = savedDir
     }
 
     if (savedMax === undefined) {
-      delete process.env.RENCO_HEAPDUMP_MAX_BYTES
+      delete process.env.SON_OF_ANTON_HEAPDUMP_MAX_BYTES
     } else {
-      process.env.RENCO_HEAPDUMP_MAX_BYTES = savedMax
+      process.env.SON_OF_ANTON_HEAPDUMP_MAX_BYTES = savedMax
     }
 
     rmSync(dir, { force: true, recursive: true })
@@ -149,7 +149,7 @@ describe('heapdump retention guard (#21767)', () => {
     }
 
     // Cap at 2KB → a fresh diagnostics write should trigger a prune down to ~cap.
-    process.env.RENCO_HEAPDUMP_MAX_BYTES = String(2 * 1024)
+    process.env.SON_OF_ANTON_HEAPDUMP_MAX_BYTES = String(2 * 1024)
 
     const result = await performHeapDump('auto-high')
     expect(result.success).toBe(true)

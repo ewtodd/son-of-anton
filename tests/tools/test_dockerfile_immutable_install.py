@@ -1,4 +1,4 @@
-"""Contract tests for the Docker image's immutable /opt/renco install tree."""
+"""Contract tests for the Docker image's immutable /opt/son-of-anton install tree."""
 from __future__ import annotations
 
 import re
@@ -12,29 +12,29 @@ def _dockerfile_text() -> str:
     return DOCKERFILE.read_text()
 
 
-def test_dockerfile_makes_opt_renco_readonly_for_renco_user() -> None:
+def test_dockerfile_makes_opt_son_of_anton_readonly_for_son_of_anton_user() -> None:
     text = _dockerfile_text()
 
     # --chmod on the source COPY bakes read-only perms at copy time instead
     # of a separate chmod -R pass (which walked ~30k files — #49113).
     assert "COPY --link --chmod=a+rX,go-w . ." in text
     # The old tree-walking passes must not be present.
-    assert "chown -R root:root /opt/renco" not in text
-    assert "chmod -R a+rX /opt/renco" not in text
-    assert "chmod -R a-w /opt/renco" not in text
+    assert "chown -R root:root /opt/son-of-anton" not in text
+    assert "chmod -R a+rX /opt/son-of-anton" not in text
+    assert "chmod -R a-w /opt/son-of-anton" not in text
 
 
-def test_dockerfile_does_not_chown_install_trees_to_renco() -> None:
+def test_dockerfile_does_not_chown_install_trees_to_son_of_anton() -> None:
     text = _dockerfile_text()
     forbidden_patterns = (
-        r"chown\s+-R\s+renco:renco\s+/opt/renco/\.venv",
-        r"chown\s+-R\s+renco:renco\s+/opt/renco/ui-tui",
-        r"chown\s+-R\s+renco:renco\s+/opt/renco/gateway",
-        r"chown\s+-R\s+renco:renco\s+/opt/renco/node_modules",
+        r"chown\s+-R\s+son-of-anton:son-of-anton\s+/opt/son-of-anton/\.venv",
+        r"chown\s+-R\s+son-of-anton:son-of-anton\s+/opt/son-of-anton/ui-tui",
+        r"chown\s+-R\s+son-of-anton:son-of-anton\s+/opt/son-of-anton/gateway",
+        r"chown\s+-R\s+son-of-anton:son-of-anton\s+/opt/son-of-anton/node_modules",
     )
     for pattern in forbidden_patterns:
         assert not re.search(pattern, text), (
-            "runtime install trees under /opt/renco must stay immutable; "
+            "runtime install trees under /opt/son-of-anton must stay immutable; "
             f"found forbidden pattern {pattern!r}"
         )
 
@@ -43,20 +43,20 @@ def test_dockerfile_bakes_code_scoped_install_method_stamp() -> None:
     """The 'docker' install-method stamp is baked next to the code.
 
     detect_install_method() reads the code-scoped stamp
-    (/opt/renco/.install_method) first; baking it at build time keeps the
+    (/opt/son-of-anton/.install_method) first; baking it at build time keeps the
     published image self-identifying as 'docker' WITHOUT writing into the
-    shared $RENCO_HOME data volume (which a host install may also use).
-    The stamp is created by root in the shim-wiring RUN block; the renco
+    shared $SON_OF_ANTON_HOME data volume (which a host install may also use).
+    The stamp is created by root in the shim-wiring RUN block; the son-of-anton
     user can't modify it (go-w from the --chmod on the source COPY).
     """
     text = _dockerfile_text()
-    assert "printf 'docker\\n' > /opt/renco/.install_method" in text
+    assert "printf 'docker\\n' > /opt/son-of-anton/.install_method" in text
 
     # The stamp must be in the RUN block that wires the exec shim.
     shim_block = re.search(
-        r"RUN mkdir -p /opt/renco/bin && \\\n"
+        r"RUN mkdir -p /opt/son-of-anton/bin && \\\n"
         r"(?:.*\\\n)+?"
-        r"\s+printf 'docker\\n' > /opt/renco/\.install_method",
+        r"\s+printf 'docker\\n' > /opt/son-of-anton/\.install_method",
         text,
     )
     assert shim_block, "install-method stamp must be in the shim-wiring RUN block"
@@ -74,24 +74,24 @@ def test_dockerfile_redirects_lazy_installs_to_durable_target() -> None:
     target = "/opt/data/lazy-packages"
 
     # The redirect target must be set AND must live under the data volume,
-    # never under the immutable /opt/renco tree.
-    assert f"ENV RENCO_LAZY_INSTALL_TARGET={target}" in text
+    # never under the immutable /opt/son-of-anton tree.
+    assert f"ENV SON_OF_ANTON_LAZY_INSTALL_TARGET={target}" in text
     assert target.startswith("/opt/data/"), "target must be on the durable volume"
-    assert "ENV RENCO_LAZY_INSTALL_TARGET=/opt/renco" not in text
+    assert "ENV SON_OF_ANTON_LAZY_INSTALL_TARGET=/opt/son-of-anton" not in text
 
     # The seal flag must still be present — the redirect rides on top of it,
     # it does not replace it.
-    assert "ENV RENCO_DISABLE_LAZY_INSTALLS=1" in text
+    assert "ENV SON_OF_ANTON_DISABLE_LAZY_INSTALLS=1" in text
 
     # stage2-hook must seed + chown the target dir so first-use installs
-    # succeed as the unprivileged renco runtime user.
+    # succeed as the unprivileged son-of-anton runtime user.
     stage2 = (REPO_ROOT / "docker" / "stage2-hook.sh").read_text()
-    assert '"$RENCO_HOME/lazy-packages"' in stage2, (
+    assert '"$SON_OF_ANTON_HOME/lazy-packages"' in stage2, (
         "stage2-hook.sh must create the lazy-packages dir on the data volume"
     )
     assert "lazy-packages" in stage2.split("for sub in", 1)[1].split(";", 1)[0], (
         "lazy-packages must be in the per-boot chown subdir list so it stays "
-        "renco-owned"
+        "son-of-anton-owned"
     )
 
 
@@ -113,5 +113,5 @@ def test_dockerfile_bakes_photon_sidecar_deps() -> None:
     ), "sidecar deps must be installed with `npm ci` (deterministic, runs postinstall patch)"
     # Immutability contract: never chown the sidecar tree to the runtime user.
     assert not re.search(
-        r"chown\s+-R\s+renco:renco\s+/opt/renco/plugins", text
+        r"chown\s+-R\s+son-of-anton:son-of-anton\s+/opt/son-of-anton/plugins", text
     )

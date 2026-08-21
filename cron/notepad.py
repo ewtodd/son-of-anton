@@ -13,7 +13,7 @@ Size caps (documented contract):
   untouched — the notepad is prompt-injected each run, so unbounded growth
   would bloat every wake-up's prompt.
 
-Write path is the CLI (``renco cron notepad <job_id> set <key> <value>``),
+Write path is the CLI (``son-of-anton cron notepad <job_id> set <key> <value>``),
 which the running agent invokes via its terminal tool; no model tool is
 added.
 
@@ -28,10 +28,10 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
-from renco_constants import get_renco_home
-from renco_time import now as _renco_now
+from son_of_anton_constants import get_son_of_anton_home
+from son_of_anton_time import now as _son_of_anton_now
 
-NOTEPAD_FILE = get_renco_home().resolve() / "cron" / "notepad.db"
+NOTEPAD_FILE = get_son_of_anton_home().resolve() / "cron" / "notepad.db"
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
 MAX_JOB_TOTAL_BYTES = 64 * 1024
@@ -44,7 +44,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from renco_state import apply_wal_with_fallback
+    from son_of_anton_state import apply_wal_with_fallback
 
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
@@ -95,7 +95,7 @@ def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
     """Upsert one key. Raises ValueError when a size cap would be exceeded."""
     job_id, key, value = str(job_id), str(key), str(value)
     _validate(job_id, key, value)
-    now = _renco_now().isoformat()
+    now = _son_of_anton_now().isoformat()
     with _transaction() as conn:
         row = conn.execute(
             """SELECT COALESCE(SUM(LENGTH(CAST(key AS BLOB))
@@ -181,7 +181,7 @@ def render_notepad_section(job_id: str) -> str:
         "## Job notepad (persistent across runs)\n"
         "This durable scratchpad survives between scheduled runs of this "
         "job. Update it via the CLI, e.g.:\n"
-        f"`renco cron notepad {job_id} set <key> <value>` "
-        f"(also: get/delete/list; `renco cron notepad {job_id} delete "
+        f"`son-of-anton cron notepad {job_id} set <key> <value>` "
+        f"(also: get/delete/list; `son-of-anton cron notepad {job_id} delete "
         "<key>` removes an entry).\n\n" + "\n".join(lines) + "\n\n"
     )

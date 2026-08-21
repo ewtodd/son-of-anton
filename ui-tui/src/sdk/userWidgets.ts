@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { pathToFileURL } from 'url'
 
-import { Box, Text } from '@renco/ink'
+import { Box, Text } from '@sonofanton/ink'
 import * as React from 'react'
 
 import { Accordion } from '../components/accordion.js'
@@ -19,14 +19,14 @@ import { defineWidgetApp, listWidgetApps, removeWidgetApp } from './registry.js'
 import { isCtrl } from './types.js'
 
 /**
- * User widget apps — Renco authors its own TUI widgets, mirroring the
- * Python plugin contract: drop `<name>.mjs` into `$RENCO_HOME/tui-widgets/`,
+ * User widget apps — Son of Anton authors its own TUI widgets, mirroring the
+ * Python plugin contract: drop `<name>.mjs` into `$SON_OF_ANTON_HOME/tui-widgets/`,
  * default-export `register(sdk)`, and the app surfaces in `/` completions
  * and dispatch automatically (the registry is the catalog). Plain ESM so the
  * production bundle can import it — no bundler, no JSX; `sdk.h` is
  * React.createElement.
  *
- * Trust model matches `~/.renco/plugins/`: files under RENCO_HOME execute
+ * Trust model matches `~/.son-of-anton/plugins/`: files under SON_OF_ANTON_HOME execute
  * with the TUI's privileges. Load errors log and skip — a broken widget
  * never takes the TUI down.
  */
@@ -58,7 +58,7 @@ export const widgetSdk = {
 
 export type WidgetSdk = typeof widgetSdk
 
-const widgetsDir = () => join(process.env.RENCO_HOME?.trim() || join(homedir(), '.renco'), 'tui-widgets')
+const widgetsDir = () => join(process.env.SON_OF_ANTON_HOME?.trim() || join(homedir(), '.son-of-anton'), 'tui-widgets')
 
 export interface UserWidgetLoadResult {
   /** App ids newly registered by this scan. */
@@ -156,7 +156,7 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
 let watching = false
 
 /** Generative-UI hot loading: watch the widgets directory and re-scan on
- *  every change, so a widget Renco writes appears within ~a second — no
+ *  every change, so a widget Son of Anton writes appears within ~a second — no
  *  `/widgets-reload`, no restart (GUI parity). Debounced (editors and
  *  write_file emit bursts); polls until the directory exists so the very
  *  first widget ever written also hot-loads. */
@@ -188,7 +188,7 @@ export function watchUserWidgets(dir = widgetsDir()): void {
   if (!attach()) {
     // Event-driven first-creation: watch the PARENT for the widgets dir to
     // appear, attach + scan the instant it does. The very first widget a
-    // user (or Renco) ever writes must hot-load too — a 10s poll here read
+    // user (or Son of Anton) ever writes must hot-load too — a 10s poll here read
     // as "requires a restart" in live use.
     try {
       const parent = watch(dirname(dir), () => {

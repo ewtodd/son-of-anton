@@ -3,18 +3,18 @@ label: LINE
 kind: platform
 version: 1.0.0
 description: >
-  LINE Messaging API gateway adapter for Renco Agent.
+  LINE Messaging API gateway adapter for Son of Anton Agent.
   Runs an aiohttp webhook server that receives LINE webhook events
   (with HMAC-SHA256 signature verification) and relays messages between
-  LINE chats (1:1, groups, rooms) and the Renco agent. Outbound replies
+  LINE chats (1:1, groups, rooms) and the Son of Anton agent. Outbound replies
   prefer the free reply token and fall back to the metered Push API
   when the token has expired or is absent. Slow LLM responses surface a
   Template Buttons postback bubble so the user can fetch the answer with
   a fresh reply token (free) once it's ready.
-author: Renco Agent contributors
+author: Son of Anton Agent contributors
 # ``requires_env`` and ``optional_env`` entries are surfaced in the
-# ``renco config`` UI via the platform-plugin env var injector in
-# ``renco_cli/config.py``.
+# ``son-of-anton config`` UI via the platform-plugin env var injector in
+# ``son_of_anton_cli/config.py``.
 requires_env:
   - name: LINE_CHANNEL_ACCESS_TOKEN
     description: "LINE channel long-lived access token (LINE Developers Console > Messaging API > Channel access token)"

@@ -11,20 +11,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 @pytest.fixture
 def cron_env(tmp_path, monkeypatch):
-    """Isolated cron environment with temp RENCO_HOME."""
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    (renco_home / "cron").mkdir()
-    (renco_home / "cron" / "output").mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    """Isolated cron environment with temp SON_OF_ANTON_HOME."""
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    (son_of_anton_home / "cron").mkdir()
+    (son_of_anton_home / "cron" / "output").mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
     import cron.jobs as jobs_mod
-    monkeypatch.setattr(jobs_mod, "RENCO_DIR", renco_home)
-    monkeypatch.setattr(jobs_mod, "CRON_DIR", renco_home / "cron")
-    monkeypatch.setattr(jobs_mod, "JOBS_FILE", renco_home / "cron" / "jobs.json")
-    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", renco_home / "cron" / "output")
+    monkeypatch.setattr(jobs_mod, "SON_OF_ANTON_DIR", son_of_anton_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", son_of_anton_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", son_of_anton_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", son_of_anton_home / "cron" / "output")
 
-    return renco_home
+    return son_of_anton_home
 
 
 class TestJobContextFromField:

@@ -13,7 +13,7 @@ process stayed alive, so the supervisor's restart-on-exit never fired.
 Worse, those connections were opened WITHOUT ``check_same_thread=False`` (both
 writer opens pass it), so ``close()`` on them raised ``ProgrammingError`` from
 a different thread and the bare ``except Exception: pass`` hid it -- leaving
-``renco_cli.sqlite_safe_read``'s registry permanently over-counted as well.
+``son_of_anton_cli.sqlite_safe_read``'s registry permanently over-counted as well.
 
 The contract pinned here: reads borrow from a BOUNDED pool, connections are
 returned and reused, surplus connections are closed rather than dropped, and
@@ -39,12 +39,12 @@ import threading
 
 import pytest
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 def _live_count(path) -> int:
     """Live-connection count the tracking registry holds for *path*."""
-    import renco_cli.sqlite_safe_read as mod
+    import son_of_anton_cli.sqlite_safe_read as mod
 
     with mod._live_lock:
         return mod._live_connections.get(mod._key(path), 0)
@@ -191,7 +191,7 @@ def test_read_open_failure_backs_off_but_recovers(db):
     """
     import time as _time
 
-    from renco_state import _READ_OPEN_RETRY_SECONDS
+    from son_of_anton_state import _READ_OPEN_RETRY_SECONDS
 
     baseline = db._get_read_conn()
     assert baseline is not None, "baseline read open should succeed"
@@ -260,7 +260,7 @@ def test_peak_live_connections_bounded_under_simultaneous_burst(db):
     of them have checked out, so the count below IS the simultaneous peak
     rather than a sample of it.
     """
-    from renco_state import _READ_POOL_MAX
+    from son_of_anton_state import _READ_POOL_MAX
 
     n = 64
     assert n > _READ_POOL_MAX, "burst must exceed the ceiling to test anything"
@@ -312,7 +312,7 @@ def test_exhausted_permits_fall_back_to_the_writer_connection(db):
     connection. Blocking instead would convert descriptor exhaustion into a
     stall -- the same outage with a different stack trace.
     """
-    from renco_state import _READ_POOL_MAX
+    from son_of_anton_state import _READ_POOL_MAX
 
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
     assert all(c is not None for c in held), "the first _READ_POOL_MAX must succeed"
@@ -341,8 +341,8 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
     """
     import sqlite3 as _sqlite3
 
-    import renco_state as _hs
-    from renco_state import _READ_POOL_MAX
+    import son_of_anton_state as _hs
+    from son_of_anton_state import _READ_POOL_MAX
 
     def boom(*a, **kw):
         raise _sqlite3.OperationalError("simulated open failure")
@@ -368,7 +368,7 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
 @pytest.mark.requires_wal
 def test_close_returns_every_permit(db):
     """close() must release the permits its drained connections held."""
-    from renco_state import _READ_POOL_MAX
+    from son_of_anton_state import _READ_POOL_MAX
 
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
     for c in held:

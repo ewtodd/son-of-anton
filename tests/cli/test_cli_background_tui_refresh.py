@@ -7,12 +7,12 @@ to prevent spinner/status bar overlap (#2718).
 from unittest.mock import MagicMock, patch
 
 
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 def _make_cli():
-    """Create a minimal RencoCLI instance for testing."""
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    """Create a minimal SonOfAntonCLI instance for testing."""
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli_obj.model = "test-model"
     cli_obj._background_tasks = {}
     cli_obj._background_task_counter = 0

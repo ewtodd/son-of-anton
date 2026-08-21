@@ -23,7 +23,7 @@ class DashboardOAuthFlow:
     flow_id: str
     server_name: str
     profile: str | None
-    renco_home: str
+    son_of_anton_home: str
     redirect_uri: str
     reconnect_live: bool = False
     created_at: float = field(default_factory=time.time)

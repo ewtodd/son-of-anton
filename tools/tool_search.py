@@ -1,13 +1,13 @@
-"""Progressive tool disclosure ("tool search") for Renco Agent.
+"""Progressive tool disclosure ("tool search") for Son of Anton Agent.
 
 When enabled, MCP and non-core plugin tools are replaced in the model-visible
 tools array by three bridge tools — ``tool_search``, ``tool_describe``,
-``tool_call`` — and surfaced on demand. Core Renco tools never defer.
+``tool_call`` — and surfaced on demand. Core Son of Anton tools never defer.
 
 Design constraints this module is built around (see ``openclaw-tool-search-report``
 for the full rationale):
 
-* Core tools defined in ``toolsets._RENCO_CORE_TOOLS`` are *never* deferred.
+* Core tools defined in ``toolsets._SON_OF_ANTON_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
 * Session-gated GUI toolsets (``desktop_ui``, ``project``) are also never
   deferred. They stay off the core list so CLI and messaging never pay for
@@ -177,7 +177,7 @@ def _safe_float(value: Any, fallback: float) -> float:
 def load_config() -> ToolSearchConfig:
     """Load tool-search config from the user config file."""
     try:
-        from renco_cli.config import load_config as _load
+        from son_of_anton_cli.config import load_config as _load
         cfg = _load() or {}
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         if not isinstance(tools_cfg, dict):
@@ -200,13 +200,13 @@ def _core_tool_names() -> frozenset[str]:
     and we don't want a hard cycle.
     """
     try:
-        from toolsets import _RENCO_CORE_TOOLS
-        return frozenset(_RENCO_CORE_TOOLS)
+        from toolsets import _SON_OF_ANTON_CORE_TOOLS
+        return frozenset(_SON_OF_ANTON_CORE_TOOLS)
     except Exception:
         return frozenset()
 
 
-# Session-gated GUI toolsets. Off ``_RENCO_CORE_TOOLS`` so non-GUI clients
+# Session-gated GUI toolsets. Off ``_SON_OF_ANTON_CORE_TOOLS`` so non-GUI clients
 # never pay their schema; once a session enables them they stay direct.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
@@ -215,7 +215,7 @@ def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is neither in ``_RENCO_CORE_TOOLS`` nor a session-gated GUI
+    OR it is neither in ``_SON_OF_ANTON_CORE_TOOLS`` nor a session-gated GUI
     surface toolset. Core and direct surface tools are never deferred even
     when their toolset is technically plugin-provided (this protects
     against accidental shadowing).

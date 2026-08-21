@@ -1,7 +1,7 @@
 """Post-loop turn finalization for ``run_conversation``.
 
 Extracted from ``agent/conversation_loop.py`` as part of the god-file
-decomposition campaign (``~/.renco/plans/god-file-decomposition.md``, Phase 1
+decomposition campaign (``~/.son-of-anton/plans/god-file-decomposition.md``, Phase 1
 step 4 — the post-loop ``TurnFinalizer`` seam). ``run_conversation``'s tail
 (everything after the main tool-calling ``while`` loop) is lifted here verbatim:
 budget-exhaustion summary, trajectory save, session persist, turn diagnostics,
@@ -71,7 +71,7 @@ def _record_kanban_budget_exhausted(
     multiple exit paths.
     """
     try:
-        from renco_cli import kanban_db as _kb
+        from son_of_anton_cli import kanban_db as _kb
         _conn = _kb.connect()
         try:
             _kb._record_task_failure(
@@ -202,7 +202,7 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
-        _kanban_task = os.environ.get("RENCO_KANBAN_TASK")
+        _kanban_task = os.environ.get("SON_OF_ANTON_KANBAN_TASK")
         if _kanban_task:
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
@@ -216,7 +216,7 @@ def finalize_turn(
         # ``_record_task_failure`` (compare-and-swap receipt path) which
         # is a no-op if another path closed it — the CAS invariant in
         # ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
-        _kanban_task = os.environ.get("RENCO_KANBAN_TASK")
+        _kanban_task = os.environ.get("SON_OF_ANTON_KANBAN_TASK")
         if _kanban_task:
             _record_kanban_budget_exhausted(
                 _kanban_task, api_call_count, agent.max_iterations, logger,
@@ -595,7 +595,7 @@ def finalize_turn(
     # First hook to return a string wins; None/empty return leaves text unchanged.
     if final_response and not interrupted:
         try:
-            from renco_cli.lifecycle import invoke_hook as _invoke_hook
+            from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
                 "transform_llm_output",
                 response_text=final_response,
@@ -618,7 +618,7 @@ def finalize_turn(
     # to an external memory system).
     if final_response and not interrupted:
         try:
-            from renco_cli.lifecycle import invoke_hook as _invoke_hook
+            from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
@@ -720,7 +720,7 @@ def finalize_turn(
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
         # Requested service tier (from request_overrides.extra_body), for
-        # billing audits by callers like `renco -z --usage-file`.
+        # billing audits by callers like `son-of-anton -z --usage-file`.
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
         ).get("service_tier"),
@@ -734,7 +734,7 @@ def finalize_turn(
     if failed and str(_turn_exit_reason) == "session_persistence_failed":
         result["error"] = final_response or (
             "session storage could not be written — check the state database "
-            "health (`renco doctor`), then send your message again"
+            "health (`son-of-anton doctor`), then send your message again"
         )
         # Machine-readable cause for the gateway/desktop: exactly
         # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|disk|unknown>'.
@@ -814,7 +814,7 @@ def finalize_turn(
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
-        from renco_cli.lifecycle import invoke_hook as _invoke_hook
+        from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,

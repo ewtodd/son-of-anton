@@ -99,7 +99,7 @@ describe('fmtProjectCwdBranch', () => {
   })
 
   it('keeps the project visible when space is tight', () => {
-    expect(fmtProjectCwdBranch('/Users/bb/proj', 'main', 'renco-agent', 12)).toBe('renco-agent')
+    expect(fmtProjectCwdBranch('/Users/bb/proj', 'main', 'son-of-anton', 12)).toBe('son-of-anton')
   })
 })
 

@@ -37,7 +37,7 @@ def test_otlp_attrs_redact_strings_and_never_export_profile():
         "exit_reason": "Bearer top-secret-token for user@example.com",
     })
 
-    assert "renco.profile" not in attrs
+    assert "son-of-anton.profile" not in attrs
     assert "top-secret-token" not in str(attrs)
     assert "user@example.com" not in str(attrs)
 
@@ -46,7 +46,7 @@ def test_resource_attributes_are_allowlisted_and_sanitized():
     from agent.monitoring.gateway_health_export import _safe_resource_attributes
 
     attrs = _safe_resource_attributes({
-        "service.name": "renco-gateway",
+        "service.name": "son-of-anton-gateway",
         "service.instance.id": "install-1",
         "deployment.environment.name": "staging",
         "user.email": "user@example.com",
@@ -55,7 +55,7 @@ def test_resource_attributes_are_allowlisted_and_sanitized():
     })
 
     assert attrs == {
-        "service.name": "renco-gateway",
+        "service.name": "son-of-anton-gateway",
         "service.instance.id": attrs["service.instance.id"],
         "deployment.environment.name": "staging",
     }
@@ -79,8 +79,8 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
         "custom": "must-not-egress",
     })
 
-    assert "renco.profile" not in attrs
-    assert "renco.custom" not in attrs
+    assert "son-of-anton.profile" not in attrs
+    assert "son-of-anton.custom" not in attrs
     assert "top-secret-token" not in str(attrs)
 
 
@@ -104,10 +104,10 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
 
 def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     """A minted install id must survive restarts (service.instance.id continuity)."""
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}\n")
 
-    import renco_cli.config as cfg_mod
+    import son_of_anton_cli.config as cfg_mod
     from agent.monitoring.policy import ensure_install_id
 
     first = ensure_install_id(cfg_mod.load_config())

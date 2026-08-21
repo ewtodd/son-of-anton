@@ -35,10 +35,10 @@ import pytest
 
 
 def _make_cli():
-    """Minimal RencoCLI shell exposing the prompt/modal helpers."""
+    """Minimal SonOfAntonCLI shell exposing the prompt/modal helpers."""
     import cli as cli_mod
 
-    obj = object.__new__(cli_mod.RencoCLI)
+    obj = object.__new__(cli_mod.SonOfAntonCLI)
     obj._app = MagicMock()
     obj._app.loop = MagicMock()
     obj._status_bar_visible = True

@@ -8,7 +8,7 @@ import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from renco_cli.profiles import _get_default_renco_home
+from son_of_anton_cli.profiles import _get_default_son_of_anton_home
 
 import pytest
 
@@ -26,8 +26,8 @@ from plugins.memory.honcho.client import (
 class TestHonchoClientConfigDefaults:
     def test_default_values(self):
         config = HonchoClientConfig()
-        assert config.host == "renco"
-        assert config.workspace_id == "renco"
+        assert config.host == "son-of-anton"
+        assert config.workspace_id == "son-of-anton"
         assert config.api_key is None
         assert config.environment == "production"
         assert config.timeout is None
@@ -162,7 +162,7 @@ class TestFromGlobalConfig:
             "workspace": "root-ws",
             "aiPeer": "root-ai",
             "hosts": {
-                "renco": {
+                "son-of-anton": {
                     "workspace": "host-ws",
                     "aiPeer": "host-ai",
                 }
@@ -188,7 +188,7 @@ class TestFromGlobalConfig:
         config_file.write_text(json.dumps({
             "apiKey": "key",
             "recallMode": "tools",
-            "hosts": {"renco": {"recallMode": "context"}},
+            "hosts": {"son-of-anton": {"recallMode": "context"}},
         }))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.recall_mode == "context"
@@ -207,7 +207,7 @@ class TestFromGlobalConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "baseUrl": "http://root:9000",
-            "hosts": {"renco": {"baseUrl": "http://host-block:9001"}},
+            "hosts": {"son-of-anton": {"baseUrl": "http://host-block:9001"}},
         }))
 
         with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://env:8000"}, clear=False):
@@ -220,7 +220,7 @@ class TestFromGlobalConfig:
         (host block) and #43803 (endpoint block + HONCHO_URL)."""
         config_file = tmp_path / "config.json"
         layers = {
-            "hosts": {"renco": {"baseUrl": "http://host:1"}},
+            "hosts": {"son-of-anton": {"baseUrl": "http://host:1"}},
             "endpoint": {"baseUrl": "http://endpoint:2"},
             "baseUrl": "http://flat:3",
         }
@@ -264,53 +264,53 @@ class TestResolveSessionName:
     def test_per_repo_uses_git_root(self):
         config = HonchoClientConfig(session_strategy="per-repo")
         with patch.object(
-            HonchoClientConfig, "_git_repo_name", return_value="renco-agent"
+            HonchoClientConfig, "_git_repo_name", return_value="son-of-anton"
         ):
-            result = config.resolve_session_name("/home/user/renco-agent/subdir")
-        assert result == "renco-agent"
+            result = config.resolve_session_name("/home/user/son-of-anton/subdir")
+        assert result == "son-of-anton"
 
 
 class TestResolveConfigPath:
-    def test_prefers_renco_home_when_exists(self, tmp_path):
-        renco_home = tmp_path / "renco"
-        renco_home.mkdir()
-        local_cfg = renco_home / "honcho.json"
+    def test_prefers_son_of_anton_home_when_exists(self, tmp_path):
+        son_of_anton_home = tmp_path / "son-of-anton"
+        son_of_anton_home.mkdir()
+        local_cfg = son_of_anton_home / "honcho.json"
         local_cfg.write_text('{"apiKey": "local"}')
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             result = resolve_config_path()
         assert result == local_cfg
 
     def test_falls_back_to_default_profile_when_no_local(self, tmp_path, monkeypatch):
-        # Profile mode: RENCO_HOME points at ~/.renco/profiles/<name>, so
-        # _get_default_renco_home() must resolve back to ~/.renco — that's
+        # Profile mode: SON_OF_ANTON_HOME points at ~/.son-of-anton/profiles/<name>, so
+        # _get_default_son_of_anton_home() must resolve back to ~/.son-of-anton — that's
         # the bug the HOME-anchored helper fixes (vs. blindly using Path.home()).
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
-        default_home = fake_home / ".renco"
+        default_home = fake_home / ".son-of-anton"
         profile_home = default_home / "profiles" / "work"
         profile_home.mkdir(parents=True)
         default_cfg = default_home / "honcho.json"
         default_cfg.write_text('{"apiKey": "default-key"}')
 
         monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.setenv("RENCO_HOME", str(profile_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(profile_home))
 
         result = resolve_config_path()
 
-        assert _get_default_renco_home() == default_home
+        assert _get_default_son_of_anton_home() == default_home
         assert result == default_cfg
 
 
 class TestResolveActiveHost:
     def test_profile_host_key_uses_honcho_safe_separator(self):
-        assert profile_host_key("coder") == "renco_coder"
-        assert profile_host_key("default") == "renco"
+        assert profile_host_key("coder") == "son_of_anton_coder"
+        assert profile_host_key("default") == "son-of-anton"
 
 
     def test_explicit_env_var_wins(self):
-        with patch.dict(os.environ, {"RENCO_HONCHO_HOST": "renco.coder"}):
-            assert resolve_active_host() == "renco.coder"
+        with patch.dict(os.environ, {"SON_OF_ANTON_HONCHO_HOST": "son-of-anton.coder"}):
+            assert resolve_active_host() == "son-of-anton.coder"
 
 
     def test_profiles_import_failure_falls_back(self):
@@ -319,26 +319,26 @@ class TestResolveActiveHost:
             "plugins.memory.honcho.client.resolve_config_path",
             return_value=Path("/nonexistent/test-honcho-config.json"),
         ):
-            os.environ.pop("RENCO_HONCHO_HOST", None)
-            # Temporarily remove renco_cli.profiles to simulate import failure
-            saved = sys.modules.get("renco_cli.profiles")
-            sys.modules["renco_cli.profiles"] = None  # type: ignore
+            os.environ.pop("SON_OF_ANTON_HONCHO_HOST", None)
+            # Temporarily remove son_of_anton_cli.profiles to simulate import failure
+            saved = sys.modules.get("son_of_anton_cli.profiles")
+            sys.modules["son_of_anton_cli.profiles"] = None  # type: ignore
             try:
-                assert resolve_active_host() == "renco"
+                assert resolve_active_host() == "son-of-anton"
             finally:
                 if saved is not None:
-                    sys.modules["renco_cli.profiles"] = saved
+                    sys.modules["son_of_anton_cli.profiles"] = saved
                 else:
-                    sys.modules.pop("renco_cli.profiles", None)
+                    sys.modules.pop("son_of_anton_cli.profiles", None)
 
 
 class TestProfileScopedConfig:
     def test_from_env_uses_profile_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
-            config = HonchoClientConfig.from_env(host="renco_coder")
-        assert config.host == "renco_coder"
-        assert config.workspace_id == "renco"  # shared workspace
-        assert config.ai_peer == "renco_coder"
+            config = HonchoClientConfig.from_env(host="son_of_anton_coder")
+        assert config.host == "son_of_anton_coder"
+        assert config.workspace_id == "son-of-anton"  # shared workspace
+        assert config.ai_peer == "son_of_anton_coder"
 
 
 class TestObservationModeMigration:
@@ -349,7 +349,7 @@ class TestObservationModeMigration:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({
             "apiKey": "k",
-            "hosts": {"renco": {"enabled": True, "aiPeer": "renco"}},
+            "hosts": {"son-of-anton": {"enabled": True, "aiPeer": "son-of-anton"}},
         }))
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.observation_mode == "unified"
@@ -367,7 +367,7 @@ class TestObservationModeMigration:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({
             "apiKey": "k",
-            "hosts": {"renco": {
+            "hosts": {"son-of-anton": {
                 "enabled": True,
                 "observation": {
                     "user": {"observeMe": True, "observeOthers": False},
@@ -393,7 +393,7 @@ class TestGetHonchoClient:
         reason="honcho SDK not installed"
     )
     def test_dot_form_legacy_host_key_keeps_local_api_key(self):
-        """Regression for #37436: a legacy dot-form host block (renco.work)
+        """Regression for #37436: a legacy dot-form host block (son-of-anton.work)
         must be found by the local-auth check. Before the _host_block fallback,
         the direct dict lookup missed it, the stored apiKey was dropped for the
         'local' placeholder, and every write 401'd silently."""
@@ -401,9 +401,9 @@ class TestGetHonchoClient:
         cfg = HonchoClientConfig(
             api_key="explicit-local-key",
             base_url="http://localhost:8000",
-            host="renco_work",
-            workspace_id="renco",
-            raw={"hosts": {"renco.work": {"apiKey": "explicit-local-key"}}},
+            host="son_of_anton_work",
+            workspace_id="son-of-anton",
+            raw={"hosts": {"son-of-anton.work": {"apiKey": "explicit-local-key"}}},
         )
 
         with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
@@ -423,8 +423,8 @@ class TestGetHonchoClient:
         cfg = HonchoClientConfig(
             api_key="cloud-root-key",
             base_url="http://localhost:8000",
-            host="renco",
-            workspace_id="renco",
+            host="son-of-anton",
+            workspace_id="son-of-anton",
             raw={},
         )
 
@@ -446,8 +446,8 @@ class TestGetHonchoClient:
         cfg = HonchoClientConfig(
             api_key="explicit-top-level-key",
             base_url="http://localhost:8000",
-            host="renco",
-            workspace_id="renco",
+            host="son-of-anton",
+            workspace_id="son-of-anton",
             raw={"apiKey": "explicit-top-level-key"},
         )
 
@@ -465,7 +465,7 @@ class TestGetHonchoClient:
         cfg = HonchoClientConfig(
             api_key="test-key",
             timeout=91.0,
-            workspace_id="renco",
+            workspace_id="son-of-anton",
             environment="production",
         )
 
@@ -483,16 +483,16 @@ class TestGetHonchoClient:
     )
     def test_timeout_change_triggers_client_rebuild(self):
         """Changing timeout config must rebuild the cached client."""
-        from renco_constants import get_renco_home
+        from son_of_anton_constants import get_son_of_anton_home
 
-        cfg_yaml = get_renco_home() / "config.yaml"
+        cfg_yaml = get_son_of_anton_home() / "config.yaml"
         cfg_yaml.write_text("honcho:\n  timeout: 30\n")
 
         fake_honcho_1 = MagicMock(name="Honcho_v1")
         fake_honcho_2 = MagicMock(name="Honcho_v2")
         cfg = HonchoClientConfig(
             api_key="test-key",
-            workspace_id="renco",
+            workspace_id="son-of-anton",
             environment="production",
         )
 
@@ -533,13 +533,13 @@ class TestGetHonchoClient:
         managed_dir.mkdir()
         managed_cfg = managed_dir / "config.yaml"
         managed_cfg.write_text("honcho:\n  timeout: 88\n")
-        monkeypatch.setenv("RENCO_MANAGED_DIR", str(managed_dir))
+        monkeypatch.setenv("SON_OF_ANTON_MANAGED_DIR", str(managed_dir))
 
         fake_honcho_1 = MagicMock(name="Honcho_v1")
         fake_honcho_2 = MagicMock(name="Honcho_v2")
         cfg = HonchoClientConfig(
             api_key="test-key",
-            workspace_id="renco",
+            workspace_id="son-of-anton",
             environment="production",
         )
 
@@ -680,12 +680,12 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         cfg = HonchoClientConfig(
             api_key=None,
             base_url="http://localhost:38000/v3",
-            workspace_id="renco",
+            workspace_id="son-of-anton",
             environment="production",
         )
 
         with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
-             patch("renco_cli.config.load_config", return_value={}):
+             patch("son_of_anton_cli.config.load_config", return_value={}):
             get_honcho_client(cfg)
 
         mock_honcho.assert_called_once()
@@ -712,7 +712,7 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         }))
 
         with patch.dict(os.environ, {}, clear=True), \
-             patch("renco_cli.profiles.get_active_profile_name", return_value="default"), \
+             patch("son_of_anton_cli.profiles.get_active_profile_name", return_value="default"), \
              patch("plugins.memory.honcho.client.resolve_config_path", return_value=config_file):
             cfg = HonchoClientConfig.from_global_config(config_path=config_file)
 
@@ -726,7 +726,7 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         mock_honcho = MagicMock(return_value=fake_honcho)
         fake_honcho_module = types.SimpleNamespace(Honcho=mock_honcho)
         with patch.dict(sys.modules, {"honcho": fake_honcho_module}), \
-             patch("renco_cli.config.load_config", return_value={}):
+             patch("son_of_anton_cli.config.load_config", return_value={}):
             get_honcho_client(cfg)
 
         mock_honcho.assert_called_once()
@@ -763,12 +763,12 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
         cfg = HonchoClientConfig(
             api_key="self-host-key",
             base_url=raw_url,
-            workspace_id="renco",
+            workspace_id="son-of-anton",
             environment="production",
         )
 
         with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
-             patch("renco_cli.config.load_config", return_value={}):
+             patch("son_of_anton_cli.config.load_config", return_value={}):
             get_honcho_client(cfg)
 
         mock_honcho.assert_called_once()

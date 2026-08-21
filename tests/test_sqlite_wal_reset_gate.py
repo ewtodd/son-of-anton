@@ -1,6 +1,6 @@
 """SQLite WAL-reset vulnerability gate (issue #69784).
 
-Renco must not *enable* multi-process WAL on SQLite builds that still contain
+Son of Anton must not *enable* multi-process WAL on SQLite builds that still contain
 the upstream WAL-reset corruption bug:
 https://sqlite.org/wal.html#walresetbug
 
@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import renco_state
-from renco_state import (
+import son_of_anton_state
+from son_of_anton_state import (
     apply_wal_with_fallback,
     is_sqlite_wal_reset_vulnerable,
     sqlite_source_id,
@@ -27,9 +27,9 @@ from renco_state import (
 
 @pytest.fixture(autouse=True)
 def _reset_wal_reset_bug_warnings():
-    renco_state._wal_reset_bug_warned_paths.clear()
+    son_of_anton_state._wal_reset_bug_warned_paths.clear()
     yield
-    renco_state._wal_reset_bug_warned_paths.clear()
+    son_of_anton_state._wal_reset_bug_warned_paths.clear()
 
 
 class TestIsSqliteWalResetVulnerable:
@@ -61,10 +61,10 @@ class TestIsSqliteWalResetVulnerable:
 class TestApplyWalWalResetGate:
     def test_fresh_db_uses_delete_when_vulnerable(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
-        with caplog.at_level("WARNING", logger="renco_state"):
+        with caplog.at_level("WARNING", logger="son_of_anton_state"):
             mode = apply_wal_with_fallback(conn, db_label="fresh.db")
         assert mode == "delete"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
@@ -76,7 +76,7 @@ class TestApplyWalWalResetGate:
     ):
         """Already-WAL DBs must not be live-downgraded under concurrent openers."""
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         path = tmp_path / "prior_wal.db"
         seed = sqlite3.connect(str(path))
@@ -91,7 +91,7 @@ class TestApplyWalWalResetGate:
 
         conn = sqlite3.connect(str(path), timeout=30.0)
         try:
-            with caplog.at_level("WARNING", logger="renco_state"):
+            with caplog.at_level("WARNING", logger="son_of_anton_state"):
                 mode = apply_wal_with_fallback(conn, db_label="prior_wal.db")
             assert mode == "wal"
             assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
@@ -108,9 +108,9 @@ class TestApplyWalWalResetGate:
 
     def test_warning_deduped_per_label(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
-        with caplog.at_level("WARNING", logger="renco_state"):
+        with caplog.at_level("WARNING", logger="son_of_anton_state"):
             for name in ("a.db", "a.db", "b.db"):
                 conn = sqlite3.connect(str(tmp_path / name))
                 apply_wal_with_fallback(conn, db_label=name)
@@ -150,7 +150,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
 
         All blocked-state assertions run WHILE the holder owns the DB."""
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         db = tmp_path / "live_wal.db"
         seed = sqlite3.connect(str(db))
@@ -175,7 +175,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
 
             conn = sqlite3.connect(str(db), timeout=30.0)
             try:
-                with caplog.at_level("WARNING", logger="renco_state"):
+                with caplog.at_level("WARNING", logger="son_of_anton_state"):
                     mode = apply_wal_with_fallback(conn, db_label="live_wal.db")
                 # Asserted while the second opener still holds the DB:
                 assert holder.poll() is None, "holder must still be alive here"
@@ -214,7 +214,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
         as 'not WAL' and flipping anyway (the incident's exact confusion).
         Assertions run WHILE the holder's exclusive lock is live."""
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         db = tmp_path / "locked_wal.db"
         seed = sqlite3.connect(str(db))
@@ -237,7 +237,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
                 # Sanity: the probe really is blocked right now.
                 with pytest.raises(sqlite3.OperationalError):
                     conn.execute("PRAGMA journal_mode").fetchone()
-                with caplog.at_level("WARNING", logger="renco_state"):
+                with caplog.at_level("WARNING", logger="son_of_anton_state"):
                     mode = apply_wal_with_fallback(conn, db_label="locked_wal.db")
                 assert mode == "wal"
                 assert any(
@@ -265,11 +265,11 @@ class TestNoDowngradeUnderConcurrentOpeners:
         """No concurrent openers → the vulnerable-SQLite DELETE gate still
         applies exactly as before."""
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "exclusive.db"))
         try:
-            with caplog.at_level("WARNING", logger="renco_state"):
+            with caplog.at_level("WARNING", logger="son_of_anton_state"):
                 mode = apply_wal_with_fallback(conn, db_label="exclusive.db")
             assert mode == "delete"
             assert (
@@ -286,7 +286,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
         between probe and flip), the gate returns the observed mode instead of
         raising or waiting the lock out."""
         monkeypatch.setattr(
-            renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
 
         class _FlipLockedConnection(sqlite3.Connection):
@@ -299,7 +299,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
             str(tmp_path / "race.db"), factory=_FlipLockedConnection
         )
         try:
-            with caplog.at_level("WARNING", logger="renco_state"):
+            with caplog.at_level("WARNING", logger="son_of_anton_state"):
                 mode = apply_wal_with_fallback(conn, db_label="race.db")
             assert mode == "delete"  # observed pre-flip mode, not a forced flip
             assert any(
@@ -315,11 +315,11 @@ class TestNoDowngradeUnderConcurrentOpeners:
         refuse to downgrade when the mode probe is blocked by a concurrent
         opener's exclusive lock — raise, never flip blind."""
         monkeypatch.setattr(
-            renco_state,
+            son_of_anton_state,
             "is_sqlite_wal_reset_vulnerable",
             lambda version_info=None: False,
         )
-        monkeypatch.setattr(renco_state, "resolve_journal_mode", lambda: "delete")
+        monkeypatch.setattr(son_of_anton_state, "resolve_journal_mode", lambda: "delete")
         db = tmp_path / "cfg_delete.db"
         seed = sqlite3.connect(str(db))
         try:
@@ -357,11 +357,11 @@ class TestNoDowngradeUnderConcurrentOpeners:
         """The filesystem-incompat fallback must not downgrade when the on-disk
         mode cannot be verified (possible concurrent openers)."""
         monkeypatch.setattr(
-            renco_state,
+            son_of_anton_state,
             "is_sqlite_wal_reset_vulnerable",
             lambda version_info=None: False,
         )
-        renco_state._wal_fallback_warned_paths.clear()
+        son_of_anton_state._wal_fallback_warned_paths.clear()
 
         class _LockedProbeConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
@@ -386,16 +386,16 @@ class TestNoDowngradeUnderConcurrentOpeners:
 
 def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     """Vulnerable SQLite is warn-only in doctor — not a blocking issues[] entry."""
-    from renco_cli.doctor import run_doctor
+    from son_of_anton_cli.doctor import run_doctor
 
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
-    monkeypatch.setattr("renco_constants.get_renco_home", lambda: home)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
+    monkeypatch.setattr("son_of_anton_constants.get_son_of_anton_home", lambda: home)
     monkeypatch.setattr(
-        renco_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+        son_of_anton_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
     )
-    monkeypatch.setattr(renco_state, "sqlite_source_id", lambda: "testid-abc")
+    monkeypatch.setattr(son_of_anton_state, "sqlite_source_id", lambda: "testid-abc")
     monkeypatch.setattr(sqlite3, "sqlite_version", "3.50.4", raising=False)
 
     args = SimpleNamespace(fix=False, ack=None)
@@ -408,6 +408,6 @@ def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     assert "SQLite" in out
     assert "3.50.4" in out
     assert "WAL-reset" in out
-    assert "renco update" in out
+    assert "son-of-anton update" in out
     # No longer appended to the blocking issues summary.
     assert "Linked SQLite is vulnerable" not in out

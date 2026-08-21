@@ -66,9 +66,9 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
         def __new__(cls):
             return sentinel_db
 
-    renco_state = ModuleType("renco_state")
-    renco_state.SessionDB = FakeSessionDB
-    monkeypatch.setitem(sys.modules, "renco_state", renco_state)
+    son_of_anton_state = ModuleType("son_of_anton_state")
+    son_of_anton_state.SessionDB = FakeSessionDB
+    monkeypatch.setitem(sys.modules, "son_of_anton_state", son_of_anton_state)
 
     session_search_mod = ModuleType("tools.session_search_tool")
 
@@ -82,13 +82,13 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     agent = _make_agent(None, platform="acp")
     result = json.loads(agent._invoke_tool(
         "session_search",
-        {"query": "Renco", "detail": "full"},
+        {"query": "Son of Anton", "detail": "full"},
         "task-id",
     ))
 
     assert result["success"] is True
     assert captured["db"] is sentinel_db
-    assert captured["query"] == "Renco"
+    assert captured["query"] == "Son of Anton"
     assert captured["detail"] == "full"
     assert agent._session_db is sentinel_db
 
@@ -111,7 +111,7 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
         id="search-1",
         function=SimpleNamespace(
             name="session_search",
-            arguments=json.dumps({"query": "Renco", "detail": "full"}),
+            arguments=json.dumps({"query": "Son of Anton", "detail": "full"}),
         ),
     )
     assistant_message = SimpleNamespace(tool_calls=[tool_call])
@@ -124,5 +124,5 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
     )
 
     assert captured["db"] is session_db
-    assert captured["query"] == "Renco"
+    assert captured["query"] == "Son of Anton"
     assert captured["detail"] == "full"

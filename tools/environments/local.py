@@ -14,9 +14,9 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from renco_constants import get_process_renco_home
+from son_of_anton_constants import get_process_son_of_anton_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from renco_cli._subprocess_compat import windows_hide_flags
+from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -56,9 +56,9 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
 
     ``TERMINAL_CWD`` can be populated from config.yaml before the terminal
     backend is created.  If that value is relative and happens to match the
-    directory Renco was already launched from (for example ``renco-agent``
-    while the process cwd is ``~/.renco/renco-agent``), passing it through
-    unchanged makes the wrapper run ``cd renco-agent`` *inside* the project
+    directory Son of Anton was already launched from (for example ``son-of-anton``
+    while the process cwd is ``~/.son-of-anton/son-of-anton``), passing it through
+    unchanged makes the wrapper run ``cd son-of-anton`` *inside* the project
     and fail with a confusing nested-path error.  Anchor relative local cwd
     values once, up front, so both ``subprocess.Popen(cwd=...)`` and the
     in-shell ``cd`` use the same absolute directory.
@@ -78,9 +78,9 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
     candidate = os.path.abspath(expanded)
     current = os.getcwd()
 
-    # Common recovery for config values like ``renco-agent`` when Renco was
+    # Common recovery for config values like ``son-of-anton`` when Son of Anton was
     # launched from that directory already.  ``os.path.abspath`` would point at
-    # a nonexistent nested ``./renco-agent``; use the current directory instead.
+    # a nonexistent nested ``./son-of-anton``; use the current directory instead.
     if not os.path.isdir(candidate):
         wanted_parts = Path(expanded).parts
         current_parts = Path(current).parts
@@ -198,12 +198,12 @@ def _resolve_safe_cwd(cwd: str) -> str:
     return tempfile.gettempdir()
 
 
-# Renco-internal env vars that should NOT leak into terminal subprocesses.
-_RENCO_PROVIDER_ENV_FORCE_PREFIX = "_RENCO_FORCE_"
+# Son of Anton-internal env vars that should NOT leak into terminal subprocesses.
+_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX = "_SON_OF_ANTON_FORCE_"
 
-# Renco-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
+# Son of Anton-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
 # providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
-# Bedrock-specific bearer token, which is a Renco inference secret exactly
+# Bedrock-specific bearer token, which is a Son of Anton inference secret exactly
 # analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
 # ``boto3`` toolchain off it, so stripping it from terminal/execute_code
 # subprocesses costs no user capability.
@@ -228,7 +228,7 @@ def _build_provider_env_blocklist() -> frozenset:
     blocked: set[str] = set()
 
     try:
-        from renco_cli.auth import PROVIDER_REGISTRY
+        from son_of_anton_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.auth_type == "aws_sdk":
@@ -239,7 +239,7 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     try:
-        from renco_cli.config import OPTIONAL_ENV_VARS
+        from son_of_anton_cli.config import OPTIONAL_ENV_VARS
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:
@@ -305,7 +305,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
-        "RENCO_DASHBOARD_SESSION_TOKEN",
+        "SON_OF_ANTON_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",
@@ -324,8 +324,8 @@ def _build_provider_env_blocklist() -> frozenset:
     })
     # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
     # owned by the user's Claude Code install (subscription OAuth), not a
-    # Renco-managed inference credential — Claude subscription auth is not a
-    # working Renco provider path.  Stripping it broke agent-spawned
+    # Son of Anton-managed inference credential — Claude subscription auth is not a
+    # working Son of Anton provider path.  Stripping it broke agent-spawned
     # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
     # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
     # logging the user out of their interactive Claude sessions (#55878).
@@ -335,38 +335,38 @@ def _build_provider_env_blocklist() -> frozenset:
     return frozenset(blocked)
 
 
-_RENCO_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
 # VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
 # agent runs against OTHER Python projects, tools like ``uv``/``poetry`` treat
 # the inherited value as the active environment and build/sync that other
-# project's dependencies into the Renco venv path instead of the project's own
-# ``.venv`` — silently clobbering the Renco environment (e.g. a project pinned
+# project's dependencies into the Son of Anton venv path instead of the project's own
+# ``.venv`` — silently clobbering the Son of Anton environment (e.g. a project pinned
 # to a different Python version overwrites it and breaks the gateway). The
-# Renco venv stays reachable via PATH (its bin dir is first), so stripping
+# Son of Anton venv stays reachable via PATH (its bin dir is first), so stripping
 # these markers is safe and only prevents the cross-project clobber (#23473).
 #
 # PYTHONHOME is included because a gateway-inherited value redirects the
 # standard-library search of ANY child interpreter — including unrelated
-# system/venv Pythons — to the Renco venv's stdlib, which crashes with
+# system/venv Pythons — to the Son of Anton venv's stdlib, which crashes with
 # version-mismatch errors before a child script even imports a package
-# (#75018). Renco itself treats PYTHONHOME as contamination in its own
+# (#75018). Son of Anton itself treats PYTHONHOME as contamination in its own
 # child processes (managed_uv.py, sqlite_runtime.py), so stripping it from
 # subprocess envs is consistent. Users who need PYTHONHOME for a specific
 # child can set it explicitly in the command.
 #
 # PYTHONPATH is NOT included here — it's handled by
-# _strip_renco_owned_pythonpath() which removes only Renco-owned entries,
+# _strip_son_of_anton_owned_pythonpath() which removes only Son of Anton-owned entries,
 # preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
 
-def _is_renco_internal_secret(key: str) -> bool:
-    """Return True for Renco-internal secrets injected under *dynamic* names.
+def _is_son_of_anton_internal_secret(key: str) -> bool:
+    """Return True for Son of Anton-internal secrets injected under *dynamic* names.
 
-    ``_RENCO_PROVIDER_ENV_BLOCKLIST`` is name-based and derived from the
+    ``_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST`` is name-based and derived from the
     provider/tool registries, but the gateway and CLI also inject secrets into
     ``os.environ`` at runtime under names no static registry knows about:
 
@@ -388,10 +388,10 @@ def _is_renco_internal_secret(key: str) -> bool:
     ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
     blocklist did not, which is the leak this predicate closes.
 
-    This is the single source of truth for "Renco-internal dynamic secret"
+    This is the single source of truth for "Son of Anton-internal dynamic secret"
     across every spawn path — the terminal ``_make_run_env`` /
     ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
-    non-terminal :func:`renco_subprocess_env` helper all call it, so the
+    non-terminal :func:`son_of_anton_subprocess_env` helper all call it, so the
     dynamic patterns are stripped **unconditionally** regardless of
     ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
     a model-driving CLI legitimately needs matches these patterns.
@@ -408,14 +408,14 @@ def _is_renco_internal_secret(key: str) -> bool:
     return False
 
 
-def _inject_context_renco_home(env: dict) -> None:
-    """Bridge the context-local Renco home override into subprocess env."""
+def _inject_context_son_of_anton_home(env: dict) -> None:
+    """Bridge the context-local Son of Anton home override into subprocess env."""
     try:
-        from renco_constants import get_renco_home_override
+        from son_of_anton_constants import get_son_of_anton_home_override
 
-        value = get_renco_home_override()
+        value = get_son_of_anton_home_override()
         if value:
-            env["RENCO_HOME"] = value
+            env["SON_OF_ANTON_HOME"] = value
     except Exception:
         pass
 
@@ -424,7 +424,7 @@ def _inject_session_context_env(env: dict) -> None:
     """Bridge gateway session ContextVars into a subprocess environment dict.
 
     ContextVars don't propagate to child processes, so the live session vars
-    (RENCO_SESSION_*) are bridged onto the child env here.
+    (SON_OF_ANTON_SESSION_*) are bridged onto the child env here.
 
     🔴 Cross-session leak guard. The session vars also have a process-global
     os.environ mirror (written last-writer-wins as a CLI/cron fallback, never
@@ -468,7 +468,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Renco-managed secrets from a subprocess environment."""
+    """Filter Son of Anton-managed secrets from a subprocess environment."""
     try:
         from tools.env_passthrough import (
             is_env_passthrough as _is_passthrough,
@@ -481,36 +481,36 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
-        if key.startswith(_RENCO_PROVIDER_ENV_FORCE_PREFIX):
+        if key.startswith(_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if _is_renco_internal_secret(key):
+        if _is_son_of_anton_internal_secret(key):
             continue
         passthrough = _is_passthrough(key)
-        if key in _RENCO_PROVIDER_ENV_BLOCKLIST and not passthrough:
+        if key in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST and not passthrough:
             continue
         resolved = _resolve_passthrough_value(key, value) if passthrough else value
         if resolved is not None:
             sanitized[key] = resolved
 
     for key, value in (extra_env or {}).items():
-        if key.startswith(_RENCO_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = key[len(_RENCO_PROVIDER_ENV_FORCE_PREFIX):]
-            if _is_renco_internal_secret(real_key):
+        if key.startswith(_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = key[len(_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_son_of_anton_internal_secret(real_key):
                 continue
             sanitized[real_key] = value
-        elif _is_renco_internal_secret(key):
+        elif _is_son_of_anton_internal_secret(key):
             continue
         else:
             passthrough = _is_passthrough(key)
-            if key in _RENCO_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if key in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST and not passthrough:
                 continue
             resolved = _resolve_passthrough_value(key, value) if passthrough else value
             if resolved is not None:
                 sanitized[key] = resolved
 
-    _inject_context_renco_home(sanitized)
+    _inject_context_son_of_anton_home(sanitized)
 
-    from renco_constants import apply_subprocess_home_env
+    from son_of_anton_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
 
     # Same cross-session leak guard as _make_run_env, for the background/PTY
@@ -519,9 +519,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     # Filter PYTHONPATH before removing VIRTUAL_ENV: legacy Windows launchers
     # can run the gateway under a base interpreter while VIRTUAL_ENV identifies
-    # the separate Renco runtime venv.  The filter validates that relationship
+    # the separate Son of Anton runtime venv.  The filter validates that relationship
     # against the repo layout before trusting it.
-    _strip_renco_owned_pythonpath_and_runtime_markers(sanitized)
+    _strip_son_of_anton_owned_pythonpath_and_runtime_markers(sanitized)
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
@@ -548,11 +548,11 @@ def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
 # Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
 # even when the caller opts into credential inheritance for a model-driving
 # CLI (claude / codex / gemini).  These are not LLM provider credentials; no
-# legitimate child Renco spawns needs them, and they are the highest-value
+# legitimate child Son of Anton spawns needs them, and they are the highest-value
 # secrets to keep out of a compromised dependency's reach (gateway bot tokens,
 # GitHub auth, remote-compute tokens, dashboard session secret).  The set is a
-# narrow subset of _RENCO_PROVIDER_ENV_BLOCKLIST; provider keys are handled by
-# the conditional Tier-2 strip in renco_subprocess_env().
+# narrow subset of _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST; provider keys are handled by
+# the conditional Tier-2 strip in son_of_anton_subprocess_env().
 _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # GitHub auth
     "GH_TOKEN",
@@ -572,7 +572,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # provisions and persists to the 0600 .env. Stripped unconditionally on
     # EVERY spawn surface (terminal + model-driving CLIs) so it can't drift
     # between paths: _SECRET / _DELIVERY_KEY are also matched by
-    # _is_renco_internal_secret, but _ID has no secret suffix, so it must be
+    # _is_son_of_anton_internal_secret, but _ID has no secret suffix, so it must be
     # enumerated here to stay stripped on the inherit_credentials=True path
     # (codex / copilot), which skips the Tier-2 blocklist.
     "GATEWAY_RELAY_ID",
@@ -580,7 +580,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "GATEWAY_RELAY_DELIVERY_KEY",
     "HASS_TOKEN",
     "EMAIL_PASSWORD",
-    "RENCO_DASHBOARD_SESSION_TOKEN",
+    "SON_OF_ANTON_DASHBOARD_SESSION_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
@@ -588,14 +588,14 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
 })
 
 
-def renco_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def son_of_anton_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
     """Build a sanitized environment dict for a spawned subprocess.
 
     Centralized helper for the **non-terminal** spawn surface (browser,
     ACP/CLI executors, computer-use driver, dep-ensure, TUI Node host,
     detached gateway).  Use this instead of copying ``os.environ`` directly
     so strip-by-default is the uniform policy across every spawn site, with a
-    single source of truth (``_RENCO_PROVIDER_ENV_BLOCKLIST``).  The terminal
+    single source of truth (``_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST``).  The terminal
     / execute_code path keeps using :func:`_sanitize_subprocess_env`, which is
     skill-aware (``env_passthrough``); this helper is for spawns that have no
     skill-passthrough concept.
@@ -604,8 +604,8 @@ def renco_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]
 
     * **Tier 1 (always):** ``_ALWAYS_STRIP_KEYS`` — gateway bot tokens, GitHub
       auth, and remote-compute secrets are removed regardless of
-      ``inherit_credentials``.  No child Renco spawns legitimately needs them.
-    * **Tier 2 (conditional):** the rest of ``_RENCO_PROVIDER_ENV_BLOCKLIST``
+      ``inherit_credentials``.  No child Son of Anton spawns legitimately needs them.
+    * **Tier 2 (conditional):** the rest of ``_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST``
       (LLM provider API keys, tool secrets) is removed unless the caller passes
       ``inherit_credentials=True``.
 
@@ -625,35 +625,35 @@ def renco_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
         env.pop(key, None)
-    # Internal routing hints and Renco-internal dynamic secrets
+    # Internal routing hints and Son of Anton-internal dynamic secrets
     # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
     # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
     # regardless of ``inherit_credentials`` — a model-driving CLI has no
-    # legitimate use for them. See :func:`_is_renco_internal_secret`.
+    # legitimate use for them. See :func:`_is_son_of_anton_internal_secret`.
     for key in list(env):
-        if key.startswith(_RENCO_PROVIDER_ENV_FORCE_PREFIX):
+        if key.startswith(_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX):
             env.pop(key, None)
-        elif _is_renco_internal_secret(key):
+        elif _is_son_of_anton_internal_secret(key):
             env.pop(key, None)
 
     if not inherit_credentials:
         # Tier 2 — strip provider/tool credentials unless explicitly inherited.
-        for key in _RENCO_PROVIDER_ENV_BLOCKLIST:
+        for key in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST:
             env.pop(key, None)
 
     # Windows UTF-8 safety for spawned processes (#31420).
     env.setdefault("PYTHONUTF8", "1")
 
-    _inject_context_renco_home(env)
-    from renco_constants import apply_subprocess_home_env
+    _inject_context_son_of_anton_home(env)
+    from son_of_anton_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
 
-    _strip_renco_owned_pythonpath_and_runtime_markers(env)
+    _strip_son_of_anton_owned_pythonpath_and_runtime_markers(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
     # Cross-session leak guard, same as the terminal spawn paths: this helper
-    # copies os.environ, whose RENCO_SESSION_* mirror is a last-writer-wins
+    # copies os.environ, whose SON_OF_ANTON_SESSION_* mirror is a last-writer-wins
     # global under a concurrent multi-session host. A caller that re-binds the
     # session identity explicitly (slash_worker/ACP via --session-key argv) is
     # unaffected — bound ContextVars win here — but a caller that spawns without
@@ -665,7 +665,7 @@ def renco_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]
     # Non-terminal subprocess helpers (browser, lazy-deps, TUI/ACP hosts, etc.)
     # also need the delegate_task child lineage marker.  Otherwise a child
     # context that later imports Kanban DB code in the spawned process would
-    # still see the parent's RENCO_HOME but lose the DB mutation guard.
+    # still see the parent's SON_OF_ANTON_HOME but lose the DB mutation guard.
     env = _scrub_delegated_child_kanban_env(env)
 
     return env
@@ -681,10 +681,10 @@ def build_subprocess_env(
     """Single factory for building a child-process environment.
 
     Every spawn site in the codebase should build its env through this
-    function (or :func:`renco_subprocess_env` for the model-driving-CLI
+    function (or :func:`son_of_anton_subprocess_env` for the model-driving-CLI
     surface) instead of copying ``os.environ`` directly, so profile-home
-    propagation (``RENCO_HOME`` / subprocess ``HOME`` contract) and the
-    Renco secret-scrub policy have a single owner.  History: ~11 separate
+    propagation (``SON_OF_ANTON_HOME`` / subprocess ``HOME`` contract) and the
+    Son of Anton secret-scrub policy have a single owner.  History: ~11 separate
     commits each fixed one more spawn site that missed profile-HOME or
     secret-scrub propagation; this factory is the fix for the class.
 
@@ -695,9 +695,9 @@ def build_subprocess_env(
       env instead.
     * ``scrub_secrets=True`` (default) — delegate to
       :func:`_sanitize_subprocess_env`, the long-standing owner of the scrub
-      list (provider blocklist + ``_is_renco_internal_secret`` dynamic
+      list (provider blocklist + ``_is_son_of_anton_internal_secret`` dynamic
       patterns + kanban/venv-marker/session-context guards) **and** of
-      ``RENCO_HOME`` / subprocess-HOME propagation.  On this path profile
+      ``SON_OF_ANTON_HOME`` / subprocess-HOME propagation.  On this path profile
       home propagation is inherent — ``inherit_profile_home`` is ignored
       (always applied), exactly matching today's sanitize semantics.
     * ``scrub_secrets=False`` — preserve the base env content byte-for-byte
@@ -706,17 +706,17 @@ def build_subprocess_env(
       scrubbing could change behavior.  The site is still a win: it becomes
       grep-able and future-fixable.
     * ``inherit_profile_home`` — on the non-scrub path, when True, bridge the
-      context-local Renco home override into ``RENCO_HOME`` and apply the
-      subprocess HOME contract (``renco_constants.apply_subprocess_home_env``).
+      context-local Son of Anton home override into ``SON_OF_ANTON_HOME`` and apply the
+      subprocess HOME contract (``son_of_anton_constants.apply_subprocess_home_env``).
       Pass False to keep the inherited env untouched (exact legacy
       ``os.environ.copy()`` behavior).
     * ``extra`` — applied **last** on the non-scrub path so explicit caller
-      overrides (e.g. a session-scoped ``RENCO_HOME``) always win.  On the
+      overrides (e.g. a session-scoped ``SON_OF_ANTON_HOME``) always win.  On the
       scrub path it is forwarded as ``_sanitize_subprocess_env``'s
       ``extra_env`` (same force-prefix / blocklist handling as today).
     """
     if scrub_secrets:
-        # _sanitize_subprocess_env already performs RENCO_HOME override
+        # _sanitize_subprocess_env already performs SON_OF_ANTON_HOME override
         # bridging + apply_subprocess_home_env unconditionally; delegating
         # wholesale keeps one owner and zero drift.
         return _sanitize_subprocess_env(
@@ -726,8 +726,8 @@ def build_subprocess_env(
 
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if inherit_profile_home:
-        _inject_context_renco_home(env)
-        from renco_constants import apply_subprocess_home_env
+        _inject_context_son_of_anton_home(env)
+        from son_of_anton_constants import apply_subprocess_home_env
         apply_subprocess_home_env(env)
     if extra:
         env.update(extra)
@@ -747,24 +747,24 @@ def _find_bash() -> str:
 
     candidates: list[str] = []
 
-    custom = os.environ.get("RENCO_GIT_BASH_PATH")
+    custom = os.environ.get("SON_OF_ANTON_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
         candidates.append(custom)
 
     # Prefer our own portable Git install — a broken or partially-uninstalled
-    # system Git (or a stale RENCO_GIT_BASH_PATH pointing at one) must not
+    # system Git (or a stale SON_OF_ANTON_GIT_BASH_PATH pointing at one) must not
     # brick the terminal.  install.ps1 drops PortableGit here when needed.
     #
     # Layouts (both checked so upgrades between MinGit and PortableGit
     # installs work transparently):
-    #   PortableGit: %LOCALAPPDATA%\renco\git\bin\bash.exe   (primary)
-    #   MinGit:      %LOCALAPPDATA%\renco\git\usr\bin\bash.exe (legacy/32-bit fallback)
+    #   PortableGit: %LOCALAPPDATA%\son-of-anton\git\bin\bash.exe   (primary)
+    #   MinGit:      %LOCALAPPDATA%\son-of-anton\git\usr\bin\bash.exe (legacy/32-bit fallback)
     _local_appdata = os.environ.get("LOCALAPPDATA", "")
-    _renco_portable_git = os.path.join(_local_appdata, "renco", "git") if _local_appdata else ""
-    if _renco_portable_git:
+    _son_of_anton_portable_git = os.path.join(_local_appdata, "son-of-anton", "git") if _local_appdata else ""
+    if _son_of_anton_portable_git:
         for candidate in (
-            os.path.join(_renco_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
-            os.path.join(_renco_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+            os.path.join(_son_of_anton_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            os.path.join(_son_of_anton_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
             if os.path.isfile(candidate) and candidate not in candidates:
                 candidates.append(candidate)
@@ -786,14 +786,14 @@ def _find_bash() -> str:
         candidates.append(found)
 
     # Prefer the first candidate that can actually start.  A stale
-    # RENCO_GIT_BASH_PATH pointing at a broken Git-for-Windows install
+    # SON_OF_ANTON_GIT_BASH_PATH pointing at a broken Git-for-Windows install
     # (``Directory \\drivers\\etc does not exist``) must not win over a
-    # healthy portable Git under %LOCALAPPDATA%\\renco\\git.
+    # healthy portable Git under %LOCALAPPDATA%\\son-of-anton\\git.
     for candidate in candidates:
         if _bash_starts(candidate):
             if candidate != custom and custom and os.path.isfile(custom):
                 logger.warning(
-                    "RENCO_GIT_BASH_PATH=%s fails to start; using %s instead",
+                    "SON_OF_ANTON_GIT_BASH_PATH=%s fails to start; using %s instead",
                     custom,
                     candidate,
                 )
@@ -816,9 +816,9 @@ def _find_bash() -> str:
         return candidates[0]
 
     raise RuntimeError(
-        "Git Bash not found. Renco Agent requires Git for Windows on Windows.\n"
+        "Git Bash not found. Son of Anton Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
-        "Or set RENCO_GIT_BASH_PATH to your bash.exe location."
+        "Or set SON_OF_ANTON_GIT_BASH_PATH to your bash.exe location."
     )
 
 
@@ -904,7 +904,7 @@ def _git_bash_aslr_help(bash: str, details: str = "") -> str:
         'Get-Item "$gitRoot\\bin\\bash.exe", "$gitRoot\\usr\\bin\\*.exe" '
         "-ErrorAction SilentlyContinue | ForEach-Object { "
         "Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }\n"
-        "Then restart Renco. If the override is blocked or later re-applied, "
+        "Then restart Son of Anton. If the override is blocked or later re-applied, "
         "ask your Windows administrator to allow this per-program exception."
     )
 
@@ -1075,42 +1075,42 @@ _SANE_PATH = (
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
-# Cached directory containing the ``renco`` console-script.
+# Cached directory containing the ``son-of-anton`` console-script.
 # ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
 _SENTINEL = object()
-_RENCO_BIN_DIR: "str | None | object" = _SENTINEL
+_SON_OF_ANTON_BIN_DIR: "str | None | object" = _SENTINEL
 
 
-def _resolve_renco_bin_dir() -> str | None:
-    """Return the directory holding the ``renco`` console-script, or None.
+def _resolve_son_of_anton_bin_dir() -> str | None:
+    """Return the directory holding the ``son-of-anton`` console-script, or None.
 
     The terminal tool runs in a freshly-spawned subshell whose PATH is the
     agent process's PATH plus a static set of system dirs (``_SANE_PATH``).
     When the gateway is launched by something that does NOT source the user's
     shell rc — systemd, a service manager, a desktop launcher, cron — the
-    renco install dir (``~/.local/bin``, the venv ``bin``/``Scripts``, pipx,
-    nix) is absent from that PATH, so plugins shelling out to bare ``renco``
+    son-of-anton install dir (``~/.local/bin``, the venv ``bin``/``Scripts``, pipx,
+    nix) is absent from that PATH, so plugins shelling out to bare ``son-of-anton``
     via the terminal tool hit ``command not found`` (exit 127) even though
-    ``renco`` works fine in the user's own interactive terminal.
+    ``son-of-anton`` works fine in the user's own interactive terminal.
 
     We resolve the install dir once (it never changes within a process) and
-    prepend-if-missing it to the subshell PATH so bare ``renco`` resolves
+    prepend-if-missing it to the subshell PATH so bare ``son-of-anton`` resolves
     regardless of how the gateway was started.
 
     Resolution order (cheap, no heavy imports):
-      1. ``shutil.which("renco")`` — normal PATH-installed shim.
+      1. ``shutil.which("son-of-anton")`` — normal PATH-installed shim.
       2. The directory of ``sys.argv[0]`` when it's an absolute path to a
-         real ``renco`` executable (covers nix-store / venv wrappers).
+         real ``son-of-anton`` executable (covers nix-store / venv wrappers).
       3. The directory of ``sys.executable`` — the running interpreter's
          venv ``bin``/``Scripts`` is where its console-scripts live.
     """
-    global _RENCO_BIN_DIR
-    if _RENCO_BIN_DIR is not _SENTINEL:
-        return _RENCO_BIN_DIR  # type: ignore[return-value]
+    global _SON_OF_ANTON_BIN_DIR
+    if _SON_OF_ANTON_BIN_DIR is not _SENTINEL:
+        return _SON_OF_ANTON_BIN_DIR  # type: ignore[return-value]
 
     candidate: str | None = None
 
-    which = shutil.which("renco")
+    which = shutil.which("son-of-anton")
     if which:
         candidate = os.path.dirname(which)
 
@@ -1119,7 +1119,7 @@ def _resolve_renco_bin_dir() -> str | None:
         base = os.path.basename(argv0).lower()
         if (
             os.path.isabs(argv0)
-            and (base == "renco" or base.startswith("renco."))
+            and (base == "son-of-anton" or base.startswith("son-of-anton."))
             and os.path.isfile(argv0)
         ):
             candidate = os.path.dirname(argv0)
@@ -1127,25 +1127,25 @@ def _resolve_renco_bin_dir() -> str | None:
     if candidate is None:
         exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
         if exe_dir:
-            shim = "renco.exe" if _IS_WINDOWS else "renco"
+            shim = "son-of-anton.exe" if _IS_WINDOWS else "son-of-anton"
             if os.path.isfile(os.path.join(exe_dir, shim)):
                 candidate = exe_dir
 
     if candidate and not os.path.isdir(candidate):
         candidate = None
 
-    _RENCO_BIN_DIR = candidate
+    _SON_OF_ANTON_BIN_DIR = candidate
     return candidate
 
 
-def _prepend_renco_bin_dir(existing_path: str) -> str:
-    """Prepend the renco install dir to ``existing_path`` if it's missing.
+def _prepend_son_of_anton_bin_dir(existing_path: str) -> str:
+    """Prepend the son-of-anton install dir to ``existing_path`` if it's missing.
 
     Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
     that already contains the dir is returned unchanged. Returns the input
     unchanged when the install dir can't be resolved.
     """
-    bin_dir = _resolve_renco_bin_dir()
+    bin_dir = _resolve_son_of_anton_bin_dir()
     if not bin_dir:
         return existing_path
     sep = os.pathsep
@@ -1156,28 +1156,28 @@ def _prepend_renco_bin_dir(existing_path: str) -> str:
 
 
 def _managed_runtime_path_entries() -> list[str]:
-    """Return existing Renco-managed runtime dirs for the terminal subshell PATH.
+    """Return existing Son of Anton-managed runtime dirs for the terminal subshell PATH.
 
     The terminal tool spawns a subshell whose PATH is the agent process's PATH
-    plus ``_SANE_PATH``. Neither carries the runtimes Renco installs for
-    itself, so on a machine where Renco provisioned its own toolchain a
+    plus ``_SANE_PATH``. Neither carries the runtimes Son of Anton installs for
+    itself, so on a machine where Son of Anton provisioned its own toolchain a
     command the agent runs resolves a system copy instead — or nothing at all:
 
-    - ``$RENCO_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
+    - ``$SON_OF_ANTON_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
       browser toolchain. ``tools/browser_tool.py`` already does this for its own
       subprocesses; the agent's shell deserves the same.
-    - ``$RENCO_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+    - ``$SON_OF_ANTON_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
 
     Resolved per call rather than cached in a module constant because
-    ``get_renco_home()`` is profile-scoped and a managed tree can appear
-    mid-process (``heal_renco_managed_node``, a first browser install).
+    ``get_son_of_anton_home()`` is profile-scoped and a managed tree can appear
+    mid-process (``heal_son_of_anton_managed_node``, a first browser install).
     """
     try:
-        from renco_constants import get_renco_home, iter_renco_node_dirs
+        from son_of_anton_constants import get_son_of_anton_home, iter_son_of_anton_node_dirs
 
-        candidates = [*iter_renco_node_dirs(), get_renco_home() / "bin"]
+        candidates = [*iter_son_of_anton_node_dirs(), get_son_of_anton_home() / "bin"]
         return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
@@ -1200,7 +1200,7 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
       that already contains repeats is not propagated verbatim.
 
-    Renco-managed runtime dirs are appended alongside the sane entries, not
+    Son of Anton-managed runtime dirs are appended alongside the sane entries, not
     prepended: a tool the user deliberately put on their own PATH still wins,
     and the managed one only fills the gap where there would otherwise be
     nothing.
@@ -1244,7 +1244,7 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
 
     Git Bash rewrites arguments that look like Unix paths (``/FO``, ``/TN``,
     ``/Create``) into ``C:/.../git/FO``-style paths, which breaks native
-    Windows commands such as ``tasklist``, ``schtasks``, and ``wmic``.  Renco
+    Windows commands such as ``tasklist``, ``schtasks``, and ``wmic``.  Son of Anton
     runs terminal commands through bash on Windows, so set the standard MSYS
     opt-out by default.  Users who need conversion can override in their env.
     Refs #56700.
@@ -1294,16 +1294,16 @@ def _make_run_env(env: dict) -> dict:
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
-        if k.startswith(_RENCO_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = k[len(_RENCO_PROVIDER_ENV_FORCE_PREFIX):]
-            if _is_renco_internal_secret(real_key):
+        if k.startswith(_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = k[len(_SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_son_of_anton_internal_secret(real_key):
                 continue
             run_env[real_key] = v
-        elif _is_renco_internal_secret(k):
+        elif _is_son_of_anton_internal_secret(k):
             continue
         else:
             passthrough = _is_passthrough(k)
-            if k in _RENCO_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if k in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST and not passthrough:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:
@@ -1318,14 +1318,14 @@ def _make_run_env(env: dict) -> dict:
         # error / exit 127).  No-op off Windows and when a login snapshot is
         # healthy (the snapshot re-exports the full PATH inside the shell).
         new_path = _prepend_git_bash_dirs(new_path)
-        # Ensure the renco install dir is reachable so plugins can shell out
-        # to bare ``renco`` via the terminal tool even when the gateway was
+        # Ensure the son-of-anton install dir is reachable so plugins can shell out
+        # to bare ``son-of-anton`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).
-        run_env[path_key] = _prepend_renco_bin_dir(new_path)
+        run_env[path_key] = _prepend_son_of_anton_bin_dir(new_path)
 
-    _inject_context_renco_home(run_env)
+    _inject_context_son_of_anton_home(run_env)
 
-    from renco_constants import apply_subprocess_home_env
+    from son_of_anton_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 
     # Bridge ContextVar-based session vars into the subprocess env (with the
@@ -1333,7 +1333,7 @@ def _make_run_env(env: dict) -> dict:
     # engaged so a sibling session's os.environ mirror can't leak in).
     _inject_session_context_env(run_env)
 
-    _strip_renco_owned_pythonpath_and_runtime_markers(run_env)
+    _strip_son_of_anton_owned_pythonpath_and_runtime_markers(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
@@ -1349,17 +1349,17 @@ def _same_path(left: Path, right: Path) -> bool:
     return left_parts == right_parts
 
 
-def _build_renco_repo_root_aliases(
+def _build_son_of_anton_repo_root_aliases(
     resolved_root: Path,
     lexical_root: Path,
     configured_home: Path,
 ) -> tuple[Path, ...]:
-    """Return exact repo-root spellings emitted by Renco launchers.
+    """Return exact repo-root spellings emitted by Son of Anton launchers.
 
-    ``gateway_windows._preserve_renco_home_path`` maps a physical path under
-    the resolved RENCO_HOME back onto the configured RENCO_HOME spelling.
+    ``gateway_windows._preserve_son_of_anton_home_path`` maps a physical path under
+    the resolved SON_OF_ANTON_HOME back onto the configured SON_OF_ANTON_HOME spelling.
     Mirror that producer contract here so a junction-backed install is matched
-    without treating arbitrary descendants of RENCO_HOME as Renco-owned.
+    without treating arbitrary descendants of SON_OF_ANTON_HOME as Son of Anton-owned.
     Additionally, when the repo itself is a junction under the configured root
     (repo-level junction, possibly cross-drive), the single deterministic
     candidate <root>/<repo dirname> is accepted only when strict resolve
@@ -1378,10 +1378,10 @@ def _build_renco_repo_root_aliases(
     # home becomes <root>/profiles/<name>.  The repo root then lives beside
     # the profiles directory (not under the profile home), so the home-
     # relative mapping below cannot reach it.  Derive the root spelling
-    # lexically the same way get_default_renco_root() does (parent of a
+    # lexically the same way get_default_son_of_anton_root() does (parent of a
     # "profiles" component) and run the same exact-ownership mapping against
     # it -- this recovers the launcher's lexical root under profile re-home
-    # while still never matching arbitrary descendants of RENCO_HOME.
+    # while still never matching arbitrary descendants of SON_OF_ANTON_HOME.
     home_candidates = [configured_home]
     if configured_home.parent.name == "profiles":
         home_candidates.append(configured_home.parent.parent)
@@ -1398,13 +1398,13 @@ def _build_renco_repo_root_aliases(
             pass
 
     # Repo-level junction recovery: the repository itself may be a
-    # junction/symlink under the configured root (e.g. D:\renco\renco-agent
-    # -> C:\...\renco-agent) while the import spelling (editable install)
+    # junction/symlink under the configured root (e.g. D:\son-of-anton\son-of-anton
+    # -> C:\...\son-of-anton) while the import spelling (editable install)
     # resolves to the physical location.  The home-relative mapping above
     # cannot express a cross-drive link (commonpath raises on different
     # drives), so prove the EXACT filesystem identity of the single
     # deterministic candidate -- <lexical root>/<repo dirname> -- with a
-    # strict resolve before accepting it as Renco-owned.  Fail-closed: a
+    # strict resolve before accepting it as Son of Anton-owned.  Fail-closed: a
     # missing path (strict resolve raises), a real directory that is not the
     # known physical root, or any unrelated spelling never becomes an alias.
     for home in home_candidates:
@@ -1418,28 +1418,28 @@ def _build_renco_repo_root_aliases(
     return tuple(aliases)
 
 
-# --- Renco venv / repo-root detection (module-level, computed once) ---
+# --- Son of Anton venv / repo-root detection (module-level, computed once) ---
 
-#: The Renco repository root - three levels up from this file
+#: The Son of Anton repository root - three levels up from this file
 #: (``tools/environments/local.py`` -> ``tools/environments`` -> ``tools``
 #: -> repo root).  This is the directory the Electron app prepends to
-#: PYTHONPATH so the backend can do ``import tools``, ``import renco_cli``,
-#: etc.  Subprocesses that are NOT the Renco backend don't need it and it
+#: PYTHONPATH so the backend can do ``import tools``, ``import son_of_anton_cli``,
+#: etc.  Subprocesses that are NOT the Son of Anton backend don't need it and it
 #: can shadow local packages.
-_renco_repo_root: Path = Path(__file__).resolve().parents[2]
+_son_of_anton_repo_root: Path = Path(__file__).resolve().parents[2]
 
-#: Alternate spellings of the repo root that Renco launchers may emit.
+#: Alternate spellings of the repo root that Son of Anton launchers may emit.
 #: ``Path(__file__).resolve()`` canonicalizes symlinks/junctions, but the
-#: Windows gateway launcher deliberately renders Renco-owned paths under
-#: the configured RENCO_HOME spelling (which may be a junction to another
-#: drive — see ``renco_cli/gateway_windows.py::_preserve_renco_home_path``).
+#: Windows gateway launcher deliberately renders Son of Anton-owned paths under
+#: the configured SON_OF_ANTON_HOME spelling (which may be a junction to another
+#: drive — see ``son_of_anton_cli/gateway_windows.py::_preserve_son_of_anton_home_path``).
 #: ``Path(__file__)`` (unresolved) keeps that spelling, so a PYTHONPATH
 #: entry written by the launcher still matches even though it differs
 #: lexically from the resolved root.
-_renco_repo_root_aliases: tuple[Path, ...] = _build_renco_repo_root_aliases(
-    _renco_repo_root,
+_son_of_anton_repo_root_aliases: tuple[Path, ...] = _build_son_of_anton_repo_root_aliases(
+    _son_of_anton_repo_root,
     Path(__file__).absolute().parents[2],
-    get_process_renco_home(),
+    get_process_son_of_anton_home(),
 )
 
 #: Whether the current interpreter is running inside a venv.  On Python 3.3+
@@ -1454,7 +1454,7 @@ _in_venv: bool = (
 #: interpreter's own venv.  Computed lazily (once) because ``site`` import
 #: and path construction are not free and this function is called on every
 #: subprocess spawn.
-_renco_site_packages: list[Path] | None = None
+_son_of_anton_site_packages: list[Path] | None = None
 
 
 def _validated_runtime_venv(env: dict) -> Path | None:
@@ -1462,7 +1462,7 @@ def _validated_runtime_venv(env: dict) -> Path | None:
 
     A user may carry an unrelated VIRTUAL_ENV, so the variable alone is not
     provenance.  The legacy Windows base-Python gateway producer uses the exact
-    ``<Renco repo>/venv`` layout and a real venv marker; require both before
+    ``<Son of Anton repo>/venv`` layout and a real venv marker; require both before
     accepting its separate runtime venv.
     """
     value = env.get("VIRTUAL_ENV")
@@ -1470,7 +1470,7 @@ def _validated_runtime_venv(env: dict) -> Path | None:
         return None
 
     candidate = Path(value)
-    if not any(_same_path(candidate, repo_root / "venv") for repo_root in _renco_repo_root_aliases):
+    if not any(_same_path(candidate, repo_root / "venv") for repo_root in _son_of_anton_repo_root_aliases):
         return None
 
     try:
@@ -1482,8 +1482,8 @@ def _validated_runtime_venv(env: dict) -> Path | None:
     return candidate
 
 
-def _get_renco_site_packages(env: dict) -> list[Path]:
-    """Return exact site-packages dirs owned by the Renco runtime.
+def _get_son_of_anton_site_packages(env: dict) -> list[Path]:
+    """Return exact site-packages dirs owned by the Son of Anton runtime.
 
     Uses ``site.getsitepackages()`` when available for robustness (it respects
     ``.pth`` rewrites and platform conventions), with a manual fallback that
@@ -1491,9 +1491,9 @@ def _get_renco_site_packages(env: dict) -> list[Path]:
     A validated Windows base-interpreter launch contributes its separate
     ``VIRTUAL_ENV/Lib/site-packages`` directory as an additional exact entry.
     """
-    global _renco_site_packages
-    if _renco_site_packages is not None:
-        result = list(_renco_site_packages)
+    global _son_of_anton_site_packages
+    if _son_of_anton_site_packages is not None:
+        result = list(_son_of_anton_site_packages)
     else:
         result = []
         if _in_venv:
@@ -1515,7 +1515,7 @@ def _get_renco_site_packages(env: dict) -> list[Path]:
                     pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
                     result.append(Path(sys.prefix) / "lib" / pyver / "site-packages")
 
-        _renco_site_packages = list(result)
+        _son_of_anton_site_packages = list(result)
 
     runtime_venv = _validated_runtime_venv(env)
     if runtime_venv is not None:
@@ -1526,27 +1526,27 @@ def _get_renco_site_packages(env: dict) -> list[Path]:
     return result
 
 
-def _strip_renco_owned_pythonpath_and_runtime_markers(env: dict) -> None:
-    """Strip Renco-owned PYTHONPATH entries, then the runtime marker vars.
+def _strip_son_of_anton_owned_pythonpath_and_runtime_markers(env: dict) -> None:
+    """Strip Son of Anton-owned PYTHONPATH entries, then the runtime marker vars.
 
     Ordering is load-bearing: PYTHONPATH filtering must run BEFORE the
     markers are removed so a validated Windows base-interpreter launch
     (VIRTUAL_ENV -> <repo>/venv) can still prove ownership.
     """
-    _strip_renco_owned_pythonpath(env)
+    _strip_son_of_anton_owned_pythonpath(env)
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
 
 
-def _strip_renco_owned_pythonpath(env: dict) -> None:
-    """Remove Renco-owned PYTHONPATH entries from subprocess environments.
+def _strip_son_of_anton_owned_pythonpath(env: dict) -> None:
+    """Remove Son of Anton-owned PYTHONPATH entries from subprocess environments.
 
-    Launchers prepend the Renco repo root and the Renco venv's
+    Launchers prepend the Son of Anton repo root and the Son of Anton venv's
     site-packages so the backend can ``import tools``; leaking those into a
     child Python of a DIFFERENT version makes it load the backend's C
     extensions and crash (``numpy._core._multiarray_umath``, ``PIL._imaging``,
     ``cryptography``).  Blanket-removing PYTHONPATH would discard legitimate
-    user entries, so only entries proven Renco-owned are removed:
+    user entries, so only entries proven Son of Anton-owned are removed:
 
     1. The exact repo root (never direct children -- no launcher injects
        one, and user paths under the repo must survive).
@@ -1563,7 +1563,7 @@ def _strip_renco_owned_pythonpath(env: dict) -> None:
     if not pp:
         return
 
-    renco_site_packages = _get_renco_site_packages(env)
+    son_of_anton_site_packages = _get_son_of_anton_site_packages(env)
 
     kept: list[str] = []
     stripped: list[str] = []
@@ -1571,7 +1571,7 @@ def _strip_renco_owned_pythonpath(env: dict) -> None:
     for entry in pp.split(os.pathsep):
         # Empty and non-normalized components are user-owned semantics.  In
         # particular, an empty component means the current working directory.
-        # Preserve raw spelling unless the exact component is Renco-owned.
+        # Preserve raw spelling unless the exact component is Son of Anton-owned.
         if entry == "":
             kept.append(entry)
             continue
@@ -1579,10 +1579,10 @@ def _strip_renco_owned_pythonpath(env: dict) -> None:
         entry_path = Path(entry)
         should_strip = False
 
-        # --- Check 1: Renco venv site-packages ---
+        # --- Check 1: Son of Anton venv site-packages ---
         # Producers inject the exact directory, never a descendant.  Exact
         # matching avoids deleting a user path nested below site-packages.
-        for sp in renco_site_packages:
+        for sp in son_of_anton_site_packages:
             if _same_path(entry_path, sp):
                 should_strip = True
                 break
@@ -1590,19 +1590,19 @@ def _strip_renco_owned_pythonpath(env: dict) -> None:
             stripped.append(entry)
             continue
 
-        # --- Check 2: Renco repo root ---
+        # --- Check 2: Son of Anton repo root ---
         # The Electron app prepends the repo root so ``import tools`` works
         # in the backend.  Subprocesses don't need it and it can shadow
         # local packages of the same name.  Only the EXACT root is stripped:
         # no launcher injects a direct child (``<repo>/tools`` etc.) as an
         # independent PYTHONPATH entry, and user paths that merely happen to
         # live under the repo directory must be preserved.  Both the
-        # resolved and unresolved (RENCO_HOME/junction) spellings count as
-        # Renco-owned.
+        # resolved and unresolved (SON_OF_ANTON_HOME/junction) spellings count as
+        # Son of Anton-owned.
         if not should_strip:
             should_strip = any(
                 _same_path(entry_path, repo_root)
-                for repo_root in _renco_repo_root_aliases
+                for repo_root in _son_of_anton_repo_root_aliases
             )
 
         if should_strip:
@@ -1617,7 +1617,7 @@ def _strip_renco_owned_pythonpath(env: dict) -> None:
 
     if stripped:
         logger.debug(
-            "Stripped Renco-owned entries from PYTHONPATH: %s",
+            "Stripped Son of Anton-owned entries from PYTHONPATH: %s",
             stripped,
         )
 
@@ -1629,7 +1629,7 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
     execution never breaks because the config file is unreadable.
     """
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
 
         cfg = load_config() or {}
         terminal_cfg = cfg.get("terminal") or {}
@@ -1648,7 +1648,7 @@ def _resolve_shell_init_files() -> list[str]:
     Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
     exist on disk, so a missing ``~/.bashrc`` never breaks the snapshot.
     The ``auto_source_bashrc`` path runs only when the user hasn't supplied
-    an explicit list — once they have, Renco trusts them.
+    an explicit list — once they have, Son of Anton trusts them.
     """
     explicit, auto_bashrc = _read_terminal_shell_init_config()
 
@@ -1736,20 +1736,20 @@ class LocalEnvironment(BaseEnvironment):
         can't open the path, and the Windows default temp (``%TEMP%``) often
         contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
         break unquoted bash interpolations.  Use a dedicated cache dir under
-        ``RENCO_HOME`` instead — single-word path, guaranteed to exist, same
+        ``SON_OF_ANTON_HOME`` instead — single-word path, guaranteed to exist, same
         string resolves in both Git Bash and native Python.
         """
         if _IS_WINDOWS:
-            # Derive a Windows-safe temp dir under RENCO_HOME.  Using
+            # Derive a Windows-safe temp dir under SON_OF_ANTON_HOME.  Using
             # forward slashes makes the same string work unchanged in bash
             # command interpolations AND in Python ``open()`` — Windows
             # accepts forward slashes in filesystem paths, and we control
             # the path so we can guarantee no spaces.
             try:
-                from renco_constants import get_renco_home
-                cache_dir = get_renco_home() / "cache" / "terminal"
+                from son_of_anton_constants import get_son_of_anton_home
+                cache_dir = get_son_of_anton_home() / "cache" / "terminal"
             except Exception:
-                cache_dir = Path(tempfile.gettempdir()) / "renco_terminal"
+                cache_dir = Path(tempfile.gettempdir()) / "son_of_anton_terminal"
             cache_dir.mkdir(parents=True, exist_ok=True)
             # Force forward slashes so the same string serves both contexts.
             return str(cache_dir).replace("\\", "/")
@@ -1838,7 +1838,7 @@ class LocalEnvironment(BaseEnvironment):
         )
         if not _IS_WINDOWS:
             try:
-                proc._renco_pgid = os.getpgid(proc.pid)
+                proc._son_of_anton_pgid = os.getpgid(proc.pid)
             except ProcessLookupError:
                 pass
 
@@ -1895,7 +1895,7 @@ class LocalEnvironment(BaseEnvironment):
                 try:
                     pgid = os.getpgid(proc.pid)
                 except ProcessLookupError:
-                    pgid = getattr(proc, "_renco_pgid", None)
+                    pgid = getattr(proc, "_son_of_anton_pgid", None)
                     if pgid is None:
                         raise
 

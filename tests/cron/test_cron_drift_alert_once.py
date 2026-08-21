@@ -52,13 +52,13 @@ def _tick(job, tmp_path, current_provider, deliveries):
         deliveries.append(content)
         return None
 
-    with patch("cron.scheduler._renco_home", tmp_path), \
+    with patch("cron.scheduler._son_of_anton_home", tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
-         patch("renco_cli.env_loader.load_renco_dotenv"), \
-         patch("renco_cli.env_loader.reset_secret_source_cache"), \
-         patch("renco_state.SessionDB", return_value=fake_db), \
+         patch("son_of_anton_cli.env_loader.load_son_of_anton_dotenv"), \
+         patch("son_of_anton_cli.env_loader.reset_secret_source_cache"), \
+         patch("son_of_anton_state.SessionDB", return_value=fake_db), \
          patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
-         patch("renco_cli.runtime_provider.resolve_runtime_provider",
+         patch("son_of_anton_cli.runtime_provider.resolve_runtime_provider",
                return_value={
                    "api_key": "test-key",
                    "base_url": "https://example.invalid/v1",
@@ -92,10 +92,10 @@ class TestDriftAlertOnce:
         blob = deliveries[0].lower()
         assert "drift" in blob
         assert "pin" in blob
-        assert "host running renco" in blob
+        assert "host running son-of-anton" in blob
         # The single alert must carry the complete supported remediation
         # command — the generic summarizer's 180-char truncation must not eat it.
-        assert "renco cron edit drift-once-test" in deliveries[0]
+        assert "son-of-anton cron edit drift-once-test" in deliveries[0]
         assert "cronjob action=update" not in deliveries[0]
         assert "[drift_skip" not in deliveries[0]
 
@@ -137,13 +137,13 @@ class TestDriftAlertOnce:
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
             fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
-            with patch("cron.scheduler._renco_home", tmp_path), \
+            with patch("cron.scheduler._son_of_anton_home", tmp_path), \
                  patch("cron.scheduler._resolve_origin", return_value=None), \
-                 patch("renco_cli.env_loader.load_renco_dotenv"), \
-                 patch("renco_cli.env_loader.reset_secret_source_cache"), \
-                 patch("renco_state.SessionDB", return_value=fake_db), \
+                 patch("son_of_anton_cli.env_loader.load_son_of_anton_dotenv"), \
+                 patch("son_of_anton_cli.env_loader.reset_secret_source_cache"), \
+                 patch("son_of_anton_state.SessionDB", return_value=fake_db), \
                  patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
-                 patch("renco_cli.runtime_provider.resolve_runtime_provider",
+                 patch("son_of_anton_cli.runtime_provider.resolve_runtime_provider",
                        return_value={
                            "api_key": "test-key",
                            "base_url": "https://example.invalid/v1",

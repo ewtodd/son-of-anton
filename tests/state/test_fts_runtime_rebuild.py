@@ -17,7 +17,7 @@ import sqlite3
 
 import pytest
 
-from renco_state import (
+from son_of_anton_state import (
     FTS_STALE_KEY,
     LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL,

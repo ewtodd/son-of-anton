@@ -2,11 +2,11 @@
 name: youtube-content
 description: "YouTube transcripts to summaries, threads, blogs."
 version: 1.0.0
-author: Teknium (teknium1), Renco Agent
+author: Teknium (teknium1), Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [YouTube, Video, Transcripts, Media]
     related_skills: []
 ---
@@ -21,7 +21,7 @@ Extract transcripts from YouTube videos and convert them into useful formats.
 
 ## Setup
 
-Use `uv` so the dependency is installed into the same Renco-managed environment
+Use `uv` so the dependency is installed into the same Son of Anton-managed environment
 that runs the helper script:
 
 ```bash

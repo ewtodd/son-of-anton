@@ -2,11 +2,11 @@
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
 version: 2.1.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
     related_skills: [obsidian, arxiv]
@@ -35,7 +35,7 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${RENCO_HOME:-~/.renco}/.env`).
+**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${SON_OF_ANTON_HOME:-~/.son-of-anton}/.env`).
 
 If unset, defaults to `~/wiki`.
 

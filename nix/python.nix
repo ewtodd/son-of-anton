@@ -111,12 +111,12 @@ let
           buildSystemOverrides
           pythonPackageOverrides
           # ``setup.py`` permits wheel/sdist creation only from the sealed
-          # Renco derivation. This is deliberately a derivation environment
+          # Son of Anton derivation. This is deliberately a derivation environment
           # variable, not a devShell variable: ``nix develop -c uv build``
           # must remain blocked.
           (final: prev: {
-            renco-agent = prev.renco-agent.overrideAttrs (_old: {
-              RENCO_NIX_BUILD = "1";
+            son-of-anton = prev.son-of-anton.overrideAttrs (_old: {
+              SON_OF_ANTON_NIX_BUILD = "1";
             });
           })
         ]
@@ -127,18 +127,18 @@ let
   # computes relative paths via lib.path.splitRoot, which rejects the
   # filtered pythonSrc (a cleanSourceWith set, not a path).  Filtering
   # buys nothing here anyway: the editable install reads from
-  # $RENCO_PYTHON_SRC_ROOT at runtime.
+  # $SON_OF_ANTON_PYTHON_SRC_ROOT at runtime.
   workspaceRoot = ./..;
   editableWorkspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
   editableOverlay = editableWorkspace.mkEditablePyprojectOverlay {
-    root = "$RENCO_PYTHON_SRC_ROOT"; # resolved at shellHook time
+    root = "$SON_OF_ANTON_PYTHON_SRC_ROOT"; # resolved at shellHook time
   };
 
   editableSet = pythonSet.overrideScope (
     lib.composeManyExtensions [
       editableOverlay
       (final: prev: {
-        renco-agent = prev.renco-agent.overrideAttrs (old: {
+        son-of-anton = prev.son-of-anton.overrideAttrs (old: {
           # point straight at the real source instead of the filtered nix store copy
           src = workspaceRoot;
           nativeBuildInputs = old.nativeBuildInputs ++ final.resolveBuildSystem { editables = [ ]; };
@@ -148,10 +148,10 @@ let
   );
 in
 {
-  venv = pythonSet.mkVirtualEnv "renco-agent-env" {
-    renco-agent = dependency-groups;
+  venv = pythonSet.mkVirtualEnv "son-of-anton-env" {
+    son-of-anton = dependency-groups;
   };
-  editableVenv = editableSet.mkVirtualEnv "renco-agent-editable-env" {
-    renco-agent = dependency-groups;
+  editableVenv = editableSet.mkVirtualEnv "son-of-anton-editable-env" {
+    son-of-anton = dependency-groups;
   };
 }

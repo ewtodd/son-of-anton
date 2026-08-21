@@ -55,8 +55,8 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
 
 def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch):
     for key in (
-        "RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS",
-        "RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        "SON_OF_ANTON_DISCORD_LIVENESS_INTERVAL_SECONDS",
+        "SON_OF_ANTON_DISCORD_LIVENESS_FAILURE_THRESHOLD",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -71,8 +71,8 @@ def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch)
         },
     )
 
-    assert os.environ["RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS"] == "11"
-    assert os.environ["RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD"] == "2"
+    assert os.environ["SON_OF_ANTON_DISCORD_LIVENESS_INTERVAL_SECONDS"] == "11"
+    assert os.environ["SON_OF_ANTON_DISCORD_LIVENESS_FAILURE_THRESHOLD"] == "2"
     assert seeded == {
         "websocket_liveness_interval_seconds": 11,
         "websocket_liveness_failure_threshold": 2,

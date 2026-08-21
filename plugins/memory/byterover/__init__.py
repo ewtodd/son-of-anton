@@ -17,7 +17,7 @@ Config via config.yaml:
     byterover:
       auto_extract: false  # disable automatic brv curate hooks
 
-Working directory: $RENCO_HOME/byterover/ (profile-scoped context tree)
+Working directory: $SON_OF_ANTON_HOME/byterover/ (profile-scoped context tree)
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def _load_plugin_config() -> Dict[str, Any]:
     early docs/issues, so accept it as a compatibility fallback.
     """
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
 
         config = load_config()
         memory_config = config.get("memory", {})
@@ -164,8 +164,8 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
 
 def _get_brv_cwd() -> Path:
     """Profile-scoped working directory for the brv context tree."""
-    from renco_constants import get_renco_home
-    return get_renco_home() / "byterover"
+    from son_of_anton_constants import get_son_of_anton_home
+    return get_son_of_anton_home() / "byterover"
 
 
 # ---------------------------------------------------------------------------

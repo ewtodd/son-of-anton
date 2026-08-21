@@ -11,7 +11,7 @@ async def test_unrelated_allow_all_does_not_bypass_yuanbao_open_gate(
     monkeypatch, tmp_path,
 ):
     """TELEGRAM_ALLOW_ALL_USERS must not satisfy Yuanbao's open-policy opt-in."""
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
     monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")

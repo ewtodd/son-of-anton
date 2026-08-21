@@ -28,7 +28,7 @@ from typing import Dict, List, Any, Set, Optional, Tuple
 
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
-_RENCO_CORE_TOOLS = [
+_SON_OF_ANTON_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
     # Terminal + process management
@@ -54,7 +54,7 @@ _RENCO_CORE_TOOLS = [
 # Webhook events may originate from untrusted third-party content (for example,
 # public PR titles/comments). Keep the default webhook toolset intentionally
 # constrained to avoid local file/system execution by prompt injection.
-_RENCO_WEBHOOK_SAFE_TOOLS = [
+_SON_OF_ANTON_WEBHOOK_SAFE_TOOLS = [
     "web_search",
     "web_extract",
     "vision_analyze",
@@ -170,7 +170,7 @@ TOOLSETS = {
         "includes": ["web", "vision"]
     },
 
-    # Coding posture (base Renco — CLI/TUI). Auto-selected in a code
+    # Coding posture (base Son of Anton — CLI/TUI). Auto-selected in a code
     # workspace; see agent/coding_context.py.
     "coding": {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision",
@@ -187,58 +187,58 @@ TOOLSETS = {
         "includes": [],
         # Posture toolset: selected per-session by agent/coding_context.py,
         # never auto-recovered into per-platform tool config (see the
-        # non-configurable-toolset recovery loop in renco_cli/tools_config.py).
+        # non-configurable-toolset recovery loop in son_of_anton_cli/tools_config.py).
         "posture": True,
     },
 
     # ==========================================================================
-    # Full Renco toolsets (CLI + messaging platforms)
+    # Full Son of Anton toolsets (CLI + messaging platforms)
     #
     # All platforms share the same core tools. Note: agents do NOT get an
     # agent-callable send_message tool — outbound platform messaging is handled
-    # outside the agent loop (cron delivery and the `renco send` CLI), not by
+    # outside the agent loop (cron delivery and the `son-of-anton send` CLI), not by
     # the model deciding to send on its own.
     # ==========================================================================
 
-    "renco-cli": {
+    "son-of-anton-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _RENCO_CORE_TOOLS,
+        "tools": _SON_OF_ANTON_CORE_TOOLS,
         "includes": []
     },
 
-    "renco-cron": {
-        # Mirrors renco-cli so cron's "default" toolset is the same set of
-        # core tools users see interactively — then `renco tools` filters
+    "son-of-anton-cron": {
+        # Mirrors son-of-anton-cli so cron's "default" toolset is the same set of
+        # core tools users see interactively — then `son-of-anton tools` filters
         # them down per the platform config.
-        "description": "Default cron toolset - same core tools as renco-cli; gated by `renco tools`",
-        "tools": _RENCO_CORE_TOOLS,
+        "description": "Default cron toolset - same core tools as son-of-anton-cli; gated by `son-of-anton tools`",
+        "tools": _SON_OF_ANTON_CORE_TOOLS,
         "includes": []
     },
 
-    "renco-discord": {
+    "son-of-anton-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _RENCO_CORE_TOOLS + [
+        "tools": _SON_OF_ANTON_CORE_TOOLS + [
             "discord",
         ],
         "includes": []
     },
 
-    "renco-slack": {
+    "son-of-anton-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _RENCO_CORE_TOOLS,
+        "tools": _SON_OF_ANTON_CORE_TOOLS,
         "includes": []
     },
 
-    "renco-signal": {
+    "son-of-anton-signal": {
         "description": "Signal bot toolset - encrypted messaging platform (full access)",
-        "tools": _RENCO_CORE_TOOLS,
+        "tools": _SON_OF_ANTON_CORE_TOOLS,
         "includes": []
     },
 
-    "renco-gateway": {
+    "son-of-anton-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["renco-discord", "renco-slack", "renco-signal"]
+        "includes": ["son-of-anton-discord", "son-of-anton-slack", "son-of-anton-signal"]
     }
 }
 
@@ -318,9 +318,9 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
 
 
 def bundle_non_core_tools(toolset_name: str) -> Set[str]:
-    """Return a ``renco-*`` bundle's platform-specific tools, excluding core.
+    """Return a ``son-of-anton-*`` bundle's platform-specific tools, excluding core.
 
-    Platform bundles are defined as ``_RENCO_CORE_TOOLS + [platform extras]``.
+    Platform bundles are defined as ``_SON_OF_ANTON_CORE_TOOLS + [platform extras]``.
     When a bundle name appears in ``disabled_toolsets``, subtracting the whole
     bundle would strip core tools (terminal, read_file, …) shared by every
     other enabled toolset, emptying the model's tool list (#33924). This
@@ -328,12 +328,12 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     one-level ``includes``), so disabling a bundle removes its platform tools
     while leaving core intact.
 
-    Bundle nesting is one level deep in practice (only ``renco-gateway``
+    Bundle nesting is one level deep in practice (only ``son-of-anton-gateway``
     includes other bundles, and those leaves don't nest further), so a single
     ``includes`` pass is sufficient. Unknown/garbage names fall back to the
     full resolution minus core — never re-introducing the core wipe.
     """
-    core = set(_RENCO_CORE_TOOLS)
+    core = set(_SON_OF_ANTON_CORE_TOOLS)
     ts_def = get_toolset(toolset_name)
     if not (ts_def and "tools" in ts_def):
         return set(resolve_toolset(toolset_name)) - core
@@ -417,17 +417,17 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     # Get toolset definition
     toolset = get_toolset(name, include_registry=include_registry)
     if not toolset:
-        # Auto-generate a toolset for plugin platforms (renco-<name>).
-        # Gives them _RENCO_CORE_TOOLS plus any tools the plugin registered
+        # Auto-generate a toolset for plugin platforms (son-of-anton-<name>).
+        # Gives them _SON_OF_ANTON_CORE_TOOLS plus any tools the plugin registered
         # into a toolset matching the platform name. This is a registry-derived
         # view, so it only applies when registry tools are requested; the static
         # view (include_registry=False) has no plugin-platform definition.
-        if include_registry and name.startswith("renco-"):
-            platform_name = name[len("renco-"):]
+        if include_registry and name.startswith("son-of-anton-"):
+            platform_name = name[len("son-of-anton-"):]
             try:
                 from gateway.platform_registry import platform_registry
                 if platform_registry.is_registered(platform_name):
-                    plugin_tools = set(_RENCO_CORE_TOOLS)
+                    plugin_tools = set(_SON_OF_ANTON_CORE_TOOLS)
                     try:
                         from tools.registry import registry
                         plugin_tools.update(

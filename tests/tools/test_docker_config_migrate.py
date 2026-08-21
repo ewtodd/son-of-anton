@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from renco_cli.config import DEFAULT_CONFIG
+from son_of_anton_cli.config import DEFAULT_CONFIG
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "docker_config_migrate.py"
@@ -23,12 +23,12 @@ def _load_script_module():
     return module
 
 
-def _run_migration(renco_home: Path, **env_overrides: str) -> subprocess.CompletedProcess[str]:
+def _run_migration(son_of_anton_home: Path, **env_overrides: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
         {
-            "RENCO_HOME": str(renco_home),
-            "RENCO_SKIP_CHMOD": "1",
+            "SON_OF_ANTON_HOME": str(son_of_anton_home),
+            "SON_OF_ANTON_SKIP_CHMOD": "1",
             "PYTHONPATH": str(REPO_ROOT),
         }
     )
@@ -124,7 +124,7 @@ def test_docker_config_migrate_does_not_rewrite_invalid_yaml(tmp_path: Path) -> 
 
     assert proc.returncode == 0, proc.stderr
     assert "Migrating config schema" not in proc.stdout
-    assert "renco config:" in proc.stderr
+    assert "son-of-anton config:" in proc.stderr
     assert config_path.read_text(encoding="utf-8") == original
     assert not list(tmp_path.glob("*.bak-*"))
 
@@ -134,7 +134,7 @@ def test_docker_config_migrate_skip_env_leaves_config_unchanged(tmp_path: Path) 
     original = yaml.safe_dump({"_config_version": 11})
     config_path.write_text(original, encoding="utf-8")
 
-    proc = _run_migration(tmp_path, RENCO_SKIP_CONFIG_MIGRATION="1")
+    proc = _run_migration(tmp_path, SON_OF_ANTON_SKIP_CONFIG_MIGRATION="1")
 
     assert proc.returncode == 0, proc.stderr
     assert "skipping config migration" in proc.stdout
@@ -205,7 +205,7 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
 def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path: Path) -> None:
     """Regression for #51579: booting ``gateway run`` twice (i.e. a host
     reboot under ``--restart unless-stopped``) must not strip or rewrite
-    ``$RENCO_HOME/.env``. The first boot migrates the stale config and bumps
+    ``$SON_OF_ANTON_HOME/.env``. The first boot migrates the stale config and bumps
     ``_config_version``; the second boot must be a no-op that leaves ``.env``
     byte-identical to what the user supplied.
 

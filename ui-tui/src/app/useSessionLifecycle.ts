@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 
-import type { ScrollBoxHandle } from '@renco/ink'
-import { evictInkCaches } from '@renco/ink'
+import type { ScrollBoxHandle } from '@sonofanton/ink'
+import { evictInkCaches } from '@sonofanton/ink'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
@@ -43,7 +43,7 @@ const statusFromLiveSession = (status?: string, running = false) => {
   return running || status === 'working' ? 'running…' : 'ready'
 }
 
-export const writeActiveSessionFile = (sessionId: null | string, file = process.env.RENCO_TUI_ACTIVE_SESSION_FILE) => {
+export const writeActiveSessionFile = (sessionId: null | string, file = process.env.SON_OF_ANTON_TUI_ACTIVE_SESSION_FILE) => {
   if (!file || !sessionId) {
     return
   }

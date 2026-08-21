@@ -1,7 +1,7 @@
 """Consent-flow tests for the shell-hook allowlist.
 
 Covers the prompt/non-prompt decision tree: TTY vs non-TTY, and the
-three accept-hooks channels (--accept-hooks, RENCO_ACCEPT_HOOKS env,
+three accept-hooks channels (--accept-hooks, SON_OF_ANTON_ACCEPT_HOOKS env,
 hooks_auto_accept: config key).
 """
 
@@ -17,8 +17,8 @@ from agent import shell_hooks
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / "renco_home"))
-    monkeypatch.delenv("RENCO_ACCEPT_HOOKS", raising=False)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "son_of_anton_home"))
+    monkeypatch.delenv("SON_OF_ANTON_ACCEPT_HOOKS", raising=False)
     shell_hooks.reset_for_tests()
     yield
     shell_hooks.reset_for_tests()
@@ -36,7 +36,7 @@ def _write_hook_script(tmp_path: Path) -> Path:
 
 class TestTTYPromptFlow:
     def test_first_use_prompts_and_approves(self, tmp_path):
-        from renco_cli import plugins
+        from son_of_anton_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -55,7 +55,7 @@ class TestTTYPromptFlow:
         assert entry["command"] == str(script)
 
     def test_first_use_prompts_and_rejects(self, tmp_path):
-        from renco_cli import plugins
+        from son_of_anton_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -73,7 +73,7 @@ class TestTTYPromptFlow:
 
     def test_subsequent_use_does_not_prompt(self, tmp_path):
         """After the first approval, re-registration must be silent."""
-        from renco_cli import plugins
+        from son_of_anton_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -106,7 +106,7 @@ class TestTTYPromptFlow:
 
 class TestNonTTYFlow:
     def test_no_tty_no_flag_skips_registration(self, tmp_path):
-        from renco_cli import plugins
+        from son_of_anton_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -121,11 +121,11 @@ class TestNonTTYFlow:
 
 
     def test_no_tty_with_env_accepts(self, tmp_path, monkeypatch):
-        from renco_cli import plugins
+        from son_of_anton_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
-        monkeypatch.setenv("RENCO_ACCEPT_HOOKS", "1")
+        monkeypatch.setenv("SON_OF_ANTON_ACCEPT_HOOKS", "1")
 
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.isatty.return_value = False

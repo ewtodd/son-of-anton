@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 
-def _bump_view_many(renco_home: str, skill_name: str, iterations: int) -> None:
-    os.environ["RENCO_HOME"] = renco_home
+def _bump_view_many(son_of_anton_home: str, skill_name: str, iterations: int) -> None:
+    os.environ["SON_OF_ANTON_HOME"] = son_of_anton_home
     from tools.skill_usage import bump_view
 
     for _ in range(iterations):
@@ -18,18 +18,18 @@ def _bump_view_many(renco_home: str, skill_name: str, iterations: int) -> None:
 
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
-    """Isolated RENCO_HOME with a clean skills/ dir for each test.
+    """Isolated SON_OF_ANTON_HOME with a clean skills/ dir for each test.
 
     Pins ``curator.prune_builtins`` OFF so the bundled/hub-protection tests in
     this module exercise the off-path semantics regardless of the shipped
     default. Tests that want built-ins to be curation-eligible flip it back on
     explicitly via ``monkeypatch.setattr(mod, "_prune_builtins_enabled", ...)``.
     """
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     (home / "skills").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     # Force skill_usage module to re-resolve paths per test
     import importlib
     import tools.skill_usage as mod
@@ -109,7 +109,7 @@ def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
     skills_home,
     monkeypatch,
 ):
-    from renco_cli import lifecycle
+    from son_of_anton_cli import lifecycle
     from tools.skill_usage import bump_patch, bump_use, get_record, record_created
 
     events = []
@@ -142,7 +142,7 @@ def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
     assert record["last_reused_patch_generation"] == 1
 
 def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
-    from renco_cli import lifecycle
+    from son_of_anton_cli import lifecycle
     from tools.skill_usage import (
         STATE_ACTIVE,
         STATE_ARCHIVED,
@@ -178,7 +178,7 @@ def test_skill_event_is_not_emitted_when_usage_state_cannot_commit(
     skills_home,
     monkeypatch,
 ):
-    from renco_cli import lifecycle
+    from son_of_anton_cli import lifecycle
     from tools import skill_usage
 
     events = []
@@ -198,7 +198,7 @@ def test_installed_lifecycle_uses_persisted_provenance_when_hub_lookup_misses(
     skills_home,
     monkeypatch,
 ):
-    from renco_cli import lifecycle
+    from son_of_anton_cli import lifecycle
     from tools import skill_usage
 
     events = []
@@ -221,7 +221,7 @@ def test_created_skill_does_not_inherit_stale_identity_or_continuity(
     skills_home,
     monkeypatch,
 ):
-    from renco_cli import lifecycle
+    from son_of_anton_cli import lifecycle
     from tools import skill_usage
 
     events = []
@@ -262,7 +262,7 @@ def test_malformed_usage_counters_recover_without_losing_patch_reuse(
     skills_home,
     monkeypatch,
 ):
-    from renco_cli import lifecycle
+    from son_of_anton_cli import lifecycle
     from tools import skill_usage
 
     events = []

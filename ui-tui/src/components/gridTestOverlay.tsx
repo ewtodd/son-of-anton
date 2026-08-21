@@ -1,4 +1,4 @@
-import { Box, Text } from '@renco/ink'
+import { Box, Text } from '@sonofanton/ink'
 
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
 import type { GridTestState } from '../sdk/apps/gridTestState.js'

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MIT License. Part of the Renco docx skill.
+# MIT License. Part of the Son of Anton docx skill.
 """Inspect and resolve tracked changes (w:ins / w:del) in a .docx.
 
 Subcommands:

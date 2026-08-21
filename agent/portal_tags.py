@@ -1,18 +1,18 @@
 """Centralized Nous Portal request tags.
 
-Every Renco request that hits the Nous Portal — main agent loop, auxiliary
+Every Son of Anton request that hits the Nous Portal — main agent loop, auxiliary
 client (compression / titles / vision / web_extract / session_search / etc.),
 and any future code path — must carry the same product-attribution tags so
-Nous can attribute usage to Renco Agent and bucket it by client release.
+Nous can attribute usage to Son of Anton Agent and bucket it by client release.
 
 Tag shape (sent in OpenAI-compatible ``extra_body['tags']``):
 
     [
-        "product=renco-agent",
-        "client=renco-client-v<__version__>",
+        "product=son-of-anton",
+        "client=son-of-anton-client-v<__version__>",
     ]
 
-The version is sourced live from ``renco_cli.__version__`` so it auto-aligns
+The version is sourced live from ``son_of_anton_cli.__version__`` so it auto-aligns
 to whatever release is installed; the release script
 (``scripts/release.py``) regex-bumps that single string, and every Portal
 request picks up the new tag on the next process start.
@@ -26,7 +26,7 @@ Why one helper instead of inlining the literal at each site:
 
 Do NOT pre-compute these as module-level constants in the consumers. The
 version can change at runtime (editable installs, hot-reload tooling), and
-``renco_cli.__version__`` is the canonical source of truth.
+``son_of_anton_cli.__version__`` is the canonical source of truth.
 """
 
 from __future__ import annotations
@@ -82,33 +82,33 @@ def get_conversation_context() -> Optional[str]:
     return _conversation_id.get()
 
 
-def _renco_version() -> str:
-    """Return the current Renco release version, e.g. ``"0.13.0"``.
+def _son_of_anton_version() -> str:
+    """Return the current Son of Anton release version, e.g. ``"0.13.0"``.
 
-    Falls back to ``"unknown"`` if ``renco_cli`` cannot be imported (should
+    Falls back to ``"unknown"`` if ``son_of_anton_cli`` cannot be imported (should
     never happen in a real install — guarded for defensive testing).
     """
     try:
-        from renco_cli import __version__
+        from son_of_anton_cli import __version__
         return __version__
     except Exception:
         return "unknown"
 
 
-def renco_client_tag() -> str:
+def son_of_anton_client_tag() -> str:
     """Return the ``client=...`` tag for Nous Portal requests.
 
-    Format: ``client=renco-client-v<MAJOR>.<MINOR>.<PATCH>``.
+    Format: ``client=son-of-anton-client-v<MAJOR>.<MINOR>.<PATCH>``.
     """
-    return f"client=renco-client-v{_renco_version()}"
+    return f"client=son-of-anton-client-v{_son_of_anton_version()}"
 
 
 def conversation_tag(session_id: str) -> str:
-    """Return the ``conversation=...`` tag for a Renco session/conversation.
+    """Return the ``conversation=...`` tag for a Son of Anton session/conversation.
 
     Format: ``conversation=<session_id>``. ``session_id`` is the canonical
-    Renco conversation identifier (``AIAgent.session_id``) — the same value
-    used for ``~/.renco/sessions/`` storage, session logs, and lineage.
+    Son of Anton conversation identifier (``AIAgent.session_id``) — the same value
+    used for ``~/.son-of-anton/sessions/`` storage, session logs, and lineage.
 
     Unlike the product/client tags this is high-cardinality (one value per
     conversation), so it is only appended when a session id is actually
@@ -124,7 +124,7 @@ def nous_portal_tags(session_id: str | None = None) -> List[str]:
     (e.g. ``merged_extra.setdefault("tags", []).extend(nous_portal_tags())``).
 
     When ``session_id`` is provided, a ``conversation=<session_id>`` tag is
-    appended so Portal usage can be attributed to a specific Renco
+    appended so Portal usage can be attributed to a specific Son of Anton
     conversation. When it is omitted, the ambient conversation context
     (``set_conversation_context``, published by the agent loop at turn
     entry) is used instead — this is how auxiliary calls (compression,
@@ -132,7 +132,7 @@ def nous_portal_tags(session_id: str | None = None) -> List[str]:
     per-call-site plumbing. Callers outside any conversation (e.g. the
     auxiliary client's import-time base tags) get the canonical two-tag set.
     """
-    tags = ["product=renco-agent", renco_client_tag()]
+    tags = ["product=son-of-anton", son_of_anton_client_tag()]
     # Ambient context first: the agent loop publishes the lineage ROOT id
     # (stable across context-compression rotation and delegate subagent
     # trees), which is the better conversation key than a per-segment

@@ -22,16 +22,16 @@ import pytest
 
 @pytest.fixture
 def curator_env(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     (home / "skills").mkdir()
     (home / "logs").mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     import importlib
-    import renco_constants
-    importlib.reload(renco_constants)
+    import son_of_anton_constants
+    importlib.reload(son_of_anton_constants)
     from agent import curator
     importlib.reload(curator)
     yield curator
@@ -345,16 +345,16 @@ def test_reconcile_absorbed_into_beats_everything_else(curator_env):
         removed=["pr-review-format"],
         heuristic={"consolidated": [], "pruned": [{"name": "pr-review-format"}]},
         model_block={"consolidations": [], "prunings": []},  # model forgot YAML block
-        destinations={"renco-agent-dev"},
+        destinations={"son-of-anton-dev"},
         absorbed_declarations={
-            "pr-review-format": {"into": "renco-agent-dev", "declared": True},
+            "pr-review-format": {"into": "son-of-anton-dev", "declared": True},
         },
     )
     assert len(out["consolidated"]) == 1
     assert out["pruned"] == []
     e = out["consolidated"][0]
     assert e["name"] == "pr-review-format"
-    assert e["into"] == "renco-agent-dev"
+    assert e["into"] == "son-of-anton-dev"
     assert "absorbed_into" in e["source"]
 
 
@@ -406,7 +406,7 @@ def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
 # ---------------------------------------------------------------------------
 # _build_rename_summary — surfaces the "where did my skills go?" map to the
 # user-visible curator summary (gateway 💾 line, CLI Rich panel,
-# `renco curator status`). The full data has always been in REPORT.md on
+# `son-of-anton curator status`). The full data has always been in REPORT.md on
 # disk; this helper makes it visible without digging.
 # ---------------------------------------------------------------------------
 
@@ -509,7 +509,7 @@ def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
 
 
 # ---------------------------------------------------------------------------
-# Pin hint — surfaces `renco curator pin <umbrella>` in the rename block so
+# Pin hint — surfaces `son-of-anton curator pin <umbrella>` in the rename block so
 # users learn the command exists at the moment they care (a consolidation
 # just landed against their library). The hint is gated on having at least
 # one umbrella destination — pruned-only runs skip it.

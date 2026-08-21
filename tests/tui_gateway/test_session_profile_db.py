@@ -28,30 +28,30 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 SESSION_ID = "sid-profile"
 SESSION_KEY = "tui-profile-1"
 
 
 @pytest.fixture()
-def renco_home(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+def son_of_anton_home(tmp_path, monkeypatch):
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     yield home
 
 
 @pytest.fixture()
-def server(renco_home):
+def server(son_of_anton_home):
     # Mocks are scoped to the initial import only (see
     # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
-            "renco_cli.env_loader": MagicMock(),
-            "renco_cli.banner": MagicMock(),
+            "son_of_anton_cli.env_loader": MagicMock(),
+            "son_of_anton_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
@@ -70,9 +70,9 @@ def server(renco_home):
 
 
 @pytest.fixture()
-def launch_db(server, renco_home):
+def launch_db(server, son_of_anton_home):
     """The launch profile's state.db, wired in as the ``_get_db()`` handle."""
-    db = SessionDB(db_path=renco_home / "state.db")
+    db = SessionDB(db_path=son_of_anton_home / "state.db")
     server._db = db
     return db
 

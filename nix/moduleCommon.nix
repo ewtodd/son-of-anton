@@ -1,6 +1,6 @@
 # nix/moduleCommon.nix — the code that the NixOS and Home Manager modules share
 #
-# `services.renco-agent` is the same option set on both modules. Both modules
+# `services.son-of-anton` is the same option set on both modules. Both modules
 # get their options, their renderers for config.yaml, .env and documents, and
 # their state setup from this file. A NixOS example works on Home Manager
 # without a change. An option added here appears on both modules at once.
@@ -10,7 +10,7 @@
 #   nixosModules.nix        the service user and group, stateDir,
 #                           addToSystemPackages, container mode, tmpfiles,
 #                           system.activationScripts, system systemd units
-#   homeManagerModules.nix  rencoHome, installPackage, home.activation,
+#   homeManagerModules.nix  son-of-antonHome, installPackage, home.activation,
 #                           systemd.user.services, launchd.agents
 #
 # The split is by scope, not by feature. Code that needs root or a system
@@ -28,8 +28,8 @@ let
   # More than one module can set `settings = { ... }`. recursiveUpdate joins
   # all of the definitions. Without it, only the last definition applies.
   deepConfigType = types.mkOptionType {
-    name = "renco-config-attrs";
-    description = "Renco YAML config (attrset), merged deeply via lib.recursiveUpdate.";
+    name = "son-of-anton-config-attrs";
+    description = "Son of Anton YAML config (attrset), merged deeply via lib.recursiveUpdate.";
     check = builtins.isAttrs;
     merge = _loc: defs: lib.foldl' lib.recursiveUpdate { } (map (d: d.value) defs);
   };
@@ -72,7 +72,7 @@ let
         default = null;
         description = ''
           Authentication method. Set to "oauth" for OAuth 2.1 PKCE flow
-          (remote MCP servers). Tokens are stored in $RENCO_HOME/mcp-tokens/.
+          (remote MCP servers). Tokens are stored in $SON_OF_ANTON_HOME/mcp-tokens/.
         '';
       };
 
@@ -233,14 +233,14 @@ let
       defaultWorkingDirectoryText,
     }:
     {
-      enable = lib.mkEnableOption "Renco Agent";
+      enable = lib.mkEnableOption "Son of Anton Agent";
 
       # ── Package ────────────────────────────────────────────────────────
       package = mkOption {
         type = types.package;
         default = defaultPackage;
         defaultText = defaultPackageText;
-        description = "The renco-agent package to use.";
+        description = "The son-of-anton package to use.";
       };
 
       workingDirectory = mkOption {
@@ -270,12 +270,12 @@ let
         type = deepConfigType;
         default = { };
         description = ''
-          The Renco configuration, as an attribute set. The module joins the
+          The Son of Anton configuration, as an attribute set. The module joins the
           definitions from all modules and writes the result to config.yaml.
 
           The merge into the config.yaml on disk is also a deep merge. These
           keys replace the keys on disk. The module keeps all other keys,
-          which includes the keys that `renco config set` and the settings
+          which includes the keys that `son-of-anton config set` and the settings
           panes of the TUI and the desktop app write at runtime.
         '';
         example = literalExpression ''
@@ -298,13 +298,13 @@ let
         description = ''
           The paths to environment files that contain secrets, for example
           API keys and tokens. Activation adds the contents of these files to
-          $RENCO_HOME/.env. Renco reads that file at each start, with
-          load_renco_dotenv().
+          $SON_OF_ANTON_HOME/.env. Son of Anton reads that file at each start, with
+          load_son_of_anton_dotenv().
 
           Each activation writes .env again from the start. Thus a secret
           file cannot go into .env two times.
         '';
-        example = literalExpression ''[ config.sops.secrets."renco/env".path ]'';
+        example = literalExpression ''[ config.sops.secrets."son-of-anton/env".path ]'';
       };
 
       environment = mkOption {
@@ -312,7 +312,7 @@ let
         default = { };
         description = ''
           Environment variables that are not secret. Activation writes them
-          to $RENCO_HOME/.env.
+          to $SON_OF_ANTON_HOME/.env.
 
           CAUTION: Do not put secrets in this option. All users can read the
           Nix store. Use environmentFiles for secrets.
@@ -325,7 +325,7 @@ let
         description = ''
           The path to a file that gives the first contents of auth.json, the
           OAuth credentials. The module copies the file only when auth.json
-          does not exist. Thus a token that Renco refreshes at runtime stays
+          does not exist. Thus a token that Son of Anton refreshes at runtime stays
           after an activation.
         '';
       };
@@ -347,8 +347,8 @@ let
 
           Use this option for the project context that the agent reads from
           its working directory, for example AGENTS.md, notes and checklists.
-          Renco reads SOUL.md and memories/ from RENCO_HOME, so put those
-          files in `rencoHomeFiles`.
+          Son of Anton reads SOUL.md and memories/ from SON_OF_ANTON_HOME, so put those
+          files in `son-of-antonHomeFiles`.
 
           If you set this option, you must also set `workingDirectory`. The
           default of that option is different on each module. Thus an unset
@@ -362,16 +362,16 @@ let
         '';
       };
 
-      rencoHomeFiles = mkOption {
+      son-of-antonHomeFiles = mkOption {
         type = documentsType;
         default = { };
         description = ''
-          Files that the module installs into RENCO_HOME. Each key is a path
+          Files that the module installs into SON_OF_ANTON_HOME. Each key is a path
           relative to that directory, and the module makes the necessary
           subdirectories. Each value is a string or a path.
 
-          Renco reads SOUL.md and the memory files from RENCO_HOME and not
-          from the working directory. Declare those files here, or Renco
+          Son of Anton reads SOUL.md and the memory files from SON_OF_ANTON_HOME and not
+          from the working directory. Declare those files here, or Son of Anton
           does not load them.
         '';
         example = literalExpression ''
@@ -419,16 +419,16 @@ let
         type = types.listOf types.package;
         default = [ ];
         description = ''
-          Directory-based plugin packages to symlink into the renco plugins
+          Directory-based plugin packages to symlink into the son-of-anton plugins
           directory. Each package must contain a plugin.yaml and __init__.py
-          at its root. Renco discovers these automatically on startup.
+          at its root. Son of Anton discovers these automatically on startup.
         '';
         example = literalExpression ''
           [
             (pkgs.fetchFromGitHub {
               owner = "stephenschoettler";
-              repo = "renco-lcm";
-              name = "renco-lcm";
+              repo = "son-of-anton-lcm";
+              name = "son-of-anton-lcm";
               rev = "v0.7.0";
               hash = "sha256-...";
             })
@@ -442,17 +442,17 @@ let
         description = ''
           Python packages to add to PYTHONPATH for entry-point plugin discovery.
           These are pip-packaged plugins that register via the
-          renco_agent.plugins entry-point group. Each package must be built
-          with the same Python interpreter as renco (python312).
+          son_of_anton_agent.plugins entry-point group. Each package must be built
+          with the same Python interpreter as son-of-anton (python312).
         '';
         example = literalExpression ''
           [
             (pkgs.python312Packages.buildPythonPackage {
-              pname = "rtk-renco";
+              pname = "rtk-son-of-anton";
               version = "1.0.0";
               src = pkgs.fetchFromGitHub {
                 owner = "ogallotti";
-                repo = "rtk-renco";
+                repo = "rtk-son-of-anton";
                 rev = "main";
                 hash = "sha256-...";
               };
@@ -469,7 +469,7 @@ let
           the sealed Python venv. These are resolved by uv alongside core
           dependencies — no PYTHONPATH patching or collision risk.
 
-          Use this for optional extras already declared in renco-agent's
+          Use this for optional extras already declared in son-of-anton's
           pyproject.toml (e.g. "hindsight", "honcho", "voice").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
@@ -480,7 +480,7 @@ let
       extraArgs = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Extra command-line arguments for `renco gateway`.";
+        description = "Extra command-line arguments for `son-of-anton gateway`.";
       };
 
       restart = mkOption {
@@ -495,16 +495,16 @@ let
         description = "The systemd RestartSec= value. Darwin does not use this option.";
       };
 
-      # ── The backend: `renco serve` or `renco dashboard` ──────────────
-      # `renco serve` and `renco dashboard` are the same entry point,
-      # renco_cli.main:cmd_dashboard, with one flag of difference. serve runs
+      # ── The backend: `son-of-anton serve` or `son-of-anton dashboard` ──────────────
+      # `son-of-anton serve` and `son-of-anton dashboard` are the same entry point,
+      # son_of_anton_cli.main:cmd_dashboard, with one flag of difference. serve runs
       # without a user interface. dashboard also serves the web application.
-      # Both give the /api/ws and /api/pty sockets that Renco Desktop
+      # Both give the /api/ws and /api/pty sockets that Son of Anton Desktop
       # connects to. They are one process, and you can run only one of them.
       # Thus this option is an enum and not two booleans.
       #
       # The backend does not run the messaging gateway. web_server.py only
-      # controls an external gateway, with `renco gateway restart`. It does
+      # controls an external gateway, with `son-of-anton gateway restart`. It does
       # not contain a gateway.
       backend = {
         mode = mkOption {
@@ -519,7 +519,7 @@ let
 
             - "none"      — no backend
             - "serve"     — the backend without a user interface. It gives
-                            the /api/ws and /api/pty sockets that Renco
+                            the /api/ws and /api/pty sockets that Son of Anton
                             Desktop connects to.
             - "dashboard" — all that "serve" gives, and the browser admin
                             panel on the same port
@@ -577,7 +577,7 @@ let
       workingDirectory,
     }:
     let
-      generated = pkgs.writeText "renco-config.yaml" (
+      generated = pkgs.writeText "son-of-anton-config.yaml" (
         builtins.toJSON (lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings)
       );
     in
@@ -592,7 +592,7 @@ let
   # install loop can copy each entry with `install -D`.
   mkDocumentTree =
     { pkgs, documents }:
-    pkgs.runCommand "renco-documents" { } (
+    pkgs.runCommand "son-of-anton-documents" { } (
       ''
         mkdir -p $out
       ''
@@ -606,7 +606,7 @@ let
           if builtins.isPath value || lib.isStorePath value then
             "${mkdir}\ncp ${value} $out/${name}"
           else
-            "${mkdir}\ncat > $out/${name} <<'RENCO_DOC_EOF'\n${value}\nRENCO_DOC_EOF"
+            "${mkdir}\ncat > $out/${name} <<'SON_OF_ANTON_DOC_EOF'\n${value}\nSON_OF_ANTON_DOC_EOF"
         ) documents
       )
     );
@@ -619,12 +619,12 @@ let
   mkEnvScript =
     { pkgs, environment }:
     let
-      base = pkgs.writeText "renco-env-base" (
+      base = pkgs.writeText "son-of-anton-env-base" (
         lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "${k}=${v}") environment)
         + lib.optionalString (environment != { }) "\n"
       );
     in
-    pkgs.writeShellScript "renco-env-merge" ''
+    pkgs.writeShellScript "son-of-anton-env-merge" ''
       set -eu
 
       dest="$1"
@@ -637,7 +637,7 @@ let
           printf '\n' >> "$dest"
           cat "$file" >> "$dest"
         else
-          echo "renco-agent: WARNING cannot read environmentFile $file" >&2
+          echo "son-of-anton: WARNING cannot read environmentFile $file" >&2
         fi
       done
     '';
@@ -658,7 +658,7 @@ let
     {
       pkgs,
       cfg,
-      rencoHome,
+      son-of-antonHome,
       workingDirectory,
       # The value to write as terminal.cwd. It is different from
       # workingDirectory only in the container mode of NixOS. There the agent
@@ -671,7 +671,7 @@ let
       stateDirs ? [ ],
       # The module writes this value into the .managed marker. An
       # interactive shell reads the marker, because it does not see the
-      # RENCO_MANAGED variable of the service. The value tells the shell
+      # SON_OF_ANTON_MANAGED variable of the service. The value tells the shell
       # which system owns the install and which rebuild command to name.
       managedSystem ? "nixos",
     }:
@@ -696,7 +696,7 @@ let
       };
       homeDocumentTree = mkDocumentTree {
         inherit pkgs;
-        documents = cfg.rencoHomeFiles;
+        documents = cfg.son-of-antonHomeFiles;
       };
 
       inst = "${run}install ${installFlags}";
@@ -710,67 +710,67 @@ let
         );
     in
     ''
-      # Directories. The service units and Renco make most of these
+      # Directories. The service units and Son of Anton make most of these
       # directories when they first need them. Activation makes them here so
       # that the first activation sets the correct owner and mode, and does
       # not use the umask.
       ${run}mkdir -p ${
         lib.escapeShellArgs (
           [
-            rencoHome
+            son-of-antonHome
             workingDirectory
           ]
-          ++ map (d: "${rencoHome}/${d}") stateDirs
+          ++ map (d: "${son-of-antonHome}/${d}") stateDirs
         )
       }
 
-      # config.yaml: merge the Nix settings into the file on disk. Renco
+      # config.yaml: merge the Nix settings into the file on disk. Son of Anton
       # writes this file at runtime. A read-only symlink to the Nix store
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
       ${
         if cfg.configFile != null then
-          "${inst} -m ${modes.config} -D ${configFiles.effective} ${rencoHome}/config.yaml"
+          "${inst} -m ${modes.config} -D ${configFiles.effective} ${son-of-antonHome}/config.yaml"
         else
           ''
-            ${run}${configFiles.mergeScript} ${configFiles.generated} ${rencoHome}/config.yaml
-            ${run}chmod ${modes.config} ${rencoHome}/config.yaml
+            ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.yaml
+            ${run}chmod ${modes.config} ${son-of-antonHome}/config.yaml
           ''
       }
 
       # The managed-mode marker. It makes an interactive shell also refuse to
       # change the configuration that Nix owns.
-      ${inst} -m ${modes.managed} ${pkgs.writeText "renco-managed" managedSystem} ${rencoHome}/.managed
+      ${inst} -m ${modes.managed} ${pkgs.writeText "son-of-anton-managed" managedSystem} ${son-of-antonHome}/.managed
 
       ${lib.optionalString (cfg.environment != { } || cfg.environmentFiles != [ ]) ''
-        ${run}${envScript} ${rencoHome}/.env ${modes.env} ${lib.escapeShellArgs cfg.environmentFiles}
-        ${lib.optionalString (owner != null) "${run}chown ${owner} ${rencoHome}/.env"}
+        ${run}${envScript} ${son-of-antonHome}/.env ${modes.env} ${lib.escapeShellArgs cfg.environmentFiles}
+        ${lib.optionalString (owner != null) "${run}chown ${owner} ${son-of-antonHome}/.env"}
       ''}
 
       ${lib.optionalString (cfg.authFile != null) (
         if cfg.authFileForceOverwrite then
-          "${inst} -m ${modes.auth} ${cfg.authFile} ${rencoHome}/auth.json"
+          "${inst} -m ${modes.auth} ${cfg.authFile} ${son-of-antonHome}/auth.json"
         else
           ''
-            if [ ! -e ${rencoHome}/auth.json ]; then
-              ${inst} -m ${modes.auth} ${cfg.authFile} ${rencoHome}/auth.json
+            if [ ! -e ${son-of-antonHome}/auth.json ]; then
+              ${inst} -m ${modes.auth} ${cfg.authFile} ${son-of-antonHome}/auth.json
             fi
           ''
       )}
 
       ${installDocuments documentTree workingDirectory cfg.documents}
-      ${installDocuments homeDocumentTree rencoHome cfg.rencoHomeFiles}
+      ${installDocuments homeDocumentTree son-of-antonHome cfg.son-of-antonHomeFiles}
 
       # Declarative plugins. Activation first deletes the old managed
       # symlinks. Thus a plugin that you remove from the configuration also
       # goes away from the plugins directory.
-      ${run}find ${rencoHome}/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
+      ${run}find ${son-of-antonHome}/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
       ${lib.concatMapStringsSep "\n" (plugin: ''
         if [ ! -f ${plugin}/plugin.yaml ]; then
-          echo "renco-agent: ERROR extraPlugins entry '${plugin}' has no plugin.yaml" >&2
+          echo "son-of-anton: ERROR extraPlugins entry '${plugin}' has no plugin.yaml" >&2
           exit 1
         fi
-        ${run}ln -sfn ${plugin} ${rencoHome}/plugins/nix-managed-${lib.getName plugin}
+        ${run}ln -sfn ${plugin} ${son-of-antonHome}/plugins/nix-managed-${lib.getName plugin}
       '') cfg.extraPlugins}
     '';
 
@@ -778,7 +778,7 @@ let
   gatewayArgv =
     cfg:
     [
-      "${effectivePackage cfg}/bin/renco"
+      "${effectivePackage cfg}/bin/son-of-anton"
       "gateway"
     ]
     ++ cfg.extraArgs;
@@ -786,7 +786,7 @@ let
   backendArgv =
     cfg:
     [
-      "${effectivePackage cfg}/bin/renco"
+      "${effectivePackage cfg}/bin/son-of-anton"
       cfg.backend.mode
       "--host"
       cfg.backend.host
@@ -800,24 +800,24 @@ let
   backendDescription =
     cfg:
     if cfg.backend.mode == "dashboard" then
-      "Renco Agent web dashboard and desktop backend"
+      "Son of Anton Agent web dashboard and desktop backend"
     else
-      "Renco Agent backend for Renco Desktop";
+      "Son of Anton Agent backend for Son of Anton Desktop";
 
-  # The environment that each Renco process needs, from either module.
+  # The environment that each Son of Anton process needs, from either module.
   #
-  # managedSystem gives the value of RENCO_MANAGED. The CLI reads that
+  # managedSystem gives the value of SON_OF_ANTON_MANAGED. The CLI reads that
   # variable to refuse a configuration change that it cannot keep, and to
   # name the correct rebuild command. The answer is different on each module,
   # so each module gives its own value.
   processEnvironment =
     {
-      rencoHome,
+      son-of-antonHome,
       managedSystem ? "true",
     }:
     {
-      RENCO_HOME = rencoHome;
-      RENCO_MANAGED = managedSystem;
+      SON_OF_ANTON_HOME = son-of-antonHome;
+      SON_OF_ANTON_MANAGED = managedSystem;
     };
 
   processPath =
@@ -862,9 +862,9 @@ let
 
             ${optionPath}.workingDirectory = "/path/you/want";
 
-          To give Renco an identity and a memory, use
-          ${optionPath}.rencoHomeFiles instead. Those files go to
-          RENCO_HOME. Renco reads SOUL.md and memories/ only from there.
+          To give Son of Anton an identity and a memory, use
+          ${optionPath}.son-of-antonHomeFiles instead. Those files go to
+          SON_OF_ANTON_HOME. Son of Anton reads SOUL.md and memories/ only from there.
         '';
       }
     ];
@@ -884,7 +884,7 @@ let
       }
     ];
 
-  # The subdirectories of RENCO_HOME that both modules make.
+  # The subdirectories of SON_OF_ANTON_HOME that both modules make.
   stateSubdirs = [
     "cron"
     "sessions"

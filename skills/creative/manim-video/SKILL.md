@@ -2,11 +2,11 @@
 name: manim-video
 description: "Manim CE animations: 3Blue1Brown math/algo videos."
 version: 1.0.0
-author: SHL0MS, Renco Agent
+author: SHL0MS, Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Manim, Animation, Math, Video]
     related_skills: []
 ---

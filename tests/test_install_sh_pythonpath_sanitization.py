@@ -20,11 +20,11 @@ def test_install_script_unsets_pythonpath_and_pythonhome_early() -> None:
     assert 'unset PYTHONHOME' in text
 
 
-def test_renco_launcher_wrapper_clears_python_env_before_exec() -> None:
+def test_son_of_anton_launcher_wrapper_clears_python_env_before_exec() -> None:
     text = INSTALL_SH.read_text()
 
     # Wrapper should clear env and forward args untouched to the venv entrypoint.
-    assert 'cat > "$command_link_dir/renco" <<EOF' in text
+    assert 'cat > "$command_link_dir/son-of-anton" <<EOF' in text
     assert 'unset PYTHONPATH' in text
     assert 'unset PYTHONHOME' in text
-    assert 'exec "$RENCO_BIN" "\\$@"' in text
+    assert 'exec "$SON_OF_ANTON_BIN" "\\$@"' in text

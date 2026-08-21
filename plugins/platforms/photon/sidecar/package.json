@@ -1,8 +1,8 @@
 {
-  "name": "@renco-agent/photon-sidecar",
+  "name": "@sonofanton/photon-sidecar",
   "private": true,
   "version": "0.4.0",
-  "description": "Spectrum-ts bridge for the Renco Agent Photon platform plugin.",
+  "description": "Spectrum-ts bridge for the Son of Anton Agent Photon platform plugin.",
   "type": "module",
   "main": "index.mjs",
   "scripts": {

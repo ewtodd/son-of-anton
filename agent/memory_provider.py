@@ -28,7 +28,7 @@ Optional hooks (override to opt in):
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
-  backup_paths() -> list[str]            — extra on-disk paths to include in `renco backup`
+  backup_paths() -> list[str]            — extra on-disk paths to include in `son-of-anton backup`
 """
 
 from __future__ import annotations
@@ -127,8 +127,8 @@ class MemoryProvider(ABC):
         establish connections, start background threads, etc.
 
         kwargs always include:
-          - renco_home (str): The active RENCO_HOME directory path. Use this
-            for profile-scoped storage instead of hardcoding ``~/.renco``.
+          - son_of_anton_home (str): The active SON_OF_ANTON_HOME directory path. Use this
+            for profile-scoped storage instead of hardcoding ``~/.son-of-anton``.
           - platform (str): "cli", "telegram", "discord", "cron", etc.
 
         kwargs may also include:
@@ -137,7 +137,7 @@ class MemoryProvider(ABC):
             prompts would corrupt user representations).
           - agent_identity (str): Profile name (e.g. "coder"). Use for
             per-profile provider identity scoping.
-          - agent_workspace (str): Shared workspace name (e.g. "renco").
+          - agent_workspace (str): Shared workspace name (e.g. "son-of-anton").
           - parent_session_id (str): For subagents, the parent's session_id.
           - user_id (str): Platform user identifier (gateway sessions).
           - user_id_alt (str): Optional alternate stable platform user identifier.
@@ -330,7 +330,7 @@ class MemoryProvider(ABC):
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Return config fields this provider needs for setup.
 
-        Used by 'renco memory setup' to walk the user through configuration.
+        Used by 'son-of-anton memory setup' to walk the user through configuration.
         Each field is a dict with:
           key:         config key name (e.g. 'api_key', 'mode')
           description: human-readable description
@@ -349,12 +349,12 @@ class MemoryProvider(ABC):
         """
         return []
 
-    def save_config(self, values: Dict[str, Any], renco_home: str) -> None:
+    def save_config(self, values: Dict[str, Any], son_of_anton_home: str) -> None:
         """Write non-secret config to the provider's native location.
 
-        Called by 'renco memory setup' after collecting user inputs.
+        Called by 'son-of-anton memory setup' after collecting user inputs.
         ``values`` contains only non-secret fields (secrets go to .env).
-        ``renco_home`` is the active RENCO_HOME directory path.
+        ``son_of_anton_home`` is the active SON_OF_ANTON_HOME directory path.
 
         Providers with native config files (JSON, YAML) should override
         this to write to their expected location. Providers that use only
@@ -386,16 +386,16 @@ class MemoryProvider(ABC):
         """
 
     def backup_paths(self) -> List[str]:
-        """Return extra on-disk paths this provider stores OUTSIDE RENCO_HOME.
+        """Return extra on-disk paths this provider stores OUTSIDE SON_OF_ANTON_HOME.
 
-        ``renco backup`` only walks RENCO_HOME, so any provider state kept
+        ``son-of-anton backup`` only walks SON_OF_ANTON_HOME, so any provider state kept
         under ``~/.honcho``, ``~/.hindsight``, ``~/.openviking``, etc. is lost
         across a backup/import cycle unless it's declared here.
 
         Return a list of absolute path strings (files or directories). The
         backup command resolves each, captures the ones that exist and live
         under the user's home directory into a reserved ``_external/`` subtree
-        of the archive, and ``renco import`` restores them to their original
+        of the archive, and ``son-of-anton import`` restores them to their original
         locations. Paths outside the home directory are skipped for safety.
 
         MUST be callable without ``initialize()`` and without network — resolve

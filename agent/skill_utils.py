@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from renco_constants import get_config_path, get_skills_dir, is_termux
+from son_of_anton_constants import get_config_path, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ EXCLUDED_SKILL_DIRS = frozenset(
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
 # ── Org-shared skills (sync contract) ───────────────────────────
-# Org mirrors live under ~/.renco/skills/_org/<org_id>/. Resolution is
+# Org mirrors live under ~/.son-of-anton/skills/_org/<org_id>/. Resolution is
 # TOKEN-GATED via a marker file the sync client writes after verifying the
 # token (skills_sync_client.pull_org_skills): only the marked org's mirror is
 # scanned. No marker ⇒ no org skills load. The marker is plain data (org_id
@@ -295,13 +295,13 @@ def _detect_environment(env: str) -> bool:
     result = True
     if env == "docker":
         try:
-            from renco_constants import is_container
+            from son_of_anton_constants import is_container
 
             result = is_container()
         except Exception:
             result = False
     elif env == "s6":
-        # The Renco Docker image runs s6-overlay as PID 1 (/init). s6 plants
+        # The Son of Anton Docker image runs s6-overlay as PID 1 (/init). s6 plants
         # its runtime scaffolding under /run/s6 and ships its admin tree under
         # /package/admin/s6-overlay. Either marker means we're inside an
         # s6-supervised container.
@@ -365,7 +365,7 @@ def _raw_config_cache_clear() -> None:
 def _load_raw_config() -> Dict[str, Any]:
     """Read config.yaml with a shared mtime+size keyed cache.
 
-    This module intentionally avoids importing ``renco_cli.config`` on the
+    This module intentionally avoids importing ``son_of_anton_cli.config`` on the
     skill prompt/build path. A tiny local cache gives the same repeated-read
     win without pulling the heavier CLI config stack into startup.
     """
@@ -402,8 +402,8 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
 
     Args:
         platform: Explicit platform name (e.g. ``"telegram"``).  When
-            *None*, resolves from ``RENCO_PLATFORM`` or
-            ``RENCO_SESSION_PLATFORM`` env vars.  Returns the global
+            *None*, resolves from ``SON_OF_ANTON_PLATFORM`` or
+            ``SON_OF_ANTON_SESSION_PLATFORM`` env vars.  Returns the global
             disabled list, unioned with the platform-specific list when a
             platform is resolved (a globally-disabled skill stays disabled
             on every platform).
@@ -422,8 +422,8 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     from gateway.session_context import get_session_env
     resolved_platform = (
         platform
-        or os.getenv("RENCO_PLATFORM")
-        or get_session_env("RENCO_SESSION_PLATFORM")
+        or os.getenv("SON_OF_ANTON_PLATFORM")
+        or get_session_env("SON_OF_ANTON_SESSION_PLATFORM")
     )
     global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if resolved_platform:
@@ -438,7 +438,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
 def parse_config_string_list(value) -> List[str]:
     """Normalize a config value that may hold a JSON-array string into a list.
 
-    ``renco config set`` and JSON-mode editor saves store lists as quoted
+    ``son_of_anton config set`` and JSON-mode editor saves store lists as quoted
     JSON strings (``'["a","b"]'`` or the Python-literal ``"['a']"``). Treating
     such a string as a single name makes a curated disabled list silently
     filter nothing (#86661); parsing it restores the intended list. A scalar
@@ -470,7 +470,7 @@ def _normalize_string_set(values) -> Set[str]:
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
 # mtime_ns so a config.yaml edit mid-run is picked up automatically;
 # otherwise every call would re-read + re-YAML-parse the 15KB config,
-# which becomes the dominant cost of ``renco`` startup when ~120 skills
+# which becomes the dominant cost of ``son-of-anton`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
 _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
@@ -487,11 +487,11 @@ def get_external_skills_dirs() -> List[Path]:
 
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
-    paths that resolve to the local ``~/.renco/skills/`` are silently skipped.
+    paths that resolve to the local ``~/.son-of-anton/skills/`` are silently skipped.
 
     Cached in-process, keyed on ``config.yaml`` mtime — the function is
     called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``renco`` cold-start time
+    parsing a non-trivial config dominates ``son-of-anton`` cold-start time
     when the cache is absent.
     """
     config_path = get_config_path()
@@ -531,9 +531,9 @@ def get_external_skills_dirs() -> List[Path]:
     if not isinstance(raw_dirs, list):
         return []
 
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    renco_home = get_renco_home()
+    son_of_anton_home = get_son_of_anton_home()
     local_skills = get_skills_dir().resolve()
     seen: Set[Path] = set()
     result = []
@@ -545,9 +545,9 @@ def get_external_skills_dirs() -> List[Path]:
         # Expand ~ and environment variables
         expanded = os.path.expanduser(os.path.expandvars(entry))
         p = Path(expanded)
-        # Resolve relative paths against RENCO_HOME, not cwd
+        # Resolve relative paths against SON_OF_ANTON_HOME, not cwd
         if not p.is_absolute():
-            p = (renco_home / p).resolve()
+            p = (son_of_anton_home / p).resolve()
         else:
             p = p.resolve()
         if p == local_skills:
@@ -566,12 +566,12 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.renco/skills/`` first, then external.
+    """Return all skill directories: local ``~/.son-of-anton/skills/`` first, then external.
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
 
-    NOTE: trusted project-local dirs (``./.renco/skills`` at the git root) are
+    NOTE: trusted project-local dirs (``./.son-of-anton/skills`` at the git root) are
     NOT part of this list — they have *higher* precedence than the local dir,
     so callers that need them use :func:`get_project_skills_dirs` and scan
     those roots first. See ``get_scan_ordered_skills_dirs`` for the full
@@ -590,7 +590,7 @@ def get_all_skills_dirs() -> List[Path]:
 #
 # Two candidate roots at the project root (found by walking up from cwd to the
 # first directory containing ``.git``):
-#   <root>/.renco/skills/   — Renco-native location
+#   <root>/.son-of-anton/skills/   — Son of Anton-native location
 #   <root>/.agents/skills/   — cross-tool convention shared with other harnesses
 #
 # TRUST GATE: unlike AGENTS.md (plain instruction text), skills are load-on-
@@ -599,7 +599,7 @@ def get_all_skills_dirs() -> List[Path]:
 # when the project root is listed in ``skills.trusted_project_dirs`` in
 # config.yaml (Codex-style per-path trust). Untrusted dirs are still
 # *discoverable* via get_untrusted_project_skills_root() so the CLI can print
-# a one-line "run `renco skills trust`" notice.
+# a one-line "run `son_of_anton skills trust`" notice.
 #
 # PRECEDENCE: trusted project skills override same-named profile/bundled
 # skills (index scans project dirs first; skill_view resolves cross-tier
@@ -613,7 +613,7 @@ def get_all_skills_dirs() -> List[Path]:
 # byte-stable. Same contract as AGENTS.md injection and project plugins.
 
 PROJECT_SKILLS_SUBDIRS = (
-    os.path.join(".renco", "skills"),
+    os.path.join(".son-of-anton", "skills"),
     os.path.join(".agents", "skills"),
 )
 
@@ -695,8 +695,8 @@ def is_project_root_trusted(root: Path) -> bool:
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:
     """Existing skill dirs under *root*, excluding the profile's own skills dir.
 
-    The exclusion matters when RENCO_HOME itself lives inside a git checkout:
-    ``<root>/.renco/skills`` would otherwise double as both the profile-local
+    The exclusion matters when SON_OF_ANTON_HOME itself lives inside a git checkout:
+    ``<root>/.son-of-anton/skills`` would otherwise double as both the profile-local
     and the project tier.
     """
     local_skills = get_skills_dir().resolve()
@@ -734,7 +734,7 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
     """When cwd's project has skills but is NOT trusted: (root, skill_count).
 
     Used by the CLI to print a one-line notice pointing at
-    ``renco skills trust``. Returns None when there is nothing to notify
+    ``son_of_anton skills trust``. Returns None when there is nothing to notify
     about (no project, no skills, already trusted, or discovery disabled).
     """
     parsed = _load_raw_config()
@@ -769,7 +769,7 @@ def get_scan_ordered_skills_dirs() -> List[Path]:
 
 # ── Project skill quarantine (scan-time injection defense) ────────────────
 #
-# Trust (`renco skills trust`) is a REPO-level decision made once; the repo's
+# Trust (`son_of_anton skills trust`) is a REPO-level decision made once; the repo's
 # skill content keeps changing underneath it with every pull. The hub install
 # path runs skills_guard on install, but project skills are read straight from
 # a checkout — without this gate a `git pull` could inject a malicious skill
@@ -782,7 +782,7 @@ def get_scan_ordered_skills_dirs() -> List[Path]:
 # "caution" loads (matches hub behavior for prose-level keyword hits) — the
 # quarantine is for high-confidence findings only.
 #
-# The scan cache lives under RENCO_HOME, never inside the repo (we don't
+# The scan cache lives under SON_OF_ANTON_HOME, never inside the repo (we don't
 # write artifacts into the user's checkout).
 
 _PROJECT_SCAN_SOURCE = "project-local"
@@ -793,9 +793,9 @@ _PROJECT_QUARANTINE_CACHE: Dict[str, bool] = {}
 
 
 def _project_scan_cache_dir() -> Path:
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    return get_renco_home() / "cache" / "project_skill_scans"
+    return get_son_of_anton_home() / "cache" / "project_skill_scans"
 
 
 def is_quarantined_project_skill(skill_md) -> bool:
@@ -861,7 +861,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     """Normalize a skill identifier to a ``skill_view()``-safe relative path.
 
     Slash commands and cron jobs may store absolute paths to skills that live
-    under ``~/.renco/skills/`` (including via symlinks) or configured
+    under ``~/.son-of-anton/skills/`` (including via symlinks) or configured
     ``skills.external_dirs``. ``skill_view()`` rejects absolute names for
     security, so callers must translate trusted absolute paths to their
     relative form first.
@@ -898,7 +898,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
 
     # Prefer the lexical path under a trusted skill root before resolving
     # symlinks. Slash-command discovery can legitimately find a skill via
-    # ~/.renco/skills/<name> where <name> is a symlink to a checked-out
+    # ~/.son-of-anton/skills/<name> where <name> is a symlink to a checked-out
     # skill elsewhere. Resolving first turns that trusted visible path into
     # an arbitrary absolute path that skill_view() refuses to load.
     for root in trusted_roots:
@@ -929,7 +929,7 @@ def _resolve_for_skill_ownership(path) -> Path:
 def is_external_skill_path(path) -> bool:
     """Return True when ``path`` lives under a configured external skills dir.
 
-    ``skills.external_dirs`` are externally owned: Renco can discover and view
+    ``skills.external_dirs`` are externally owned: Son of Anton can discover and view
     their skills, and foreground user-directed tool calls may still edit them,
     but autonomous lifecycle maintenance must treat them as read-only. This
     helper centralizes the ownership boundary so curator/reporting/tool paths do
@@ -962,14 +962,14 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
     if not isinstance(metadata, dict):
         metadata = {}
-    renco = metadata.get("renco") or {}
-    if not isinstance(renco, dict):
-        renco = {}
+    son_of_anton = metadata.get("son-of-anton") or {}
+    if not isinstance(son_of_anton, dict):
+        son_of_anton = {}
     return {
-        "fallback_for_toolsets": renco.get("fallback_for_toolsets", []),
-        "requires_toolsets": renco.get("requires_toolsets", []),
-        "fallback_for_tools": renco.get("fallback_for_tools", []),
-        "requires_tools": renco.get("requires_tools", []),
+        "fallback_for_toolsets": son_of_anton.get("fallback_for_toolsets", []),
+        "requires_toolsets": son_of_anton.get("requires_toolsets", []),
+        "fallback_for_tools": son_of_anton.get("fallback_for_tools", []),
+        "requires_tools": son_of_anton.get("requires_tools", []),
     }
 
 
@@ -982,7 +982,7 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
     Skills declare config.yaml settings they need via::
 
         metadata:
-          renco:
+          son_of_anton:
             config:
               - key: wiki.path
                 description: Path to the LLM Wiki knowledge base directory
@@ -995,10 +995,10 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
     metadata = frontmatter.get("metadata")
     if not isinstance(metadata, dict):
         return []
-    renco = metadata.get("renco")
-    if not isinstance(renco, dict):
+    son_of_anton = metadata.get("son-of-anton")
+    if not isinstance(son_of_anton, dict):
         return []
-    raw = renco.get("config")
+    raw = son_of_anton.get("config")
     if not raw:
         return []
     if isinstance(raw, dict):
@@ -1155,7 +1155,7 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes Renco metadata, VCS, virtualenv/dependency, cache, and skill
+    Excludes Son of Anton metadata, VCS, virtualenv/dependency, cache, and skill
     support directories. Support directories (references/templates/assets/
     scripts) can contain arbitrary markdown and even archived package
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through

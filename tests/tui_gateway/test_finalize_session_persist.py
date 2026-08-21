@@ -188,8 +188,8 @@ class TestFinalizeSessionPersistE2E:
         (messages live only in agent._session_messages / session['history'],
         never written to the DB) must be flushed to state.db when the WS
         disconnect tears the session down."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-        from renco_state import SessionDB
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+        from son_of_anton_state import SessionDB
         import tui_gateway.server as srv
 
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -221,8 +221,8 @@ class TestFinalizeSessionPersistE2E:
     def test_resumed_session_not_reflushed_as_duplicates(self, tmp_path, monkeypatch):
         """A resumed session torn down before any new turn (its transcript is
         already durable in the DB) must NOT re-append duplicate rows."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-        from renco_state import SessionDB
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+        from son_of_anton_state import SessionDB
         import tui_gateway.server as srv
 
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -250,7 +250,7 @@ class TestFinalizeSessionPersistE2E:
 class TestOnSessionEndHook:
     """Verify on_session_end plugin hook fires on finalize."""
 
-    @patch("renco_cli.plugins.invoke_hook")
+    @patch("son_of_anton_cli.plugins.invoke_hook")
     def test_hook_fired_with_interrupted_true(self, mock_invoke_hook):
         """on_session_end is called with interrupted=True when finalizing."""
         from tui_gateway.server import _finalize_session

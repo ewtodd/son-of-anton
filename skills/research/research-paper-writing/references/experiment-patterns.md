@@ -1,6 +1,6 @@
 # Experiment Design Patterns
 
-Patterns and best practices distilled from running research experiments at scale with the Renco agent. These cover experiment infrastructure, evaluation protocols, monitoring, and failure recovery.
+Patterns and best practices distilled from running research experiments at scale with the Son of Anton agent. These cover experiment infrastructure, evaluation protocols, monitoring, and failure recovery.
 
 ---
 

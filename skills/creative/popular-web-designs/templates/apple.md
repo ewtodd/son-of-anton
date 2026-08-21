@@ -1,7 +1,7 @@
 # Design System: Apple
 
 
-> **Renco Agent — Implementation Notes**
+> **Son of Anton Agent — Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `system-ui` | **Mono:** `SF Mono (system)`

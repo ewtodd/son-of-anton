@@ -51,7 +51,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _ensure_plugins_loaded() -> None:
     """Idempotently load plugins so the registry is populated."""
-    from renco_cli.plugins import _ensure_plugins_discovered
+    from son_of_anton_cli.plugins import _ensure_plugins_discovered
 
     _ensure_plugins_discovered()
 

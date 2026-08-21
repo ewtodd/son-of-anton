@@ -6,7 +6,7 @@ author: Mibayy
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [maps, geocoding, places, routing, distance, directions, nearby, location, openstreetmap, nominatim, overpass, osrm]
     category: productivity
     requires_toolsets: [terminal]
@@ -39,12 +39,12 @@ functionality is covered by the `nearby` command below, with the same
 
 Python 3.8+ (stdlib only — no pip installs needed).
 
-Script path: `~/.renco/skills/maps/scripts/maps_client.py`
+Script path: `~/.son-of-anton/skills/maps/scripts/maps_client.py`
 
 ## Commands
 
 ```bash
-MAPS=~/.renco/skills/maps/scripts/maps_client.py
+MAPS=~/.son-of-anton/skills/maps/scripts/maps_client.py
 ```
 
 ### search — Geocode a place name
@@ -187,9 +187,9 @@ current.
 ## Verification
 
 ```bash
-python ~/.renco/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python ~/.son-of-anton/skills/maps/scripts/maps_client.py search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
 
-python ~/.renco/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python ~/.son-of-anton/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # Should return a list of restaurants within ~500m of Times Square
 ```

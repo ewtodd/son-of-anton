@@ -9,12 +9,12 @@ def test_load_transcript_returns_db_messages_when_no_jsonl(tmp_path, monkeypatch
     """Reading a transcript must work from SQLite alone — no JSONL fallback needed.
 
     Pin DEFAULT_DB_PATH to tmp_path so this test cannot write to the real
-    ~/.renco/state.db. (DEFAULT_DB_PATH is a module-level constant computed
-    at renco_state import time, before pytest's RENCO_HOME monkeypatch
-    fires — the autouse fixture's RENCO_HOME override doesn't help here.)
+    ~/.son-of-anton/state.db. (DEFAULT_DB_PATH is a module-level constant computed
+    at son_of_anton_state import time, before pytest's SON_OF_ANTON_HOME monkeypatch
+    fires — the autouse fixture's SON_OF_ANTON_HOME override doesn't help here.)
     """
-    import renco_state
-    monkeypatch.setattr(renco_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import son_of_anton_state
+    monkeypatch.setattr(son_of_anton_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)

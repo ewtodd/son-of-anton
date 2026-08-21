@@ -12,7 +12,7 @@ the host platform.  We also keep a live Winsock smoke test that only runs
 on a real Windows host.
 
 Also covers the companion Windows bug: the sandbox writes
-``renco_tools.py`` and ``script.py`` into a temp dir, and those files
+``son_of_anton_tools.py`` and ``script.py`` into a temp dir, and those files
 must be written as UTF-8 on every platform — the generated stub contains
 em-dash/en-dash characters in docstrings, and the default ``open(path, "w")``
 on Windows uses the system locale (cp1252 typically), corrupting those
@@ -243,7 +243,7 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     _scrub_child_env's POSIX behavior, used to prove the production helper does
     what we think it does.
 
-    Deliberately updated for #27303 (the broad ``RENCO_`` prefix was dropped
+    Deliberately updated for #27303 (the broad ``SON_OF_ANTON_`` prefix was dropped
     in favor of an explicit operational allowlist, and DSN/WEBHOOK were added
     to the secret substrings).  The original docstring said: if POSIX behavior
     legitimately needs to evolve, adjust this oracle on purpose so the churn is
@@ -254,8 +254,8 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
                           "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
     _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                           "PASSWD", "AUTH", "DSN", "WEBHOOK")
-    _RENCO_CHILD_ALLOWED = frozenset({
-        "RENCO_HOME", "RENCO_PROFILE", "RENCO_CONFIG", "RENCO_ENV",
+    _SON_OF_ANTON_CHILD_ALLOWED = frozenset({
+        "SON_OF_ANTON_HOME", "SON_OF_ANTON_PROFILE", "SON_OF_ANTON_CONFIG", "SON_OF_ANTON_ENV",
     })
     out = {}
     for k, v in source_env.items():
@@ -267,7 +267,7 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             out[k] = v
             continue
-        if k in _RENCO_CHILD_ALLOWED:
+        if k in _SON_OF_ANTON_CHILD_ALLOWED:
             out[k] = v
     return out
 
@@ -301,13 +301,13 @@ class TestPosixEquivalence:
         "PYTHONPATH": "/opt/lib",
         "VIRTUAL_ENV": "/home/alice/.venv",
         "CONDA_PREFIX": "/opt/conda",
-        # RENCO_* handling (#27303): only the operational allowlist passes;
-        # every other RENCO_* is dropped (the broad prefix was removed).
-        "RENCO_HOME": "/home/alice/.renco",        # allowlisted → kept
-        "RENCO_PROFILE": "default",                 # allowlisted → kept
-        "RENCO_INTERACTIVE": "1",                   # not allowlisted → dropped
-        "RENCO_BASE_URL": "https://api.internal",   # not allowlisted → dropped
-        "RENCO_KANBAN_DB": "postgres://u:p@h/db",   # not allowlisted → dropped
+        # SON_OF_ANTON_* handling (#27303): only the operational allowlist passes;
+        # every other SON_OF_ANTON_* is dropped (the broad prefix was removed).
+        "SON_OF_ANTON_HOME": "/home/alice/.son-of-anton",        # allowlisted → kept
+        "SON_OF_ANTON_PROFILE": "default",                 # allowlisted → kept
+        "SON_OF_ANTON_INTERACTIVE": "1",                   # not allowlisted → dropped
+        "SON_OF_ANTON_BASE_URL": "https://api.internal",   # not allowlisted → dropped
+        "SON_OF_ANTON_KANBAN_DB": "postgres://u:p@h/db",   # not allowlisted → dropped
         # Secret-substring blocks
         "OPENAI_API_KEY": "sk-xxx",
         "GITHUB_TOKEN": "ghp_xxx",
@@ -400,7 +400,7 @@ class TestPosixEquivalence:
 # ---------------------------------------------------------------------------
 #
 # The sandbox writes two Python files into a temp dir — the generated
-# ``renco_tools.py`` stub, and the LLM's ``script.py``.  Both contain
+# ``son_of_anton_tools.py`` stub, and the LLM's ``script.py``.  Both contain
 # non-ASCII characters in practice: the stub has em-dashes in docstrings
 # ("``tcp://host:port`` — the parent falls back..."), and user scripts
 # routinely contain non-ASCII strings, comments, or Unicode identifiers.
@@ -424,7 +424,7 @@ class TestSandboxWritesUtf8:
     context — but the code inspection is deterministic and fast."""
 
     def test_stub_and_script_writes_specify_utf8(self):
-        """Both ``renco_tools.py`` and ``script.py`` writes in
+        """Both ``son_of_anton_tools.py`` and ``script.py`` writes in
         ``_execute_local`` must pass ``encoding="utf-8"``."""
         import tools.code_execution_tool as cet
         src = open(cet.__file__, encoding="utf-8").read()
@@ -450,9 +450,9 @@ class TestSandboxWritesUtf8:
         sandbox does, and it must succeed even when the stub contains
         em-dashes (which it does — check the transport-header docstring).
         """
-        from tools.code_execution_tool import generate_renco_tools_module
+        from tools.code_execution_tool import generate_son_of_anton_tools_module
         import tempfile, ast
-        stub = generate_renco_tools_module(
+        stub = generate_son_of_anton_tools_module(
             ["terminal", "read_file", "write_file"], transport="uds"
         )
         # Sanity: stub actually contains a non-ASCII character, otherwise
@@ -487,10 +487,10 @@ class TestSandboxWritesUtf8:
         test ever starts failing (i.e. default write succeeds), it means
         Python's default encoding has changed and the explicit UTF-8
         requirement may be obsolete — reconsider the fix."""
-        from tools.code_execution_tool import generate_renco_tools_module
+        from tools.code_execution_tool import generate_son_of_anton_tools_module
         import tempfile
 
-        stub = generate_renco_tools_module(["terminal"], transport="uds")
+        stub = generate_son_of_anton_tools_module(["terminal"], transport="uds")
         # Find a non-ASCII character we can use to prove the corruption.
         non_ascii = [c for c in stub if ord(c) > 127]
         if not non_ascii:
@@ -541,7 +541,7 @@ class TestSandboxWritesUtf8:
 # ---------------------------------------------------------------------------
 #
 # The third Windows-specific sandbox bug: after the UTF-8 file-write fix
-# let the child import renco_tools, a user script that printed non-ASCII
+# let the child import son_of_anton_tools, a user script that printed non-ASCII
 # to stdout still crashed with:
 #
 #     UnicodeEncodeError: 'charmap' codec can't encode character '\u2192'

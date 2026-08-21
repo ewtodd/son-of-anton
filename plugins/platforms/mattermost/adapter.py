@@ -2,7 +2,7 @@
 
 Connects to a self-hosted (or cloud) Mattermost instance via its REST API
 (v4) and WebSocket for real-time events.  No external Mattermost library
-required — uses aiohttp which is already a Renco dependency.
+required — uses aiohttp which is already a Son of Anton dependency.
 
 Environment variables:
     MATTERMOST_URL              Server URL (e.g. https://mm.example.com)
@@ -1168,11 +1168,11 @@ def interactive_setup() -> None:
     helpers so the plugin's import surface stays small, prompts for the
     server URL + bot token, captures an allowlist, and offers to set a
     home channel.  Replaces the central
-    ``renco_cli/setup.py::_setup_mattermost`` function this migration
+    ``son_of_anton_cli/setup.py::_setup_mattermost`` function this migration
     removes.
     """
-    from renco_cli.config import get_env_value, remove_env_value, save_env_value
-    from renco_cli.cli_output import (
+    from son_of_anton_cli.config import get_env_value, remove_env_value, save_env_value
+    from son_of_anton_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_header,
@@ -1213,7 +1213,7 @@ def interactive_setup() -> None:
         print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
 
     print()
-    print_info("📬 Home Channel: where Renco delivers cron job results and notifications.")
+    print_info("📬 Home Channel: where Son of Anton delivers cron job results and notifications.")
     print_info("   To get a channel ID: click channel name → View Info → copy the ID")
     print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
     home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
@@ -1222,7 +1222,7 @@ def interactive_setup() -> None:
     else:
         if remove_env_value("MATTERMOST_HOME_CHANNEL"):
             print_info("Home channel cleared.")
-    print_info("   Open config in your editor:  renco config edit")
+    print_info("   Open config in your editor:  son-of-anton config edit")
 
 
 # ---------------------------------------------------------------------------
@@ -1275,12 +1275,12 @@ def _is_connected(config) -> bool:
     """Mattermost is considered connected when BOTH MATTERMOST_TOKEN and
     MATTERMOST_URL are set.
 
-    Looks up via ``renco_cli.gateway.get_env_value`` at call time (not via
+    Looks up via ``son_of_anton_cli.gateway.get_env_value`` at call time (not via
     the plugin's own bound import) so tests that patch
     ``gateway_mod.get_env_value`` can suppress ambient env vars.  Matches
     what the legacy connected-platforms check did before this migration.
     """
-    import renco_cli.gateway as gateway_mod
+    import son_of_anton_cli.gateway as gateway_mod
     return bool(
         (gateway_mod.get_env_value("MATTERMOST_TOKEN") or "").strip()
         and (gateway_mod.get_env_value("MATTERMOST_URL") or "").strip()
@@ -1298,7 +1298,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Renco plugin system."""
+    """Plugin entry point — called by the Son of Anton plugin system."""
     ctx.register_platform(
         name="mattermost",
         label="Mattermost",
@@ -1309,7 +1309,7 @@ def register(ctx) -> None:
         required_env=["MATTERMOST_URL", "MATTERMOST_TOKEN"],
         install_hint="pip install aiohttp",
         # Interactive setup wizard — replaces the central
-        # renco_cli/setup.py::_setup_mattermost function.
+        # son_of_anton_cli/setup.py::_setup_mattermost function.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of
         # ``config.yaml`` ``mattermost:`` keys (require_mention,

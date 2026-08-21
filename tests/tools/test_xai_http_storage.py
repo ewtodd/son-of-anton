@@ -7,7 +7,7 @@ import yaml
 
 def _invalidate_config_cache():
     try:
-        import renco_cli.config as cfg_mod
+        import son_of_anton_cli.config as cfg_mod
 
         if hasattr(cfg_mod, "_invalidate_load_config_cache"):
             cfg_mod._invalidate_load_config_cache()
@@ -16,26 +16,26 @@ def _invalidate_config_cache():
 
 
 def test_storage_defaults_to_permanent_public_urls(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     _invalidate_config_cache()
 
     from tools.xai_http import build_xai_storage_options
 
     storage = build_xai_storage_options(
         "image_gen",
-        filename_prefix="renco-xai-image",
+        filename_prefix="son-of-anton-xai-image",
         extension="png",
     )
 
     assert storage is not None
     assert storage["public_url"] is True
     assert "expires_after" not in storage
-    assert storage["filename"].startswith("renco-xai-image-")
+    assert storage["filename"].startswith("son-of-anton-xai-image-")
     assert storage["filename"].endswith(".png")
 
 
 def test_invalid_storage_retention_falls_back_to_bounded_ttl(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({
         "video_gen": {
             "xai": {
@@ -51,7 +51,7 @@ def test_invalid_storage_retention_falls_back_to_bounded_ttl(tmp_path, monkeypat
 
     storage = build_xai_storage_options(
         "video_gen",
-        filename_prefix="renco-xai-video",
+        filename_prefix="son-of-anton-xai-video",
         extension="mp4",
     )
 

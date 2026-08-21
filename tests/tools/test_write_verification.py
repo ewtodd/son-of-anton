@@ -10,7 +10,7 @@ from tools.file_tools import write_file_tool
 
 @pytest.fixture
 def workdir(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
     return tmp_path
 
 

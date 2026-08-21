@@ -1,14 +1,14 @@
-"""renco-memory-store — holographic memory plugin using MemoryProvider interface.
+"""son-of-anton-memory-store — holographic memory plugin using MemoryProvider interface.
 
 Registers as a MemoryProvider plugin, giving the agent structured fact storage
 with entity resolution, trust scoring, and HRR-based compositional retrieval.
 
 Original plugin by dusterbloom (PR #2351), adapted to the MemoryProvider ABC.
 
-Config in $RENCO_HOME/config.yaml (profile-scoped):
+Config in $SON_OF_ANTON_HOME/config.yaml (profile-scoped):
   plugins:
-    renco-memory-store:
-      db_path: $RENCO_HOME/memory_store.db   # omit to use the default
+    son-of-anton-memory-store:
+      db_path: $SON_OF_ANTON_HOME/memory_store.db   # omit to use the default
       auto_extract: false
       default_trust: 0.5
       min_trust_threshold: 0.3
@@ -27,7 +27,7 @@ from tools.registry import tool_error
 from utils import is_truthy_value
 from .store import MemoryStore
 from .retrieval import FactRetriever
-from renco_cli.config import cfg_get
+from son_of_anton_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +99,9 @@ def _load_plugin_config() -> dict:
     try:
         # Canonical loader: behavioral read now honors the managed-scope
         # overlay + ${VAR} expansion (e.g. an api key template) too.
-        from renco_cli.config import load_config_readonly
+        from son_of_anton_cli.config import load_config_readonly
         all_config = load_config_readonly()
-        return cfg_get(all_config, "plugins", "renco-memory-store", default={}) or {}
+        return cfg_get(all_config, "plugins", "son-of-anton-memory-store", default={}) or {}
     except Exception:
         return {}
 
@@ -126,26 +126,26 @@ class HolographicMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         return True  # SQLite is always available, numpy is optional
 
-    def save_config(self, values, renco_home):
-        """Write config to config.yaml under plugins.renco-memory-store."""
+    def save_config(self, values, son_of_anton_home):
+        """Write config to config.yaml under plugins.son-of-anton-memory-store."""
         from pathlib import Path
-        config_path = Path(renco_home) / "config.yaml"
+        config_path = Path(son_of_anton_home) / "config.yaml"
         try:
             import yaml
             # Write-back round-trip: raw read is correct (merged defaults
             # must not be persisted back into the user's file).
-            from renco_cli.config import read_user_config_raw
+            from son_of_anton_cli.config import read_user_config_raw
             existing = read_user_config_raw(config_path)
             existing.setdefault("plugins", {})
-            existing["plugins"]["renco-memory-store"] = values
+            existing["plugins"]["son-of-anton-memory-store"] = values
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
         except Exception:
             pass
 
     def get_config_schema(self):
-        from renco_constants import display_renco_home
-        _default_db = f"{display_renco_home()}/memory_store.db"
+        from son_of_anton_constants import display_son_of_anton_home
+        _default_db = f"{display_son_of_anton_home()}/memory_store.db"
         return [
             {"key": "db_path", "description": "SQLite database path", "default": _default_db},
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
@@ -154,16 +154,16 @@ class HolographicMemoryProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        from renco_constants import get_renco_home
-        _renco_home = str(get_renco_home())
-        _default_db = _renco_home + "/memory_store.db"
+        from son_of_anton_constants import get_son_of_anton_home
+        _son_of_anton_home = str(get_son_of_anton_home())
+        _default_db = _son_of_anton_home + "/memory_store.db"
         db_path = self._config.get("db_path", _default_db)
-        # Expand $RENCO_HOME in user-supplied paths so config values like
-        # "$RENCO_HOME/memory_store.db" or "~/.renco/memory_store.db" both
+        # Expand $SON_OF_ANTON_HOME in user-supplied paths so config values like
+        # "$SON_OF_ANTON_HOME/memory_store.db" or "~/.son-of-anton/memory_store.db" both
         # resolve to the active profile's directory.
         if isinstance(db_path, str):
-            db_path = db_path.replace("$RENCO_HOME", _renco_home)
-            db_path = db_path.replace("${RENCO_HOME}", _renco_home)
+            db_path = db_path.replace("$SON_OF_ANTON_HOME", _son_of_anton_home)
+            db_path = db_path.replace("${SON_OF_ANTON_HOME}", _son_of_anton_home)
         default_trust = float(self._config.get("default_trust", 0.5))
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))

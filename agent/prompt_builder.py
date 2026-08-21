@@ -13,12 +13,12 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from renco_constants import (
-    get_renco_home,
+from son_of_anton_constants import (
+    get_son_of_anton_home,
     get_skills_dir,
     is_wsl,
-    reset_renco_home_override,
-    set_renco_home_override,
+    reset_son_of_anton_home_override,
+    set_son_of_anton_home_override,
 )
 from typing import List, Optional
 
@@ -98,11 +98,11 @@ def _find_git_root(start: Path) -> Optional[Path]:
     return None
 
 
-_RENCO_MD_NAMES = (".renco.md", "RENCO.md")
+_SON_OF_ANTON_MD_NAMES = (".son-of-anton.md", "SON_OF_ANTON.md")
 
 
-def _find_renco_md(cwd: Path) -> Optional[Path]:
-    """Discover the nearest ``.renco.md`` or ``RENCO.md``.
+def _find_son_of_anton_md(cwd: Path) -> Optional[Path]:
+    """Discover the nearest ``.son-of-anton.md`` or ``SON_OF_ANTON.md``.
 
     Search order: *cwd* first, then each parent directory up to (and
     including) the git repository root.  Returns the first match, or
@@ -112,11 +112,11 @@ def _find_renco_md(cwd: Path) -> Optional[Path]:
     current = cwd.resolve()
 
     # When there is no git root, only check cwd itself – walking parents
-    # could pick up a .renco.md planted in /tmp, /home, etc.
+    # could pick up a .son-of-anton.md planted in /tmp, /home, etc.
     search_dirs = [current, *current.parents] if stop_at else [current]
 
     for directory in search_dirs:
-        for name in _RENCO_MD_NAMES:
+        for name in _SON_OF_ANTON_MD_NAMES:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
@@ -148,7 +148,7 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # =========================================================================
 
 DEFAULT_AGENT_IDENTITY = (
-    "You are Renco Agent, an intelligent AI assistant created by Nous Research. "
+    "You are Son of Anton Agent, an intelligent AI assistant created by Nous Research. "
     "You are helpful, knowledgeable, and direct. You assist users with a wide "
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
@@ -157,13 +157,13 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
-RENCO_AGENT_HELP_GUIDANCE = (
-    "You run on Renco Agent (by Nous Research). When the user needs help with "
-    "Renco itself — configuring, setting up, using, extending, or troubleshooting "
+SON_OF_ANTON_AGENT_HELP_GUIDANCE = (
+    "You run on Son of Anton Agent (by Nous Research). When the user needs help with "
+    "Son of Anton itself — configuring, setting up, using, extending, or troubleshooting "
     "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://renco-agent.nousresearch.com/docs is your "
+    "the documentation at https://son-of-anton.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `renco-agent` skill with skill_view(name='renco-agent') "
+    "information. Load the `son-of-anton` skill with skill_view(name='son-of-anton') "
     "for additional guidance and proven workflows, but treat the docs as the source "
     "of truth when the two differ."
 )
@@ -358,9 +358,9 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "`computer_use.grant_existing_profile: true` (if unset, report the "
         "refusal and name that key — you can never grant it yourself); "
         "bounded mode authorizes via the user's reviewed capability manifest; "
-        "explicit Renco YOLO uses an unrestricted runtime after the user's "
+        "explicit Son of Anton YOLO uses an unrestricted runtime after the user's "
         "launch/session risk acceptance. Permission mode and grants are fixed "
-        "when Renco launches that runtime.\n\n"
+        "when Son of Anton launches that runtime.\n\n"
         "## Background mode rules\n"
         "- Do NOT use `raise_window=true` on `focus_app` unless the user "
         "explicitly asked you to bring a window to front. Input routing to "
@@ -391,7 +391,7 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "## When something is broken\n"
         "If `computer_use` consistently fails (empty captures, missing "
         "elements, clicks not landing, type going nowhere), ask the user to "
-        "run `renco computer-use doctor` and share the output. That command "
+        "run `son-of-anton computer-use doctor` and share the output. That command "
         "runs cua-driver's structured health-report — per-platform checks "
         "for permissions, display server, accessibility tree reachability "
         "— and the failure message tells you exactly what to fix.\n"
@@ -428,7 +428,7 @@ def format_steer_marker(steer_text: str) -> str:
 
 STEER_CHANNEL_NOTE = (
     "## Mid-turn user steering\n"
-    "While you work, the user can send an out-of-band message that Renco "
+    "While you work, the user can send an out-of-band message that Son of Anton "
     "appends to the end of a tool result, wrapped exactly as:\n"
     f"{STEER_MARKER_OPEN}\n<their message>\n{STEER_MARKER_CLOSE}\n"
     "Text inside that marker is a genuine message from the user delivered "
@@ -455,8 +455,8 @@ STEER_CHANNEL_NOTE += (
 def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
     """Per-turn note for a message typed into the desktop's floating HUD.
 
-    HUD mode is a strip of Renco floating over another application, so the
-    user is rarely asking about Renco — they are asking about the thing behind
+    HUD mode is a strip of Son of Anton floating over another application, so the
+    user is rarely asking about Son of Anton — they are asking about the thing behind
     it, and the work they want done usually belongs in that app rather than in
     a surface of our own. Left to itself the model answers from its own
     browser and panes, which is the wrong half of the screen.
@@ -483,10 +483,10 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         return ""
 
     sentences = [
-        "[Note: this message came from HUD mode — a small floating Renco "
+        "[Note: this message came from HUD mode — a small floating Son of Anton "
         "window sitting over whatever the user is actually working in, so an "
         'unqualified "this" or "here" usually means the app behind the HUD '
-        "rather than anything inside Renco. read_window_below identifies "
+        "rather than anything inside Son of Anton. read_window_below identifies "
         "that app.",
         "They move the HUD from app to app mid-conversation, so one you "
         "identified on an earlier turn is still a live target: a reference "
@@ -624,7 +624,7 @@ PLATFORM_HINTS = {
         "default-deliver cron job will message them in this session."
     ),
     "tui": (
-        "You are running in the Renco terminal UI (TUI). "
+        "You are running in the Son of Anton terminal UI (TUI). "
         "Cron jobs scheduled from this session are LOCAL-ONLY: their output is "
         "saved (viewable via cronjob action='list') but is NOT delivered back "
         "into this TUI session — there is no live-delivery channel here. If the "
@@ -634,7 +634,7 @@ PLATFORM_HINTS = {
         "default-deliver cron job will message them in this session."
     ),
     "desktop": (
-        "You are chatting inside the Renco desktop app — a graphical chat "
+        "You are chatting inside the Son of Anton desktop app — a graphical chat "
         "surface, not a terminal. Use markdown freely: it renders with full "
         "GitHub flavor (tables, code blocks with syntax highlighting, math "
         "via $...$, task lists, blockquote callouts). "
@@ -654,8 +654,8 @@ PLATFORM_HINTS = {
         "the inherited app font, no body padding or margin, content flush "
         "left and filling the viewport width, no centering wrappers, decorative "
         "backdrops, or page chrome. The frame auto-sizes to the content. "
-        "Widgets can talk back: window.renco.send(\"prompt\") — or a "
-        "data-renco-send=\"prompt\" attribute on any clickable element — sends "
+        "Widgets can talk back: window.son-of-anton.send(\"prompt\") — or a "
+        "data-son-of-anton-send=\"prompt\" attribute on any clickable element — sends "
         "that prompt to you as a hidden user turn (no chat bubble), so give "
         "interactive widgets buttons whose clicks mean something and answer "
         "them by updating the widget's file, not with prose. Only "
@@ -778,7 +778,7 @@ PLATFORM_HINTS = {
         "in your response text instead of a MEDIA: tag."
     ),
     "webui": (
-        "You are in the Renco WebUI, a browser-based chat interface. "
+        "You are in the Son of Anton WebUI, a browser-based chat interface. "
         "Full Markdown rendering is supported — headings, bold, italic, code "
         "blocks, tables, math (LaTeX), and Mermaid diagrams all render natively. "
         "To display local or remote media/files inline, include "
@@ -833,7 +833,7 @@ WSL_ENVIRONMENT_HINT = (
 
 # Non-local terminal backends that run commands (and therefore every file
 # tool: read_file, write_file, patch, search_files) inside a separate
-# container / remote host rather than on the machine where Renco itself
+# container / remote host rather than on the machine where Son of Anton itself
 # runs. For these backends, host info (Windows/Linux/macOS, $HOME, cwd) is
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
@@ -861,7 +861,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # on the first prompt build of a session. Keyed by (env_type, cwd_hint) so
 # a mid-process backend switch rebuilds the string. Kept in-module (not on
 # disk) because the probe captures live backend state that may change
-# across Renco restarts.
+# across Son of Anton restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
@@ -915,7 +915,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     Returns a pre-formatted multi-line string describing the backend's OS,
     $HOME, cwd, and user — or None if the probe failed. Result is cached
     per process. Used only for non-local backends where the agent's tools
-    operate on a different machine than the host Renco runs on.
+    operate on a different machine than the host Son of Anton runs on.
     """
     cwd_hint = os.getenv("TERMINAL_CWD", "")
     cache_key = (env_type, cwd_hint)
@@ -1106,8 +1106,8 @@ def build_environment_hints() -> str:
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "
                 f"inside this {backend} environment — NOT on the machine "
-                f"where Renco itself is running. The host OS, home, and cwd "
-                f"of the Renco process are irrelevant; only the following "
+                f"where Son of Anton itself is running. The host OS, home, and cwd "
+                f"of the Son of Anton process are irrelevant; only the following "
                 f"backend state matters:\n{probe}"
             )
         else:
@@ -1117,7 +1117,7 @@ def build_environment_hints() -> str:
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "
-                f"inside {description} — NOT on the machine where Renco "
+                f"inside {description} — NOT on the machine where Son of Anton "
                 f"itself runs. The backend probe didn't respond at "
                 f"prompt-build time, so the sandbox's current user, $HOME, "
                 f"and working directory are unknown from here. If you need "
@@ -1128,17 +1128,17 @@ def build_environment_hints() -> str:
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
-    # Embedder-supplied environment description. Lets a host that wraps Renco
+    # Embedder-supplied environment description. Lets a host that wraps Son of Anton
     # (e.g. a sandbox runner / managed platform) explain the environment the
     # agent is running in — proxy, credential handling, mount layout — without
     # forking the identity slot (SOUL.md). Read once at prompt-build time, so
     # it's part of the stable, cache-safe system prompt. The env var is the
     # build-time/embedder mechanism (set in a container ENV); config.yaml
     # ``agent.environment_hint`` is the user-facing surface. Env var wins.
-    extra = (os.getenv("RENCO_ENVIRONMENT_HINT") or "").strip()
+    extra = (os.getenv("SON_OF_ANTON_ENVIRONMENT_HINT") or "").strip()
     if not extra:
         try:
-            from renco_cli.config import load_config_readonly
+            from son_of_anton_cli.config import load_config_readonly
 
             extra = str(
                 (load_config_readonly().get("agent", {}) or {}).get("environment_hint", "")
@@ -1192,7 +1192,7 @@ def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
       3. ``CONTEXT_FILE_MAX_CHARS`` (20K) as the upstream-compatible fallback.
     """
     try:
-        from renco_cli.config import load_config_readonly
+        from son_of_anton_cli.config import load_config_readonly
 
         val = load_config_readonly().get("context_file_max_chars")
         if isinstance(val, (int, float)) and val > 0:
@@ -1248,7 +1248,7 @@ _SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
-    return get_renco_home() / ".skills_prompt_snapshot.json"
+    return get_son_of_anton_home() / ".skills_prompt_snapshot.json"
 
 
 def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
@@ -1462,7 +1462,7 @@ def _skill_should_show(
 
 def _current_session_platform_hint() -> str:
     """Return the active platform without importing the gateway package on CLI startup."""
-    platform = os.environ.get("RENCO_PLATFORM") or os.environ.get("RENCO_SESSION_PLATFORM")
+    platform = os.environ.get("SON_OF_ANTON_PLATFORM") or os.environ.get("SON_OF_ANTON_SESSION_PLATFORM")
     if platform:
         return platform
 
@@ -1471,7 +1471,7 @@ def _current_session_platform_hint() -> str:
     if get_session_env is None:
         return ""
     try:
-        return get_session_env("RENCO_SESSION_PLATFORM") or ""
+        return get_session_env("SON_OF_ANTON_SESSION_PLATFORM") or ""
     except Exception:
         return ""
 
@@ -1492,7 +1492,7 @@ def build_skills_system_prompt(
     Falls back to a full filesystem scan when both layers miss.
 
     External skill directories (``skills.external_dirs`` in config.yaml) are
-    scanned alongside the local ``~/.renco/skills/`` directory.  External dirs
+    scanned alongside the local ``~/.son-of-anton/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
 
@@ -1505,19 +1505,19 @@ def build_skills_system_prompt(
     # Home resolution is EXPLICIT when a caller passes skills_dir_override
     # (the agent knows its own profile home from its session_db path). This
     # avoids the ContextVar-on-a-thread trap: build threads that didn't bind
-    # RENCO_HOME would otherwise fall back to the launch (default) home and
+    # SON_OF_ANTON_HOME would otherwise fall back to the launch (default) home and
     # leak the default profile's skills into a bot's prompt (confirmed: a
     # no-override thread builds default's full index). Snapshot + external
     # dirs are scoped to the same home so nothing reads ambient state.
     if skills_dir_override is not None:
         skills_dir = Path(skills_dir_override)
-        _home_token = set_renco_home_override(str(skills_dir.parent))
+        _home_token = set_son_of_anton_home_override(str(skills_dir.parent))
     else:
         skills_dir = get_skills_dir()
         _home_token = None
     try:
         external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
-        # Trusted project-local dirs (./.renco/skills, ./.agents/skills at
+        # Trusted project-local dirs (./.son-of-anton/skills, ./.agents/skills at
         # the git root) — highest-precedence tier, scanned before local.
         # Resolved once here; cwd and trust are stable for the session, so
         # the index (and the system prompt) stays byte-stable.
@@ -1537,7 +1537,7 @@ def build_skills_system_prompt(
         )
     finally:
         if _home_token is not None:
-            reset_renco_home_override(_home_token)
+            reset_son_of_anton_home_override(_home_token)
 
 
 def _build_skills_system_prompt_inner(
@@ -1830,10 +1830,10 @@ def _build_skills_system_prompt_inner(
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Renco Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `renco-agent` skill "
-            "first. It has the actual commands (e.g. `renco config set …`, `renco tools`, "
-            "`renco setup`) so you don't have to guess or invent workarounds.\n"
+            "or troubleshoot Son of Anton Agent itself — its CLI, config, models, providers, tools, "
+            "skills, voice, gateway, plugins, or any feature — load the `son-of-anton` skill "
+            "first. It has the actual commands (e.g. `son-of-anton config set …`, `son-of-anton tools`, "
+            "`son-of-anton setup`) so you don't have to guess or invent workarounds.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
@@ -1860,7 +1860,7 @@ def _build_skills_system_prompt_inner(
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a compact Nous subscription capability block for the system prompt."""
     try:
-        from renco_cli.nous_subscription import get_nous_subscription_features
+        from son_of_anton_cli.nous_subscription import get_nous_subscription_features
         from tools.tool_backend_helpers import managed_nous_tools_enabled
     except Exception as exc:
         logger.debug("Failed to import Nous subscription helper: %s", exc)
@@ -1917,7 +1917,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
             "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",
             "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
             "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
-            "Useful commands: renco setup, renco setup tools, renco setup terminal, renco status.",
+            "Useful commands: son-of-anton setup, son-of-anton setup tools, son-of-anton setup terminal, son-of-anton status.",
         ]
     )
     return "\n".join(lines)
@@ -1971,7 +1971,7 @@ def load_soul_md(
     context_length: Optional[int] = None,
     home_override: "Path | None" = None,
 ) -> Optional[str]:
-    """Load SOUL.md from RENCO_HOME and return its content, or None.
+    """Load SOUL.md from SON_OF_ANTON_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
@@ -1979,17 +1979,17 @@ def load_soul_md(
 
     ``home_override`` scopes the read to an explicit profile home (the agent
     knows its own home from its session_db path). Without it, resolution is
-    ambient — which on a thread that lost the RENCO_HOME ContextVar falls
+    ambient — which on a thread that lost the SON_OF_ANTON_HOME ContextVar falls
     back to the launch home and reads the wrong profile's SOUL.md (#50233,
     same class as the skills-index leak fixed in #86313).
     """
     try:
-        from renco_cli.config import ensure_renco_home
-        ensure_renco_home()
+        from son_of_anton_cli.config import ensure_son_of_anton_home
+        ensure_son_of_anton_home()
     except Exception as e:
-        logger.debug("Could not ensure RENCO_HOME before loading SOUL.md: %s", e)
+        logger.debug("Could not ensure SON_OF_ANTON_HOME before loading SOUL.md: %s", e)
 
-    _home = Path(home_override) if home_override is not None else get_renco_home()
+    _home = Path(home_override) if home_override is not None else get_son_of_anton_home()
     soul_path = _home / "SOUL.md"
     if not soul_path.exists():
         return None
@@ -2008,29 +2008,29 @@ def load_soul_md(
         return None
 
 
-def _load_renco_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.renco.md / RENCO.md — walk to git root."""
-    renco_md_path = _find_renco_md(cwd_path)
-    if not renco_md_path:
+def _load_son_of_anton_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """.son-of-anton.md / SON_OF_ANTON.md — walk to git root."""
+    son_of_anton_md_path = _find_son_of_anton_md(cwd_path)
+    if not son_of_anton_md_path:
         return ""
     try:
-        content = renco_md_path.read_text(encoding="utf-8").strip()
+        content = son_of_anton_md_path.read_text(encoding="utf-8").strip()
         if not content:
             return ""
         content = _strip_yaml_frontmatter(content)
-        rel = renco_md_path.name
+        rel = son_of_anton_md_path.name
         try:
-            rel = str(renco_md_path.relative_to(cwd_path))
+            rel = str(son_of_anton_md_path.relative_to(cwd_path))
         except ValueError:
             pass
         content = _scan_context_content(content, rel)
         result = f"## {rel}\n\n{content}"
         return _truncate_content(
-            result, ".renco.md", context_length=context_length,
-            read_path=str(renco_md_path),
+            result, ".son-of-anton.md", context_length=context_length,
+            read_path=str(son_of_anton_md_path),
         )
     except Exception as e:
-        logger.debug("Could not read %s: %s", renco_md_path, e)
+        logger.debug("Could not read %s: %s", son_of_anton_md_path, e)
         return ""
 
 
@@ -2181,12 +2181,12 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt.
 
     Priority (first found wins — only ONE project context type is loaded):
-      1. .renco.md / RENCO.md  (walk to git root)
+      1. .son-of-anton.md / SON_OF_ANTON.md  (walk to git root)
       2. AGENTS.md / agents.md   (merged chain: git root → cwd)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from RENCO_HOME is independent and always included when present.
+    SOUL.md from SON_OF_ANTON_HOME is independent and always included when present.
 
     Each context source is capped before injection. The cap defaults to the
     model's context window (scaled — see ``_dynamic_context_file_max_chars``)
@@ -2205,14 +2205,14 @@ def build_context_files_prompt(
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Never let a FALLBACK-picked directory inside the Renco install/source
+    # Never let a FALLBACK-picked directory inside the Son of Anton install/source
     # tree gain system-prompt authority. A backend that self-spawns into that
     # tree (the desktop app default) would otherwise load this repo's
     # contributor AGENTS.md as authoritative project context (#64590). An
-    # explicitly configured cwd is honored verbatim — the Renco tree is a
+    # explicitly configured cwd is honored verbatim — the Son of Anton tree is a
     # legitimate workspace when the user deliberately points a session at it —
     # and CLI-style surfaces pass allow_install_tree_fallback=True because
-    # their launch dir IS the user's shell cwd (developing Renco in-tree).
+    # their launch dir IS the user's shell cwd (developing Son of Anton in-tree).
     from agent.runtime_cwd import _is_install_tree
 
     if (
@@ -2222,7 +2222,7 @@ def build_context_files_prompt(
     ):
         logger.warning(
             "skipping project-context discovery: working-directory resolution "
-            "fell back to the Renco install tree (%s) — set terminal.cwd to "
+            "fell back to the Son of Anton install tree (%s) — set terminal.cwd to "
             "your project directory",
             cwd_path,
         )
@@ -2230,7 +2230,7 @@ def build_context_files_prompt(
     else:
         # Priority-based project context: first match wins
         project_context = (
-            _load_renco_md(cwd_path, context_length)
+            _load_son_of_anton_md(cwd_path, context_length)
             or _load_agents_md(cwd_path, context_length)
             or _load_claude_md(cwd_path, context_length)
             or _load_cursorrules(cwd_path, context_length)
@@ -2238,7 +2238,7 @@ def build_context_files_prompt(
     if project_context:
         sections.append(project_context)
 
-    # SOUL.md from RENCO_HOME only — skip when already loaded as identity
+    # SOUL.md from SON_OF_ANTON_HOME only — skip when already loaded as identity
     if not skip_soul:
         soul_content = load_soul_md(context_length, home_override=home_override)
         if soul_content:

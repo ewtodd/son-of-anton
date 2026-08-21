@@ -1,5 +1,5 @@
 {
-  description = "renco — an always-on agent harness with physics research modes (hard fork of Nous Research's hermes-agent)";
+  description = "son-of-anton — an always-on agent harness with physics research modes (hard fork of Nous Research's hermes-agent)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

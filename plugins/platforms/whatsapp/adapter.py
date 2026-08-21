@@ -27,11 +27,11 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from renco_cli._subprocess_compat import windows_detach_popen_kwargs
-from renco_constants import (
+from son_of_anton_cli._subprocess_compat import windows_detach_popen_kwargs
+from son_of_anton_constants import (
     find_node_executable,
-    get_renco_dir,
-    with_renco_node_path,
+    get_son_of_anton_dir,
+    with_son_of_anton_node_path,
 )
 
 def _wenv(name: str, default: str = "") -> str:
@@ -104,7 +104,7 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
-            from renco_cli._subprocess_compat import windows_hide_flags
+            from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
@@ -300,7 +300,7 @@ from utils import env_int
 
 def _is_allowed_bridge_path(url: str) -> bool:
     """Return True only when an absolute path from the bridge resolves inside a
-    known Renco media cache directory.
+    known Son of Anton media cache directory.
 
     The Baileys bridge is a local subprocess that downloads inbound media and
     hands back absolute file paths. A compromised or buggy bridge could hand
@@ -308,7 +308,7 @@ def _is_allowed_bridge_path(url: str) -> bool:
     attached verbatim and sent to the model. Resolve the path (following any
     symlinks) and require it to live under one of the real cache roots — this
     covers both the canonical ``cache/<kind>`` layout and the legacy
-    ``<kind>_cache`` layout that ``get_renco_dir`` may return.
+    ``<kind>_cache`` layout that ``get_son_of_anton_dir`` may return.
     """
     try:
         resolved = Path(url).resolve()
@@ -361,7 +361,7 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Prefer Renco-managed Node/npm so Windows installs are not broken by a
+    # Prefer Son of Anton-managed Node/npm so Windows installs are not broken by a
     # bad or elevation-triggering system Node on PATH.
     _node = find_node_executable("node")
     if not _node:
@@ -425,7 +425,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._session_path: Path = Path(config.extra.get(
             "session_path",
-            get_renco_dir("platforms/whatsapp/session", "whatsapp/session")
+            get_son_of_anton_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
@@ -516,7 +516,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
                 "whatsapp_node_missing",
-                "Node.js is not installed — install Node.js and re-run `renco gateway`.",
+                "Node.js is not installed — install Node.js and re-run `son-of-anton gateway`.",
                 retryable=False,
             )
             return False
@@ -542,13 +542,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not creds_path.exists():
             logger.warning(
                 "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Pair from the dashboard or run `renco whatsapp`; remove "
+                "Pair from the dashboard or run `son-of-anton whatsapp`; remove "
                 "WHATSAPP_ENABLED from your .env to disable.",
                 self.name, creds_path,
             )
             self._set_fatal_error(
                 "whatsapp_not_paired",
-                "WhatsApp enabled but not paired — pair from the dashboard or run `renco whatsapp`.",
+                "WhatsApp enabled but not paired — pair from the dashboard or run `son-of-anton whatsapp`.",
                 retryable=False,
             )
             return False
@@ -567,11 +567,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             # Auto-install npm dependencies when node_modules is missing OR
             # package.json changed since the last install (e.g. after
-            # `renco update` bumps the Baileys pin).  The stamp file records
+            # `son-of-anton update` bumps the Baileys pin).  The stamp file records
             # the package.json hash of the last successful install.
             bridge_dir = bridge_path.parent
             _pkg_json = bridge_dir / "package.json"
-            _dep_stamp = bridge_dir / "node_modules" / ".renco-pkg-hash"
+            _dep_stamp = bridge_dir / "node_modules" / ".son-of-anton-pkg-hash"
             _pkg_hash = _file_content_hash(_pkg_json)
             _deps_fresh = False
             if (bridge_dir / "node_modules").exists():
@@ -584,7 +584,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not _deps_fresh:
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
                 # Resolve npm path so Windows uses npm.cmd from the
-                # Renco-managed portable Node before falling back to PATH.
+                # Son of Anton-managed portable Node before falling back to PATH.
                 _npm_bin = find_node_executable("npm") or "npm"
                 try:
                     # Read timeout from environment variable, default to 300 seconds (5 minutes)
@@ -596,13 +596,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         capture_output=True,
                         text=True, encoding='utf-8', errors='replace',
                         timeout=npm_install_timeout,
-                        env=with_renco_node_path(),
+                        env=with_son_of_anton_node_path(),
                     )
                     if install_result.returncode != 0:
                         print(f"[{self.name}] npm install failed: {install_result.stderr}")
                         self._set_fatal_error(
                             "whatsapp_npm_install_failed",
-                            f"WhatsApp bridge npm install failed. Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `renco gateway`.",
+                            f"WhatsApp bridge npm install failed. Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `son-of-anton gateway`.",
                             retryable=False,
                         )
                         return False
@@ -616,7 +616,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Failed to install dependencies: {e}")
                     self._set_fatal_error(
                         "whatsapp_npm_install_failed",
-                        f"WhatsApp bridge npm install failed ({e}). Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `renco gateway`.",
+                        f"WhatsApp bridge npm install failed ({e}). Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `son-of-anton gateway`.",
                         retryable=False,
                     )
                     return False
@@ -640,7 +640,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # bridge if it is serving the same bridge.js
                                 # that is on disk right now.  A long-lived
                                 # bridge survives gateway restarts AND
-                                # `renco update`, so without this check it
+                                # `son-of-anton update`, so without this check it
                                 # keeps serving pre-update code forever
                                 # (e.g. no inbound media download).  Old
                                 # bridges that don't report scriptHash are
@@ -688,8 +688,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Build bridge subprocess environment.
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
-            # with_renco_node_path() copies os.environ when called with no arg.
-            bridge_env = with_renco_node_path()
+            # with_son_of_anton_node_path() copies os.environ when called with no arg.
+            bridge_env = with_son_of_anton_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
@@ -721,16 +721,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     bridge_env[_key] = _v
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
-            # hardcodes ~/.renco/{image,audio,document}_cache, which diverges
-            # under RENCO_HOME overrides, profiles, and the new cache/ layout.
+            # hardcodes ~/.son-of-anton/{image,audio,document}_cache, which diverges
+            # under SON_OF_ANTON_HOME overrides, profiles, and the new cache/ layout.
             from gateway.platforms.base import (
                 get_audio_cache_dir as _get_audio_dir,
                 get_document_cache_dir as _get_doc_dir,
                 get_image_cache_dir as _get_img_dir,
             )
-            bridge_env["RENCO_IMAGE_CACHE_DIR"] = str(_get_img_dir())
-            bridge_env["RENCO_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
-            bridge_env["RENCO_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
+            bridge_env["SON_OF_ANTON_IMAGE_CACHE_DIR"] = str(_get_img_dir())
+            bridge_env["SON_OF_ANTON_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
+            bridge_env["SON_OF_ANTON_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
             self._bridge_process = subprocess.Popen(
                 [
@@ -810,7 +810,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # auto-reconnect later, e.g. after a code 515 restart).
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
-                    print(f"[{self.name}]   If session expired, re-pair: renco whatsapp")
+                    print(f"[{self.name}]   If session expired, re-pair: son-of-anton whatsapp")
             
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
@@ -1661,7 +1661,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 # per-platform core touchpoints (the Platform.WHATSAPP elif in gateway/run.py,
 # the whatsapp_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
 # gateway/config.py, the _setup_whatsapp wizard + _PLATFORMS["whatsapp"] static
-# dict in renco_cli/gateway.py, and the _send_whatsapp dispatch in
+# dict in son_of_anton_cli/gateway.py, and the _send_whatsapp dispatch in
 # tools/send_message_tool.py).  WhatsApp auth is handled by the Node.js bridge,
 # so is_connected is always True (matches the legacy checker).
 # ──────────────────────────────────────────────────────────────────────────
@@ -1798,12 +1798,12 @@ async def _standalone_send(
 def interactive_setup() -> None:
     """Guide the user through WhatsApp setup.
 
-    Replaces the central _setup_whatsapp in renco_cli/gateway.py and the
+    Replaces the central _setup_whatsapp in son_of_anton_cli/gateway.py and the
     static _PLATFORMS["whatsapp"] dict. CLI helpers are lazy-imported so the
     plugin's module-load surface stays minimal.
     """
-    from renco_cli.config import get_env_value, remove_env_value, save_env_value
-    from renco_cli.cli_output import (
+    from son_of_anton_cli.config import get_env_value, remove_env_value, save_env_value
+    from son_of_anton_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_header,
@@ -1885,7 +1885,7 @@ def _is_connected(config) -> bool:
     bridge token here — so the opt-in flag is the connection signal. The legacy
     built-in path keyed off ``WHATSAPP_ENABLED`` in both the connected-platforms
     check and the setup-status display; returning an unconditional True here
-    would make WhatsApp always show as "configured" in ``renco setup`` even
+    would make WhatsApp always show as "configured" in ``son-of-anton setup`` even
     when the user never enabled it. #41112.
     """
     extra = getattr(config, "extra", {}) or {}
@@ -1893,10 +1893,10 @@ def _is_connected(config) -> bool:
         # An explicitly-enabled PlatformConfig with seeded extras (e.g. from
         # YAML) counts as configured.
         return True
-    # Read via renco_cli.gateway.get_env_value (not os.getenv) so setup-status
+    # Read via son_of_anton_cli.gateway.get_env_value (not os.getenv) so setup-status
     # callers that patch get_env_value — and the gateway connected-platforms
     # check — observe the same value. Matches the discord/slack plugin pattern.
-    import renco_cli.gateway as gateway_mod
+    import son_of_anton_cli.gateway as gateway_mod
     val = (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower()
     return val in {"true", "1", "yes"}
 
@@ -1907,7 +1907,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Renco plugin system."""
+    """Plugin entry point — called by the Son of Anton plugin system."""
     ctx.register_platform(
         name="whatsapp",
         label="WhatsApp",

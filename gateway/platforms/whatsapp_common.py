@@ -74,7 +74,7 @@ class WhatsAppBehaviorMixin:
     MAX_MESSAGE_LENGTH: int = 4096
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
-    DEFAULT_REPLY_PREFIX: str = "⚕ *Renco Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX: str = "⚕ *Son of Anton Agent*\n────────────\n"
 
     _OUTBOUND_INVISIBLE_CHARS_RE = re.compile(r"[\u200b\u2060\u2063\ufeff]")
     _OUTBOUND_ODD_SPACE_RE = re.compile(r"[\u00a0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]")
@@ -504,10 +504,10 @@ class WhatsAppBehaviorMixin:
 # ---------------------------------------------------------------------------
 
 def resolve_whatsapp_bridge_dir() -> Path:
-    """Resolve the WhatsApp bridge directory, mirroring to RENCO_HOME if needed.
+    """Resolve the WhatsApp bridge directory, mirroring to SON_OF_ANTON_HOME if needed.
 
-    When the install tree is read-only (e.g., Docker /opt/renco), this function
-    mirrors the bridge source to a writable RENCO_HOME location and returns that
+    When the install tree is read-only (e.g., Docker /opt/son-of-anton), this function
+    mirrors the bridge source to a writable SON_OF_ANTON_HOME location and returns that
     path. This ensures npm install works in Docker environments.
 
     Returns the resolved bridge directory path.
@@ -516,12 +516,12 @@ def resolve_whatsapp_bridge_dir() -> Path:
     from pathlib import Path as _Path
 
     # Default location in install tree (may be read-only)
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
     install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
-    # Try RENCO_HOME location first
-    renco_home = get_renco_home()
-    renco_home_bridge = renco_home / "scripts" / "whatsapp-bridge"
+    # Try SON_OF_ANTON_HOME location first
+    son_of_anton_home = get_son_of_anton_home()
+    son_of_anton_home_bridge = son_of_anton_home / "scripts" / "whatsapp-bridge"
 
     # Check if install dir is writable
     try:
@@ -535,18 +535,18 @@ def resolve_whatsapp_bridge_dir() -> Path:
     if install_writable:
         return install_bridge
 
-    # Install dir is read-only, mirror to RENCO_HOME if needed
-    if renco_home_bridge.exists():
-        return renco_home_bridge
+    # Install dir is read-only, mirror to SON_OF_ANTON_HOME if needed
+    if son_of_anton_home_bridge.exists():
+        return son_of_anton_home_bridge
 
-    # Mirror the bridge source to RENCO_HOME
+    # Mirror the bridge source to SON_OF_ANTON_HOME
     try:
-        renco_home_bridge.parent.mkdir(parents=True, exist_ok=True)
+        son_of_anton_home_bridge.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(
             install_bridge,
-            renco_home_bridge,
+            son_of_anton_home_bridge,
             dirs_exist_ok=False,
         )
-        return renco_home_bridge
+        return son_of_anton_home_bridge
     except Exception:
         return install_bridge

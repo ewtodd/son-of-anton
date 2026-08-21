@@ -29,7 +29,7 @@ from agent import relay_llm, relay_runtime, relay_tools
 
 @pytest.fixture()
 def relay_turn(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / "profile"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "profile"))
     relay_runtime._reset_for_tests()
     lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
         profile_key=relay_runtime.current_profile_key(),

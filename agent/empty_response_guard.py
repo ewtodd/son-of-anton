@@ -39,7 +39,7 @@ Configured via the additive ``agent.empty_response_guard`` section in
         enabled: true            # false = legacy fixed 3-retry behaviour
         cost_threshold_usd: 0.25 # per-attempt cost that halves the budget
 
-Per project policy, no ``RENCO_*`` environment variables are involved —
+Per project policy, no ``SON_OF_ANTON_*`` environment variables are involved —
 ``.env`` is reserved for credentials; behavioural settings live in
 ``config.yaml``.
 """

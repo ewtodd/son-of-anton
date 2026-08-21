@@ -1,7 +1,7 @@
 """Session transcript stores are read-only to agent file tools.
 
 Inspired by Claude Code 2.1.205's auto-mode rule preventing transcript
-manipulation. Renco keeps canonical conversation history in state.db and may
+manipulation. Son of Anton keeps canonical conversation history in state.db and may
 also emit legacy JSON snapshots under sessions/; agent tools must not rewrite
 or delete either store.
 """
@@ -16,20 +16,20 @@ import pytest
 
 @pytest.fixture()
 def fake_homes(tmp_path, monkeypatch):
-    """Point RENCO_HOME at a temp profile dir.
+    """Point SON_OF_ANTON_HOME at a temp profile dir.
 
-    Uses the real env-var resolution chain (get_renco_home /
-    get_default_renco_root) instead of monkeypatching private helpers —
+    Uses the real env-var resolution chain (get_son_of_anton_home /
+    get_default_son_of_anton_root) instead of monkeypatching private helpers —
     a stale monkeypatch on a since-deleted helper broke CI in July 2026
     (monkeypatch.setattr raises AttributeError on missing attributes).
-    RENCO_HOME=<root>/profiles/<name> makes get_default_renco_root()
+    SON_OF_ANTON_HOME=<root>/profiles/<name> makes get_default_son_of_anton_root()
     derive <root> via the `profiles` parent-dir rule, so both the
     profile-scoped and root-scoped deny lists resolve into tmp_path.
     """
-    root = tmp_path / ".renco"
+    root = tmp_path / ".son-of-anton"
     profile = root / "profiles" / "work"
     profile.mkdir(parents=True)
-    monkeypatch.setenv("RENCO_HOME", str(profile))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(profile))
     return root, profile
 
 

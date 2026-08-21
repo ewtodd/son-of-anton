@@ -2,7 +2,7 @@
 
 Two behaviours are covered:
 
-1. ``load_renco_dotenv()`` auto-loads ``~/.renco/.op.env`` so the
+1. ``load_son_of_anton_dotenv()`` auto-loads ``~/.son-of-anton/.op.env`` so the
    ``OP_SERVICE_ACCOUNT_TOKEN`` bootstrap token is available to
    ``apply_onepassword_secrets()`` in cron / subprocess / macOS / Docker
    contexts that inherit no shell state (no systemd EnvironmentFile, no
@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from renco_cli import env_loader  # noqa: E402
+from son_of_anton_cli import env_loader  # noqa: E402
 import agent.credential_pool as credential_pool  # noqa: E402
 
 
@@ -53,7 +53,7 @@ def _isolate_op_token(monkeypatch):
 
 def test_op_env_autoloads_bootstrap_token_in_cron_context(tmp_path, monkeypatch):
     """A fresh interpreter (no inherited shell state) picks up the token."""
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     # .env carries user secrets / op:// references but NOT the bootstrap token.
     (home / ".env").write_text("FOO=bar\n", encoding="utf-8")
@@ -64,7 +64,7 @@ def test_op_env_autoloads_bootstrap_token_in_cron_context(tmp_path, monkeypatch)
 
     assert os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") is None
 
-    env_loader.load_renco_dotenv(renco_home=home)
+    env_loader.load_son_of_anton_dotenv(son_of_anton_home=home)
 
     assert os.environ["OP_SERVICE_ACCOUNT_TOKEN"] == "test-token"
 
@@ -97,7 +97,7 @@ def _seed_openrouter_token(monkeypatch, dotenv_value, environ_value):
         monkeypatch.setenv("OPENROUTER_API_KEY", environ_value)
     # Never treat the synthetic source as suppressed.
     monkeypatch.setattr(
-        "renco_cli.auth.is_source_suppressed", lambda _p, _s: False
+        "son_of_anton_cli.auth.is_source_suppressed", lambda _p, _s: False
     )
 
     entries: list = []

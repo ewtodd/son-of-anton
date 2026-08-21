@@ -62,9 +62,9 @@ class TestModuleNotFound:
         assert "venv" in hint
 
     def test_dotted_module(self):
-        out = "ImportError: No module named 'renco_cli.main'"
-        hint = annotate_failure("python3 -m renco_cli.main", 1, out)
-        assert "renco_cli" in hint
+        out = "ImportError: No module named 'son_of_anton_cli.main'"
+        hint = annotate_failure("python3 -m son_of_anton_cli.main", 1, out)
+        assert "son_of_anton_cli" in hint
 
 
 class TestGitShapes:

@@ -1,7 +1,7 @@
 """The base-CLI petdex pane: reactive half-block sprite above the prompt.
 
 Mirrors the TUI's PetPane. The methods are tested in isolation via __new__ so
-we don't pay the full RencoCLI.__init__ cost; a synthetic spritesheet exercises
+we don't pay the full SonOfAntonCLI.__init__ cost; a synthetic spritesheet exercises
 the real engine decode + half-block fragment building.
 """
 
@@ -14,17 +14,17 @@ import pytest
 from agent.pet import store
 from agent.pet.constants import FRAME_H, FRAME_W
 from agent.pet.render import PetRenderer
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 @pytest.fixture
 def boba_like(tmp_path, monkeypatch):
-    """Install a synthetic pet into a temp RENCO_HOME and return its slug."""
+    """Install a synthetic pet into a temp SON_OF_ANTON_HOME and return its slug."""
     from PIL import Image
 
-    home = tmp_path / ".renco"
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
 
     cols, rows = 8, 9
     sheet = Image.new("RGBA", (FRAME_W * cols, FRAME_H * rows), (0, 0, 0, 0))
@@ -44,7 +44,7 @@ def boba_like(tmp_path, monkeypatch):
 
 
 def _make_cli():
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli_obj._app = None
     cli_obj._pet_lock = threading.Lock()
     cli_obj._pet_enabled = False
@@ -55,7 +55,7 @@ def _make_cli():
     cli_obj._pet_frames_cache = {}
     cli_obj._pet_frame_idx = 0
     cli_obj._agent_running = False
-    # Transient-beat + reasoning state (set by RencoCLI.__init__ in production).
+    # Transient-beat + reasoning state (set by SonOfAntonCLI.__init__ in production).
     cli_obj._pet_event = ""
     cli_obj._pet_event_until = 0.0
     cli_obj._pet_reasoning = False
@@ -115,7 +115,7 @@ def test_pet_fragments_render_half_blocks(boba_like):
 
 
 def test_pet_resolve_config_enables_and_disables(boba_like):
-    from renco_cli.config import load_config, save_config
+    from son_of_anton_cli.config import load_config, save_config
 
     cli_obj = _make_cli()
 

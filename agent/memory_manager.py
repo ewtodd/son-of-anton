@@ -434,9 +434,9 @@ class MemoryManager:
         # (#40466). Reject it here, at the door, so it never enters the routing
         # table at all — matching the built-ins-always-win invariant used by
         # the TTS/browser/search provider registries.
-        from toolsets import _RENCO_CORE_TOOLS
+        from toolsets import _SON_OF_ANTON_CORE_TOOLS
 
-        _core_tool_names = set(_RENCO_CORE_TOOLS)
+        _core_tool_names = set(_SON_OF_ANTON_CORE_TOOLS)
 
         # Index tool names → provider for routing
         for raw_schema in provider.get_tool_schemas():
@@ -508,7 +508,7 @@ class MemoryManager:
     def _strip_skill_scaffolding(text: str) -> Optional[str]:
         """Return memory-worthy user text, or None to skip the turn.
 
-        When a user invokes a /skill or /bundle, Renco expands the turn into
+        When a user invokes a /skill or /bundle, Son of Anton expands the turn into
         a model-facing message that embeds the entire skill body. Feeding that
         verbatim to memory providers pollutes their stores/embeddings with
         prompt scaffolding instead of what the user actually asked. We recover
@@ -559,7 +559,7 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 error_box["value"] = exc
 
-        # Propagate the caller's contextvars (profile RENCO_HOME override)
+        # Propagate the caller's contextvars (profile SON_OF_ANTON_HOME override)
         # to the prefetch thread — see _submit_background.
         import contextvars
         from functools import partial
@@ -737,7 +737,7 @@ class MemoryManager:
 
         The submitted callable is wrapped with the CALLER's contextvars:
         profile isolation in multi-profile processes (gateway multiplexer,
-        dashboard, cron) is a ContextVar-scoped RENCO_HOME override, and
+        dashboard, cron) is a ContextVar-scoped SON_OF_ANTON_HOME override, and
         executor worker threads start with empty contexts — without the
         wrap, a provider resolving ambient state (config paths, secrets)
         from the worker would silently land on the default profile.
@@ -839,9 +839,9 @@ class MemoryManager:
         :meth:`add_provider`, so the manager must not advertise a schema it
         will never route. Built-ins always win (#40466).
         """
-        from toolsets import _RENCO_CORE_TOOLS
+        from toolsets import _SON_OF_ANTON_CORE_TOOLS
 
-        _core_tool_names = set(_RENCO_CORE_TOOLS)
+        _core_tool_names = set(_SON_OF_ANTON_CORE_TOOLS)
         schemas = []
         seen = set()
         for provider in self._providers:
@@ -1274,13 +1274,13 @@ class MemoryManager:
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.
 
-        Automatically injects ``renco_home`` into *kwargs* so that every
+        Automatically injects ``son_of_anton_home`` into *kwargs* so that every
         provider can resolve profile-scoped storage paths without importing
-        ``get_renco_home()`` themselves.
+        ``get_son_of_anton_home()`` themselves.
         """
-        if "renco_home" not in kwargs:
-            from renco_constants import get_renco_home
-            kwargs["renco_home"] = str(get_renco_home())
+        if "son_of_anton_home" not in kwargs:
+            from son_of_anton_constants import get_son_of_anton_home
+            kwargs["son_of_anton_home"] = str(get_son_of_anton_home())
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)

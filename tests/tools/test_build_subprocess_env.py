@@ -43,28 +43,28 @@ def test_scrub_on_forwards_extra_like_sanitize_extra_env(monkeypatch):
 
 
 def test_no_scrub_inherit_profile_home_bridges_context_override(tmp_path):
-    from renco_constants import set_renco_home_override, reset_renco_home_override
+    from son_of_anton_constants import set_son_of_anton_home_override, reset_son_of_anton_home_override
 
-    token = set_renco_home_override(str(tmp_path))
+    token = set_son_of_anton_home_override(str(tmp_path))
     try:
         env = build_subprocess_env(
             {"PATH": "/bin"}, scrub_secrets=False, inherit_profile_home=True
         )
     finally:
-        reset_renco_home_override(token)
-    assert env["RENCO_HOME"] == str(tmp_path)
+        reset_son_of_anton_home_override(token)
+    assert env["SON_OF_ANTON_HOME"] == str(tmp_path)
 
 
 # ---------------------------------------------------------------------------
 # E2E: real subprocess sees the factory's contract
 # ---------------------------------------------------------------------------
 
-def test_e2e_child_sees_renco_home_and_no_planted_secret(tmp_path, monkeypatch):
-    """A real child spawned with a factory-built env must see RENCO_HOME
+def test_e2e_child_sees_son_of_anton_home_and_no_planted_secret(tmp_path, monkeypatch):
+    """A real child spawned with a factory-built env must see SON_OF_ANTON_HOME
     propagated and (with scrub on) a planted provider-style key absent."""
-    renco_home = tmp_path / "renco-home"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    son_of_anton_home = tmp_path / "son-of-anton-home"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-FAKE-planted")
     monkeypatch.setenv("AUXILIARY_FAKE_API_KEY", "sk-FAKE-aux")
 
@@ -72,7 +72,7 @@ def test_e2e_child_sees_renco_home_and_no_planted_secret(tmp_path, monkeypatch):
 
     code = (
         "import os, json; "
-        "print(json.dumps({'home': os.environ.get('RENCO_HOME'), "
+        "print(json.dumps({'home': os.environ.get('SON_OF_ANTON_HOME'), "
         "'k1': 'ANTHROPIC_API_KEY' in os.environ, "
         "'k2': 'AUXILIARY_FAKE_API_KEY' in os.environ}))"
     )
@@ -83,7 +83,7 @@ def test_e2e_child_sees_renco_home_and_no_planted_secret(tmp_path, monkeypatch):
     import json
 
     result = json.loads(out.stdout)
-    assert result["home"] == str(renco_home)
+    assert result["home"] == str(son_of_anton_home)
     assert result["k1"] is False
     assert result["k2"] is False
 

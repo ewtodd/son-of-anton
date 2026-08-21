@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from renco_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from son_of_anton_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 
 
 @pytest.fixture()
@@ -149,7 +149,7 @@ class TestContinuationCeilingWedge:
         )
 
     def test_continuation_requests_carry_no_marks(self, loop_agent):
-        """The scaffolding marks are Renco bookkeeping. The centrally
+        """The scaffolding marks are Son of Anton bookkeeping. The centrally
         sanitized api_messages must never carry them — only the
         chat-completions transport strips underscore keys, so anthropic
         and bedrock requests would otherwise send them to the provider."""

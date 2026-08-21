@@ -14,11 +14,11 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from renco_cli.config import get_renco_home
+from son_of_anton_cli.config import get_son_of_anton_home
 
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = get_renco_home() / "sessions"
+_SESSIONS_DIR = get_son_of_anton_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
 
 
@@ -132,7 +132,7 @@ def _find_session_id(
     """
     # Primary: state.db
     try:
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
         db = SessionDB()
         try:
             finder = getattr(db, "find_session_by_origin", None)
@@ -211,7 +211,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     """Append a message to the SQLite session database."""
     db = None
     try:
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
         db = SessionDB()
         db.append_message(
             session_id=session_id,

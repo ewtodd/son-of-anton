@@ -30,7 +30,7 @@ Use this as the structure for PR review summary comments. Copy and fill in the s
 - [aspect that was done well]
 
 ---
-*Reviewed by Renco Agent*
+*Reviewed by Son of Anton Agent*
 ```
 
 ## Severity Guide

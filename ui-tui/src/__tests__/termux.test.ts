@@ -22,10 +22,10 @@ describe('isTermuxTuiMode', () => {
   })
 
   it('allows explicit opt-out override', () => {
-    expect(isTermuxTuiMode({ TERMUX_VERSION: '0.118.0', RENCO_TUI_TERMUX_MODE: '0' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(isTermuxTuiMode({ TERMUX_VERSION: '0.118.0', SON_OF_ANTON_TUI_TERMUX_MODE: '0' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
   it('stays false outside Termux even if override is set', () => {
-    expect(isTermuxTuiMode({ RENCO_TUI_TERMUX_MODE: '1', PREFIX: '/usr' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(isTermuxTuiMode({ SON_OF_ANTON_TUI_TERMUX_MODE: '1', PREFIX: '/usr' } as NodeJS.ProcessEnv)).toBe(false)
   })
 })

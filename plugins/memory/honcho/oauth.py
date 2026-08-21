@@ -95,7 +95,7 @@ def _config_refresh_lock(path: Path):
     """Machine-wide advisory lock around read-refresh-persist.
 
     The in-process ``_refresh_lock`` can't stop a second process (a sibling
-    Renco profile or the desktop app sharing this honcho.json) from replaying
+    Son of Anton profile or the desktop app sharing this honcho.json) from replaying
     the single-use refresh token and tripping reuse-detection — which revokes
     the whole grant. An OS file lock on ``<config>.lock`` serializes rotation
     across processes; best-effort, so a platform without flock degrades to
@@ -418,7 +418,7 @@ def _rotate_and_persist(
             _mark_grant_dead(key, cred)
             logger.error(
                 "Honcho OAuth grant for host %s is no longer valid (%s); "
-                "run 'renco honcho setup' to re-authenticate", host, exc,
+                "run 'son-of-anton honcho setup' to re-authenticate", host, exc,
             )
         else:
             _refresh_failure_at[key] = time.monotonic()

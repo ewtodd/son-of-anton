@@ -10,13 +10,13 @@ from unittest.mock import MagicMock
 
 
 def _make_cli():
-    """Bare RencoCLI suitable for process_command() tests.
+    """Bare SonOfAntonCLI suitable for process_command() tests.
 
     Uses ``__new__`` to skip the heavy __init__; only sets the attributes
     the /exit branch touches.
     """
-    from cli import RencoCLI
-    cli = RencoCLI.__new__(RencoCLI)
+    from cli import SonOfAntonCLI
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli.config = {}
     cli.console = MagicMock()
     cli.agent = None
@@ -72,13 +72,13 @@ class TestCommandRegistry:
     def test_quit_command_advertises_delete_flag(self):
         """The CommandDef args_hint should surface `--delete` in /help and
         CLI autocomplete."""
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
         cmd = resolve_command("quit")
         assert cmd is not None
         assert cmd.args_hint == "[--delete]"
 
     def test_exit_alias_resolves_to_quit_with_hint(self):
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
         cmd = resolve_command("exit")
         assert cmd is not None
         assert cmd.name == "quit"

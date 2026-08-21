@@ -4,13 +4,13 @@ export const SETUP_REQUIRED_TITLE = 'Setup Required'
 
 export const buildSetupRequiredSections = (): PanelSection[] => [
   {
-    text: 'Renco needs a model provider before the TUI can start a session.'
+    text: 'Son of Anton needs a model provider before the TUI can start a session.'
   },
   {
     rows: [
       ['/model', 'configure provider + model in-place'],
       ['/setup', 'run full first-time setup wizard in-place'],
-      ['Ctrl+C', 'exit and run `renco setup` manually']
+      ['Ctrl+C', 'exit and run `son-of-anton setup` manually']
     ],
     title: 'Actions'
   }

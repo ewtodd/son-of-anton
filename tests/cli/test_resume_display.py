@@ -13,9 +13,9 @@ import cli as cli_mod
 
 
 def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
-    """Create a RencoCLI instance with minimal mocking."""
+    """Create a SonOfAntonCLI instance with minimal mocking."""
     import cli as _cli_mod
-    from cli import RencoCLI
+    from cli import SonOfAntonCLI
 
     _clean_config = {
         "model": {
@@ -34,7 +34,7 @@ def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
             else:
                 _clean_config[k] = v
 
-    clean_env = {"LLM_MODEL": "", "RENCO_MAX_ITERATIONS": ""}
+    clean_env = {"LLM_MODEL": "", "SON_OF_ANTON_MAX_ITERATIONS": ""}
     if env_overrides:
         clean_env.update(env_overrides)
     with (
@@ -42,7 +42,7 @@ def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
         patch.dict("os.environ", clean_env, clear=False),
         patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
     ):
-        return RencoCLI(**kwargs)
+        return SonOfAntonCLI(**kwargs)
 
 
 # ── Sample conversation histories for tests ──────────────────────────
@@ -129,7 +129,7 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert "You:" in output
-        assert "Renco:" in output
+        assert "Son of Anton:" in output
         assert "What is Python?" in output
         assert "Python is a high-level programming language." in output
         assert "How do I install it?" in output
@@ -270,7 +270,7 @@ class TestPreloadResumedSession:
         mock_db.reopen_session.assert_called_once_with("reopen_session")
 
     def test_rejects_runaway_transcript_before_history_load(self):
-        from renco_state import SessionResumeTooLargeError
+        from son_of_anton_state import SessionResumeTooLargeError
 
         cli = _make_cli(resume="runaway-session")
         mock_db = MagicMock()
@@ -313,7 +313,7 @@ class TestHandleResumeCommandRecap:
         cli._session_db = mock_db
 
         with (
-            patch("renco_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch("son_of_anton_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
             patch.object(cli, "_display_resumed_history") as display_mock,
         ):
             cli._handle_resume_command("/resume test session")
@@ -345,7 +345,7 @@ class TestHandleResumeCommandRecap:
         cli._session_db = mock_db
 
         with (
-            patch("renco_cli.main._resolve_session_by_name_or_id", return_value="session_b"),
+            patch("son_of_anton_cli.main._resolve_session_by_name_or_id", return_value="session_b"),
             patch.object(cli, "_display_resumed_history") as display_mock,
         ):
             cli._handle_resume_command("/resume session_b")
@@ -391,8 +391,8 @@ class TestResumeDisplayConfig:
     """resume_display config option defaults and behavior."""
 
     def test_default_config_has_resume_display(self):
-        """DEFAULT_CONFIG in renco_cli/config.py includes resume_display."""
-        from renco_cli.config import DEFAULT_CONFIG
+        """DEFAULT_CONFIG in son_of_anton_cli/config.py includes resume_display."""
+        from son_of_anton_cli.config import DEFAULT_CONFIG
         display = DEFAULT_CONFIG.get("display", {})
         assert "resume_display" in display
         assert display["resume_display"] == "full"

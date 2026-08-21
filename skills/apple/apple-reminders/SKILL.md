@@ -2,11 +2,11 @@
 name: apple-reminders
 description: "Apple Reminders via remindctl: add, list, complete."
 version: 1.0.0
-author: Renco Agent
+author: Son of Anton Agent
 license: MIT
 platforms: [macos]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Reminders, tasks, todo, macOS, Apple]
 prerequisites:
   commands: [remindctl]

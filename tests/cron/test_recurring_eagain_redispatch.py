@@ -18,7 +18,7 @@ re-dispatched without force-run/resume — is covered by
 behavioral RED (unfixed: no execution) / GREEN (fixed: re-dispatched) for the
 new recovery path.
 
-This file drives the REAL `tick()` end-to-end against a throwaway RENCO_HOME:
+This file drives the REAL `tick()` end-to-end against a throwaway SON_OF_ANTON_HOME:
   tick 1 -> script EAGAINs (subprocess.run raises OSError 11) -> failed exec row
   tick 2 -> substrate recovered (script runs clean) -> job MUST fire again
 """
@@ -41,18 +41,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 @pytest.fixture
 def wedge_env(tmp_path, monkeypatch):
     """Isolated cron env + a recurring no_agent interval job, due NOW."""
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    (renco_home / "cron").mkdir()
-    (renco_home / "cron" / "output").mkdir()
-    (renco_home / "scripts").mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    (son_of_anton_home / "cron").mkdir()
+    (son_of_anton_home / "cron" / "output").mkdir()
+    (son_of_anton_home / "scripts").mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
     import cron.jobs as jobs_mod
-    monkeypatch.setattr(jobs_mod, "RENCO_DIR", renco_home)
-    monkeypatch.setattr(jobs_mod, "CRON_DIR", renco_home / "cron")
-    monkeypatch.setattr(jobs_mod, "JOBS_FILE", renco_home / "cron" / "jobs.json")
-    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", renco_home / "cron" / "output")
+    monkeypatch.setattr(jobs_mod, "SON_OF_ANTON_DIR", son_of_anton_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", son_of_anton_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", son_of_anton_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", son_of_anton_home / "cron" / "output")
 
     # Create a recurring no_agent interval job.
     job = jobs_mod.create_job(
@@ -65,10 +65,10 @@ def wedge_env(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     jobs_mod.update_job(job["id"], {"next_run_at": (now - timedelta(minutes=1)).isoformat()})
 
-    script = renco_home / "scripts" / "probe.py"
+    script = son_of_anton_home / "scripts" / "probe.py"
     script.write_text("print('ok')\n")
 
-    return {"home": renco_home, "job_id": job["id"]}
+    return {"home": son_of_anton_home, "job_id": job["id"]}
 
 
 class TestEAGAINRecurringRedispatches:
@@ -111,7 +111,7 @@ class TestEAGAINRecurringRedispatches:
         env = wedge_env
         # Point the executions ledger at the throwaway home.
         monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
-        monkeypatch.setattr(S, "_renco_home", env["home"])
+        monkeypatch.setattr(S, "_son_of_anton_home", env["home"])
         monkeypatch.setattr(S, "get_due_jobs", S.get_due_jobs)  # no-op, keep real
 
         state = self._make_script_eagain(env, monkeypatch)
@@ -153,7 +153,7 @@ class TestEAGAINRecurringRedispatches:
 
         env = wedge_env
         monkeypatch.setattr(E, "EXECUTIONS_FILE", env["home"] / "cron" / "executions.db")
-        monkeypatch.setattr(S, "_renco_home", env["home"])
+        monkeypatch.setattr(S, "_son_of_anton_home", env["home"])
 
         self._make_script_eagain(env, monkeypatch)
         n1 = S.tick(verbose=False, sync=True)

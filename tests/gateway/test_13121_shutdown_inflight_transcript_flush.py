@@ -26,7 +26,7 @@ finish gracefully re-flush nothing.
 
 These tests exercise BOTH a lightweight unit path (the flush hook is invoked
 with the in-flight messages) AND a true E2E path (a real ``AIAgent`` flush
-against a real ``SessionDB`` in a temp ``RENCO_HOME``, read back through the
+against a real ``SessionDB`` in a temp ``SON_OF_ANTON_HOME``, read back through the
 real ``SessionStore.load_transcript``).
 """
 
@@ -117,9 +117,9 @@ class TestShutdownTranscriptSurvivesResumeE2E:
         in-flight turn is readable back through SessionStore.load_transcript —
         the exact path the resume logic reads on the next message."""
         # Isolated state.db.
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
 
-        from renco_state import SessionDB
+        from son_of_anton_state import SessionDB
         from run_agent import AIAgent
 
         db = SessionDB(db_path=tmp_path / "state.db")

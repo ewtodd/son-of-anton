@@ -3,20 +3,20 @@ from unittest.mock import MagicMock
 
 
 def test_default_config_exposes_vacuum_interval():
-    from renco_cli.config import DEFAULT_CONFIG
+    from son_of_anton_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["sessions"]["min_vacuum_interval_days"] == 30
 
 
 def test_cli_auto_maintenance_forwards_vacuum_interval(monkeypatch, tmp_path: Path):
     import cli
-    import renco_cli.config
-    import renco_constants
+    import son_of_anton_cli.config
+    import son_of_anton_constants
 
     session_db = MagicMock()
     session_db.get_meta.return_value = "already-done"
     monkeypatch.setattr(
-        renco_cli.config,
+        son_of_anton_cli.config,
         "load_config",
         lambda: {
             "sessions": {
@@ -28,7 +28,7 @@ def test_cli_auto_maintenance_forwards_vacuum_interval(monkeypatch, tmp_path: Pa
             }
         },
     )
-    monkeypatch.setattr(renco_constants, "get_renco_home", lambda: tmp_path)
+    monkeypatch.setattr(son_of_anton_constants, "get_son_of_anton_home", lambda: tmp_path)
 
     cli._run_state_db_auto_maintenance(session_db)
 

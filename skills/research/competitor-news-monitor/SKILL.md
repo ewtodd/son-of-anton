@@ -2,11 +2,11 @@
 name: competitor-news-monitor
 description: "Watch named companies for material news; cited digests."
 version: 0.1.0
-author: Ben Barclay (benbarclay), Renco Agent
+author: Ben Barclay (benbarclay), Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Competitors, News, Market-Research, Monitoring]
     related_skills: [blogwatcher]
 ---
@@ -42,12 +42,12 @@ For each company include, where available:
 5. reputable trade and financial press
 6. job postings as weak supporting evidence
 
-Use `blogwatcher` for feeds and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.renco/competitor-watches/<watch-slug>.json`, then create the job:
+Use `blogwatcher` for feeds and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.son-of-anton/competitor-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",
         schedule="every monday 9am",
-        prompt="Load the competitor-news-monitor skill and run the tick for the watch contract at ~/.renco/competitor-watches/<watch-slug>.json.",
+        prompt="Load the competitor-news-monitor skill and run the tick for the watch contract at ~/.son-of-anton/competitor-watches/<watch-slug>.json.",
         deliver=<user's destination>)
 ```
 

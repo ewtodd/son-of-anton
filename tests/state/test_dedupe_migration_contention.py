@@ -19,7 +19,7 @@ import sqlite3
 
 import pytest
 
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 def _make_legacy_db(tmp_path, n_rows=5):

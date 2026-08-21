@@ -29,8 +29,8 @@ def test_transient_retry_count_default(monkeypatch):
 
     # No config value -> default.
     monkeypatch.setattr(ac, "load_config", lambda: {}, raising=False)
-    with patch("renco_cli.config.load_config", return_value={}), \
-         patch("renco_cli.config.cfg_get", return_value=None):
+    with patch("son_of_anton_cli.config.load_config", return_value={}), \
+         patch("son_of_anton_cli.config.cfg_get", return_value=None):
         assert ac._transient_retry_count() == ac._DEFAULT_TRANSIENT_RETRIES
 
 

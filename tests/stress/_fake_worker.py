@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fake worker process that exercises the real subprocess contract.
 
-Reads RENCO_KANBAN_TASK from env, heartbeats periodically, does short
+Reads SON_OF_ANTON_KANBAN_TASK from env, heartbeats periodically, does short
 work, completes via the CLI. Designed to be spawned by the dispatcher
-exactly the way `renco chat -q` would be, minus the LLM cost.
+exactly the way `son-of-anton chat -q` would be, minus the LLM cost.
 """
 
 import json
@@ -13,12 +13,12 @@ import time
 
 
 def main():
-    tid = os.environ["RENCO_KANBAN_TASK"]
-    workspace = os.environ.get("RENCO_KANBAN_WORKSPACE", "")
+    tid = os.environ["SON_OF_ANTON_KANBAN_TASK"]
+    workspace = os.environ.get("SON_OF_ANTON_KANBAN_WORKSPACE", "")
 
     # Announce via CLI (goes through real argparse + init_db + etc)
     subprocess.run(
-        ["renco", "kanban", "heartbeat", tid, "--note", "started"],
+        ["son-of-anton", "kanban", "heartbeat", tid, "--note", "started"],
         check=True, capture_output=True,
     )
 
@@ -26,14 +26,14 @@ def main():
     for i in range(3):
         time.sleep(0.3)
         subprocess.run(
-            ["renco", "kanban", "heartbeat", tid, "--note", f"progress {i+1}/3"],
+            ["son-of-anton", "kanban", "heartbeat", tid, "--note", f"progress {i+1}/3"],
             check=True, capture_output=True,
         )
 
     # Complete with structured handoff
     subprocess.run(
         [
-            "renco", "kanban", "complete", tid,
+            "son-of-anton", "kanban", "complete", tid,
             "--summary", f"real-subprocess worker finished {tid}",
             "--metadata", json.dumps({
                 "workspace": workspace,

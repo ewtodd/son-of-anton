@@ -23,7 +23,7 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONTAINER_TAG = "renco"
+_DEFAULT_CONTAINER_TAG = "son-of-anton"
 _DEFAULT_MAX_RECALL_RESULTS = 10
 _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
@@ -33,7 +33,7 @@ _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _DEFAULT_BASE_URL = "https://api.supermemory.ai"
-_API_KEY_URL = "http://app.supermemory.ai/integrations?connect=renco"
+_API_KEY_URL = "http://app.supermemory.ai/integrations?connect=son-of-anton"
 _TRIVIAL_RE = re.compile(
     r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
     re.IGNORECASE,
@@ -110,9 +110,9 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _load_supermemory_config(renco_home: str) -> dict:
+def _load_supermemory_config(son_of_anton_home: str) -> dict:
     config = _default_config()
-    config_path = Path(renco_home) / "supermemory.json"
+    config_path = Path(son_of_anton_home) / "supermemory.json"
     if config_path.exists():
         try:
             raw = json.loads(config_path.read_text(encoding="utf-8"))
@@ -157,8 +157,8 @@ def _load_supermemory_config(renco_home: str) -> dict:
     return config
 
 
-def _save_supermemory_config(values: dict, renco_home: str) -> None:
-    config_path = Path(renco_home) / "supermemory.json"
+def _save_supermemory_config(values: dict, son_of_anton_home: str) -> None:
+    config_path = Path(son_of_anton_home) / "supermemory.json"
     existing = {}
     if config_path.exists():
         try:
@@ -304,14 +304,14 @@ class _SupermemoryClient:
             base_url=self._base_url,
             timeout=timeout,
             max_retries=0,
-            default_headers={"x-sm-source": "renco"},
+            default_headers={"x-sm-source": "son-of-anton"},
         )
 
     def _merge_metadata(self, metadata: Optional[dict]) -> dict:
-        # sm_source routes Renco writes into the "Renco" Space in the Supermemory
+        # sm_source routes Son of Anton writes into the "Son of Anton" Space in the Supermemory
         # app so the user can filter / bulk-manage them per source agent. This is a
         # functional routing key for the user, not vendor telemetry.
-        merged = {"sm_source": "renco", **(metadata or {})}
+        merged = {"sm_source": "son-of-anton", **(metadata or {})}
         legacy_source = merged.pop("source", None)
         if legacy_source and "type" not in merged:
             merged["type"] = str(legacy_source)
@@ -410,7 +410,7 @@ class _SupermemoryClient:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "x-sm-source": "renco",
+                "x-sm-source": "son-of-anton",
             },
             method="POST",
         )
@@ -418,20 +418,20 @@ class _SupermemoryClient:
             return
 
 
-def _resolve_container_tag_for_setup(renco_home: str, *, identity: str = "default") -> str:
-    config = _load_supermemory_config(renco_home)
+def _resolve_container_tag_for_setup(son_of_anton_home: str, *, identity: str = "default") -> str:
+    config = _load_supermemory_config(son_of_anton_home)
     env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
     raw_tag = env_tag or config["container_tag"]
     return _sanitize_tag(raw_tag.replace("{identity}", identity))
 
 
-def _probe_supermemory_connection(api_key: str, renco_home: str, *, identity: str = "default") -> dict:
-    config = _load_supermemory_config(renco_home)
+def _probe_supermemory_connection(api_key: str, son_of_anton_home: str, *, identity: str = "default") -> dict:
+    config = _load_supermemory_config(son_of_anton_home)
     base_url = _resolve_base_url(config["base_url"])
     status = {
         "ok": False,
         "error": "",
-        "container_tag": _resolve_container_tag_for_setup(renco_home, identity=identity),
+        "container_tag": _resolve_container_tag_for_setup(son_of_anton_home, identity=identity),
         "profile_facts": 0,
         "auto_recall": bool(config["auto_recall"]),
         "auto_capture": bool(config["auto_capture"]),
@@ -551,7 +551,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
         self._base_url = _DEFAULT_BASE_URL
-        self._renco_home = ""
+        self._son_of_anton_home = ""
         self._write_enabled = True
         self._active = False
         # Multi-container support
@@ -576,35 +576,35 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return bool(get_secret("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
-        # Only prompt for the API key during `renco memory setup`.
-        # All other options are documented for $RENCO_HOME/supermemory.json
+        # Only prompt for the API key during `son-of-anton memory setup`.
+        # All other options are documented for $SON_OF_ANTON_HOME/supermemory.json
         # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [
             {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": _API_KEY_URL},
         ]
 
-    def save_config(self, values, renco_home):
+    def save_config(self, values, son_of_anton_home):
         sanitized = dict(values or {})
         if "container_tag" in sanitized:
             sanitized["container_tag"] = _sanitize_tag(str(sanitized["container_tag"]))
         if "entity_context" in sanitized:
             sanitized["entity_context"] = _clamp_entity_context(str(sanitized["entity_context"]))
-        _save_supermemory_config(sanitized, renco_home)
+        _save_supermemory_config(sanitized, son_of_anton_home)
 
     def get_status_config(self, provider_config: dict) -> dict:
-        from renco_constants import get_renco_home
+        from son_of_anton_constants import get_son_of_anton_home
 
         del provider_config
-        renco_home = str(get_renco_home())
+        son_of_anton_home = str(get_son_of_anton_home())
         api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
-        status = _probe_supermemory_connection(api_key, renco_home)
+        status = _probe_supermemory_connection(api_key, son_of_anton_home)
         return {"summary": _format_connection_summary(status)}
 
-    def post_setup(self, renco_home: str, config: dict) -> None:
+    def post_setup(self, son_of_anton_home: str, config: dict) -> None:
         from pathlib import Path
 
-        from renco_cli.config import save_config
-        from renco_cli.memory_setup import _prompt, _write_env_vars
+        from son_of_anton_cli.config import save_config
+        from son_of_anton_cli.memory_setup import _prompt, _write_env_vars
 
         print("\n  Configuring supermemory:\n")
         print(f"  Get your API key at {_API_KEY_URL}\n")
@@ -625,7 +625,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         save_config(config)
 
         if env_writes:
-            _write_env_vars(Path(renco_home) / ".env", env_writes)
+            _write_env_vars(Path(son_of_anton_home) / ".env", env_writes)
 
         api_key = env_writes.get("SUPERMEMORY_API_KEY") or existing
         # Make the freshly-entered key visible to the connection probe below.
@@ -642,7 +642,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         ):
             os.environ["SUPERMEMORY_API_KEY"] = api_key
 
-        status = _probe_supermemory_connection(api_key, renco_home)
+        status = _probe_supermemory_connection(api_key, son_of_anton_home)
         print(f"\n  {_format_connection_summary(status)}")
         print("\n  Memory provider: supermemory")
         print("  Activation saved to config.yaml")
@@ -651,11 +651,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
         print("\n  Start a new session to activate.\n")
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        from renco_constants import get_renco_home
-        self._renco_home = kwargs.get("renco_home") or str(get_renco_home())
+        from son_of_anton_constants import get_son_of_anton_home
+        self._son_of_anton_home = kwargs.get("son_of_anton_home") or str(get_son_of_anton_home())
         self._session_id = session_id
         self._turn_count = 0
-        self._config = _load_supermemory_config(self._renco_home)
+        self._config = _load_supermemory_config(self._son_of_anton_home)
         self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
 
         # Resolve container tag: env var > config > default.

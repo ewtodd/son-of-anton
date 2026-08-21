@@ -19,10 +19,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
-    """Ensure RENCO_HOME and RETAINDB vars are isolated."""
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    """Ensure SON_OF_ANTON_HOME and RETAINDB vars are isolated."""
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     monkeypatch.delenv("RETAINDB_API_KEY", raising=False)
     monkeypatch.delenv("RETAINDB_BASE_URL", raising=False)
     monkeypatch.delenv("RETAINDB_PROJECT", raising=False)
@@ -265,8 +265,8 @@ class TestRetainDBMemoryProvider:
 
     def _make_provider(self, tmp_path, monkeypatch, api_key="rdb-test-key"):
         monkeypatch.setenv("RETAINDB_API_KEY", api_key)
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-        (tmp_path / ".renco").mkdir(exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+        (tmp_path / ".son-of-anton").mkdir(exist_ok=True)
         provider = RetainDBMemoryProvider()
         return provider
 
@@ -290,7 +290,7 @@ class TestRetainDBMemoryProvider:
 
     def test_initialize_creates_client_and_queue(self, tmp_path, monkeypatch):
         p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", renco_home=str(tmp_path / ".renco"))
+        p.initialize("test-session", son_of_anton_home=str(tmp_path / ".son-of-anton"))
         assert p._client is not None
         assert p._queue is not None
         assert p._session_id == "test-session"
@@ -299,7 +299,7 @@ class TestRetainDBMemoryProvider:
 
     def test_system_prompt_block(self, tmp_path, monkeypatch):
         p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", renco_home=str(tmp_path / ".renco"))
+        p.initialize("test-session", son_of_anton_home=str(tmp_path / ".son-of-anton"))
         block = p.system_prompt_block()
         assert "RetainDB Memory" in block
         assert "Active" in block
@@ -314,7 +314,7 @@ class TestRetainDBMemoryProvider:
 
     def test_dispatch_profile(self, tmp_path, monkeypatch):
         p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", renco_home=str(tmp_path / ".renco"))
+        p.initialize("test-session", son_of_anton_home=str(tmp_path / ".son-of-anton"))
         with patch.object(p._client, "get_profile", return_value={"memories": []}):
             result = json.loads(p.handle_tool_call("retaindb_profile", {}))
             assert "memories" in result
@@ -330,11 +330,11 @@ class TestPrefetch:
 
     def _make_initialized_provider(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", renco_home=str(renco_home))
+        p.initialize("test-session", son_of_anton_home=str(son_of_anton_home))
         return p
 
     def test_queue_prefetch_skips_without_client(self):
@@ -361,11 +361,11 @@ class TestSyncTurn:
 
     def test_sync_turn_enqueues(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", renco_home=str(renco_home))
+        p.initialize("test-session", son_of_anton_home=str(son_of_anton_home))
         with patch.object(p._queue, "enqueue") as mock_enqueue:
             p.sync_turn("user msg", "assistant msg")
             mock_enqueue.assert_called_once()
@@ -388,11 +388,11 @@ class TestOnMemoryWrite:
 
     def test_mirrors_add_action(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", renco_home=str(renco_home))
+        p.initialize("test-session", son_of_anton_home=str(son_of_anton_home))
         with patch.object(p._client, "add_memory", return_value={"id": "mem-1"}) as mock_add:
             p.on_memory_write("add", "user", "User prefers dark mode")
             mock_add.assert_called_once()
@@ -401,11 +401,11 @@ class TestOnMemoryWrite:
 
     def test_skips_non_add_action(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", renco_home=str(renco_home))
+        p.initialize("test-session", son_of_anton_home=str(son_of_anton_home))
         with patch.object(p._client, "add_memory") as mock_add:
             p.on_memory_write("remove", "user", "something")
             mock_add.assert_not_called()
@@ -414,11 +414,11 @@ class TestOnMemoryWrite:
 
     def test_memory_target_maps_to_type(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", renco_home=str(renco_home))
+        p.initialize("test-session", son_of_anton_home=str(son_of_anton_home))
         with patch.object(p._client, "add_memory", return_value={"id": "mem-1"}) as mock_add:
             p.on_memory_write("add", "memory", "Some env fact")
             assert mock_add.call_args[1]["memory_type"] == "factual"

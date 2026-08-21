@@ -16,7 +16,7 @@ instances and coordinates:
   is warranted.
 
 Replaces what used to be scattered across eight call sites in `mcp_oauth.py`,
-`mcp_tool.py`, and `renco_cli/mcp_config.py`. This module is the ONLY place
+`mcp_tool.py`, and `son_of_anton_cli/mcp_config.py`. This module is the ONLY place
 that instantiates the MCP SDK's `OAuthClientProvider` — all other code paths
 go through `get_manager()`.
 
@@ -99,11 +99,11 @@ class _ProviderEntry:
 
 
 # ---------------------------------------------------------------------------
-# RencoMCPOAuthProvider — OAuthClientProvider subclass with disk-watch
+# SonOfAntonMCPOAuthProvider — OAuthClientProvider subclass with disk-watch
 # ---------------------------------------------------------------------------
 
 
-def _make_renco_provider_class() -> Optional[type]:
+def _make_son_of_anton_provider_class() -> Optional[type]:
     """Lazy-import the SDK base class and return our subclass.
 
     Wrapped in a function so this module imports cleanly even when the
@@ -114,7 +114,7 @@ def _make_renco_provider_class() -> Optional[type]:
     except ImportError:  # pragma: no cover — SDK required in CI
         return None
 
-    class RencoMCPOAuthProvider(OAuthClientProvider):
+    class SonOfAntonMCPOAuthProvider(OAuthClientProvider):
         """OAuthClientProvider with pre-flow disk-mtime reload.
 
         Before every ``async_auth_flow`` invocation, asks the manager to
@@ -138,20 +138,20 @@ def _make_renco_provider_class() -> Optional[type]:
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
-            self._renco_server_name = server_name
-            self._renco_home = ""
+            self._son_of_anton_server_name = server_name
+            self._son_of_anton_home = ""
             # When the client_id comes from config.yaml (pre-registered), an
             # invalid_client rejection means the *config* is wrong — deleting
             # client.json would just be re-seeded from config and re-running
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
-            self._renco_preregistered = preregistered
+            self._son_of_anton_preregistered = preregistered
             # oauth.user_agent — stamped onto token-endpoint requests only;
             # some authorization servers/WAFs reject httpx's default (#75576).
-            self._renco_token_user_agent = token_user_agent
+            self._son_of_anton_token_user_agent = token_user_agent
 
         def _stamp_token_user_agent(self, request):
-            ua = getattr(self, "_renco_token_user_agent", None)
+            ua = getattr(self, "_son_of_anton_token_user_agent", None)
             if ua:
                 request.headers["User-Agent"] = ua
             return request
@@ -260,7 +260,7 @@ def _make_renco_provider_class() -> Optional[type]:
             ``async_auth_flow`` takes the ``can_refresh_token()`` branch,
             and the SDK quietly refreshes before the first real request.
 
-            Paired with :class:`RencoTokenStorage` persisting an absolute
+            Paired with :class:`SonOfAntonTokenStorage` persisting an absolute
             ``expires_at`` timestamp (``mcp_oauth.py:set_tokens``) so the
             remaining TTL we compute here reflects real wall-clock age.
             """
@@ -275,9 +275,9 @@ def _make_renco_provider_class() -> Optional[type]:
             # guessed ``{server_url}/token`` path (returns 404 on most real
             # providers) and require a full browser re-authorization.
             storage = self.context.storage
-            from tools.mcp_oauth import RencoTokenStorage
+            from tools.mcp_oauth import SonOfAntonTokenStorage
             if (
-                isinstance(storage, RencoTokenStorage)
+                isinstance(storage, SonOfAntonTokenStorage)
                 and self.context.oauth_metadata is None
             ):
                 meta = storage.load_oauth_metadata()
@@ -286,7 +286,7 @@ def _make_renco_provider_class() -> Optional[type]:
                     logger.debug(
                         "MCP OAuth '%s': restored metadata from disk "
                         "(token_endpoint=%s)",
-                        self._renco_server_name,
+                        self._son_of_anton_server_name,
                         meta.token_endpoint,
                     )
 
@@ -307,7 +307,7 @@ def _make_renco_provider_class() -> Optional[type]:
                     logger.debug(
                         "MCP OAuth '%s': pre-flight metadata discovery "
                         "failed (non-fatal): %s",
-                        self._renco_server_name, exc,
+                        self._son_of_anton_server_name, exc,
                     )
 
         async def _prefetch_oauth_metadata(self) -> None:
@@ -319,7 +319,7 @@ def _make_renco_provider_class() -> Optional[type]:
             builders and response handlers so we track whatever the SDK
             version we're pinned to expects.
             """
-            # The SDK's httpx flavour, not Renco' — mcp 2.0 builds on httpx2,
+            # The SDK's httpx flavour, not Son of Anton' — mcp 2.0 builds on httpx2,
             # and `create_oauth_metadata_request` below returns one of *its*
             # Request objects, which only its own AsyncClient can send. See
             # tools.mcp_tool.sdk_httpx.
@@ -347,7 +347,7 @@ def _make_renco_provider_class() -> Optional[type]:
                     except httpx.HTTPError as exc:
                         logger.debug(
                             "MCP OAuth '%s': PRM discovery to %s failed: %s",
-                            self._renco_server_name, url, exc,
+                            self._son_of_anton_server_name, url, exc,
                         )
                         continue
                     prm = await handle_protected_resource_response(resp)
@@ -370,7 +370,7 @@ def _make_renco_provider_class() -> Optional[type]:
                     except httpx.HTTPError as exc:
                         logger.debug(
                             "MCP OAuth '%s': ASM discovery to %s failed: %s",
-                            self._renco_server_name, url, exc,
+                            self._son_of_anton_server_name, url, exc,
                         )
                         continue
                     ok, asm = await handle_auth_metadata_response(resp)
@@ -381,13 +381,13 @@ def _make_renco_provider_class() -> Optional[type]:
                         # Persist immediately so a subsequent cold-load can
                         # skip discovery entirely.
                         storage = self.context.storage
-                        from tools.mcp_oauth import RencoTokenStorage
-                        if isinstance(storage, RencoTokenStorage):
+                        from tools.mcp_oauth import SonOfAntonTokenStorage
+                        if isinstance(storage, SonOfAntonTokenStorage):
                             storage.save_oauth_metadata(asm)
                         logger.debug(
                             "MCP OAuth '%s': pre-flight ASM discovered "
                             "token_endpoint=%s",
-                            self._renco_server_name, asm.token_endpoint,
+                            self._son_of_anton_server_name, asm.token_endpoint,
                         )
                         break
 
@@ -402,8 +402,8 @@ def _make_renco_provider_class() -> Optional[type]:
             if meta is None:
                 return
             storage = self.context.storage
-            from tools.mcp_oauth import RencoTokenStorage
-            if not isinstance(storage, RencoTokenStorage):
+            from tools.mcp_oauth import SonOfAntonTokenStorage
+            if not isinstance(storage, SonOfAntonTokenStorage):
                 return
             existing = storage.load_oauth_metadata()
             if (
@@ -423,7 +423,7 @@ def _make_renco_provider_class() -> Optional[type]:
             registration. This addresses the recurring manual-reset ritual in
             GH#36767 for the auto-detectable subset (token-endpoint rejection);
             the browser-side "Redirect URI Mismatch" case has no HTTP signal
-            and is handled by ``renco mcp reauth``.
+            and is handled by ``son-of-anton mcp reauth``.
 
             Conservative by construction — acts ONLY when all hold:
               * status is 400/401,
@@ -440,10 +440,10 @@ def _make_renco_provider_class() -> Optional[type]:
             preemptive refresh — but only when ``token_endpoint`` was
             discovered (``_initialize`` prefetches it on cold-load). If that
             discovery was skipped, the guard returns early and the user falls
-            back to ``renco mcp reauth``.
+            back to ``son-of-anton mcp reauth``.
             """
             try:
-                if self._renco_preregistered:
+                if self._son_of_anton_preregistered:
                     return
                 status = getattr(response, "status_code", None)
                 if status not in (400, 401):
@@ -468,14 +468,14 @@ def _make_renco_provider_class() -> Optional[type]:
                     return
 
                 storage = self.context.storage
-                from tools.mcp_oauth import RencoTokenStorage
+                from tools.mcp_oauth import SonOfAntonTokenStorage
 
                 # When the rejected client_id was our Client ID Metadata
                 # Document URL, re-presenting it next flow would loop: the
                 # server has already fetched that document and refused it.
                 # Dropping the URL sends the retry down the DCR branch
                 # instead, and the marker on disk keeps the next process from
-                # walking back into the same refusal. `renco mcp login`
+                # walking back into the same refusal. `son-of-anton mcp login`
                 # clears the marker, so a fixed document gets another chance.
                 cimd_url = getattr(self.context, "client_metadata_url", None)
                 rejected_id = getattr(self.context.client_info, "client_id", None)
@@ -484,13 +484,13 @@ def _make_renco_provider_class() -> Optional[type]:
                         "MCP OAuth '%s': authorization server rejected our "
                         "Client ID Metadata Document (%s) with invalid_client "
                         "— falling back to dynamic client registration.",
-                        self._renco_server_name, cimd_url,
+                        self._son_of_anton_server_name, cimd_url,
                     )
                     self.context.client_metadata_url = None
-                    if isinstance(storage, RencoTokenStorage):
+                    if isinstance(storage, SonOfAntonTokenStorage):
                         storage.mark_cimd_rejected()
 
-                if isinstance(storage, RencoTokenStorage):
+                if isinstance(storage, SonOfAntonTokenStorage):
                     storage.poison_client_registration()
                 # Drop the in-memory client so the SDK re-registers next flow.
                 self.context.client_info = None
@@ -498,7 +498,7 @@ def _make_renco_provider_class() -> Optional[type]:
             except Exception as exc:  # pragma: no cover — defensive, must not throw
                 logger.debug(
                     "MCP OAuth '%s': invalid_client detection failed (non-fatal): %s",
-                    self._renco_server_name, exc,
+                    self._son_of_anton_server_name, exc,
                 )
 
         async def async_auth_flow(self, request):  # type: ignore[override]
@@ -507,13 +507,13 @@ def _make_renco_provider_class() -> Optional[type]:
             # whatever state the SDK already has.
             try:
                 await get_manager().invalidate_if_disk_changed(
-                    self._renco_server_name,
-                    renco_home=self._renco_home,
+                    self._son_of_anton_server_name,
+                    son_of_anton_home=self._son_of_anton_home,
                 )
             except Exception as exc:  # pragma: no cover — defensive
                 logger.debug(
                     "MCP OAuth '%s': pre-flow disk-watch failed (non-fatal): %s",
-                    self._renco_server_name, exc,
+                    self._son_of_anton_server_name, exc,
                 )
 
             # Manually bridge the bidirectional generator protocol. httpx's
@@ -545,11 +545,11 @@ def _make_renco_provider_class() -> Optional[type]:
                 self._persist_oauth_metadata_if_changed()
                 return
 
-    return RencoMCPOAuthProvider
+    return SonOfAntonMCPOAuthProvider
 
 
 # Cached at import time. Tested and used by :class:`MCPOAuthManager`.
-_RENCO_PROVIDER_CLS: Optional[type] = _make_renco_provider_class()
+_SON_OF_ANTON_PROVIDER_CLS: Optional[type] = _make_son_of_anton_provider_class()
 
 
 # ---------------------------------------------------------------------------
@@ -609,18 +609,18 @@ class MCPOAuthManager:
             if entry.provider is None:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
-                    entry.provider._renco_home = key[0]
+                    entry.provider._son_of_anton_home = key[0]
 
             return entry.provider
 
     @staticmethod
     def _key(
         server_name: str,
-        renco_home: str | Path | None = None,
+        son_of_anton_home: str | Path | None = None,
     ) -> tuple[str, str]:
-        from renco_constants import get_renco_home
+        from son_of_anton_constants import get_son_of_anton_home
 
-        home = Path(renco_home) if renco_home is not None else get_renco_home()
+        home = Path(son_of_anton_home) if son_of_anton_home is not None else get_son_of_anton_home()
         return (str(home.expanduser().resolve(strict=False)), server_name)
 
     def _build_provider(
@@ -630,14 +630,14 @@ class MCPOAuthManager:
     ) -> Optional[Any]:
         """Build the underlying OAuth provider.
 
-        Constructs :class:`RencoMCPOAuthProvider` directly using the helpers
+        Constructs :class:`SonOfAntonMCPOAuthProvider` directly using the helpers
         extracted from ``tools.mcp_oauth``. The subclass injects a pre-flow
         disk-watch hook so external token refreshes (cron, other CLI
         instances) are visible to running MCP sessions.
 
         Returns None if the MCP SDK's OAuth support is unavailable.
         """
-        if _RENCO_PROVIDER_CLS is None:
+        if _SON_OF_ANTON_PROVIDER_CLS is None:
             logger.warning(
                 "MCP OAuth '%s': SDK auth module unavailable", server_name,
             )
@@ -645,7 +645,7 @@ class MCPOAuthManager:
 
         # Local imports avoid circular deps at module import time.
         from tools.mcp_oauth import (
-            RencoTokenStorage,
+            SonOfAntonTokenStorage,
             OAuthNonInteractiveError,
             _OAUTH_AVAILABLE,
             _build_client_metadata,
@@ -667,7 +667,7 @@ class MCPOAuthManager:
         apply_oauth_provider_defaults(
             cfg, server_name=server_name, server_url=entry.server_url
         )
-        storage = RencoTokenStorage(server_name)
+        storage = SonOfAntonTokenStorage(server_name)
 
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
 
@@ -679,7 +679,7 @@ class MCPOAuthManager:
             raise OAuthNonInteractiveError(
                 "MCP OAuth for "
                 f"'{server_name}': non-interactive environment and no "
-                "cached tokens found. Run `renco mcp login "
+                "cached tokens found. Run `son-of-anton mcp login "
                 f"{server_name}` interactively first to complete initial "
                 "authorization."
             )
@@ -697,7 +697,7 @@ class MCPOAuthManager:
             resolved_port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))
         )
 
-        return _RENCO_PROVIDER_CLS(
+        return _SON_OF_ANTON_PROVIDER_CLS(
             server_name=server_name,
             preregistered=bool(cfg.get("client_id")),
             server_url=entry.server_url,
@@ -713,18 +713,18 @@ class MCPOAuthManager:
         self,
         server_name: str,
         *,
-        renco_home: str | Path | None = None,
+        son_of_anton_home: str | Path | None = None,
     ) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk.
 
-        Called by ``renco mcp remove <name>`` and (indirectly) by
-        ``renco mcp login <name>`` during forced re-auth.
+        Called by ``son-of-anton mcp remove <name>`` and (indirectly) by
+        ``son-of-anton mcp login <name>`` during forced re-auth.
         """
         with self._entries_lock:
-            entry = self._entries.pop(self._key(server_name, renco_home), None)
+            entry = self._entries.pop(self._key(server_name, son_of_anton_home), None)
 
         from tools.mcp_oauth import remove_oauth_tokens
-        remove_oauth_tokens(server_name, renco_home=renco_home)
+        remove_oauth_tokens(server_name, son_of_anton_home=son_of_anton_home)
         logger.info(
             "MCP OAuth '%s': evicted from cache and removed from disk",
             server_name,
@@ -736,23 +736,23 @@ class MCPOAuthManager:
         server_name: str,
         entry: _ProviderEntry | None,
         *,
-        renco_home: str | Path | None = None,
+        son_of_anton_home: str | Path | None = None,
     ) -> None:
         """Restore a provider entry removed for a failed reauthorization."""
         if entry is None:
             return
         with self._entries_lock:
-            self._entries.setdefault(self._key(server_name, renco_home), entry)
+            self._entries.setdefault(self._key(server_name, son_of_anton_home), entry)
 
     def evict(
         self,
         server_name: str,
         *,
-        renco_home: str | Path | None = None,
+        son_of_anton_home: str | Path | None = None,
     ) -> None:
         """Drop only the in-process provider, preserving persisted OAuth state."""
         with self._entries_lock:
-            self._entries.pop(self._key(server_name, renco_home), None)
+            self._entries.pop(self._key(server_name, son_of_anton_home), None)
 
     # -- Disk watch ----------------------------------------------------------
 
@@ -760,7 +760,7 @@ class MCPOAuthManager:
         self,
         server_name: str,
         *,
-        renco_home: str | Path | None = None,
+        son_of_anton_home: str | Path | None = None,
     ) -> bool:
         """If the tokens file on disk has a newer mtime than last-seen, force
         the MCP SDK provider to reload its in-memory state.
@@ -772,12 +772,12 @@ class MCPOAuthManager:
         """
         from tools.mcp_oauth import _get_token_dir, _safe_filename
 
-        entry = self._entries.get(self._key(server_name, renco_home))
+        entry = self._entries.get(self._key(server_name, son_of_anton_home))
         if entry is None or entry.provider is None:
             return False
 
         async with entry.lock:
-            tokens_path = _get_token_dir(renco_home) / f"{_safe_filename(server_name)}.json"
+            tokens_path = _get_token_dir(son_of_anton_home) / f"{_safe_filename(server_name)}.json"
             try:
                 mtime_ns = tokens_path.stat().st_mtime_ns
             except (FileNotFoundError, OSError):

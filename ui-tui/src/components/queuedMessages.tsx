@@ -1,4 +1,4 @@
-import { Box, Text } from '@renco/ink'
+import { Box, Text } from '@sonofanton/ink'
 
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'

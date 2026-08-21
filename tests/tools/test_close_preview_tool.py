@@ -18,8 +18,8 @@ def _reset_emitter():
 
 def test_lives_in_the_gui_surface_toolset(monkeypatch):
     """Reaches a desktop client on ANY backend, including one with no
-    RENCO_DESKTOP in its environment (URL / cloud gateways)."""
-    monkeypatch.delenv("RENCO_DESKTOP", raising=False)
+    SON_OF_ANTON_DESKTOP in its environment (URL / cloud gateways)."""
+    monkeypatch.delenv("SON_OF_ANTON_DESKTOP", raising=False)
     entry = registry.get_entry("close_preview")
 
     assert entry is not None

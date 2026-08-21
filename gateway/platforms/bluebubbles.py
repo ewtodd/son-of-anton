@@ -97,11 +97,11 @@ MAX_TEXT_LENGTH = 4000
 
 # BlueBubbles/iMessage does not expose a stable bot mention identity like
 # Slack (<@U...>), Telegram (@botname), or Matrix (MXID). When users opt into
-# group mention gating without custom aliases, use conservative Renco wake
+# group mention gating without custom aliases, use conservative Son of Anton wake
 # words so `require_mention: true` is a one-line enablement path.
 DEFAULT_MENTION_PATTERNS = [
-    r"(?<![\w@])@?renco\s+agent\b[,:\-]?",
-    r"(?<![\w@])@?renco\b[,:\-]?",
+    r"(?<![\w@])@?son-of-anton\s+agent\b[,:\-]?",
+    r"(?<![\w@])@?son-of-anton\b[,:\-]?",
 ]
 
 # Tapback reaction codes (BlueBubbles associatedMessageType values)
@@ -216,7 +216,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         """Compile group-mention wake words from config/env.
 
         ``raw`` is a list (from config or env JSON), a string (raw env var:
-        JSON list, or comma/newline-separated), or None (use Renco defaults).
+        JSON list, or comma/newline-separated), or None (use Son of Anton defaults).
         """
         return compile_mention_patterns(
             raw,

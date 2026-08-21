@@ -18,7 +18,7 @@ from gateway.platforms.base import (
 )
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
-from renco_cli.plugins import PluginContext, PluginManager, PluginManifest
+from son_of_anton_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
 def _entry(*, origin=True) -> SessionEntry:
@@ -79,14 +79,14 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
     tmp_path,
     monkeypatch,
 ):
-    renco_home = tmp_path / "renco"
-    renco_home.mkdir()
-    (renco_home / "config.yaml").write_text(
+    son_of_anton_home = tmp_path / "son-of-anton"
+    son_of_anton_home.mkdir()
+    (son_of_anton_home / "config.yaml").write_text(
         yaml.safe_dump({
             "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}
         })
     )
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     source = _entry().origin
@@ -121,7 +121,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         manager,
     )
 
-    with patch("renco_cli.plugins.get_plugin_manager", return_value=manager):
+    with patch("son_of_anton_cli.plugins.get_plugin_manager", return_value=manager):
         runner._install_plugin_message_injector()
         assert (
             context.inject_message(
@@ -174,8 +174,8 @@ async def test_dispatch_uses_stored_origin_and_adapter_message_path():
         allow_adapter_delegation=False,
     )
     assert event.metadata == {
-        "renco_plugin_id": "notify-plugin",
-        "renco_plugin_injection": True,
+        "son_of_anton_plugin_id": "notify-plugin",
+        "son_of_anton_plugin_injection": True,
         "gateway_session_key": entry.session_key,
         "gateway_session_id": entry.session_id,
         "gateway_session_strict": True,
@@ -543,7 +543,7 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     runner = _runner(_entry())
     manager = PluginManager()
 
-    with patch("renco_cli.plugins.get_plugin_manager", return_value=manager):
+    with patch("son_of_anton_cli.plugins.get_plugin_manager", return_value=manager):
         runner._install_plugin_message_injector()
         assert manager.has_gateway_message_injector is True
 

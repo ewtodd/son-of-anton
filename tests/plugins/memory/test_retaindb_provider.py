@@ -60,12 +60,12 @@ def test_prefetch_does_not_spawn_when_previous_batch_is_alive(monkeypatch):
     assert not created
 
 
-def test_upload_file_rejects_renco_credential_store(tmp_path, monkeypatch):
-    renco_home = tmp_path / "renco_home"
-    renco_home.mkdir()
-    auth_json = renco_home / "auth.json"
+def test_upload_file_rejects_son_of_anton_credential_store(tmp_path, monkeypatch):
+    son_of_anton_home = tmp_path / "son_of_anton_home"
+    son_of_anton_home.mkdir()
+    auth_json = son_of_anton_home / "auth.json"
     auth_json.write_text('{"OPENAI_API_KEY":"sk-test-secret"}', encoding="utf-8")
-    monkeypatch.setattr(fs, "_renco_home_path", lambda: renco_home)
+    monkeypatch.setattr(fs, "_son_of_anton_home_path", lambda: son_of_anton_home)
 
     provider = RetainDBMemoryProvider()
     provider._client = MagicMock()
@@ -94,8 +94,8 @@ def test_upload_file_allows_regular_file(tmp_path):
 
 
 def _capture_initialized_client(monkeypatch, tmp_path):
-    """Patch _Client/_WriteQueue/get_renco_home; return a dict capturing args."""
-    import renco_constants
+    """Patch _Client/_WriteQueue/get_son_of_anton_home; return a dict capturing args."""
+    import son_of_anton_constants
 
     import plugins.memory.retaindb as retaindb_module
 
@@ -110,12 +110,12 @@ def _capture_initialized_client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(retaindb_module, "_Client", _FakeClient)
     monkeypatch.setattr(retaindb_module, "_WriteQueue", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(renco_constants, "get_renco_home", lambda: tmp_path)
+    monkeypatch.setattr(son_of_anton_constants, "get_son_of_anton_home", lambda: tmp_path)
     return retaindb_module, captured
 
 
 def test_retaindb_config_loader_uses_readonly_config(monkeypatch):
-    import renco_cli.config as config_mod
+    import son_of_anton_cli.config as config_mod
     import plugins.memory.retaindb as retaindb_module
 
     backing_config = {
@@ -152,7 +152,7 @@ memory:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     _retaindb_module, captured = _capture_initialized_client(monkeypatch, tmp_path)
 
     RetainDBMemoryProvider().initialize("sess-1")

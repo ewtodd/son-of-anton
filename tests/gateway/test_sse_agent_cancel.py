@@ -367,7 +367,7 @@ class TestSSEAgentFailureFinishReason:
 
         reason, finish, _ = self._run(failed)
         assert reason == "error"
-        assert finish.get("renco", {}).get("failed") is True
+        assert finish.get("son-of-anton", {}).get("failed") is True
 
     def test_truncated_result_reports_length(self):
         async def trunc():
@@ -379,7 +379,7 @@ class TestSSEAgentFailureFinishReason:
 
         reason, finish, _ = self._run(trunc)
         assert reason == "length"
-        assert finish["renco"]["error_code"] == "output_truncated"
+        assert finish["son-of-anton"]["error_code"] == "output_truncated"
 
     def test_successful_completion_reports_stop(self):
         async def ok():
@@ -390,9 +390,9 @@ class TestSSEAgentFailureFinishReason:
 
         reason, finish, _ = self._run(ok)
         assert reason == "stop"
-        # No error/renco pollution on the happy path.
+        # No error/son-of-anton pollution on the happy path.
         assert "error" not in finish
-        assert "renco" not in finish
+        assert "son-of-anton" not in finish
 
 
 # ---------------------------------------------------------------------------

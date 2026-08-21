@@ -132,7 +132,7 @@ def _run_wrapped_live_turn_to_boundary(agent, result):
 
 def _install_relay_recorder(monkeypatch, review_run=None):
     from agent import relay_runtime
-    from renco_cli.observability import relay_shared_metrics
+    from son_of_anton_cli.observability import relay_shared_metrics
 
     calls = []
 
@@ -365,7 +365,7 @@ def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
     agent._delegate_depth = 0
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
 
-    with patch("renco_cli.config.load_config_readonly", return_value=cfg):
+    with patch("son_of_anton_cli.config.load_config_readonly", return_value=cfg):
         AIAgent._spawn_background_review(
             agent,
             messages_snapshot=[{"role": "user", "content": "hello"}],

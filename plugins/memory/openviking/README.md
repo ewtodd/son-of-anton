@@ -7,10 +7,10 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 - OpenViking installed with the `openviking-server` command available
 - OpenViking server config initialized and validated (`openviking-server init`,
   then `openviking-server doctor`)
-- OpenViking server running and reachable from Renco
+- OpenViking server running and reachable from Son of Anton
 
 OpenViking 0.2.10 or newer is recommended. For backward compatibility,
-Renco can identify older servers that expose the legacy status-only health
+Son of Anton can identify older servers that expose the legacy status-only health
 response, but only when anonymous OpenAPI metadata also identifies the service
 as OpenViking. OpenViking 0.2.6 and earlier are deprecated for this integration;
 upgrade them to receive the current health contract and compatibility fixes.
@@ -25,37 +25,37 @@ openviking-server doctor
 openviking-server
 ```
 
-Then configure Renco:
+Then configure Son of Anton:
 
 ```bash
-renco memory setup    # select "openviking"
+son-of-anton memory setup    # select "openviking"
 ```
 
 The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
-connection values into Renco, or create a minimal `ovcli.conf` when one does
+connection values into Son of Anton, or create a minimal `ovcli.conf` when one does
 not exist.
 
 Or manually:
 
 ```bash
-renco config set memory.provider openviking
+son-of-anton config set memory.provider openviking
 ```
 
 Add the connection settings to the active profile's `.env` file. For the
-default profile that is `~/.renco/.env`; for a named profile use
-`~/.renco/profiles/<profile>/.env`.
+default profile that is `~/.son-of-anton/.env`; for a named profile use
+`~/.son-of-anton/profiles/<profile>/.env`.
 
 ```text
 OPENVIKING_ENDPOINT=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
 # OPENVIKING_ACCOUNT=default
 # OPENVIKING_USER=default
-# OPENVIKING_AGENT=renco
+# OPENVIKING_AGENT=son-of-anton
 ```
 
 ## Config
 
-OpenViking's server config is separate from Renco:
+OpenViking's server config is separate from Son of Anton:
 
 - `ov.conf` configures OpenViking storage, embedding/VLM models, auth, and
   server behavior. OpenViking reads it from `--config`,
@@ -64,7 +64,7 @@ OpenViking's server config is separate from Renco:
   `account`, and `user`. It is read from `OPENVIKING_CLI_CONFIG_FILE` or
   `~/.openviking/ovcli.conf`.
 
-Renco-side provider config is read from environment variables in the active
+Son of Anton-side provider config is read from environment variables in the active
 profile's `.env`:
 
 | Env Var | Default | Description |
@@ -73,11 +73,11 @@ profile's `.env`:
 | `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
 | `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
 | `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
-| `OPENVIKING_AGENT` | `renco` | Renco peer ID in OpenViking, used for peer-scoped memories |
+| `OPENVIKING_AGENT` | `son-of-anton` | Son of Anton peer ID in OpenViking, used for peer-scoped memories |
 
-When `OPENVIKING_API_KEY` is set, Renco lets OpenViking derive account/user
+When `OPENVIKING_API_KEY` is set, Son of Anton lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
-Renco sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
+Son of Anton sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 
 ## Tools
 
@@ -99,22 +99,22 @@ canonical user-scoped form such as
 `viking://user/default/peers/${OPENVIKING_AGENT}/memories/...` in API-key mode.
 Explicit remembers do not depend on session commit extraction.
 
-Renco built-in `memory` tool additions are mirrored to OpenViking after the
+Son of Anton built-in `memory` tool additions are mirrored to OpenViking after the
 local memory operation succeeds:
 
-| Renco action | OpenViking operation |
+| Son of Anton action | OpenViking operation |
 |---------------|----------------------|
 | `add` | `content/write` with `mode=create` under the configured peer memory namespace |
 
-Built-in `replace` and `remove` operations are not mirrored because Renco
+Built-in `replace` and `remove` operations are not mirrored because Son of Anton
 native memory entries do not yet carry stable OpenViking file URIs. Use
 `viking_forget` when the user explicitly asks to delete a specific OpenViking
 memory URI.
 
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as
-`viking://user/peers/renco/memories/preferences/mem_abc123.md` or the canonical
-`viking://user/default/peers/renco/memories/preferences/mem_abc123.md`. Files
+`viking://user/peers/son-of-anton/memories/preferences/mem_abc123.md` or the canonical
+`viking://user/default/peers/son-of-anton/memories/preferences/mem_abc123.md`. Files
 directly under `memories/`, such as `viking://user/default/memories/profile.md`,
 are also allowed because OpenViking supports them. The tool rejects directories,
 resources, skills, sessions, generated summary files, and URIs with query

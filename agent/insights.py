@@ -1,11 +1,11 @@
 """
-Session Insights Engine for Renco Agent.
+Session Insights Engine for Son of Anton Agent.
 
 Analyzes historical session data from the SQLite state database to produce
 comprehensive usage insights — token consumption, cost estimates, tool usage
 patterns, activity trends, model/platform breakdowns, and session metrics.
 
-Inspired by Claude Code's /insights command, adapted for Renco Agent's
+Inspired by Claude Code's /insights command, adapted for Son of Anton Agent's
 multi-platform architecture with additional cost estimation and platform
 breakdown capabilities.
 
@@ -107,7 +107,7 @@ class InsightsEngine:
         Initialize with a SessionDB instance.
 
         Args:
-            db: A SessionDB instance (from renco_state.py)
+            db: A SessionDB instance (from son_of_anton_state.py)
         """
         self.db = db
         self._conn = db._conn
@@ -526,7 +526,7 @@ class InsightsEngine:
             # dimension in session_model_usage, #23270) plus reconciled
             # residuals, while the sessions counters carry main-loop usage
             # only. Summing the breakdown keeps overview totals consistent
-            # with the per-model table and stops `renco insights`
+            # with the per-model table and stops `son-of-anton insights`
             # undercounting aux spend (#58592, #9979).
             total_input = sum(int(m.get("input_tokens") or 0) for m in models)
             total_output = sum(int(m.get("output_tokens") or 0) for m in models)
@@ -982,7 +982,7 @@ class InsightsEngine:
         # Header
         lines.append("")
         lines.append("  ╔══════════════════════════════════════════════════════════╗")
-        lines.append("  ║                    📊 Renco Insights                    ║")
+        lines.append("  ║                    📊 Son of Anton Insights                    ║")
         period_label = f"Last {days} days"
         if src_filter:
             period_label += f" ({src_filter})"
@@ -1140,7 +1140,7 @@ class InsightsEngine:
         o = report["overview"]
         days = report["days"]
 
-        lines.append(f"📊 **Renco Insights** — Last {days} days\n")
+        lines.append(f"📊 **Son of Anton Insights** — Last {days} days\n")
 
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")

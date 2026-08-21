@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("RENCO_RUN_SLOW_PET_TESTS") != "1",
+    os.environ.get("SON_OF_ANTON_RUN_SLOW_PET_TESTS") != "1",
     reason=(
         "pet generation image-processing suite is opt-in; run with "
-        "RENCO_RUN_SLOW_PET_TESTS=1 scripts/run_tests.sh tests/agent/test_pet_generate.py"
+        "SON_OF_ANTON_RUN_SLOW_PET_TESTS=1 scripts/run_tests.sh tests/agent/test_pet_generate.py"
     ),
 )
 

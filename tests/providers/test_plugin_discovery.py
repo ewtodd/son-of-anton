@@ -2,7 +2,7 @@
 
 Verifies that:
  1. All bundled providers at plugins/model-providers/<name>/ are discovered
- 2. User plugins at $RENCO_HOME/plugins/model-providers/<name>/ override bundled
+ 2. User plugins at $SON_OF_ANTON_HOME/plugins/model-providers/<name>/ override bundled
  3. plugin.yaml manifests with kind=model-provider are correctly categorized
 """
 
@@ -27,7 +27,7 @@ def _clear_provider_caches():
     for mod in list(sys.modules.keys()):
         if (
             mod.startswith("plugins.model_providers")
-            or mod.startswith("_renco_user_provider")
+            or mod.startswith("_son_of_anton_user_provider")
         ):
             del sys.modules[mod]
 
@@ -76,15 +76,15 @@ def test_all_profiles_register():
 
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     """A user plugin with the same name must override the bundled profile."""
-    # Point RENCO_HOME at a fresh temp dir
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
-    # get_renco_home() may be module-cached depending on codebase; ensure the
+    # Point SON_OF_ANTON_HOME at a fresh temp dir
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
+    # get_son_of_anton_home() may be module-cached depending on codebase; ensure the
     # env var is the source of truth. Most code paths re-read it each call.
 
     # Drop a user plugin that replaces 'gmi'
-    user_gmi = renco_home / "plugins" / "model-providers" / "gmi"
+    user_gmi = son_of_anton_home / "plugins" / "model-providers" / "gmi"
     user_gmi.mkdir(parents=True)
     (user_gmi / "__init__.py").write_text(
         "from providers import register_provider\n"

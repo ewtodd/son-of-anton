@@ -3,13 +3,13 @@
 ``validate_media_delivery_path`` (gateway/platforms/base.py) reads its policy
 from environment variables:
 
-  - ``RENCO_MEDIA_DELIVERY_STRICT``    <- gateway.strict
-  - ``RENCO_MEDIA_ALLOW_DIRS``         <- gateway.media_delivery_allow_dirs
-  - ``RENCO_MEDIA_TRUST_RECENT_FILES`` <- gateway.trust_recent_files
+  - ``SON_OF_ANTON_MEDIA_DELIVERY_STRICT``    <- gateway.strict
+  - ``SON_OF_ANTON_MEDIA_ALLOW_DIRS``         <- gateway.media_delivery_allow_dirs
+  - ``SON_OF_ANTON_MEDIA_TRUST_RECENT_FILES`` <- gateway.trust_recent_files
 
 Historically the config.yaml -> env translation ran ONLY in gateway startup
 (gateway/run.py), so any process that delivers media without booting the
-gateway — a manual ``renco cron run`` in the CLI, ``renco send``, a
+gateway — a manual ``son-of-anton cron run`` in the CLI, ``son-of-anton send``, a
 standalone cron tick — filtered MEDIA paths under DIFFERENT policy than the
 gateway's scheduled deliveries. In strict/allowlisted enterprise deployments
 that divergence silently dropped attachments from manual cron runs while
@@ -35,15 +35,15 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_STRICT_ENV = "RENCO_MEDIA_DELIVERY_STRICT"
-_ALLOW_DIRS_ENV = "RENCO_MEDIA_ALLOW_DIRS"
-_TRUST_RECENT_ENV = "RENCO_MEDIA_TRUST_RECENT_FILES"
+_STRICT_ENV = "SON_OF_ANTON_MEDIA_DELIVERY_STRICT"
+_ALLOW_DIRS_ENV = "SON_OF_ANTON_MEDIA_ALLOW_DIRS"
+_TRUST_RECENT_ENV = "SON_OF_ANTON_MEDIA_TRUST_RECENT_FILES"
 
 
 def _load_gateway_cfg(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if config is None:
         try:
-            from renco_cli.config import load_config
+            from son_of_anton_cli.config import load_config
 
             config = load_config() or {}
         except Exception:

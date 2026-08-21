@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from typing import Any, cast
 
-from renco_cli.models import LMStudioLoadResult
+from son_of_anton_cli.models import LMStudioLoadResult
 from run_agent import AIAgent
 
 
@@ -25,7 +25,7 @@ def test_lmstudio_jit_load_mode_skips_explicit_preload(monkeypatch):
         calls.append((args, kwargs))
         return LMStudioLoadResult(64_000)
 
-    monkeypatch.setattr("renco_cli.models.ensure_lmstudio_model_loaded", fake_ensure)
+    monkeypatch.setattr("son_of_anton_cli.models.ensure_lmstudio_model_loaded", fake_ensure)
 
     result = AIAgent._ensure_lmstudio_runtime_loaded(cast(Any, _agent("jit")))
 

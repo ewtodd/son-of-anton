@@ -15,10 +15,10 @@ Layer ownership vs :mod:`agent.coding_context`:
   not push runtime detection into it.
 - This module owns the *deep runtime recipe* — framework identification,
   bootstrap/build/test command inference, and crucially the start command,
-  port, and readiness path that let ``renco verify`` boot the app and prove
-  it serves HTTP. The ``renco verify`` CLI merges any project-facts verify
+  port, and readiness path that let ``son-of-anton verify`` boot the app and prove
+  it serves HTTP. The ``son-of-anton verify`` CLI merges any project-facts verify
   commands the recipe missed into its test list (see
-  ``renco_cli.verify_cmd._merge_project_facts_commands``) so the two layers
+  ``son_of_anton_cli.verify_cmd._merge_project_facts_commands``) so the two layers
   extend rather than contradict each other.
 """
 

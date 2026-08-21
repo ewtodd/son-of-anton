@@ -4,7 +4,7 @@ This file is the canary. If anyone removes a guard or weakens it, these
 tests fail. If anyone adds a NEW kill primitive to the codebase without
 adding it to the guard, the corresponding test added here will fail too.
 
-The guard exists to protect the developer's live ``renco-gateway`` process
+The guard exists to protect the developer's live ``son-of-anton-gateway`` process
 from being SIGTERMed by tests. See PR #23397 for the original incident
 (5+ live gateway kills in 3 days). Per Teknium 2026-05-10:
 
@@ -127,79 +127,79 @@ def test_os_killpg_blocks_foreign_pgid():
 
 def test_subprocess_run_systemctl_restart_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["systemctl", "--user", "restart", "renco-gateway"])
+        subprocess.run(["systemctl", "--user", "restart", "son-of-anton-gateway"])
 
 
 def test_subprocess_run_full_path_systemctl_blocked():
     """``/usr/bin/systemctl`` (full path) must be blocked too."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["/usr/bin/systemctl", "--user", "stop", "renco-gateway"])
+        subprocess.run(["/usr/bin/systemctl", "--user", "stop", "son-of-anton-gateway"])
 
 
 def test_subprocess_run_sudo_systemctl_blocked():
     """``sudo systemctl ...`` defeated the old head==systemctl check."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["sudo", "systemctl", "restart", "renco-gateway"])
+        subprocess.run(["sudo", "systemctl", "restart", "son-of-anton-gateway"])
 
 
 def test_subprocess_run_env_systemctl_blocked():
     """``env systemctl ...`` similarly defeated the old head check."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["env", "systemctl", "--user", "restart", "renco-gateway"])
+        subprocess.run(["env", "systemctl", "--user", "restart", "son-of-anton-gateway"])
 
 
 def test_subprocess_run_bash_c_systemctl_blocked():
     """``bash -c "systemctl ..."`` must also be caught."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["bash", "-c", "systemctl --user restart renco-gateway"])
+        subprocess.run(["bash", "-c", "systemctl --user restart son-of-anton-gateway"])
 
 
 def test_subprocess_run_sh_c_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["sh", "-c", "systemctl --user stop renco-gateway"])
+        subprocess.run(["sh", "-c", "systemctl --user stop son-of-anton-gateway"])
 
 
 def test_subprocess_run_setsid_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["setsid", "systemctl", "kill", "renco-gateway"])
+        subprocess.run(["setsid", "systemctl", "kill", "son-of-anton-gateway"])
 
 
 def test_subprocess_run_string_shell_true_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.run(
-            "systemctl --user restart renco-gateway",
+            "systemctl --user restart son-of-anton-gateway",
             shell=True,
         )
 
 
 def test_subprocess_popen_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.Popen(["systemctl", "--user", "stop", "renco-gateway"])
+        subprocess.Popen(["systemctl", "--user", "stop", "son-of-anton-gateway"])
 
 
 def test_subprocess_call_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.call(["systemctl", "--user", "restart", "renco-gateway"])
+        subprocess.call(["systemctl", "--user", "restart", "son-of-anton-gateway"])
 
 
 def test_subprocess_check_call_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.check_call(["systemctl", "--user", "restart", "renco-gateway"])
+        subprocess.check_call(["systemctl", "--user", "restart", "son-of-anton-gateway"])
 
 
 def test_subprocess_check_output_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.check_output(["systemctl", "--user", "restart", "renco-gateway"])
+        subprocess.check_output(["systemctl", "--user", "restart", "son-of-anton-gateway"])
 
 
 def test_subprocess_getoutput_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.getoutput("systemctl --user restart renco-gateway")
+        subprocess.getoutput("systemctl --user restart son-of-anton-gateway")
 
 
 def test_subprocess_getstatusoutput_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.getstatusoutput("systemctl --user restart renco-gateway")
+        subprocess.getstatusoutput("systemctl --user restart son-of-anton-gateway")
 
 
 # ──────────────────── os.system / os.popen ────────────────────
@@ -207,12 +207,12 @@ def test_subprocess_getstatusoutput_systemctl_blocked():
 
 def test_os_system_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        os.system("systemctl --user restart renco-gateway")
+        os.system("systemctl --user restart son-of-anton-gateway")
 
 
 def test_os_popen_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        os.popen("systemctl --user restart renco-gateway")
+        os.popen("systemctl --user restart son-of-anton-gateway")
 
 
 # ──────────────────── pty.spawn ────────────────────────────────
@@ -221,7 +221,7 @@ def test_os_popen_systemctl_blocked():
 def test_pty_spawn_systemctl_blocked():
     import pty
     with pytest.raises(RuntimeError, match="live-system guard"):
-        pty.spawn(["systemctl", "--user", "restart", "renco-gateway"])
+        pty.spawn(["systemctl", "--user", "restart", "son-of-anton-gateway"])
 
 
 # ──────────────────── asyncio.create_subprocess_* ──────────────
@@ -232,7 +232,7 @@ def test_asyncio_create_subprocess_exec_systemctl_blocked():
 
     async def _attempt():
         await asyncio.create_subprocess_exec(
-            "systemctl", "--user", "restart", "renco-gateway"
+            "systemctl", "--user", "restart", "son-of-anton-gateway"
         )
 
     with pytest.raises(RuntimeError, match="live-system guard"):
@@ -244,7 +244,7 @@ def test_asyncio_create_subprocess_shell_systemctl_blocked():
 
     async def _attempt():
         await asyncio.create_subprocess_shell(
-            "systemctl --user restart renco-gateway"
+            "systemctl --user restart son-of-anton-gateway"
         )
 
     with pytest.raises(RuntimeError, match="live-system guard"):
@@ -254,25 +254,25 @@ def test_asyncio_create_subprocess_shell_systemctl_blocked():
 # ──────────────────── pkill / killall / taskkill ───────────────
 
 
-def test_subprocess_pkill_renco_blocked():
+def test_subprocess_pkill_son_of_anton_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["pkill", "-f", "renco"])
+        subprocess.run(["pkill", "-f", "son-of-anton"])
 
 
-def test_subprocess_pkill_renco_gateway_blocked():
+def test_subprocess_pkill_son_of_anton_gateway_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["pkill", "-f", "renco-gateway"])
+        subprocess.run(["pkill", "-f", "son-of-anton-gateway"])
 
 
 def test_subprocess_pkill_python_dash_f_blocked():
-    """``pkill -f python`` matches the gateway's "python -m renco_cli.main"."""
+    """``pkill -f python`` matches the gateway's "python -m son_of_anton_cli.main"."""
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.run(["pkill", "-f", "python"])
 
 
-def test_subprocess_killall_renco_blocked():
+def test_subprocess_killall_son_of_anton_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["killall", "renco"])
+        subprocess.run(["killall", "son-of-anton"])
 
 
 # ──────────────────── pass-through cases (must NOT raise) ──────

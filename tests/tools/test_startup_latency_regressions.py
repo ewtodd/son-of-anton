@@ -155,7 +155,7 @@ class TestBannerUpdateCheckNonBlocking:
     def test_banner_does_not_block_on_pending_update_check(self):
         """When the prefetch hasn't finished, the banner path must return in
         well under the old 500ms blocking wait."""
-        import renco_cli.banner as banner
+        import son_of_anton_cli.banner as banner
 
         class _NullConsole:
             def print(self, *a, **k):
@@ -171,7 +171,7 @@ class TestBannerUpdateCheckNonBlocking:
         assert elapsed < 0.3, f"banner update check blocked {elapsed:.3f}s"
 
     def test_deferred_notice_prints_when_result_lands(self):
-        import renco_cli.banner as banner
+        import son_of_anton_cli.banner as banner
 
         printed = []
 
@@ -193,7 +193,7 @@ class TestBannerUpdateCheckNonBlocking:
         assert "3 commits behind" in printed[0]
 
     def test_deferred_notice_silent_when_up_to_date(self):
-        import renco_cli.banner as banner
+        import son_of_anton_cli.banner as banner
 
         printed = []
 

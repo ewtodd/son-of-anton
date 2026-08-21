@@ -59,9 +59,9 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
         from agent import secret_scope as ss
         from gateway.config import Platform, load_gateway_config
 
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             "gateway:\n"
             "  platforms:\n"
             "    telegram:\n"
@@ -69,7 +69,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
             "      bot_token: '123:abc'\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
         monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://deploy.example/relay")
 
         profile_dir = tmp_path / "profile-a"
@@ -106,9 +106,9 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
         from agent import secret_scope as ss
         from gateway.config import Platform, load_gateway_config
 
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "config.yaml").write_text(
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "config.yaml").write_text(
             "gateway:\n"
             "  platforms:\n"
             "    telegram:\n"
@@ -116,7 +116,7 @@ class TestConfigRegistrationAgreementUnderMultiplexScope:
             "      bot_token: '123:abc'\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         profile_dir = tmp_path / "profile-a"
         profile_dir.mkdir()

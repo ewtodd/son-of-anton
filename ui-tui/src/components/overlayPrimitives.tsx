@@ -1,5 +1,5 @@
-import type { Key } from '@renco/ink'
-import { Text, useInput } from '@renco/ink'
+import type { Key } from '@sonofanton/ink'
+import { Text, useInput } from '@sonofanton/ink'
 import { type ReactNode, useState } from 'react'
 
 import type { UsageModelData } from '../gatewayTypes.js'

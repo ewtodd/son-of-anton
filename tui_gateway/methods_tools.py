@@ -95,7 +95,7 @@ def _(rid, params: dict) -> dict:
         user_confirm = bool(params.get("confirm", False))
         if not user_confirm:
             try:
-                from renco_cli.config import load_config as _load_config
+                from son_of_anton_cli.config import load_config as _load_config
 
                 _cfg = _load_config()
                 _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
@@ -233,8 +233,8 @@ def _(rid, params: dict) -> dict:
 
 @method("reload.env")
 def _(rid, params: dict) -> dict:
-    """Re-read ``~/.renco/.env`` into the gateway process via
-    ``renco_cli.config.reload_env``, matching classic CLI's ``/reload``
+    """Re-read ``~/.son-of-anton/.env`` into the gateway process via
+    ``son_of_anton_cli.config.reload_env``, matching classic CLI's ``/reload``
     handler.  Newly added API keys take effect on the next agent call
     without restarting the TUI.
 
@@ -244,7 +244,7 @@ def _(rid, params: dict) -> dict:
     should follow with ``/new``.
     """
     try:
-        from renco_cli.config import reload_env
+        from son_of_anton_cli.config import reload_env
 
         count = reload_env()
         return _ok(rid, {"updated": int(count)})
@@ -256,7 +256,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
     try:
-        from renco_cli.commands import (
+        from son_of_anton_cli.commands import (
             COMMAND_REGISTRY,
             SUBCOMMANDS,
             _build_description,
@@ -370,7 +370,7 @@ def _(rid, params: dict) -> dict:
 
 @method("cli.exec")
 def _(rid, params: dict) -> dict:
-    """Run `python -m renco_cli.main` with argv; capture stdout/stderr (non-interactive only)."""
+    """Run `python -m son_of_anton_cli.main` with argv; capture stdout/stderr (non-interactive only)."""
     argv = params.get("argv", [])
     if not isinstance(argv, list) or not all(isinstance(x, str) for x in argv):
         return _err(rid, 4003, "argv must be list[str]")
@@ -380,10 +380,10 @@ def _(rid, params: dict) -> dict:
     try:
         # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless
         # parent, this spawn otherwise flashes a console (#56747).
-        from renco_cli._subprocess_compat import windows_hide_flags
+        from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
         r = subprocess.run(
-            [sys.executable, "-m", "renco_cli.main", *argv],
+            [sys.executable, "-m", "son_of_anton_cli.main", *argv],
             capture_output=True,
             text=True,
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
@@ -392,9 +392,9 @@ def _(rid, params: dict) -> dict:
             errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
-            # cli.exec runs `python -m renco_cli.main` (can drive the agent) →
+            # cli.exec runs `python -m son_of_anton_cli.main` (can drive the agent) →
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
-            env=renco_subprocess_env(inherit_credentials=True),
+            env=son_of_anton_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )
@@ -412,7 +412,7 @@ def _(rid, params: dict) -> dict:
 @method("command.resolve")
 def _(rid, params: dict) -> dict:
     try:
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         r = resolve_command(params.get("name", ""))
         if r:
@@ -446,7 +446,7 @@ def _(rid, params: dict) -> dict:
             # has all API keys in os.environ.
             from tools.environments.local import build_subprocess_env
             sanitized_env = build_subprocess_env()
-            from renco_cli._subprocess_compat import windows_hide_flags
+            from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
             r = subprocess.run(
                 qc.get("command", ""),
@@ -480,7 +480,7 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 
     try:
-        from renco_cli.plugins import (
+        from son_of_anton_cli.plugins import (
             get_plugin_command_handler,
             resolve_plugin_command_result,
         )
@@ -499,7 +499,7 @@ def _(rid, params: dict) -> dict:
             resolve_bundle_command_key,
         )
 
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         bundle_key = (
             resolve_bundle_command_key(name)
@@ -590,7 +590,7 @@ def _(rid, params: dict) -> dict:
         # submit it as a normal agent turn (same pattern as /learn). The live
         # agent scans the project with its own read-only tools and writes or
         # merge-updates AGENTS.md via write_file. Works on any backend.
-        from renco_cli.init_command import build_init_prompt_for_cwd
+        from son_of_anton_cli.init_command import build_init_prompt_for_cwd
 
         return _ok(rid, {"type": "send", "message": build_init_prompt_for_cwd(extra=arg)})
     if name == "moa":
@@ -599,7 +599,7 @@ def _(rid, params: dict) -> dict:
         # for the rest of the session, pick it from the model picker (MoA
         # presets surface as a virtual "Mixture of Agents" provider).
         try:
-            from renco_cli.moa_config import moa_usage, normalize_moa_config
+            from son_of_anton_cli.moa_config import moa_usage, normalize_moa_config
 
             if not arg:
                 return _err(rid, 4004, moa_usage())
@@ -660,7 +660,7 @@ def _(rid, params: dict) -> dict:
         # /focus is display-only. Route it through the same config.set branch the
         # Ink TUI slash command uses so both surfaces share one state machine and
         # one persistence path. Returns a plain notice line for the transcript.
-        from renco_cli.focus_view import (
+        from son_of_anton_cli.focus_view import (
             format_focus_status,
             format_focus_toggle_message,
             resolve_focus_arg,
@@ -767,7 +767,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from renco_cli.goals import GoalManager
+            from son_of_anton_cli.goals import GoalManager
         except Exception as exc:
             return _err(rid, 5030, f"goals unavailable: {exc}")
 
@@ -851,7 +851,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from renco_cli.loops import LoopManager, dispatch_loop_command
+            from son_of_anton_cli.loops import LoopManager, dispatch_loop_command
         except Exception as exc:
             return _err(rid, 5030, f"loops unavailable: {exc}")
 
@@ -864,7 +864,7 @@ def _(rid, params: dict) -> dict:
         output = result.get("output") or ""
         if result.get("created"):
             try:
-                from renco_cli.loops import goal_blocks_loop_tick
+                from son_of_anton_cli.loops import goal_blocks_loop_tick
 
                 if goal_blocks_loop_tick(sid_key):
                     output += (
@@ -1172,7 +1172,7 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_bundles import resolve_bundle_command_key
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         _bundle_key = (
             resolve_bundle_command_key(_cmd_base)
@@ -1193,16 +1193,16 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import get_skill_commands
-        from renco_constants import reset_renco_home_override, set_renco_home_override
+        from son_of_anton_constants import reset_son_of_anton_home_override, set_son_of_anton_home_override
 
-        # Re-bind RENCO_HOME to the session's profile so get_skill_commands()
+        # Re-bind SON_OF_ANTON_HOME to the session's profile so get_skill_commands()
         # sees that profile's skills.external_dirs rather than whatever the
         # process-level env happens to carry (#88023): dispatch() runs this
         # handler on the pool with a copied context, and nothing upstream of
         # here binds the override for slash.exec.
         _profile_home = session.get("profile_home")
         _home_token = (
-            set_renco_home_override(_profile_home) if _profile_home else None
+            set_son_of_anton_home_override(_profile_home) if _profile_home else None
         )
         try:
             _cmd_key = f"/{_cmd_base}"
@@ -1212,7 +1212,7 @@ def _(rid, params: dict) -> dict:
                 )
         finally:
             if _home_token is not None:
-                reset_renco_home_override(_home_token)
+                reset_son_of_anton_home_override(_home_token)
     except Exception:
         pass
 
@@ -1220,7 +1220,7 @@ def _(rid, params: dict) -> dict:
     resolve_plugin_command_result = None
     if _cmd_base:
         try:
-            from renco_cli.plugins import (
+            from son_of_anton_cli.plugins import (
                 get_plugin_command_handler,
                 resolve_plugin_command_result,
             )
@@ -1431,7 +1431,7 @@ def _(rid, params: dict) -> dict:
 @method("plugins.list")
 def _(rid, params: dict) -> dict:
     try:
-        from renco_cli.plugins import get_plugin_manager
+        from son_of_anton_cli.plugins import get_plugin_manager
 
         return _ok(
             rid,
@@ -1457,9 +1457,9 @@ def _(rid, params: dict) -> dict:
         model = _resolve_model()
         from agent.secret_scope import get_secret
 
-        api_key = get_secret("RENCO_API_KEY", "") or cfg.get("api_key", "")
+        api_key = get_secret("SON_OF_ANTON_API_KEY", "") or cfg.get("api_key", "")
         masked = f"****{api_key[-4:]}" if len(api_key) > 4 else "(not set)"
-        base_url = os.environ.get("RENCO_BASE_URL", "") or cfg.get("base_url", "")
+        base_url = os.environ.get("SON_OF_ANTON_BASE_URL", "") or cfg.get("base_url", "")
 
         sections = [
             {
@@ -1482,7 +1482,7 @@ def _(rid, params: dict) -> dict:
                 "title": "Environment",
                 "rows": [
                     ["Working Dir", os.getcwd()],
-                    ["Config File", str(_renco_home / "config.yaml")],
+                    ["Config File", str(_son_of_anton_home / "config.yaml")],
                 ],
             },
         ]
@@ -1577,8 +1577,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, "names required")
 
     try:
-        from renco_cli.config import load_config, save_config
-        from renco_cli.tools_config import (
+        from son_of_anton_cli.config import load_config, save_config
+        from son_of_anton_cli.tools_config import (
             CONFIGURABLE_TOOLSETS,
             _apply_mcp_change,
             _apply_toolset_change,
@@ -1691,7 +1691,7 @@ def _(rid, params: dict) -> dict:
 @method("cron.manage")
 def _(rid, params: dict) -> dict:
     action, jid = params.get("action", "list"), params.get("name", "")
-    # Optional profile scoping: cronjob() keys off RENCO_HOME, so scoping the
+    # Optional profile scoping: cronjob() keys off SON_OF_ANTON_HOME, so scoping the
     # env override lets a per-profile cron store be listed/mutated even when
     # that profile runs a separate gateway. Omitted/None = the launch profile.
     # Mirrors ``skills.manage`` / ``mcp.catalog``.
@@ -1699,13 +1699,13 @@ def _(rid, params: dict) -> dict:
     token = None
     if profile:
         try:
-            from renco_cli.profiles import get_profile_dir
-            from renco_constants import set_renco_home_override
+            from son_of_anton_cli.profiles import get_profile_dir
+            from son_of_anton_constants import set_son_of_anton_home_override
 
             profile_dir = get_profile_dir(profile)
             if not profile_dir or not profile_dir.is_dir():
                 return _err(rid, 4064, f"profile '{profile}' not found")
-            token = set_renco_home_override(str(profile_dir))
+            token = set_son_of_anton_home_override(str(profile_dir))
         except Exception as e:
             return _err(rid, 5023, str(e))
     try:
@@ -1763,9 +1763,9 @@ def _(rid, params: dict) -> dict:
     finally:
         if token is not None:
             try:
-                from renco_constants import reset_renco_home_override
+                from son_of_anton_constants import reset_son_of_anton_home_override
 
-                reset_renco_home_override(token)
+                reset_son_of_anton_home_override(token)
             except Exception:
                 pass
 
@@ -1776,7 +1776,7 @@ def _(rid, params: dict) -> dict:
 
     Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
     so Ink can render and walk the tree locally without round-tripping the
-    gateway. Shares its renderer with the ``renco journey`` CLI.
+    gateway. Shares its renderer with the ``son-of-anton journey`` CLI.
     """
     try:
         cols = int(params.get("cols", 80) or 80)
@@ -1838,18 +1838,18 @@ def _(rid, params: dict) -> dict:
     token = None
     if profile:
         try:
-            from renco_cli.profiles import get_profile_dir
-            from renco_constants import set_renco_home_override
+            from son_of_anton_cli.profiles import get_profile_dir
+            from son_of_anton_constants import set_son_of_anton_home_override
 
             profile_dir = get_profile_dir(profile)
             if not profile_dir or not profile_dir.is_dir():
                 return _err(rid, 4064, f"profile '{profile}' not found")
-            token = set_renco_home_override(str(profile_dir))
+            token = set_son_of_anton_home_override(str(profile_dir))
         except Exception as e:
             return _err(rid, 5024, str(e))
     try:
         if action == "list":
-            from renco_cli.banner import get_available_skills
+            from son_of_anton_cli.banner import get_available_skills
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
@@ -1877,7 +1877,7 @@ def _(rid, params: dict) -> dict:
                 },
             )
         if action == "install":
-            from renco_cli.skills_hub import do_install
+            from son_of_anton_cli.skills_hub import do_install
 
             class _Q:
                 def print(self, *a, **k):
@@ -1886,7 +1886,7 @@ def _(rid, params: dict) -> dict:
             do_install(query, skip_confirm=True, console=_Q())
             return _ok(rid, {"installed": True, "name": query})
         if action == "browse":
-            from renco_cli.skills_hub import browse_skills
+            from son_of_anton_cli.skills_hub import browse_skills
 
             pg = int(params.get("page", 0) or 0) or (
                 int(query) if query.isdigit() else 1
@@ -1895,7 +1895,7 @@ def _(rid, params: dict) -> dict:
                 rid, browse_skills(page=pg, page_size=int(params.get("page_size", 20)))
             )
         if action == "inspect":
-            from renco_cli.skills_hub import inspect_skill
+            from son_of_anton_cli.skills_hub import inspect_skill
 
             return _ok(rid, {"info": inspect_skill(query) or {}})
         return _err(rid, 4017, f"unknown skills action: {action}")
@@ -1904,9 +1904,9 @@ def _(rid, params: dict) -> dict:
     finally:
         if token is not None:
             try:
-                from renco_constants import reset_renco_home_override
+                from son_of_anton_constants import reset_son_of_anton_home_override
 
-                reset_renco_home_override(token)
+                reset_son_of_anton_home_override(token)
             except Exception:
                 pass
 
@@ -1917,7 +1917,7 @@ def _(rid, params: dict) -> dict:
 
     Params: optional ``profile`` (defaults to the launch profile). Result:
     ``{servers: [{name, description, installed, enabled, requires: [env
-    keys], transport}]}`` — the same catalog `renco mcp` offers, so
+    keys], transport}]}`` — the same catalog `son-of-anton mcp` offers, so
     capability UIs can present the full menu and know which entries need
     setup (missing requires) before they'll work.
     """
@@ -1925,15 +1925,15 @@ def _(rid, params: dict) -> dict:
     token = None
     try:
         if profile:
-            from renco_cli.profiles import get_profile_dir
-            from renco_constants import set_renco_home_override
+            from son_of_anton_cli.profiles import get_profile_dir
+            from son_of_anton_constants import set_son_of_anton_home_override
 
             profile_dir = get_profile_dir(profile)
             if not profile_dir or not profile_dir.is_dir():
                 return _err(rid, 4064, f"profile '{profile}' not found")
-            token = set_renco_home_override(str(profile_dir))
+            token = set_son_of_anton_home_override(str(profile_dir))
 
-        from renco_cli import mcp_catalog
+        from son_of_anton_cli import mcp_catalog
 
         out = []
         for entry in mcp_catalog.list_catalog():
@@ -1962,9 +1962,9 @@ def _(rid, params: dict) -> dict:
     finally:
         if token is not None:
             try:
-                from renco_constants import reset_renco_home_override
+                from son_of_anton_constants import reset_son_of_anton_home_override
 
-                reset_renco_home_override(token)
+                reset_son_of_anton_home_override(token)
             except Exception:
                 pass
 
@@ -1972,11 +1972,11 @@ def _(rid, params: dict) -> dict:
 # ─── Per-profile MCP server lifecycle (mcp.servers.*) ────────────────────────
 #
 # Gateway RPCs mirroring the dashboard's REST surface
-# (renco_cli/web_routers/mcp.py) so a desktop plugin can manage MCP servers for
+# (son_of_anton_cli/web_routers/mcp.py) so a desktop plugin can manage MCP servers for
 # ANY profile, not just the launch profile. Each accepts an optional ``profile``
-# param that scopes RENCO_HOME via set_renco_home_override (omitted/None = the
+# param that scopes SON_OF_ANTON_HOME via set_son_of_anton_home_override (omitted/None = the
 # launch profile) in a try/finally, exactly like ``skills.manage`` / ``mcp.catalog``.
-# All persistence reuses renco_cli/mcp_config.py helpers — no logic is duplicated.
+# All persistence reuses son_of_anton_cli/mcp_config.py helpers — no logic is duplicated.
 # Shared helpers (resolve_profile / reset_profile / summarize_server) live in
 # tui_gateway.mcp_rpc_helpers and are imported at call time: these handlers are
 # rebound onto server.py's globals at install time, so a plain module-level def
@@ -1995,7 +1995,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.mcp_config import _get_mcp_servers
+        from son_of_anton_cli.mcp_config import _get_mcp_servers
 
         servers = _get_mcp_servers()
         return _ok(
@@ -2034,7 +2034,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.mcp_config import (
+        from son_of_anton_cli.mcp_config import (
             _apply_mcp_preset,
             _get_mcp_servers,
             _save_bearer_auth_token,
@@ -2110,8 +2110,8 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.config import load_config, save_config, save_env_value
-        from renco_cli.mcp_config import (
+        from son_of_anton_cli.config import load_config, save_config, save_env_value
+        from son_of_anton_cli.mcp_config import (
             _bearer_auth_headers,
             _env_key_for_server,
             _get_mcp_servers,
@@ -2186,7 +2186,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.mcp_config import (
+        from son_of_anton_cli.mcp_config import (
             _get_mcp_servers,
             _oauth_tokens_present,
             _probe_single_server,
@@ -2259,7 +2259,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.mcp_config import _remove_mcp_server
+        from son_of_anton_cli.mcp_config import _remove_mcp_server
 
         removed = _remove_mcp_server(name)
         if not removed:
@@ -2279,11 +2279,11 @@ def _(rid, params: dict) -> dict:
     ``{ok: true, session_id, auth_url, flow: "pkce"}``.
 
     The client (desktop) opens ``auth_url`` in the native browser
-    (``window.rencoDesktop.openExternal``) and then polls
+    (``window.son-of-antonDesktop.openExternal``) and then polls
     ``mcp.servers.oauth.poll`` with the returned ``session_id`` until
     ``status == "approved"``. This mirrors the provider-OAuth start/poll model
     (``/api/providers/oauth/{id}/start`` + ``/poll``): a background worker drives
-    the SAME interactive MCP OAuth machinery ``renco mcp login`` uses
+    the SAME interactive MCP OAuth machinery ``son-of-anton mcp login`` uses
     (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
     listener captures the browser redirect — no FastAPI request object needed.
 
@@ -2297,8 +2297,8 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.mcp_config import _get_mcp_servers
-        from renco_constants import get_renco_home
+        from son_of_anton_cli.mcp_config import _get_mcp_servers
+        from son_of_anton_constants import get_son_of_anton_home
         from tui_gateway import mcp_oauth_sessions
 
         servers = _get_mcp_servers()
@@ -2315,8 +2315,8 @@ def _(rid, params: dict) -> dict:
             )
         cfg["auth"] = "oauth"
 
-        renco_home = str(get_renco_home().expanduser().resolve(strict=False))
-        result = mcp_oauth_sessions.start_flow(renco_home, name, cfg)
+        son_of_anton_home = str(get_son_of_anton_home().expanduser().resolve(strict=False))
+        result = mcp_oauth_sessions.start_flow(son_of_anton_home, name, cfg)
         return _ok(
             rid,
             {
@@ -2395,7 +2395,7 @@ def _(rid, params: dict) -> dict:
     """List installed plugins with activation state, or toggle one on/off.
 
     Backs the TUI Plugins Hub. Uses the same disk-discovery + enable/disable
-    primitives as ``renco plugins`` / the dashboard, so the three surfaces
+    primitives as ``son-of-anton plugins`` / the dashboard, so the three surfaces
     agree on what's installed and what's enabled.
 
     Actions:
@@ -2403,12 +2403,12 @@ def _(rid, params: dict) -> dict:
                        status, portable}], "user_count": N, "bundled_count": M}
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
-      - ``install`` → git-clone into ``~/.renco/plugins/`` (non-interactive).
+      - ``install`` → git-clone into ``~/.son-of-anton/plugins/`` (non-interactive).
                        Params: ``identifier`` or ``repo``, optional ``force``,
                        ``enable`` (default True). Returns dashboard install dict.
 
     Accepts an optional ``profile`` param (same contract as mcp.servers.*):
-    plugins live under each profile's RENCO_HOME, so a client can list or
+    plugins live under each profile's SON_OF_ANTON_HOME, so a client can list or
     toggle another profile's plugins without switching the whole app.
     """
     action = params.get("action", "list")
@@ -2416,7 +2416,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from renco_cli.plugins_cmd import (
+        from son_of_anton_cli.plugins_cmd import (
             _bundled_default_on,
             _discover_all_plugins,
             _get_disabled_set,
@@ -2455,7 +2455,7 @@ def _(rid, params: dict) -> dict:
                         "source": source,
                         "status": status,
                         # Agent Plugins v1 package (plugin.json — the portable
-                        # skills/MCP format) vs a native Renco plugin.
+                        # skills/MCP format) vs a native Son of Anton plugin.
                         "portable": _is_portable_plugin_dir(_dir),
                     }
                 )
@@ -2474,7 +2474,7 @@ def _(rid, params: dict) -> dict:
             )
 
         if action == "toggle":
-            from renco_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+            from son_of_anton_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
             # Prefer the canonical key — bare names are ambiguous when two
             # category plugins share one (image_gen/fal vs video_gen/fal).
@@ -2499,7 +2499,7 @@ def _(rid, params: dict) -> dict:
             )
 
         if action == "install":
-            from renco_cli.plugins_cmd import dashboard_install_plugin
+            from son_of_anton_cli.plugins_cmd import dashboard_install_plugin
 
             ident = (
                 params.get("identifier") or params.get("repo") or ""
@@ -2545,7 +2545,7 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
-        from renco_cli._subprocess_compat import windows_hide_flags
+        from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),

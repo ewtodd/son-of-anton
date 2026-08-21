@@ -8,8 +8,8 @@ OK="${GREEN}✔${NC}"; FAIL="${RED}✘${NC}"; WARN="${YELLOW}⚠${NC}"
 
 TWOZERO_URL="https://www.404zero.com/pisang/twozero.tox"
 TOX_PATH="$HOME/Downloads/twozero.tox"
-RENCO_HOME_DIR="${RENCO_HOME:-$HOME/.renco}"
-RENCO_CFG="${RENCO_HOME_DIR}/config.yaml"
+SON_OF_ANTON_HOME_DIR="${SON_OF_ANTON_HOME:-$HOME/.son-of-anton}"
+SON_OF_ANTON_CFG="${SON_OF_ANTON_HOME_DIR}/config.yaml"
 MCP_PORT=40404
 MCP_ENDPOINT="http://localhost:${MCP_PORT}/mcp"
 
@@ -43,18 +43,18 @@ else
     fi
 fi
 
-# ── 3. Ensure Renco config has twozero_td MCP entry ──
-if [[ ! -f "$RENCO_CFG" ]]; then
-    echo -e " ${FAIL} Renco config not found at ${RENCO_CFG}"
-    manual_steps+=("Create ${RENCO_CFG} with twozero_td MCP server entry")
-elif grep -q 'twozero_td' "$RENCO_CFG" 2>/dev/null; then
-    echo -e " ${OK} twozero_td MCP entry exists in Renco config"
+# ── 3. Ensure Son of Anton config has twozero_td MCP entry ──
+if [[ ! -f "$SON_OF_ANTON_CFG" ]]; then
+    echo -e " ${FAIL} Son of Anton config not found at ${SON_OF_ANTON_CFG}"
+    manual_steps+=("Create ${SON_OF_ANTON_CFG} with twozero_td MCP server entry")
+elif grep -q 'twozero_td' "$SON_OF_ANTON_CFG" 2>/dev/null; then
+    echo -e " ${OK} twozero_td MCP entry exists in Son of Anton config"
 else
-    echo -e " ${WARN} Adding twozero_td MCP entry to Renco config..."
+    echo -e " ${WARN} Adding twozero_td MCP entry to Son of Anton config..."
     python3 -c "
 import yaml, sys, copy
 
-cfg_path = '$RENCO_CFG'
+cfg_path = '$SON_OF_ANTON_CFG'
 with open(cfg_path, 'r') as f:
     cfg = yaml.safe_load(f) or {}
 
@@ -71,8 +71,8 @@ if 'twozero_td' not in cfg['mcp_servers']:
         yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 " 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
               || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
-                   manual_steps+=("Add twozero_td MCP entry to ${RENCO_CFG} manually"); }
-    manual_steps+=("Restart Renco session to pick up config change")
+                   manual_steps+=("Add twozero_td MCP entry to ${SON_OF_ANTON_CFG} manually"); }
+    manual_steps+=("Restart Son of Anton session to pick up config change")
 fi
 
 # ── 4. Test if MCP port is responding ──

@@ -27,34 +27,34 @@ def _stringify_filter_value(value: Any) -> str:
 
 
 def _resolve_profile_path(path_value: Any) -> Optional[Path]:
-    """Resolve a user path, mapping ~/.renco to the active profile home."""
+    """Resolve a user path, mapping ~/.son-of-anton to the active profile home."""
     if not isinstance(path_value, str):
         return None
     raw = os.path.expandvars(path_value.strip())
     if not raw:
         return None
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    renco_home = get_renco_home()
-    if raw == "~/.renco":
-        return renco_home
-    if raw.startswith("~/.renco/"):
-        return renco_home / raw.removeprefix("~/.renco/")
+    son_of_anton_home = get_son_of_anton_home()
+    if raw == "~/.son-of-anton":
+        return son_of_anton_home
+    if raw.startswith("~/.son-of-anton/"):
+        return son_of_anton_home / raw.removeprefix("~/.son-of-anton/")
     path = Path(raw).expanduser()
     if path.is_absolute():
         return path
-    return renco_home / path
+    return son_of_anton_home / path
 
 
 def _resolve_script_path(script_value: Any) -> tuple[Optional[Path], Optional[str]]:
-    """Resolve a route script under RENCO_HOME/scripts."""
+    """Resolve a route script under SON_OF_ANTON_HOME/scripts."""
     if not isinstance(script_value, str) or not script_value.strip():
         return None, "script path is empty"
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    scripts_root = (get_renco_home() / "scripts").resolve()
+    scripts_root = (get_son_of_anton_home() / "scripts").resolve()
     raw_text = os.path.expandvars(script_value.strip())
-    if raw_text == "~/.renco" or raw_text.startswith("~/.renco/"):
+    if raw_text == "~/.son-of-anton" or raw_text.startswith("~/.son-of-anton/"):
         mapped = _resolve_profile_path(raw_text)
         candidate = mapped.resolve() if mapped is not None else scripts_root
     else:
@@ -296,7 +296,7 @@ class WebhookRouteProcessor:
             return False, None
         if (
             transformed.get("[SILENT]") is True
-            or transformed.get("__renco_ignore__") is True
+            or transformed.get("__son_of_anton_ignore__") is True
         ):
             return False, None
         return True, transformed

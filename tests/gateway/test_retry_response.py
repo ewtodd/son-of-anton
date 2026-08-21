@@ -28,7 +28,7 @@ async def test_retry_returns_response_not_none(gateway):
         session_id="test-session"
     )
     gateway.session_store.load_transcript.return_value = [
-        {"role": "user", "content": "Hello Renco"},
+        {"role": "user", "content": "Hello Son of Anton"},
         {"role": "assistant", "content": "Hi there!"},
     ]
     gateway.session_store.rewrite_transcript = MagicMock()

@@ -6,8 +6,8 @@
 { inputs, ... }: {
   perSystem = { pkgs, lib, self', ... }:
     let
-      renco-agent = self'.packages.default;
-      rencoVenv = renco-agent.rencoVenv;
+      son-of-anton = self'.packages.default;
+      son-of-antonVenv = son-of-anton.son-of-antonVenv;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
@@ -33,7 +33,7 @@
                 fsType = "ext4";
               };
             }
-            { services.renco-agent = settings; }
+            { services.son-of-anton = settings; }
           ];
         };
 
@@ -45,20 +45,20 @@
             inputs.self.homeManagerModules.default
             {
               home = {
-                username = "renco-check";
-                homeDirectory = "/home/renco-check";
+                username = "son-of-anton-check";
+                homeDirectory = "/home/son-of-anton-check";
                 stateVersion = "24.11";
               };
             }
-            { services.renco-agent = settings; }
+            { services.son-of-anton = settings; }
           ];
         };
 
       # The option names that each module defines under
-      # services.renco-agent. The internal names that the module system adds
+      # services.son-of-anton. The internal names that the module system adds
       # are not in the list.
       moduleOptionNames =
-        eval: lib.attrNames (lib.filterAttrs (n: _: !lib.hasPrefix "_" n) eval.options.services.renco-agent);
+        eval: lib.attrNames (lib.filterAttrs (n: _: !lib.hasPrefix "_" n) eval.options.services.son-of-anton);
 
       # These options belong to one module by design. The check does not
       # compare the two lists against each other, because that test only
@@ -74,17 +74,17 @@
       ];
       homeOnlyOptions = [
         "gateway"
-        "rencoHome"
+        "son-of-antonHome"
         "installPackage"
       ];
 
       # Auto-generated config key reference — always in sync with Python
-      configKeys = pkgs.runCommand "renco-config-keys" {} ''
+      configKeys = pkgs.runCommand "son-of-anton-config-keys" {} ''
         set -euo pipefail
         export HOME=$TMPDIR
-        ${rencoVenv}/bin/python3 -c '
+        ${son-of-antonVenv}/bin/python3 -c '
 import json, sys
-from renco_cli.config import DEFAULT_CONFIG
+from son_of_anton_cli.config import DEFAULT_CONFIG
 
 def leaf_paths(d, prefix=""):
     paths = []
@@ -116,7 +116,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
           failures = builtins.filter (r: !r.result.success) results;
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
-        in pkgs.runCommand "renco-cross-eval" { } (
+        in pkgs.runCommand "son-of-anton-cross-eval" { } (
           if failures != [] then
             throw "Package fails to evaluate on:\n${failMsg}"
           else ''
@@ -129,14 +129,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # Verify the default package builds successfully (cross-platform).
         # On Linux the runtime checks below already depend on the package,
         # but this ensures darwin builders also build it during flake check.
-        build-package = pkgs.runCommand "renco-build-package" { } ''
-          echo "PASS: package built at ${renco-agent}"
+        build-package = pkgs.runCommand "son-of-anton-build-package" { } ''
+          echo "PASS: package built at ${son-of-anton}"
           mkdir -p $out
           echo "ok" > $out/result
         '';
 
         # Verify the devShell builds successfully (cross-platform).
-        build-devshell = pkgs.runCommand "renco-build-devshell" { } ''
+        build-devshell = pkgs.runCommand "son-of-anton-build-devshell" { } ''
           echo "PASS: devShell built at ${self'.devShells.default}"
           mkdir -p $out
           echo "ok" > $out/result
@@ -154,9 +154,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               gateway.enable = true;
               backend.mode = "serve";
               settings.model.default = "test/model";
-              environment.RENCO_TEST = "1";
-              environmentFiles = [ "/run/secrets/renco-env" ];
-              rencoHomeFiles."SOUL.md" = "test soul";
+              environment.SON_OF_ANTON_TEST = "1";
+              environmentFiles = [ "/run/secrets/son-of-anton-env" ];
+              son-of-antonHomeFiles."SOUL.md" = "test soul";
               # documents needs an explicit workingDirectory. The check
               # workspace-files-need-a-directory below asserts that rule.
               workingDirectory = "/home/test-user/workspace";
@@ -169,18 +169,18 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             cfg = enabled.config;
 
             # The gateway and the backend are two processes with one
-            # RENCO_HOME.
+            # SON_OF_ANTON_HOME.
             processes =
               if pkgs.stdenv.hostPlatform.isDarwin then
                 lib.mapAttrs (_: agent: {
                   argv = agent.config.ProgramArguments;
                   env = agent.config.EnvironmentVariables;
-                }) (lib.filterAttrs (n: _: lib.hasPrefix "renco" n) cfg.launchd.agents)
+                }) (lib.filterAttrs (n: _: lib.hasPrefix "son-of-anton" n) cfg.launchd.agents)
               else
                 lib.mapAttrs (_: unit: {
                   argv = [ unit.Service.ExecStart ];
                   env = unit.Service.Environment;
-                }) (lib.filterAttrs (n: _: lib.hasPrefix "renco" n) cfg.systemd.user.services);
+                }) (lib.filterAttrs (n: _: lib.hasPrefix "son-of-anton" n) cfg.systemd.user.services);
 
             names = lib.attrNames processes;
             argvOf = name: lib.concatStringsSep " " (lib.flatten (processes.${name}.argv));
@@ -196,48 +196,48 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 if lib.isAttrs env then lib.mapAttrsToList (k: v: "${k}=${toString v}") env else env
               );
 
-            activation = cfg.home.activation.rencoAgentSetup.data;
+            activation = cfg.home.activation.son-of-antonAgentSetup.data;
 
             failures =
               lib.optional (names != [
-                "renco-agent"
-                "renco-backend"
-              ]) "expected renco-agent + renco-backend processes, got: ${toString names}"
+                "son-of-anton"
+                "son-of-anton-backend"
+              ]) "expected son-of-anton + son-of-anton-backend processes, got: ${toString names}"
               ++ lib.optional (
-                !lib.hasInfix "bin/renco gateway" (argvOf "renco-agent")
-              ) "gateway process does not run `renco gateway`: ${argvOf "renco-agent"}"
+                !lib.hasInfix "bin/son-of-anton gateway" (argvOf "son-of-anton")
+              ) "gateway process does not run `son-of-anton gateway`: ${argvOf "son-of-anton"}"
               ++ lib.optional (
-                !lib.hasInfix "bin/renco serve" (argvOf "renco-backend")
-              ) "backend process does not run `renco serve`: ${argvOf "renco-backend"}"
+                !lib.hasInfix "bin/son-of-anton serve" (argvOf "son-of-anton-backend")
+              ) "backend process does not run `son-of-anton serve`: ${argvOf "son-of-anton-backend"}"
               ++ lib.optional (
-                !lib.hasInfix "--no-open" (argvOf "renco-backend")
+                !lib.hasInfix "--no-open" (argvOf "son-of-anton-backend")
               ) "backend must pass --no-open so a service never opens a browser"
               ++ lib.optional (
-                lib.any (n: !lib.hasInfix "/home/renco-check/.renco" (envOf n)) names
-              ) "gateway and backend must share one RENCO_HOME"
+                lib.any (n: !lib.hasInfix "/home/son-of-anton-check/.son-of-anton" (envOf n)) names
+              ) "gateway and backend must share one SON_OF_ANTON_HOME"
               ++ lib.optional (
-                cfg.home.sessionVariables.RENCO_HOME or null != "/home/renco-check/.renco"
-              ) "installPackage must export RENCO_HOME for interactive shells"
+                cfg.home.sessionVariables.SON_OF_ANTON_HOME or null != "/home/son-of-anton-check/.son-of-anton"
+              ) "installPackage must export SON_OF_ANTON_HOME for interactive shells"
               ++ lib.optional (
-                !lib.hasInfix "renco-config-merge" activation
+                !lib.hasInfix "son-of-anton-config-merge" activation
               ) "activation must deep-merge config.yaml, not overwrite it"
               ++ lib.optional (
-                !lib.hasInfix "/home/renco-check/.renco/SOUL.md" activation
-              ) "rencoHomeFiles must install into RENCO_HOME"
+                !lib.hasInfix "/home/son-of-anton-check/.son-of-anton/SOUL.md" activation
+              ) "son-of-antonHomeFiles must install into SON_OF_ANTON_HOME"
               ++ lib.optional (
                 !lib.hasInfix "/home/test-user/workspace/AGENTS.md" activation
               ) "documents must install into workingDirectory"
-              # The CLI reads RENCO_MANAGED to name the rebuild command when
+              # The CLI reads SON_OF_ANTON_MANAGED to name the rebuild command when
               # it refuses to write the configuration. A Home Manager install
               # has no nixos-rebuild command. Thus it must not report NixOS.
               ++ lib.optional (
-                !lib.any (n: lib.hasInfix "RENCO_MANAGED=home-manager" (envOf n)) names
-              ) "processes must report RENCO_MANAGED=home-manager"
+                !lib.any (n: lib.hasInfix "SON_OF_ANTON_MANAGED=home-manager" (envOf n)) names
+              ) "processes must report SON_OF_ANTON_MANAGED=home-manager"
               ++ lib.optional (
-                !lib.hasInfix "renco-managed" activation
+                !lib.hasInfix "son-of-anton-managed" activation
               ) "activation must write a .managed marker naming the managing system";
           in
-          pkgs.runCommand "renco-home-manager-module" { } (
+          pkgs.runCommand "son-of-anton-home-manager-module" { } (
             if failures != [ ] then
               throw "Home Manager module check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
             else
@@ -272,7 +272,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             # of values reads it as untouched, but a comparison of priorities
             # sees the definition. This row is the reason that the code tests
             # the priority.
-            sameAsDefault = "/home/renco-check";
+            sameAsDefault = "/home/son-of-anton-check";
 
             cases = [
               {
@@ -301,8 +301,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 };
               }
               {
-                name = "rencoHomeFiles needs no directory";
-                ok = accepts { rencoHomeFiles."SOUL.md" = "x"; };
+                name = "son-of-antonHomeFiles needs no directory";
+                ok = accepts { son-of-antonHomeFiles."SOUL.md" = "x"; };
               }
               {
                 name = "no files at all is accepted";
@@ -312,7 +312,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
             failed = lib.filter (c: !c.ok) cases;
           in
-          pkgs.runCommand "renco-workspace-files-need-a-directory" { } (
+          pkgs.runCommand "son-of-anton-workspace-files-need-a-directory" { } (
             if failed != [ ] then
               throw "workspace-files rule failed:\n${
                 lib.concatMapStringsSep "\n" (c: "  - ${c.name}") failed
@@ -362,7 +362,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 staleHomeOnly != [ ]
               ) "homeOnlyOptions names options the Home Manager module no longer defines: ${toString staleHomeOnly}";
           in
-          pkgs.runCommand "renco-module-option-parity" { } (
+          pkgs.runCommand "son-of-anton-module-option-parity" { } (
             if failures != [ ] then
               throw "Module option parity failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
             else
@@ -382,32 +382,32 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               enable = true;
               backend.mode = "dashboard";
               settings.model.default = "test/model";
-              environmentFiles = [ "/run/secrets/renco-env" ];
-              rencoHomeFiles."SOUL.md" = "test soul";
+              environmentFiles = [ "/run/secrets/son-of-anton-env" ];
+              son-of-antonHomeFiles."SOUL.md" = "test soul";
             }).config;
 
-            units = lib.filterAttrs (n: _: lib.hasPrefix "renco" n) cfg.systemd.services;
+            units = lib.filterAttrs (n: _: lib.hasPrefix "son-of-anton" n) cfg.systemd.services;
             names = lib.attrNames units;
             execOf = name: units.${name}.serviceConfig.ExecStart;
-            activation = cfg.system.activationScripts."renco-agent-setup".text;
+            activation = cfg.system.activationScripts."son-of-anton-setup".text;
 
             failures =
               lib.optional (names != [
-                "renco-agent"
-                "renco-backend"
-              ]) "expected renco-agent + renco-backend units, got: ${toString names}"
+                "son-of-anton"
+                "son-of-anton-backend"
+              ]) "expected son-of-anton + son-of-anton-backend units, got: ${toString names}"
               ++ lib.optional (
-                !lib.hasInfix "bin/renco gateway" (execOf "renco-agent")
-              ) "gateway unit does not run `renco gateway`: ${execOf "renco-agent"}"
+                !lib.hasInfix "bin/son-of-anton gateway" (execOf "son-of-anton")
+              ) "gateway unit does not run `son-of-anton gateway`: ${execOf "son-of-anton"}"
               ++ lib.optional (
-                !lib.hasInfix "bin/renco dashboard" (execOf "renco-backend")
-              ) "backend unit does not run `renco dashboard`: ${execOf "renco-backend"}"
+                !lib.hasInfix "bin/son-of-anton dashboard" (execOf "son-of-anton-backend")
+              ) "backend unit does not run `son-of-anton dashboard`: ${execOf "son-of-anton-backend"}"
               ++ lib.optional (
-                units.renco-agent.environment.RENCO_HOME != units.renco-backend.environment.RENCO_HOME
-              ) "gateway and backend must share one RENCO_HOME"
+                units.son-of-anton.environment.SON_OF_ANTON_HOME != units.son-of-anton-backend.environment.SON_OF_ANTON_HOME
+              ) "gateway and backend must share one SON_OF_ANTON_HOME"
               ++ lib.optional (
-                !lib.hasInfix "/var/lib/renco/.renco/SOUL.md" activation
-              ) "rencoHomeFiles must install into RENCO_HOME";
+                !lib.hasInfix "/var/lib/son-of-anton/.son-of-anton/SOUL.md" activation
+              ) "son-of-antonHomeFiles must install into SON_OF_ANTON_HOME";
 
             # You cannot use container mode and the backend together. The
             # module says so with an assertion. Without the assertion it
@@ -422,7 +422,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 true
             );
           in
-          pkgs.runCommand "renco-nixos-module" { } (
+          pkgs.runCommand "son-of-anton-nixos-module" { } (
             if failures != [ ] then
               throw "NixOS module check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
             else if containerConflict.success then
@@ -437,7 +437,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
         # ── How .env is built ────────────────────────────────────────────
         # This check runs the real script that both modules use to build
-        # $RENCO_HOME/.env. The important property is that a second run
+        # $SON_OF_ANTON_HOME/.env. The important property is that a second run
         # gives the same result. Activation runs at each rebuild. If the
         # script added the secrets to the file that exists, the file would
         # grow at each rebuild. The script writes the file again from the
@@ -448,11 +448,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             envScript = (import ./moduleCommon.nix { inherit lib; }).mkEnvScript {
               inherit pkgs;
               environment = {
-                RENCO_PUBLIC = "visible";
+                SON_OF_ANTON_PUBLIC = "visible";
               };
             };
           in
-          pkgs.runCommand "renco-env-file-assembly" { } ''
+          pkgs.runCommand "son-of-anton-env-file-assembly" { } ''
             set -e
             workdir=$(mktemp -d)
             printf 'SECRET_TOKEN=s3cret\n' > "$workdir/secret-a"
@@ -462,7 +462,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             ${envScript} "$workdir/.env" 0600 "$workdir/secret-a" "$workdir/secret-b"
             first=$(cat "$workdir/.env")
 
-            grep -qx 'RENCO_PUBLIC=visible' "$workdir/.env" || \
+            grep -qx 'SON_OF_ANTON_PUBLIC=visible' "$workdir/.env" || \
               (echo "FAIL: non-secret environment missing"; cat "$workdir/.env"; exit 1)
             grep -qx 'SECRET_TOKEN=s3cret' "$workdir/.env" || \
               (echo "FAIL: secret from environmentFile missing"; cat "$workdir/.env"; exit 1)
@@ -514,7 +514,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           let
             common = import ./moduleCommon.nix { inherit lib; };
             cfgFor = mode: {
-              package = renco-agent;
+              package = son-of-anton;
               extraPythonPackages = [ ];
               extraDependencyGroups = [ ];
               extraArgs = [ ];
@@ -525,10 +525,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 extraArgs = [ ];
               };
             };
-            sentinel = "--renco-nix-argv-probe";
+            sentinel = "--son-of-anton-nix-argv-probe";
             probe = argv: lib.escapeShellArgs (argv ++ [ sentinel ]);
           in
-          pkgs.runCommand "renco-service-argv" { } ''
+          pkgs.runCommand "son-of-anton-service-argv" { } ''
             set -e
             export HOME=$(mktemp -d)
 
@@ -563,15 +563,15 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           '';
 
         # Verify binaries exist and are executable
-        package-contents = pkgs.runCommand "renco-package-contents" { } ''
+        package-contents = pkgs.runCommand "son-of-anton-package-contents" { } ''
           set -e
           echo "=== Checking binaries ==="
-          test -x ${renco-agent}/bin/renco || (echo "FAIL: renco binary missing"; exit 1)
-          test -x ${renco-agent}/bin/renco-agent || (echo "FAIL: renco-agent binary missing"; exit 1)
+          test -x ${son-of-anton}/bin/son-of-anton || (echo "FAIL: son-of-anton binary missing"; exit 1)
+          test -x ${son-of-anton}/bin/son-of-anton || (echo "FAIL: son-of-anton binary missing"; exit 1)
           echo "PASS: All binaries present"
 
           echo "=== Checking version ==="
-          ${renco-agent}/bin/renco --version 2>&1 | grep -qi "renco" || (echo "FAIL: version check"; exit 1)
+          ${son-of-anton}/bin/son-of-anton --version 2>&1 | grep -qi "son-of-anton" || (echo "FAIL: version check"; exit 1)
           echo "PASS: Version check"
 
           echo "=== All checks passed ==="
@@ -580,11 +580,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify every pyproject.toml [project.scripts] entry has a wrapped binary
-        entry-points-sync = pkgs.runCommand "renco-entry-points-sync" { } ''
+        entry-points-sync = pkgs.runCommand "son-of-anton-entry-points-sync" { } ''
           set -e
           echo "=== Checking entry points match pyproject.toml [project.scripts] ==="
-          for bin in renco renco-agent renco-acp; do
-            test -x ${renco-agent}/bin/$bin || (echo "FAIL: $bin binary missing from Nix package"; exit 1)
+          for bin in son-of-anton son-of-anton son-of-anton-acp; do
+            test -x ${son-of-anton}/bin/$bin || (echo "FAIL: $bin binary missing from Nix package"; exit 1)
             echo "PASS: $bin present"
           done
 
@@ -593,13 +593,13 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify CLI subcommands are accessible
-        cli-commands = pkgs.runCommand "renco-cli-commands" { } ''
+        cli-commands = pkgs.runCommand "son-of-anton-cli-commands" { } ''
           set -e
           export HOME=$(mktemp -d)
 
-          echo "=== Checking renco --help ==="
-          ${renco-agent}/bin/renco --help 2>&1 | grep -q "gateway" || (echo "FAIL: gateway subcommand missing"; exit 1)
-          ${renco-agent}/bin/renco --help 2>&1 | grep -q "config" || (echo "FAIL: config subcommand missing"; exit 1)
+          echo "=== Checking son-of-anton --help ==="
+          ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "gateway" || (echo "FAIL: gateway subcommand missing"; exit 1)
+          ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "config" || (echo "FAIL: config subcommand missing"; exit 1)
           echo "PASS: All subcommands accessible"
 
           echo "=== All CLI checks passed ==="
@@ -608,30 +608,30 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify bundled skills are present in the package
-        bundled-skills = pkgs.runCommand "renco-bundled-skills" { } ''
+        bundled-skills = pkgs.runCommand "son-of-anton-bundled-skills" { } ''
           set -e
           echo "=== Checking bundled skills ==="
-          test -d ${renco-agent}/share/renco-agent/skills || (echo "FAIL: skills directory missing"; exit 1)
+          test -d ${son-of-anton}/share/son-of-anton/skills || (echo "FAIL: skills directory missing"; exit 1)
           echo "PASS: skills directory exists"
 
           # -L: skills/ is a symlink to the filtered source store path
-          SKILL_COUNT=$(find -L ${renco-agent}/share/renco-agent/skills -name "SKILL.md" | wc -l)
+          SKILL_COUNT=$(find -L ${son-of-anton}/share/son-of-anton/skills -name "SKILL.md" | wc -l)
           test "$SKILL_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files found in skills directory"; exit 1)
           echo "PASS: $SKILL_COUNT bundled skills found"
 
-          grep -q "RENCO_BUNDLED_SKILLS" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_BUNDLED_SKILLS not in wrapper"; exit 1)
-          echo "PASS: RENCO_BUNDLED_SKILLS set in wrapper"
+          grep -q "SON_OF_ANTON_BUNDLED_SKILLS" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_BUNDLED_SKILLS not in wrapper"; exit 1)
+          echo "PASS: SON_OF_ANTON_BUNDLED_SKILLS set in wrapper"
 
           # Optional skills ship via the wrapper too (pythonSrc excludes
           # them from the wheel, so the env var is the only path in nix).
-          test -d ${renco-agent}/share/renco-agent/optional-skills || \
+          test -d ${son-of-anton}/share/son-of-anton/optional-skills || \
             (echo "FAIL: optional-skills directory missing"; exit 1)
-          OPT_COUNT=$(find -L ${renco-agent}/share/renco-agent/optional-skills -name "SKILL.md" | wc -l)
+          OPT_COUNT=$(find -L ${son-of-anton}/share/son-of-anton/optional-skills -name "SKILL.md" | wc -l)
           test "$OPT_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files in optional-skills"; exit 1)
-          grep -q "RENCO_OPTIONAL_SKILLS" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_OPTIONAL_SKILLS not in wrapper"; exit 1)
-          echo "PASS: $OPT_COUNT optional skills found, RENCO_OPTIONAL_SKILLS set in wrapper"
+          grep -q "SON_OF_ANTON_OPTIONAL_SKILLS" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_OPTIONAL_SKILLS not in wrapper"; exit 1)
+          echo "PASS: $OPT_COUNT optional skills found, SON_OF_ANTON_OPTIONAL_SKILLS set in wrapper"
 
           echo "=== All bundled skills checks passed ==="
           mkdir -p $out
@@ -639,19 +639,19 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify bundled plugins (platforms, memory, context_engine) are present
-        bundled-plugins = pkgs.runCommand "renco-bundled-plugins" { } ''
+        bundled-plugins = pkgs.runCommand "son-of-anton-bundled-plugins" { } ''
           set -e
           echo "=== Checking bundled plugins ==="
-          test -d ${renco-agent}/share/renco-agent/plugins || (echo "FAIL: plugins directory missing"; exit 1)
+          test -d ${son-of-anton}/share/son-of-anton/plugins || (echo "FAIL: plugins directory missing"; exit 1)
           echo "PASS: plugins directory exists"
 
-          test -f ${renco-agent}/share/renco-agent/plugins/platforms/irc/plugin.yaml || \
+          test -f ${son-of-anton}/share/son-of-anton/plugins/platforms/irc/plugin.yaml || \
             (echo "FAIL: irc plugin manifest missing"; exit 1)
           echo "PASS: irc plugin manifest present"
 
-          grep -q "RENCO_BUNDLED_PLUGINS" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_BUNDLED_PLUGINS not in wrapper"; exit 1)
-          echo "PASS: RENCO_BUNDLED_PLUGINS set in wrapper"
+          grep -q "SON_OF_ANTON_BUNDLED_PLUGINS" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_BUNDLED_PLUGINS not in wrapper"; exit 1)
+          echo "PASS: SON_OF_ANTON_BUNDLED_PLUGINS set in wrapper"
 
           echo "=== All bundled plugins checks passed ==="
           mkdir -p $out
@@ -661,32 +661,32 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # Verify bundled i18n locale catalogs are present and resolvable.
         # Regression for #23943 / #27632 / #35374 — sealed Nix venvs dropped
         # locales/, surfacing raw i18n keys like gateway.reset.header_default.
-        bundled-locales = pkgs.runCommand "renco-bundled-locales" { } ''
+        bundled-locales = pkgs.runCommand "son-of-anton-bundled-locales" { } ''
           set -e
           echo "=== Checking bundled locales ==="
-          test -d ${renco-agent}/share/renco-agent/locales || (echo "FAIL: locales directory missing"; exit 1)
+          test -d ${son-of-anton}/share/son-of-anton/locales || (echo "FAIL: locales directory missing"; exit 1)
           echo "PASS: locales directory exists"
 
           # -L: locales/ is a symlink to the source store path
-          LOC_COUNT=$(find -L ${renco-agent}/share/renco-agent/locales -name "*.yaml" | wc -l)
+          LOC_COUNT=$(find -L ${son-of-anton}/share/son-of-anton/locales -name "*.yaml" | wc -l)
           test "$LOC_COUNT" -ge 16 || (echo "FAIL: expected >=16 catalogs, found $LOC_COUNT"; exit 1)
           echo "PASS: $LOC_COUNT locale catalogs found"
 
-          test -f ${renco-agent}/share/renco-agent/locales/en.yaml || (echo "FAIL: en.yaml missing"; exit 1)
+          test -f ${son-of-anton}/share/son-of-anton/locales/en.yaml || (echo "FAIL: en.yaml missing"; exit 1)
           echo "PASS: en.yaml present"
 
-          grep -q "RENCO_BUNDLED_LOCALES" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_BUNDLED_LOCALES not in wrapper"; exit 1)
-          echo "PASS: RENCO_BUNDLED_LOCALES set in wrapper"
+          grep -q "SON_OF_ANTON_BUNDLED_LOCALES" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_BUNDLED_LOCALES not in wrapper"; exit 1)
+          echo "PASS: SON_OF_ANTON_BUNDLED_LOCALES set in wrapper"
 
           # locales/ is a bare data dir (no __init__.py), shipped via a
-          # symlink + RENCO_BUNDLED_LOCALES (not via wheel data-files).
+          # symlink + SON_OF_ANTON_BUNDLED_LOCALES (not via wheel data-files).
           # Verify the wrapper override resolves real strings.
           export HOME=$(mktemp -d)
-          RENDERED=$(cd "$HOME" && RENCO_BUNDLED_LOCALES=${renco-agent}/share/renco-agent/locales \
-            ${rencoVenv}/bin/python3 -c "from agent import i18n; print(i18n.t('gateway.reset.header_default', lang='en'))")
+          RENDERED=$(cd "$HOME" && SON_OF_ANTON_BUNDLED_LOCALES=${son-of-anton}/share/son-of-anton/locales \
+            ${son-of-antonVenv}/bin/python3 -c "from agent import i18n; print(i18n.t('gateway.reset.header_default', lang='en'))")
           echo "rendered: $RENDERED"
-          test "$RENDERED" != "gateway.reset.header_default" || (echo "FAIL: i18n returned the raw key with RENCO_BUNDLED_LOCALES set"; exit 1)
+          test "$RENDERED" != "gateway.reset.header_default" || (echo "FAIL: i18n returned the raw key with SON_OF_ANTON_BUNDLED_LOCALES set"; exit 1)
           echo "PASS: i18n renders a human string via the wrapper override"
 
           echo "=== All bundled locales checks passed ==="
@@ -696,25 +696,25 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
         # Verify bundled optional-mcps catalog is present and resolvable.
         # optional-mcps/ is a bare data dir shipped via symlink +
-        # RENCO_OPTIONAL_MCPS (not via wheel data-files).
-        bundled-mcps = pkgs.runCommand "renco-bundled-mcps" { } ''
+        # SON_OF_ANTON_OPTIONAL_MCPS (not via wheel data-files).
+        bundled-mcps = pkgs.runCommand "son-of-anton-bundled-mcps" { } ''
           set -e
           echo "=== Checking bundled optional-mcps ==="
-          test -d ${renco-agent}/share/renco-agent/optional-mcps || (echo "FAIL: optional-mcps directory missing"; exit 1)
+          test -d ${son-of-anton}/share/son-of-anton/optional-mcps || (echo "FAIL: optional-mcps directory missing"; exit 1)
           echo "PASS: optional-mcps directory exists"
 
-          MANIFEST_COUNT=$(find -L ${renco-agent}/share/renco-agent/optional-mcps -name "manifest.yaml" | wc -l)
+          MANIFEST_COUNT=$(find -L ${son-of-anton}/share/son-of-anton/optional-mcps -name "manifest.yaml" | wc -l)
           test "$MANIFEST_COUNT" -gt 0 || (echo "FAIL: no manifest.yaml files found"; exit 1)
           echo "PASS: $MANIFEST_COUNT catalog manifests found"
 
-          grep -q "RENCO_OPTIONAL_MCPS" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_OPTIONAL_MCPS not in wrapper"; exit 1)
-          echo "PASS: RENCO_OPTIONAL_MCPS set in wrapper"
+          grep -q "SON_OF_ANTON_OPTIONAL_MCPS" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_OPTIONAL_MCPS not in wrapper"; exit 1)
+          echo "PASS: SON_OF_ANTON_OPTIONAL_MCPS set in wrapper"
 
           export HOME=$(mktemp -d)
-          CATALOG=$(cd "$HOME" && ${renco-agent}/bin/renco mcp catalog 2>/dev/null || true)
+          CATALOG=$(cd "$HOME" && ${son-of-anton}/bin/son-of-anton mcp catalog 2>/dev/null || true)
           echo "catalog output: $CATALOG"
-          test -n "$CATALOG" || (echo "FAIL: renco mcp catalog returned empty"; exit 1)
+          test -n "$CATALOG" || (echo "FAIL: son-of-anton mcp catalog returned empty"; exit 1)
           echo "PASS: mcp catalog resolves entries"
 
           echo "=== All bundled optional-mcps checks passed ==="
@@ -723,58 +723,58 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify bundled TUI is present and compiled
-        bundled-tui = pkgs.runCommand "renco-bundled-tui" { } ''
+        bundled-tui = pkgs.runCommand "son-of-anton-bundled-tui" { } ''
           set -e
           echo "=== Checking bundled TUI ==="
-          test -d ${renco-agent}/ui-tui || (echo "FAIL: ui-tui directory missing"; exit 1)
+          test -d ${son-of-anton}/ui-tui || (echo "FAIL: ui-tui directory missing"; exit 1)
           echo "PASS: ui-tui directory exists"
 
-          test -f ${renco-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
+          test -f ${son-of-anton}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
 
           # self-contained bundle; no runtime node_modules expected
 
-          grep -q "RENCO_TUI_DIR" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_TUI_DIR not in wrapper"; exit 1)
-          echo "PASS: RENCO_TUI_DIR set in wrapper"
+          grep -q "SON_OF_ANTON_TUI_DIR" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_TUI_DIR not in wrapper"; exit 1)
+          echo "PASS: SON_OF_ANTON_TUI_DIR set in wrapper"
 
           echo "=== All bundled TUI checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';
 
-        # Verify RENCO_NODE is set in wrapper and points to Node 26+
-        # (Renco pins its toolchain to Node 26 everywhere)
-        renco-node = pkgs.runCommand "renco-node-version" { } ''
+        # Verify SON_OF_ANTON_NODE is set in wrapper and points to Node 26+
+        # (Son of Anton pins its toolchain to Node 26 everywhere)
+        son-of-anton-node = pkgs.runCommand "son-of-anton-node-version" { } ''
           set -e
-          echo "=== Checking RENCO_NODE in wrapper ==="
-          grep -q "RENCO_NODE" ${renco-agent}/bin/renco || \
-            (echo "FAIL: RENCO_NODE not set in wrapper"; exit 1)
-          echo "PASS: RENCO_NODE present in wrapper"
+          echo "=== Checking SON_OF_ANTON_NODE in wrapper ==="
+          grep -q "SON_OF_ANTON_NODE" ${son-of-anton}/bin/son-of-anton || \
+            (echo "FAIL: SON_OF_ANTON_NODE not set in wrapper"; exit 1)
+          echo "PASS: SON_OF_ANTON_NODE present in wrapper"
 
-          RENCO_NODE=$(sed -n "s/^export RENCO_NODE='\(.*\)'/\1/p" ${renco-agent}/bin/renco)
-          test -x "$RENCO_NODE" || (echo "FAIL: RENCO_NODE=$RENCO_NODE not executable"; exit 1)
-          echo "PASS: RENCO_NODE executable at $RENCO_NODE"
+          SON_OF_ANTON_NODE=$(sed -n "s/^export SON_OF_ANTON_NODE='\(.*\)'/\1/p" ${son-of-anton}/bin/son-of-anton)
+          test -x "$SON_OF_ANTON_NODE" || (echo "FAIL: SON_OF_ANTON_NODE=$SON_OF_ANTON_NODE not executable"; exit 1)
+          echo "PASS: SON_OF_ANTON_NODE executable at $SON_OF_ANTON_NODE"
 
-          NODE_MAJOR=$("$RENCO_NODE" --version | sed 's/^v//' | cut -d. -f1)
+          NODE_MAJOR=$("$SON_OF_ANTON_NODE" --version | sed 's/^v//' | cut -d. -f1)
           test "$NODE_MAJOR" -ge 26 || \
-            (echo "FAIL: Node v$NODE_MAJOR < 26, Renco requires Node 26"; exit 1)
+            (echo "FAIL: Node v$NODE_MAJOR < 26, Son of Anton requires Node 26"; exit 1)
           echo "PASS: Node v$NODE_MAJOR >= 26"
 
-          echo "=== All RENCO_NODE checks passed ==="
+          echo "=== All SON_OF_ANTON_NODE checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';
 
-        # Verify RENCO_MANAGED guard works on all mutation commands
-        managed-guard = pkgs.runCommand "renco-managed-guard" { } ''
+        # Verify SON_OF_ANTON_MANAGED guard works on all mutation commands
+        managed-guard = pkgs.runCommand "son-of-anton-managed-guard" { } ''
           set -e
           export HOME=$(mktemp -d)
 
           check_blocked() {
             local label="$1"
             shift
-            OUTPUT=$(RENCO_MANAGED=true "$@" 2>&1 || true)
+            OUTPUT=$(SON_OF_ANTON_MANAGED=true "$@" 2>&1 || true)
             # Case-insensitive: the message names the managing system as the
             # identifier it is keyed by, and the display form is not the
             # property under test here.
@@ -782,9 +782,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             echo "PASS: $label blocked in managed mode"
           }
 
-          echo "=== Checking RENCO_MANAGED guards ==="
-          check_blocked "config set" ${renco-agent}/bin/renco config set model foo
-          check_blocked "config edit" ${renco-agent}/bin/renco config edit
+          echo "=== Checking SON_OF_ANTON_MANAGED guards ==="
+          check_blocked "config set" ${son-of-anton}/bin/son-of-anton config set model foo
+          check_blocked "config edit" ${son-of-anton}/bin/son-of-anton config edit
 
           echo "=== All guard checks passed ==="
           mkdir -p $out
@@ -794,23 +794,23 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # Verify extraPythonPackages PYTHONPATH injection
         extra-python-packages = let
           testPkg = pkgs.python312Packages.pyfiglet;
-          rencoWithExtra = renco-agent.override {
+          son-of-antonWithExtra = son-of-anton.override {
             extraPythonPackages = [ testPkg ];
           };
-        in pkgs.runCommand "renco-extra-python-packages" { } ''
+        in pkgs.runCommand "son-of-anton-extra-python-packages" { } ''
           set -e
           echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
 
-          grep -q "PYTHONPATH" ${rencoWithExtra}/bin/renco || \
+          grep -q "PYTHONPATH" ${son-of-antonWithExtra}/bin/son-of-anton || \
             (echo "FAIL: PYTHONPATH not in wrapper"; exit 1)
           echo "PASS: PYTHONPATH present in wrapper"
 
-          grep -q "${testPkg}" ${rencoWithExtra}/bin/renco || \
+          grep -q "${testPkg}" ${son-of-antonWithExtra}/bin/son-of-anton || \
             (echo "FAIL: test package path not in PYTHONPATH"; exit 1)
           echo "PASS: test package path found in wrapper"
 
           echo "=== Checking base package has no PYTHONPATH ==="
-          if grep -q "PYTHONPATH" ${renco-agent}/bin/renco; then
+          if grep -q "PYTHONPATH" ${son-of-anton}/bin/son-of-anton; then
             echo "FAIL: base package should not have PYTHONPATH"; exit 1
           fi
           echo "PASS: base package clean"
@@ -822,18 +822,18 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
         # Verify extraDependencyGroups passes through to python.nix
         extra-dependency-groups = let
-          rencoWithGroups = renco-agent.override {
+          son-of-antonWithGroups = son-of-anton.override {
             extraDependencyGroups = [ "honcho" ];
           };
-        in pkgs.runCommand "renco-extra-dependency-groups" { } ''
+        in pkgs.runCommand "son-of-anton-extra-dependency-groups" { } ''
           set -e
           echo "=== Checking extraDependencyGroups override evaluates ==="
 
           # Eval-only: verify the override produces valid derivation paths
           # without building the full venv (which is expensive and redundant
           # since the mechanism is just list concatenation into python.nix).
-          echo "derivation: ${rencoWithGroups}"
-          echo "venv: ${rencoWithGroups.rencoVenv}"
+          echo "derivation: ${son-of-antonWithGroups}"
+          echo "venv: ${son-of-antonWithGroups.son-of-antonVenv}"
           echo "PASS: extraDependencyGroups override evaluates cleanly"
 
           echo "=== All extraDependencyGroups checks passed ==="
@@ -844,10 +844,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # Regression guard: messaging deps live outside [all], so the
         # #messaging variant must actually ship discord.py — otherwise
         # `nix profile install .#messaging` regresses to the broken default.
-        messaging-variant = pkgs.runCommand "renco-messaging-variant" { } ''
+        messaging-variant = pkgs.runCommand "son-of-anton-messaging-variant" { } ''
           set -e
           echo "=== Checking discord.py importable from messaging variant ==="
-          ${self'.packages.messaging.rencoVenv}/bin/python3 -c \
+          ${self'.packages.messaging.son-of-antonVenv}/bin/python3 -c \
             "import discord; print(discord.__version__)"
           echo "PASS: discord.py importable from messaging variant venv"
           mkdir -p $out
@@ -914,7 +914,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 - USER_VAR
           '';
 
-        in pkgs.runCommand "renco-config-roundtrip" {
+        in pkgs.runCommand "son-of-anton-config-roundtrip" {
           nativeBuildInputs = [ pkgs.jq ];
         } ''
           set -e
@@ -925,12 +925,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
           # Helper: run merge then load with Python, output merged JSON
           merge_and_load() {
-            local renco_home="$1"
-            export RENCO_HOME="$renco_home"
-            ${configMergeScript} ${nixSettings} "$renco_home/config.yaml"
-            ${rencoVenv}/bin/python3 -c '
+            local son_of_anton_home="$1"
+            export SON_OF_ANTON_HOME="$son_of_anton_home"
+            ${configMergeScript} ${nixSettings} "$son_of_anton_home/config.yaml"
+            ${son-of-antonVenv}/bin/python3 -c '
 import json, sys
-from renco_cli.config import load_config
+from son_of_anton_cli.config import load_config
 json.dump(load_config(), sys.stdout, default=str)
 '
           }

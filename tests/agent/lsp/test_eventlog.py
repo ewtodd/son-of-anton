@@ -23,7 +23,7 @@ def _reset():
 
 @pytest.fixture
 def caplog_lsp(caplog):
-    caplog.set_level(logging.DEBUG, logger="renco.lint.lsp")
+    caplog.set_level(logging.DEBUG, logger="son-of-anton.lint.lsp")
     return caplog
 
 

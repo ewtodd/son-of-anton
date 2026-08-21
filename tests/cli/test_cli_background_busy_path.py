@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_cli():
-    """Create a RencoCLI instance with prompt_toolkit stubbed out."""
+    """Create a SonOfAntonCLI instance with prompt_toolkit stubbed out."""
     _clean_config = {
         "model": {
             "default": "anthropic/claude-opus-4.6",
@@ -37,7 +37,7 @@ def _make_cli():
         "agent": {},
         "terminal": {"env_type": "local"},
     }
-    clean_env = {"LLM_MODEL": "", "RENCO_MAX_ITERATIONS": ""}
+    clean_env = {"LLM_MODEL": "", "SON_OF_ANTON_MAX_ITERATIONS": ""}
     prompt_toolkit_stubs = {
         "prompt_toolkit": MagicMock(),
         "prompt_toolkit.history": MagicMock(),
@@ -64,7 +64,7 @@ def _make_cli():
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
             _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
         ):
-            return _cli_mod.RencoCLI()
+            return _cli_mod.SonOfAntonCLI()
 
 
 class TestBackgroundInlineDetector:
@@ -118,14 +118,14 @@ class TestBackgroundBusyPolicyContract:
     """The registry already declares the intent this detector implements."""
 
     def test_background_declares_dispatch_while_busy(self):
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         cmd = resolve_command("background")
         assert cmd is not None
         assert cmd.busy_policy == "dispatch"
 
     def test_aliases_resolve_to_background(self):
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         for alias in ("bg", "btw"):
             cmd = resolve_command(alias)

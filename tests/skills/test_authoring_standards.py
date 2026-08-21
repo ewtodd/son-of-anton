@@ -89,9 +89,9 @@ def test_required_frontmatter_fields(p):
     ]
     if missing and not _grandfathered(p, "fields"):
         pytest.fail(f"{_rel(p)}: missing frontmatter fields: {missing}")
-    renco = (fm.get("metadata") or {}).get("renco") or {}
-    if not (renco.get("tags") or fm.get("tags")) and not _grandfathered(p, "tags"):
-        pytest.fail(f"{_rel(p)}: no tags (metadata.renco.tags or top-level tags)")
+    son_of_anton = (fm.get("metadata") or {}).get("son-of-anton") or {}
+    if not (son_of_anton.get("tags") or fm.get("tags")) and not _grandfathered(p, "tags"):
+        pytest.fail(f"{_rel(p)}: no tags (metadata.son_of_anton.tags or top-level tags)")
 
 
 @pytest.mark.parametrize("p", _params())
@@ -118,9 +118,9 @@ def test_description_hardline(p):
 @pytest.mark.parametrize("p", _params())
 def test_related_skills_resolve(p):
     fm, _ = _frontmatter(p)
-    renco = (fm.get("metadata") or {}).get("renco") or {}
+    son_of_anton = (fm.get("metadata") or {}).get("son-of-anton") or {}
     dangling = [
-        rs for rs in (renco.get("related_skills") or []) if rs not in _all_names()
+        rs for rs in (son_of_anton.get("related_skills") or []) if rs not in _all_names()
     ]
     if dangling and not _grandfathered(p, "related"):
         pytest.fail(f"{_rel(p)}: dangling related_skills: {dangling}")

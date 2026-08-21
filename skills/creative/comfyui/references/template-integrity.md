@@ -1,7 +1,7 @@
 # ComfyUI Workflow-Template Integrity
 
 > **Authored by [@purzbeats](https://github.com/purzbeats)** — adapted from
-> [purzbeats/renco-agent-comfyui-helper](https://github.com/purzbeats/renco-agent-comfyui-helper).
+> [purzbeats/son-of-anton-comfyui-helper](https://github.com/purzbeats/son-of-anton-comfyui-helper).
 > Use this reference when converting workflows from the official
 > `comfyui-workflow-templates` package (editor format) into API format for
 > submission via `/api/prompt`. The conversion has subtle gotchas that cause

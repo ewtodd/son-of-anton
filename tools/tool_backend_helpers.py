@@ -31,7 +31,7 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     reflect a just-purchased subscription, credits, or pool grant immediately.
     """
     try:
-        from renco_cli.nous_account import get_nous_portal_account_info
+        from son_of_anton_cli.nous_account import get_nous_portal_account_info
 
         if force_fresh:
             account_info = get_nous_portal_account_info(force_fresh=True)
@@ -51,7 +51,7 @@ def nous_tool_gateway_unavailable_message(
 ) -> str:
     """Return account-aware guidance for an unavailable Nous Tool Gateway path."""
     try:
-        from renco_cli.nous_account import (
+        from son_of_anton_cli.nous_account import (
             format_nous_portal_entitlement_message,
             get_nous_portal_account_info,
         )
@@ -66,7 +66,7 @@ def nous_tool_gateway_unavailable_message(
     except Exception:
         pass
     return (
-        f"{capability} is unavailable. Run `renco model` to refresh your "
+        f"{capability} is unavailable. Run `son-of-anton model` to refresh your "
         "Nous Portal login and billing status."
     )
 
@@ -163,18 +163,18 @@ def resolve_provider_secret(
 ) -> str:
     """Resolve a voice-provider API key. Single owner for STT/TTS key lookup.
 
-    Resolution order (fixes #68003 — keys added via ``renco auth add
+    Resolution order (fixes #68003 — keys added via ``son-of-anton auth add
     <provider>`` were invisible to the voice tools, which only consulted
     env/.env):
 
     1. An explicit ``config_value`` from config.yaml, when the caller has one.
-    2. The environment / ``~/.renco/.env``. Under a multiplexed gateway turn
+    2. The environment / ``~/.son-of-anton/.env``. Under a multiplexed gateway turn
        this reads the active profile's secret scope (authoritative — a scope
        miss must NOT borrow another profile's ``os.environ``; see
        ``agent/secret_scope.py``). Outside multiplexing it reads
-       ``renco_cli.config.get_env_value`` (os.environ, then ``.env``),
+       ``son_of_anton_cli.config.get_env_value`` (os.environ, then ``.env``),
        matching the tools' historical behaviour exactly.
-    3. The credential pool / auth store for ``provider_id`` (``renco auth
+    3. The credential pool / auth store for ``provider_id`` (``son-of-anton auth
        add <provider_id>``). Skipped under an active multiplex turn, where
        only the profile scope is authoritative for credentials.
 
@@ -183,7 +183,7 @@ def resolve_provider_secret(
 
     ``env_getter`` lets callers supply their module-level ``get_env_value``
     wrapper (transcription_tools / tts_tool expose one that tests patch);
-    when omitted, ``renco_cli.config.get_env_value`` is used directly.
+    when omitted, ``son_of_anton_cli.config.get_env_value`` is used directly.
     """
     value = str(config_value or "").strip()
     if value:
@@ -211,7 +211,7 @@ def resolve_provider_secret(
         key = str(env_getter(env_var) or "").strip()
     else:
         try:
-            from renco_cli.config import get_env_value
+            from son_of_anton_cli.config import get_env_value
 
             key = str(get_env_value(env_var) or "").strip()
         except ImportError:  # pragma: no cover — config is in-repo
@@ -224,7 +224,7 @@ def resolve_provider_secret(
     try:
         from agent.credential_pool import load_pool
 
-        # `renco auth add <provider>` keys a registry provider by its plain
+        # `son-of-anton auth add <provider>` keys a registry provider by its plain
         # id, but a provider declared via config.yaml ``providers.<name>`` /
         # ``custom_providers`` is pooled under ``custom:<name>`` (see
         # agent/credential_pool.py CUSTOM_POOL_PREFIX). Check both.
@@ -265,7 +265,7 @@ def resolve_openai_audio_api_key() -> str:
     ``agent/secret_scope.py``.
 
     Outside a multiplexed turn, ``OPENAI_API_KEY`` additionally falls back to
-    the credential pool (``renco auth add openai-api``) via
+    the credential pool (``son-of-anton auth add openai-api``) via
     ``resolve_provider_secret`` — same #68003 fix as the other voice
     providers. The dedicated voice-tools override remains env/scope-only.
     """
@@ -281,7 +281,7 @@ def prefers_gateway(config_section: str) -> bool:
     Reads ``<section>.use_gateway`` from config.yaml.  Never raises.
     """
     try:
-        from renco_cli.config import load_config
+        from son_of_anton_cli.config import load_config
         section = (load_config() or {}).get(config_section)
         if isinstance(section, dict):
             return is_truthy_value(section.get("use_gateway"), default=False)
@@ -314,7 +314,7 @@ _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
 
 
 def read_selection(section: str) -> str | None:
-    """Return the stored `renco tools` provider string for a config section.
+    """Return the stored `son-of-anton tools` provider string for a config section.
 
     THE single runtime read of the persisted selection. Returns:
     - ``"nous"`` — the managed Nous Tool Gateway row was selected,
@@ -334,7 +334,7 @@ def read_selection(section: str) -> str | None:
     ``use_gateway: false`` beside a name key maps to that name.
     """
     try:
-        from renco_cli.config import read_raw_config_readonly
+        from son_of_anton_cli.config import read_raw_config_readonly
 
         cfg = read_raw_config_readonly() or {}
         raw = cfg.get(section) if isinstance(cfg, dict) else None
@@ -391,7 +391,7 @@ def selection_exists(section: str) -> bool:
     if not extra:
         return False
     try:
-        from renco_cli.config import read_raw_config_readonly
+        from son_of_anton_cli.config import read_raw_config_readonly
 
         cfg = read_raw_config_readonly() or {}
         raw = cfg.get(section) if isinstance(cfg, dict) else None
@@ -405,16 +405,16 @@ def selection_exists(section: str) -> bool:
 def selection_error(section: str, selection_name: str, failure: str) -> str:
     """The uniform honest-error contract for a selected-but-broken provider."""
     return (
-        f"{section} is configured to use {selection_name} (set via renco "
-        f"tools), but {failure}. Run 'renco tools' to change it."
+        f"{section} is configured to use {selection_name} (set via son-of-anton "
+        f"tools), but {failure}. Run 'son-of-anton tools' to change it."
     )
 
 
 def fal_key_is_configured() -> bool:
     """Return True when FAL_KEY is set to a non-whitespace value.
 
-    Consults both ``os.environ`` and ``~/.renco/.env`` (via
-    ``renco_cli.config.get_env_value`` when available) so tool-side
+    Consults both ``os.environ`` and ``~/.son-of-anton/.env`` (via
+    ``son_of_anton_cli.config.get_env_value`` when available) so tool-side
     checks and CLI setup-time checks agree.  A whitespace-only value
     is treated as unset everywhere.
     """
@@ -423,7 +423,7 @@ def fal_key_is_configured() -> bool:
         # Fall back to the .env file for CLI paths that may run before
         # dotenv is loaded into os.environ.
         try:
-            from renco_cli.config import get_env_value
+            from son_of_anton_cli.config import get_env_value
 
             value = get_env_value("FAL_KEY")
         except Exception:

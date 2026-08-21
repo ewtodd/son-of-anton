@@ -5,7 +5,7 @@ cron, auxiliary) can check whether Nous Portal is currently rate-limited
 before making requests.  Prevents retry amplification when RPH is tapped.
 
 Each 429 from Nous triggers up to 9 API calls per conversation turn
-(3 SDK retries x 3 Renco retries), and every one of those calls counts
+(3 SDK retries x 3 Son of Anton retries), and every one of those calls counts
 against RPH.  By recording the rate limit state on first 429 and checking
 it before subsequent attempts, we eliminate the amplification effect.
 """
@@ -29,10 +29,10 @@ _STATE_FILENAME = "nous.json"
 def _state_path() -> str:
     """Return the path to the Nous rate limit state file."""
     try:
-        from renco_constants import get_renco_home
-        base = get_renco_home()
+        from son_of_anton_constants import get_son_of_anton_home
+        base = get_son_of_anton_home()
     except ImportError:
-        base = os.path.join(os.path.expanduser("~"), ".renco")
+        base = os.path.join(os.path.expanduser("~"), ".son-of-anton")
     return os.path.join(base, _STATE_SUBDIR, _STATE_FILENAME)
 
 
@@ -197,7 +197,7 @@ def is_genuine_nous_rate_limit(
     """Decide whether a 429 from Nous Portal is a real account rate limit.
 
     Nous Portal multiplexes multiple upstream providers (DeepSeek, Kimi,
-    MiMo, Renco, ...) behind one endpoint.  A 429 can mean either:
+    MiMo, Son of Anton, ...) behind one endpoint.  A 429 can mean either:
 
       (a) The caller's own RPM / RPH / TPM / TPH bucket on Nous is
           exhausted — a genuine rate limit that will last until the

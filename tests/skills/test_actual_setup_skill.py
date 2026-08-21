@@ -60,7 +60,7 @@ def test_uses_first_class_provider_not_custom_provider(skill_source) -> None:
     # The legacy setup configured Actual as providers.actual.* custom entries,
     # which now collides with the built-in provider of the same name.
     assert "--provider actual" in skill_source
-    assert "renco config set providers.actual.api " not in skill_source
+    assert "son-of-anton config set providers.actual.api " not in skill_source
     assert "key_env" not in skill_source
 
 

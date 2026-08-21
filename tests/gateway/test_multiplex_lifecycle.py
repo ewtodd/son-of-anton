@@ -6,7 +6,7 @@ from gateway.config import GatewayConfig
 
 class TestServedProfilesStatus:
     def test_write_and_read_served_profiles(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         import importlib
         import gateway.status as status
         importlib.reload(status)
@@ -23,8 +23,8 @@ class TestServedProfilesStatus:
 def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
     """The helper wired into in-process cron returns only selected profiles."""
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    default_home = tmp_path / ".renco"
-    monkeypatch.setenv("RENCO_HOME", str(default_home))
+    default_home = tmp_path / ".son-of-anton"
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(default_home))
     for name in ("worker", "guest"):
         (default_home / "profiles" / name).mkdir(parents=True)
 
@@ -45,28 +45,28 @@ class TestNamedProfileMultiplexerGuard:
 
 
     def test_force_bypasses(self, monkeypatch):
-        from renco_cli import gateway as gw
+        from son_of_anton_cli import gateway as gw
         # Even if it looks like a named profile, force returns immediately.
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         gw._guard_named_profile_under_multiplexer(force=True)
 
     def test_inert_when_no_default_gateway_running(self, monkeypatch, tmp_path):
-        from renco_cli import gateway as gw
+        from son_of_anton_cli import gateway as gw
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(
-            "renco_constants.get_default_renco_root", lambda: tmp_path
+            "son_of_anton_constants.get_default_son_of_anton_root", lambda: tmp_path
         )
         # No gateway.pid in tmp_path => no running default gateway => no raise.
         gw._guard_named_profile_under_multiplexer(force=False)
 
     def _fake_running_default_gateway(self, monkeypatch, tmp_path):
         """Make the guard believe a live default gateway exists at tmp_path."""
-        from renco_cli import gateway as gw
+        from son_of_anton_cli import gateway as gw
         import gateway.status as status
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(
-            "renco_constants.get_default_renco_root", lambda: tmp_path
+            "son_of_anton_constants.get_default_son_of_anton_root", lambda: tmp_path
         )
         (tmp_path / "gateway.pid").write_text("12345", encoding="utf-8")
         monkeypatch.setattr(status, "_read_pid_record", lambda p: {"pid": 12345})
@@ -80,7 +80,7 @@ class TestNamedProfileMultiplexerGuard:
             encoding="utf-8",
         )
 
-        from renco_cli import gateway as gw
+        from son_of_anton_cli import gateway as gw
 
         with pytest.raises(SystemExit, match="1"):
             gw._guard_named_profile_under_multiplexer(force=False)
@@ -95,7 +95,7 @@ class TestNamedProfileMultiplexerGuard:
             encoding="utf-8",
         )
 
-        from renco_cli import gateway as gw
+        from son_of_anton_cli import gateway as gw
 
         with pytest.raises(SystemExit, match="1"):
             gw._guard_named_profile_under_multiplexer(force=False)
@@ -115,7 +115,7 @@ class TestNamedProfileMultiplexerGuard:
             encoding="utf-8",
         )
 
-        from renco_cli import gateway as gw
+        from son_of_anton_cli import gateway as gw
 
         gw._guard_named_profile_under_multiplexer(force=False)
 

@@ -1,4 +1,4 @@
-from renco_state import AsyncSessionDB
+from son_of_anton_state import AsyncSessionDB
 """Regression tests for approval-state cleanup on session boundaries."""
 
 from datetime import datetime

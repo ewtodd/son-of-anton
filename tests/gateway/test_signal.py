@@ -311,11 +311,11 @@ class TestSignalPhoneRedaction:
     @pytest.fixture(autouse=True)
     def _ensure_redaction_enabled(self, monkeypatch):
         # agent.redact snapshots _REDACT_ENABLED at import time from the
-        # RENCO_REDACT_SECRETS env var. monkeypatch.delenv is too late —
+        # SON_OF_ANTON_REDACT_SECRETS env var. monkeypatch.delenv is too late —
         # the module was already imported during test collection with
         # whatever value was in the env then. Force the flag directly.
         # See skill: xdist-cross-test-pollution Pattern 5.
-        monkeypatch.delenv("RENCO_REDACT_SECRETS", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_REDACT_SECRETS", raising=False)
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
     def test_us_number(self):

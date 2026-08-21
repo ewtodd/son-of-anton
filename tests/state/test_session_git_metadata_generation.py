@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 
-from renco_state import SCHEMA_VERSION, SessionDB
+from son_of_anton_state import SCHEMA_VERSION, SessionDB
 
 
 def _open_pair(tmp_path):

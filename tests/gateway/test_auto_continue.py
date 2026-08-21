@@ -100,7 +100,7 @@ class TestInterruptedReplayFiltering:
                         "id": "call_1",
                         "function": {
                             "name": "terminal",
-                            "arguments": '{"command": "docker restart renco-agent"}',
+                            "arguments": '{"command": "docker restart son-of-anton"}',
                         },
                     },
                 ],

@@ -24,10 +24,10 @@ from gateway.session import (
 
 @pytest.fixture()
 def _isolated_db(tmp_path, monkeypatch):
-    import renco_state
+    import son_of_anton_state
 
-    monkeypatch.setattr(renco_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setattr(son_of_anton_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     return tmp_path
 
 

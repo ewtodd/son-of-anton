@@ -32,10 +32,10 @@ import pytest
 
 
 @pytest.fixture()
-def renco_home(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+def son_of_anton_home(tmp_path, monkeypatch):
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     return home
 
 
@@ -44,8 +44,8 @@ def tui_server():
     with patch.dict(
         "sys.modules",
         {
-            "renco_cli.env_loader": MagicMock(),
-            "renco_cli.banner": MagicMock(),
+            "son_of_anton_cli.env_loader": MagicMock(),
+            "son_of_anton_cli.banner": MagicMock(),
         },
     ):
         yield importlib.import_module("tui_gateway.server")
@@ -107,11 +107,11 @@ def _approval_module():
 
 @pytest.mark.parametrize("yaml_text,expected_mode,expected_timeout", CASES)
 def test_mode_and_timeout_parity_across_surfaces(
-    renco_home, tui_server, yaml_text, expected_mode, expected_timeout
+    son_of_anton_home, tui_server, yaml_text, expected_mode, expected_timeout
 ):
     approval_mod = _approval_module()
 
-    _write_config(renco_home, yaml_text)
+    _write_config(son_of_anton_home, yaml_text)
 
     core_mode = approval_mod._get_approval_mode()
     core_timeout = approval_mod._get_approval_timeout()
@@ -136,7 +136,7 @@ def test_mode_and_timeout_parity_across_surfaces(
             )
 
 
-def test_tui_loader_delegates_to_core(renco_home, tui_server):
+def test_tui_loader_delegates_to_core(son_of_anton_home, tui_server):
     """The TUI must not re-resolve mode itself — it delegates to the core.
 
     Pin the delegation seam directly: patching the core resolver changes

@@ -1,8 +1,8 @@
 """Gateway lifecycle guard for cron job creation (#30719).
 
 An agent running inside a gateway can schedule a cron job that calls
-``renco gateway restart`` (or ``launchctl kickstart ai.renco.gateway``
-or ``systemctl restart renco-gateway``).  When the cron fires, the
+``son-of-anton gateway restart`` (or ``launchctl kickstart ai.son-of-anton.gateway``
+or ``systemctl restart son-of-anton-gateway``).  When the cron fires, the
 gateway dies, the supervisor (launchd KeepAlive / systemd Restart=)
 revives it, auto-resume picks up the offending session, and the resumed
 turn re-runs the same logic — a SIGTERM-respawn loop every ~10 seconds
@@ -11,12 +11,12 @@ until manually broken.
 This module rejects cron job specs whose prompt or script contains a
 direct shell-level gateway-lifecycle command.  It is enforced at
 ``cron.jobs.create_job`` so it fires on every job-creation path: the
-``renco cron create`` CLI subcommand AND the agent's ``cronjob`` model
+``son-of-anton cron create`` CLI subcommand AND the agent's ``cronjob`` model
 tool (which calls ``create_job`` directly, bypassing the CLI layer).
 
 The pattern is intentionally command-shaped: it anchors on a concrete
-command identifier (``renco gateway``, ``launchctl ... renco-gateway``,
-``systemctl ... renco-gateway``, ``pkill`` against the gateway) so it
+command identifier (``son-of-anton gateway``, ``launchctl ... son-of-anton-gateway``,
+``systemctl ... son-of-anton-gateway``, ``pkill`` against the gateway) so it
 cannot fire on prose.  A cron ``prompt`` is fed to a future LLM, not a
 shell, so an over-broad substring match on English ("Kong API gateway
 autoscaling and restart behavior") would produce a high false-positive
@@ -24,9 +24,9 @@ rate without preventing the actual foot-gun, which requires a real
 command shape.
 
 This is a defence-in-depth layer.  ``tools/terminal_tool.py`` blocks direct
-commands and shell scripts they reference when ``_RENCO_GATEWAY=1``. It also
+commands and shell scripts they reference when ``_SON_OF_ANTON_GATEWAY=1``. It also
 rejects ``launchctl submit`` in gateway sessions because launchd treats that
-primitive as a persistent KeepAlive job, not a one-shot task. ``renco gateway
+primitive as a persistent KeepAlive job, not a one-shot task. ``son-of-anton gateway
 stop|restart`` separately refuse to self-target from inside the gateway.
 Blocking cron specs at creation time as well means the agent gets an immediate,
 informative rejection instead of scheduling a job that will only fail
@@ -55,30 +55,30 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `renco gateway restart|stop` — the canonical foot-gun.
+    # Branch A: `son-of-anton gateway restart|stop` — the canonical foot-gun.
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:renco\s+gateway\s+(?:restart|stop))"
-    # Branch B: launchctl ops on a renco-gateway label. macOS launchd
-    # labels look like `ai.renco.gateway` / `renco-gateway`. Requiring the
-    # gateway identifier prevents blocking unrelated renco services (e.g.
-    # `launchctl unload ai.renco.update-checker.plist`).
+    r"(?:son-of-anton\s+gateway\s+(?:restart|stop))"
+    # Branch B: launchctl ops on a son-of-anton-gateway label. macOS launchd
+    # labels look like `ai.son-of-anton.gateway` / `son-of-anton-gateway`. Requiring the
+    # gateway identifier prevents blocking unrelated son-of-anton services (e.g.
+    # `launchctl unload ai.son-of-anton.update-checker.plist`).
     # `submit` and `bootstrap` are included alongside the direct verbs
-    # (kickstart/etc.): `launchctl submit -l ai.renco.gateway-<suffix> --
+    # (kickstart/etc.): `launchctl submit -l ai.son-of-anton.gateway-<suffix> --
     # <helper-script>` (or `launchctl bootstrap gui/<uid> <plist>`) creates
     # a NEW keepalive job wrapping an arbitrary helper, which is how a
     # blocked direct restart/kill gets laundered into a persistent restart
     # loop instead (#62891) — same foot-gun, indirect shape. Neutral-label
     # submissions that dodge this text anchor are caught separately by
     # `contains_launchctl_submit_command` (execution-aware, label-independent).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\brenco[.\-]?gateway)"
-    # Branch C: systemctl ops on a renco-gateway unit.
-    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\brenco[.\-]?gateway)"
-    # Branch D: pkill / kill targeting the renco gateway process. Both
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\bson-of-anton[.\-]?gateway)"
+    # Branch C: systemctl ops on a son-of-anton-gateway unit.
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bson-of-anton[.\-]?gateway)"
+    # Branch D: pkill / kill targeting the son-of-anton gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\brenco\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\brenco)"
+    r"|(?:p?kill\b[^\n]*\bson-of-anton\b[^\n]*\bgateway)"
+    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bson-of-anton)"
 )
 
 
@@ -87,7 +87,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # above uses `[^\n]*` between its verb and the gateway identifier so the
 # match can't span unrelated lines of a longer cron prompt/script, but that
 # also means a real multi-line shell invocation split across continuation
-# lines (e.g. `launchctl submit \` / `  -l ai.renco.gateway-... \` / `  -- ...`,
+# lines (e.g. `launchctl submit \` / `  -l ai.son-of-anton.gateway-... \` / `  -- ...`,
 # the exact reported shape in #62891) would otherwise slip past. Collapse
 # continuations to a single space before matching, mirroring what the shell
 # itself does, rather than loosening `[^\n]*` and risking false positives
@@ -138,7 +138,7 @@ def _is_cloud_placeholder_path(path: Path) -> bool:
 # Executables whose arguments are DATA, not commands: search patterns, SQL
 # statements, log filters. None of these can execute their argument text, so
 # a lifecycle-shaped string inside their arguments (a grep pattern hunting
-# for `systemctl restart renco-gateway` in syslog, a SQL LIKE literal over a
+# for `systemctl restart son-of-anton-gateway` in syslog, a SQL LIKE literal over a
 # restart-events table) is diagnostics, not a lifecycle command. Deliberately
 # conservative: no `awk` (system()), no `sed` (`s///e`), no `echo`/`printf`
 # (routinely piped into a shell), no `mysql` (`\\!` and `system` escapes).
@@ -151,7 +151,7 @@ _DATA_SINK_EXECUTABLES = frozenset(
 # segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
 # A data sink piped into a shell/interpreter can feed matched lines straight
-# to execution (`grep 'systemctl restart renco-gateway' f | sh`); never mask
+# to execution (`grep 'systemctl restart son-of-anton-gateway' f | sh`); never mask
 # such a line.
 _PIPE_TO_INTERPRETER = re.compile(
     r"\|\s*&?\s*(?:sudo\s+)?(?:sh|bash|dash|ksh|zsh|xargs|eval|source)\b"
@@ -218,7 +218,7 @@ def contains_launchctl_submit_command(command: str) -> bool:
     """Detect an executed ``launchctl submit``/``bootstrap``, not quoted text.
 
     Label-independent by design: the label of a submitted/bootstrapped job is
-    chosen by whoever writes it, so a neutral name (``ai.renco.svc-reload-tmp``)
+    chosen by whoever writes it, so a neutral name (``ai.son-of-anton.svc-reload-tmp``)
     defeats any label-anchored regex (#62891, second reproduction). Both verbs
     register a NEW persistent launchd job (``submit`` jobs get KeepAlive
     semantics; ``bootstrap`` loads an arbitrary plist), which is never safe to
@@ -239,13 +239,13 @@ def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
     The lifecycle regex is command-shaped, but it cannot tell an EXECUTED
-    ``systemctl restart renco-gateway`` from the same characters appearing
+    ``systemctl restart son-of-anton-gateway`` from the same characters appearing
     as *data* — a grep/rg pattern, a journalctl filter, a SQL string literal
     passed to sqlite3/psql. Those diagnostics commands were being rejected
     (false positives blocking legitimate cron prompts), e.g.::
 
-        grep -c 'systemctl restart renco-gateway' /var/log/syslog
-        sqlite3 db "SELECT msg FROM log WHERE msg LIKE '%systemctl restart renco-gateway%'"
+        grep -c 'systemctl restart son-of-anton-gateway' /var/log/syslog
+        sqlite3 db "SELECT msg FROM log WHERE msg LIKE '%systemctl restart son-of-anton-gateway%'"
 
     This masker shell-tokenizes each line and, for command segments whose
     executable is a known data sink (``_DATA_SINK_EXECUTABLES``), replaces
@@ -416,7 +416,7 @@ def _iter_referenced_shell_scripts(
             continue
 
         # A bare "/" token is pathlib's division operator in Python sources
-        # (e.g. `Path.home() / ".renco"`), not an executable reference.
+        # (e.g. `Path.home() / ".son-of-anton"`), not an executable reference.
         # Resolving it walks to the filesystem root and fails the
         # regular-file check below, hard-blocking innocent .py scripts
         # (#77131). Skip pure-separator tokens.
@@ -682,10 +682,10 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     """Resolve a cron ``script`` value the same way the scheduler does.
 
     The scheduler (``cron.scheduler``) resolves a bare/relative script path
-    under ``<RENCO_HOME>/scripts/`` and only accepts absolute paths as-is.
+    under ``<SON_OF_ANTON_HOME>/scripts/`` and only accepts absolute paths as-is.
     We MUST mirror that here so the guard scans the file that will actually
     run — otherwise a job whose script lives at the scheduler's real location
-    (``~/.renco/scripts/restart.sh``) but is passed as the bare name
+    (``~/.son-of-anton/scripts/restart.sh``) but is passed as the bare name
     ``restart.sh`` would read as a nonexistent relative path and silently
     scan prompt-only content, letting the command through.
 
@@ -694,7 +694,7 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     ``_expand_candidate_path``; such a value can never name a file the
     scheduler would execute, so there is nothing to scan.
     """
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
     raw = _expand_candidate_path(script_path)
     if raw is None:
@@ -702,10 +702,10 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     if raw.is_absolute():
         return raw
     try:
-        return get_renco_home() / "scripts" / raw
+        return get_son_of_anton_home() / "scripts" / raw
     except (RuntimeError, OSError):
-        # get_renco_home() falls back to Path.home(), which raises when
-        # neither RENCO_HOME nor HOME is resolvable (launchd/systemd
+        # get_son_of_anton_home() falls back to Path.home(), which raises when
+        # neither SON_OF_ANTON_HOME nor HOME is resolvable (launchd/systemd
         # environments) — same ingestion contract: nothing to scan.
         return None
 
@@ -722,7 +722,7 @@ def _read_script_for_scanning(script_path: str) -> str:
         return ""
     script_text, unsafe = _read_referenced_script(resolved)
     if unsafe:
-        return "renco gateway restart"
+        return "son-of-anton gateway restart"
     return script_text or ""
 
 
@@ -767,7 +767,7 @@ def check_gateway_lifecycle(
                     "evicted FileProvider placeholder can hang the guard's "
                     "preflight scan indefinitely, so it is refused without "
                     "being read. Move the script to a local, non-cloud path "
-                    "(e.g. ~/.renco/scripts/) and recreate the job."
+                    "(e.g. ~/.son-of-anton/scripts/) and recreate the job."
                 )
         python_script = resolved_script is not None and resolved_script.suffix == ".py"
         script_text = _read_script_for_scanning(script)
@@ -781,7 +781,7 @@ def check_gateway_lifecycle(
         # the filesystem root and trips the regular-file check, blocking
         # every innocent .py cron script, #77131). The direct command
         # regex below still scans the full text, so a literal
-        # `renco gateway restart` embedded in a .py script is still
+        # `son-of-anton gateway restart` embedded in a .py script is still
         # blocked. Non-regular/oversized script files still fail closed
         # via the lifecycle-shaped sentinel in _read_script_for_scanning.
         unsafe = _lifecycle_command_scan_with_data_exemption(combined)
@@ -796,6 +796,6 @@ def check_gateway_lifecycle(
             "Blocked: cron job contains a gateway lifecycle command or persistent "
             "launchctl submit operation. This is blocked to prevent agent-driven "
             "SIGTERM-respawn loops under launchd/systemd supervision "
-            "(#30719). Run `renco gateway restart` from a shell outside "
+            "(#30719). Run `son-of-anton gateway restart` from a shell outside "
             "the running gateway instead."
         )

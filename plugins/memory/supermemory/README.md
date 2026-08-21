@@ -5,20 +5,20 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 ## Requirements
 
 - `pip install supermemory`
-- Hosted: API key from [app.supermemory.ai/integrations?connect=renco](http://app.supermemory.ai/integrations?connect=renco)
+- Hosted: API key from [app.supermemory.ai/integrations?connect=son-of-anton](http://app.supermemory.ai/integrations?connect=son-of-anton)
 - Self-hosted: a running [Supermemory local](https://supermemory.ai/docs/self-hosting/overview) server and the API key it prints on first boot
 
 ## Setup
 
 ```bash
-renco memory setup    # select "supermemory"
+son-of-anton memory setup    # select "supermemory"
 ```
 
 Or manually:
 
 ```bash
-renco config set memory.provider supermemory
-echo 'SUPERMEMORY_API_KEY=***' >> ~/.renco/.env
+son-of-anton config set memory.provider supermemory
+echo 'SUPERMEMORY_API_KEY=***' >> ~/.son-of-anton/.env
 ```
 
 For a fully self-hosted setup, start Supermemory local and note the API key it
@@ -28,8 +28,8 @@ prints on first boot:
 npx supermemory local
 ```
 
-Before running `renco memory setup`, add the local endpoint to
-`$RENCO_HOME/supermemory.json`:
+Before running `son-of-anton memory setup`, add the local endpoint to
+`$SON_OF_ANTON_HOME/supermemory.json`:
 
 ```json
 {
@@ -37,17 +37,17 @@ Before running `renco memory setup`, add the local endpoint to
 }
 ```
 
-Then run `renco memory setup` and enter the local server's API key. Configuring
+Then run `son-of-anton memory setup` and enter the local server's API key. Configuring
 the endpoint first ensures the setup connection probe also stays local.
 
 ## Config
 
-Config file: `$RENCO_HOME/supermemory.json`
+Config file: `$SON_OF_ANTON_HOME/supermemory.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `base_url` | `https://api.supermemory.ai` | API endpoint for hosted or self-hosted Supermemory. Takes priority over `SUPERMEMORY_BASE_URL`. |
-| `container_tag` | `renco` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags (e.g. `renco-{identity}` → `renco-coder`). |
+| `container_tag` | `son-of-anton` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags (e.g. `son-of-anton-{identity}` → `son-of-anton-coder`). |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
 | `max_recall_results` | `10` | Max recalled items to format into context |
@@ -66,7 +66,7 @@ Config file: `$RENCO_HOME/supermemory.json`
 | `SUPERMEMORY_CONTAINER_TAG` | Override container tag (takes priority over config file) |
 
 Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` →
-`https://api.supermemory.ai`. Renco resolves it once and uses the same endpoint
+`https://api.supermemory.ai`. Son of Anton resolves it once and uses the same endpoint
 for SDK operations, setup/status probes, and full-session conversation ingest.
 
 ## Tools
@@ -82,15 +82,15 @@ Kebab-case names are registered for the agent; snake_case aliases remain support
 
 ## Source attribution
 
-All Supermemory API calls send `x-sm-source: renco`, and document writes stamp
-`metadata.sm_source: renco`. This is a **functional routing key, not telemetry**:
-it groups Renco-written memories into a dedicated "Renco" Space in the
+All Supermemory API calls send `x-sm-source: son-of-anton`, and document writes stamp
+`metadata.sm_source: son-of-anton`. This is a **functional routing key, not telemetry**:
+it groups Son of Anton-written memories into a dedicated "Son of Anton" Space in the
 Supermemory app, so you can filter, browse, and bulk-manage them per source agent
 (alongside Codex, Claude Code, etc.) from the Supermemory UI.
 
 ## Behavior
 
-When enabled, Renco can:
+When enabled, Son of Anton can:
 
 - prefetch relevant memory context before each turn
 - buffer the full conversation and ingest it as **one session** at session end (or on `/reset`, branch, compression, or shutdown)
@@ -102,15 +102,15 @@ The session is written once via the conversations endpoint, which drives Superme
 
 ## Profile-Scoped Containers
 
-Use `{identity}` in the `container_tag` to scope memories per Renco profile:
+Use `{identity}` in the `container_tag` to scope memories per Son of Anton profile:
 
 ```json
 {
-  "container_tag": "renco-{identity}"
+  "container_tag": "son-of-anton-{identity}"
 }
 ```
 
-For a profile named `coder`, this resolves to `renco-coder`. The default profile resolves to `renco-default`. Without `{identity}`, all profiles share the same container.
+For a profile named `coder`, this resolves to `son-of-anton-coder`. The default profile resolves to `son-of-anton-default`. Without `{identity}`, all profiles share the same container.
 
 ## Multi-Container Mode
 
@@ -118,7 +118,7 @@ For advanced setups (e.g. OpenClaw-style multi-workspace), you can enable custom
 
 ```json
 {
-  "container_tag": "renco",
+  "container_tag": "son-of-anton",
   "enable_custom_container_tags": true,
   "custom_containers": ["project-alpha", "project-beta", "shared-knowledge"],
   "custom_container_instructions": "Use project-alpha for coding tasks, project-beta for research, and shared-knowledge for team-wide facts."

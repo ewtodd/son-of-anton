@@ -8,7 +8,7 @@ not inserted into the prompt buffer and cleaned up later.
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
 
-from renco_cli.pt_input_extras import install_ignored_terminal_sequences
+from son_of_anton_cli.pt_input_extras import install_ignored_terminal_sequences
 
 
 def _parse_keys(data: str):

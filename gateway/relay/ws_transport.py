@@ -90,7 +90,7 @@ def _env_disconnect_budget_s() -> float:
     variable, same default). Callers above the transport use this to
     apportion the budget across go_idle / monitor teardown / drain."""
     budget = 5.0  # _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT in gateway/run.py
-    raw = os.getenv("RENCO_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+    raw = os.getenv("SON_OF_ANTON_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
     if raw:
         try:
             budget = max(0.0, float(raw))
@@ -177,13 +177,13 @@ def _normalize_slack_parent_command(
     text: str,
     message_type: MessageType,
 ) -> tuple[str, MessageType]:
-    """Mirror native Slack ``/renco`` routing for authenticated relay text."""
+    """Mirror native Slack ``/son-of-anton`` routing for authenticated relay text."""
     stripped = text.strip()
     parent_parts = stripped.split(maxsplit=1)
-    if not parent_parts or parent_parts[0] != "/renco":
+    if not parent_parts or parent_parts[0] != "/son-of-anton":
         return text, message_type
 
-    from renco_cli.commands import slack_subcommand_map
+    from son_of_anton_cli.commands import slack_subcommand_map
 
     payload = parent_parts[1].strip() if len(parent_parts) > 1 else ""
     subcommand_map = slack_subcommand_map()
@@ -248,7 +248,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
-        # The RENCO profile this event is routed to (multiplex mode). The
+        # The SON_OF_ANTON profile this event is routed to (multiplex mode). The
         # connector stamps it on the wire source when NAS resolves the target
         # profile for a Team-Gateway message; absent for a single-profile
         # gateway, where it stays None and session keys keep the legacy
@@ -286,9 +286,9 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     text = raw.get("text", "")
     if platform_enum == Platform.SLACK:
         # Team Gateway carries Slack slash text over the authenticated message
-        # relay, bypassing Renco' native Slack command callback. Normalize at
+        # relay, bypassing Son of Anton' native Slack command callback. Normalize at
         # the wire boundary so adapter-level active-session gates see the real
-        # gateway command rather than the legacy `renco` parent name.
+        # gateway command rather than the legacy `son-of-anton` parent name.
         text, msg_type = _normalize_slack_parent_command(text, msg_type)
 
     return MessageEvent(

@@ -1,4 +1,4 @@
-import { colorize } from '@renco/ink'
+import { colorize } from '@sonofanton/ink'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -258,7 +258,7 @@ describe('supportsFastEchoTerminal', () => {
     expect(
       supportsFastEchoTerminal({
         TMUX: '/tmp/tmux-1000/default,1234,0',
-        RENCO_TUI_TERMUX_FAST_ECHO: '1',
+        SON_OF_ANTON_TUI_TERMUX_FAST_ECHO: '1',
         TERMUX_VERSION: '0.118.0'
       } as NodeJS.ProcessEnv)
     ).toBe(false)
@@ -298,7 +298,7 @@ describe('supportsFastEchoTerminal', () => {
   it('allows explicit Termux fast-echo opt-in via env override', () => {
     expect(
       supportsFastEchoTerminal({
-        RENCO_TUI_TERMUX_FAST_ECHO: '1',
+        SON_OF_ANTON_TUI_TERMUX_FAST_ECHO: '1',
         TERMUX_VERSION: '0.118.0'
       } as NodeJS.ProcessEnv)
     ).toBe(true)

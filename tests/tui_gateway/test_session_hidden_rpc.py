@@ -15,7 +15,7 @@ import pytest
 
 import tui_gateway.server as srv
 import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 @pytest.fixture

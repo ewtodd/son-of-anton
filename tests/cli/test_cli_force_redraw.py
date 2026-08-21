@@ -14,13 +14,13 @@ from unittest.mock import MagicMock
 import pytest
 
 import cli as cli_mod
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 @pytest.fixture
 def bare_cli():
-    """A RencoCLI with no __init__ — we only exercise the redraw helper."""
-    cli = object.__new__(RencoCLI)
+    """A SonOfAntonCLI with no __init__ — we only exercise the redraw helper."""
+    cli = object.__new__(SonOfAntonCLI)
     return cli
 
 
@@ -127,7 +127,7 @@ class TestForceFullRedraw:
         """Same-width SIGWINCH (tmux attach, benign focus/tab signals) must not
         clear the viewport or replay: a 2J without replay erases the visible
         transcript, and a replay duplicates it (#65293). The tmux-attach
-        stale-paint crash is handled by _renco_call_output_screen_diff's
+        stale-paint crash is handled by _son_of_anton_call_output_screen_diff's
         retry instead (#83874)."""
         app = MagicMock()
         events = []
@@ -175,7 +175,7 @@ class TestForceFullRedraw:
         previous = MagicMock()
         previous.height = 8
 
-        result = cli_mod._renco_call_output_screen_diff(
+        result = cli_mod._son_of_anton_call_output_screen_diff(
             fake_osd,
             app=None,
             output=None,

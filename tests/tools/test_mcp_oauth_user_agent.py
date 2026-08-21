@@ -94,7 +94,7 @@ def _ready_for_token_requests(provider):
 
 
 def _build_provider_via(builder, monkeypatch, tmp_path, cfg):
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
     return builder("srv", "https://mcp.example.com/mcp", cfg)
 

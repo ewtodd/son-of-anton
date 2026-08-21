@@ -3,7 +3,7 @@
 PR #11383's consolidation fixed external-refresh reloading (mtime disk-watch)
 and 401 dedup, but left two underlying latent bugs in place:
 
-1. ``RencoTokenStorage.set_tokens`` persisted only relative ``expires_in``,
+1. ``SonOfAntonTokenStorage.set_tokens`` persisted only relative ``expires_in``,
    which is meaningless after a process restart.
 2. The MCP SDK's ``OAuthContext._initialize`` loads ``current_tokens`` from
    storage but does NOT call ``update_token_expiry``, so
@@ -23,7 +23,7 @@ These tests pin the contract for Fix A:
 - ``set_tokens`` persists an absolute ``expires_at`` wall-clock timestamp.
 - ``get_tokens`` reconstructs ``expires_in`` from ``expires_at - now`` so
   the SDK's ``update_token_expiry`` computes the correct absolute expiry.
-- ``RencoMCPOAuthProvider._initialize`` seeds ``context.token_expiry_time``
+- ``SonOfAntonMCPOAuthProvider._initialize`` seeds ``context.token_expiry_time``
   after loading, so ``is_token_valid()`` reports True only for tokens that
   are actually still valid, and the SDK's preemptive refresh fires for
   expired tokens with a live refresh_token.
@@ -44,19 +44,19 @@ pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
 
 # ---------------------------------------------------------------------------
-# RencoTokenStorage — absolute expiry persistence
+# SonOfAntonTokenStorage — absolute expiry persistence
 # ---------------------------------------------------------------------------
 
 
 class TestSetTokensAbsoluteExpiry:
     def test_set_tokens_persists_absolute_expires_at(self, tmp_path, monkeypatch):
         """Tokens round-tripped through disk must encode absolute expiry."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import RencoTokenStorage
+        from tools.mcp_oauth import SonOfAntonTokenStorage
 
-        storage = RencoTokenStorage("srv")
+        storage = SonOfAntonTokenStorage("srv")
         before = time.time()
         asyncio.run(
             storage.set_tokens(
@@ -84,12 +84,12 @@ class TestSetTokensAbsoluteExpiry:
         self, tmp_path, monkeypatch
     ):
         """Tokens without a TTL must not gain a fabricated expires_at."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import RencoTokenStorage
+        from tools.mcp_oauth import SonOfAntonTokenStorage
 
-        storage = RencoTokenStorage("srv")
+        storage = SonOfAntonTokenStorage("srv")
         asyncio.run(
             storage.set_tokens(
                 OAuthToken(
@@ -111,12 +111,12 @@ class TestGetTokensReconstructsExpiresIn:
         self, tmp_path, monkeypatch
     ):
         """Round-trip: expires_in on read must reflect time remaining."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import RencoTokenStorage
+        from tools.mcp_oauth import SonOfAntonTokenStorage
 
-        storage = RencoTokenStorage("srv")
+        storage = SonOfAntonTokenStorage("srv")
         asyncio.run(
             storage.set_tokens(
                 OAuthToken(
@@ -141,8 +141,8 @@ class TestGetTokensReconstructsExpiresIn:
         self, tmp_path, monkeypatch
     ):
         """An already-expired token reloaded from disk must report expires_in=0."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        from tools.mcp_oauth import RencoTokenStorage, _get_token_dir
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        from tools.mcp_oauth import SonOfAntonTokenStorage, _get_token_dir
 
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -159,7 +159,7 @@ class TestGetTokensReconstructsExpiresIn:
             )
         )
 
-        storage = RencoTokenStorage("srv")
+        storage = SonOfAntonTokenStorage("srv")
         reloaded = asyncio.run(storage.get_tokens())
         assert reloaded is not None
         assert reloaded.expires_in == 0, (
@@ -178,8 +178,8 @@ class TestGetTokensReconstructsExpiresIn:
         expires_in to zero so the SDK refreshes on next request. A fresh
         legacy-format file (mtime = now) keeps most of its TTL.
         """
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        from tools.mcp_oauth import RencoTokenStorage, _get_token_dir
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        from tools.mcp_oauth import SonOfAntonTokenStorage, _get_token_dir
 
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +201,7 @@ class TestGetTokensReconstructsExpiresIn:
 
         os.utime(legacy_path, (stale_time, stale_time))
 
-        storage = RencoTokenStorage("srv")
+        storage = SonOfAntonTokenStorage("srv")
         reloaded = asyncio.run(storage.get_tokens())
         assert reloaded is not None
         assert reloaded.expires_in == 0, (
@@ -211,7 +211,7 @@ class TestGetTokensReconstructsExpiresIn:
 
 
 # ---------------------------------------------------------------------------
-# RencoMCPOAuthProvider._initialize — seed token_expiry_time
+# SonOfAntonMCPOAuthProvider._initialize — seed token_expiry_time
 # ---------------------------------------------------------------------------
 
 
@@ -225,17 +225,17 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     token_expiry_time. Our subclass must do it so ``is_token_valid()``
     reports correctly and the preemptive-refresh path fires when needed.
     """
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import RencoTokenStorage
-    from tools.mcp_oauth_manager import _RENCO_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import SonOfAntonTokenStorage
+    from tools.mcp_oauth_manager import _SON_OF_ANTON_PROVIDER_CLS, reset_manager_for_tests
 
-    assert _RENCO_PROVIDER_CLS is not None
+    assert _SON_OF_ANTON_PROVIDER_CLS is not None
     reset_manager_for_tests()
 
-    storage = RencoTokenStorage("srv")
+    storage = SonOfAntonTokenStorage("srv")
     await storage.set_tokens(
         OAuthToken(
             access_token="a",
@@ -258,9 +258,9 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
 
     metadata = OAuthClientMetadata(
         redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-        client_name="Renco Agent",
+        client_name="Son of Anton Agent",
     )
-    provider = _RENCO_PROVIDER_CLS(
+    provider = _SON_OF_ANTON_PROVIDER_CLS(
         server_name="srv",
         server_url="https://example.com/mcp",
         client_metadata=metadata,
@@ -308,7 +308,7 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     and we drop into full browser re-auth — visible to the user as an
     unwanted OAuth browser prompt every time the process restarts.
     """
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
 
     # The SDK's httpx flavour (httpx2 on mcp >= 2.0). _prefetch_oauth_metadata
     # builds its client from the same module, so the MockTransport and the
@@ -322,13 +322,13 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     )
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import RencoTokenStorage
-    from tools.mcp_oauth_manager import _RENCO_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import SonOfAntonTokenStorage
+    from tools.mcp_oauth_manager import _SON_OF_ANTON_PROVIDER_CLS, reset_manager_for_tests
 
-    assert _RENCO_PROVIDER_CLS is not None
+    assert _SON_OF_ANTON_PROVIDER_CLS is not None
     reset_manager_for_tests()
 
-    storage = RencoTokenStorage("srv")
+    storage = SonOfAntonTokenStorage("srv")
     await storage.set_tokens(
         OAuthToken(
             access_token="a",
@@ -396,9 +396,9 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
 
     metadata = OAuthClientMetadata(
         redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-        client_name="Renco Agent",
+        client_name="Son of Anton Agent",
     )
-    provider = _RENCO_PROVIDER_CLS(
+    provider = _SON_OF_ANTON_PROVIDER_CLS(
         server_name="srv",
         server_url="https://mcp.example.com",
         client_metadata=metadata,
@@ -429,15 +429,15 @@ async def test_initialize_skips_prefetch_when_no_tokens(tmp_path, monkeypatch):
     extra network roundtrips that gain nothing (the SDK's 401-branch
     discovery will run on the first real request anyway).
     """
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     import httpx
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth_manager import _RENCO_PROVIDER_CLS, reset_manager_for_tests
-    from tools.mcp_oauth import RencoTokenStorage
+    from tools.mcp_oauth_manager import _SON_OF_ANTON_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import SonOfAntonTokenStorage
 
-    assert _RENCO_PROVIDER_CLS is not None
+    assert _SON_OF_ANTON_PROVIDER_CLS is not None
     reset_manager_for_tests()
 
     calls: list[str] = []
@@ -457,12 +457,12 @@ async def test_initialize_skips_prefetch_when_no_tokens(tmp_path, monkeypatch):
 
     monkeypatch.setattr(real_httpx, "AsyncClient", patched)
 
-    storage = RencoTokenStorage("srv")  # empty — no tokens on disk
+    storage = SonOfAntonTokenStorage("srv")  # empty — no tokens on disk
     metadata = OAuthClientMetadata(
         redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-        client_name="Renco Agent",
+        client_name="Son of Anton Agent",
     )
-    provider = _RENCO_PROVIDER_CLS(
+    provider = _SON_OF_ANTON_PROVIDER_CLS(
         server_name="srv",
         server_url="https://mcp.example.com",
         client_metadata=metadata,

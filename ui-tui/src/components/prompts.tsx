@@ -1,4 +1,4 @@
-import { Box, Text, useInput, wrapAnsi } from '@renco/ink'
+import { Box, Text, useInput, wrapAnsi } from '@sonofanton/ink'
 import { useEffect, useState } from 'react'
 
 import { isMac } from '../lib/platform.js'

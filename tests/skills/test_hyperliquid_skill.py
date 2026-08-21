@@ -97,15 +97,15 @@ def test_main_markets_json_prints_normalized_payload(capsys):
 
 
 
-def test_env_lookup_reads_renco_dotenv(tmp_path, monkeypatch):
+def test_env_lookup_reads_son_of_anton_dotenv(tmp_path, monkeypatch):
     mod = load_module()
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir(parents=True)
-    (renco_home / ".env").write_text(
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir(parents=True)
+    (son_of_anton_home / ".env").write_text(
         "HYPERLIQUID_USER_ADDRESS=0xdotenv123\nHYPERLIQUID_API_URL=https://api.hyperliquid-testnet.xyz\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     monkeypatch.delenv("HYPERLIQUID_USER_ADDRESS", raising=False)
     monkeypatch.delenv("HYPERLIQUID_API_URL", raising=False)
 
@@ -120,12 +120,12 @@ def test_user_dotenv_overrides_project_dotenv(tmp_path, monkeypatch):
     project_dir.mkdir()
     (project_dir / ".env").write_text("HYPERLIQUID_USER_ADDRESS=0xproject\n", encoding="utf-8")
 
-    renco_home = tmp_path / ".renco"
-    renco_home.mkdir()
-    (renco_home / ".env").write_text("HYPERLIQUID_USER_ADDRESS=0xuserhome\n", encoding="utf-8")
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    son_of_anton_home.mkdir()
+    (son_of_anton_home / ".env").write_text("HYPERLIQUID_USER_ADDRESS=0xuserhome\n", encoding="utf-8")
 
     monkeypatch.chdir(project_dir)
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
     monkeypatch.delenv("HYPERLIQUID_USER_ADDRESS", raising=False)
 
     assert mod._env_lookup("HYPERLIQUID_USER_ADDRESS") == "0xuserhome"

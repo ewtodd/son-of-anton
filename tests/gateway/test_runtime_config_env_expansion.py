@@ -15,12 +15,12 @@ def _write_config(home, body: str) -> None:
 
 @pytest.fixture
 def gateway_home(monkeypatch, tmp_path):
-    monkeypatch.setattr(gateway_run, "_renco_home", tmp_path)
-    monkeypatch.delenv("RENCO_PREFILL_MESSAGES_FILE", raising=False)
-    monkeypatch.delenv("RENCO_EPHEMERAL_SYSTEM_PROMPT", raising=False)
-    monkeypatch.delenv("RENCO_GATEWAY_BUSY_INPUT_MODE", raising=False)
-    monkeypatch.delenv("RENCO_RESTART_DRAIN_TIMEOUT", raising=False)
-    monkeypatch.delenv("RENCO_BACKGROUND_NOTIFICATIONS", raising=False)
+    monkeypatch.setattr(gateway_run, "_son_of_anton_home", tmp_path)
+    monkeypatch.delenv("SON_OF_ANTON_PREFILL_MESSAGES_FILE", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_GATEWAY_BUSY_INPUT_MODE", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_RESTART_DRAIN_TIMEOUT", raising=False)
+    monkeypatch.delenv("SON_OF_ANTON_BACKGROUND_NOTIFICATIONS", raising=False)
     return tmp_path
 
 

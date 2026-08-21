@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_module
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 class _FakeBuffer:
@@ -19,7 +19,7 @@ class _FakeBuffer:
 
 
 def _make_cli_stub():
-    cli = RencoCLI.__new__(RencoCLI)
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli._approval_state = None
     cli._approval_deadline = 0
     cli._approval_lock = threading.Lock()
@@ -226,9 +226,9 @@ class TestCliApprovalUi:
                 _thread.join(timeout=10)
 
         assert seen["approval"].__self__ is cli
-        assert seen["approval"].__func__ is RencoCLI._approval_callback
+        assert seen["approval"].__func__ is SonOfAntonCLI._approval_callback
         assert seen["sudo"].__self__ is cli
-        assert seen["sudo"].__func__ is RencoCLI._sudo_password_callback
+        assert seen["sudo"].__func__ is SonOfAntonCLI._sudo_password_callback
         assert not cli._background_tasks
 
 
@@ -239,7 +239,7 @@ def _make_real_paint_cli_stub():
     _last_invalidate inside the throttle window. A throttled _invalidate() would
     be dropped under these conditions — _paint_now must paint regardless.
     """
-    cli = RencoCLI.__new__(RencoCLI)
+    cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli._approval_state = None
     cli._approval_deadline = 0
     cli._approval_lock = threading.Lock()
@@ -250,8 +250,8 @@ def _make_real_paint_cli_stub():
     cli._clarify_deadline = 0
     cli._modal_input_snapshot = None
     # Real methods, not mocks.
-    cli._paint_now = RencoCLI._paint_now.__get__(cli, RencoCLI)
-    cli._invalidate = RencoCLI._invalidate.__get__(cli, RencoCLI)
+    cli._paint_now = SonOfAntonCLI._paint_now.__get__(cli, SonOfAntonCLI)
+    cli._invalidate = SonOfAntonCLI._invalidate.__get__(cli, SonOfAntonCLI)
     cli._resize_recovery_pending = True       # gate 1: resize in flight
     cli._last_invalidate = time.monotonic()   # gate 2: inside throttle window
     cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())

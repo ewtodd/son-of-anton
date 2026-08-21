@@ -25,8 +25,8 @@ def _run_node_deps_stage(
     install_dir = tmp_path / "install"
     tui_dir = install_dir / "ui-tui"
     bin_dir = tmp_path / "bin"
-    renco_home = tmp_path / "home"
-    managed_bin = renco_home / "bin"
+    son_of_anton_home = tmp_path / "home"
+    managed_bin = son_of_anton_home / "bin"
     npm_calls = tmp_path / "npm-calls"
 
     tui_dir.mkdir(parents=True)
@@ -61,8 +61,8 @@ exit 0
     env = os.environ.copy()
     env.update(
         {
-            "RENCO_HOME": str(renco_home),
-            "RENCO_INSTALL_DIR": str(install_dir),
+            "SON_OF_ANTON_HOME": str(son_of_anton_home),
+            "SON_OF_ANTON_INSTALL_DIR": str(install_dir),
             "NPM_CALLS": str(npm_calls),
             "NPM_FAIL_DIRECTORY": fail_directory or "",
             "PATH": f"{bin_dir}:{env['PATH']}",

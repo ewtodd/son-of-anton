@@ -1,6 +1,6 @@
 """OpenAI-compatible facade over Google AI Studio's native Gemini API.
 
-Renco keeps ``api_mode='chat_completions'`` for the ``gemini`` provider so the
+Son of Anton keeps ``api_mode='chat_completions'`` for the ``gemini`` provider so the
 main agent loop can keep using its existing OpenAI-shaped message flow.
 This adapter is the transport shim that converts those OpenAI-style
 ``messages[]`` / ``tools[]`` requests into Gemini's native
@@ -8,7 +8,7 @@ This adapter is the transport shim that converts those OpenAI-style
 
 Why this exists
 ---------------
-Google's OpenAI-compatible endpoint has been brittle for Renco's multi-turn
+Google's OpenAI-compatible endpoint has been brittle for Son of Anton's multi-turn
 agent/tool loop (auth churn, tool-call replay quirks, thought-signature
 requirements).  The native Gemini API is the canonical path and avoids the
 OpenAI-compat layer entirely.
@@ -34,11 +34,11 @@ from agent.gemini_schema import sanitize_gemini_tool_parameters
 logger = logging.getLogger(__name__)
 
 try:
-    import renco_cli as _renco_cli
+    import son_of_anton_cli as _son_of_anton_cli
 
-    _RENCO_VERSION = str(_renco_cli.__version__)
+    _SON_OF_ANTON_VERSION = str(_son_of_anton_cli.__version__)
 except Exception:
-    _RENCO_VERSION = "0.0.0"
+    _SON_OF_ANTON_VERSION = "0.0.0"
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -106,7 +106,7 @@ def probe_gemini_tier(
 
     Returns one of:
 
-    - ``"free"``    -- key is on the free tier (unusable with Renco)
+    - ``"free"``    -- key is on the free tier (unusable with Son of Anton)
     - ``"paid"``    -- key is on a paid tier
     - ``"unknown"`` -- probe failed; callers should proceed without blocking.
     """
@@ -134,7 +134,7 @@ def probe_gemini_tier(
                 json=payload,
                 headers={
                     "Content-Type": "application/json",
-                    "X-Goog-Api-Client": f"renco-agent/{_RENCO_VERSION}",
+                    "X-Goog-Api-Client": f"son-of-anton/{_SON_OF_ANTON_VERSION}",
                 },
             )
     except Exception as exc:
@@ -181,7 +181,7 @@ def is_free_tier_quota_error(error_message: str) -> bool:
 
 _FREE_TIER_GUIDANCE = (
     "\n\nYour Google API key is on the free tier (a few hundred requests/day "
-    "for Gemini Flash models). Renco typically makes 3-10 API calls per user turn, "
+    "for Gemini Flash models). Son of Anton typically makes 3-10 API calls per user turn, "
     "so the free tier is exhausted in a handful of messages and cannot sustain "
     "an agent session. Enable billing on your Google Cloud project and "
     "regenerate the key in a billing-enabled project: "
@@ -220,13 +220,13 @@ _STANDARD_KEY_GUIDANCE = (
     "key's type and status, and create a replacement Gemini API key (or, as "
     "a temporary bridge, restrict the Standard key to "
     "generativelanguage.googleapis.com). Then update GEMINI_API_KEY / "
-    "GOOGLE_API_KEY in ~/.renco/.env and restart your session. "
+    "GOOGLE_API_KEY in ~/.son-of-anton/.env and restart your session. "
     "Details: https://ai.google.dev/gemini-api/docs/api-key"
 )
 
 
 class GeminiAPIError(Exception):
-    """Error shape compatible with Renco retry/error classification."""
+    """Error shape compatible with Son of Anton retry/error classification."""
 
     def __init__(
         self,
@@ -564,7 +564,7 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     """Return True when Gemini will spend output tokens on thinking.
 
     Gemini bills thought tokens against ``maxOutputTokens``. A global
-    Renco ``max_tokens`` of 4096/16384 is enough for visible text, but
+    Son of Anton ``max_tokens`` of 4096/16384 is enough for visible text, but
     Ultra/high thinking can consume the entire budget and leave
     ``finishReason=MAX_TOKENS`` with no complete answer. Continuations
     then abort after 4 retries.
@@ -1058,8 +1058,8 @@ class GeminiNativeClient:
         if not (api_key or "").strip():
             raise RuntimeError(
                 "Gemini native client requires an API key, but none was provided. "
-                "Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment / ~/.renco/.env "
-                "(get one at https://aistudio.google.com/app/apikey), or run `renco setup` "
+                "Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment / ~/.son-of-anton/.env "
+                "(get one at https://aistudio.google.com/app/apikey), or run `son-of-anton setup` "
                 "to configure the Google provider."
             )
         self.api_key = api_key
@@ -1092,11 +1092,11 @@ class GeminiNativeClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            # Include Renco client context following Gemini's partner
+            # Include Son of Anton client context following Gemini's partner
             # integration guidance.
             # See https://ai.google.dev/gemini-api/docs/partner-integration
-            "User-Agent": f"renco-agent/{_RENCO_VERSION} (gemini-native)",
-            "X-Goog-Api-Client": f"renco-agent/{_RENCO_VERSION}",
+            "User-Agent": f"son-of-anton/{_SON_OF_ANTON_VERSION} (gemini-native)",
+            "X-Goog-Api-Client": f"son-of-anton/{_SON_OF_ANTON_VERSION}",
         }
         headers.update(self._default_headers)
         return headers

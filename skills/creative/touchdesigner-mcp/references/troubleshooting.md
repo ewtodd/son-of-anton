@@ -133,11 +133,11 @@ n.cook(force=True)
 actual = str(n.width) + 'x' + str(n.height)
 ```
 
-## 5. Renco Configuration
+## 5. Son of Anton Configuration
 
 ### Config location
 
-`$RENCO_HOME/config.yaml` (defaults to `~/.renco/config.yaml` when `RENCO_HOME` is unset)
+`$SON_OF_ANTON_HOME/config.yaml` (defaults to `~/.son-of-anton/config.yaml` when `SON_OF_ANTON_HOME` is unset)
 
 ### MCP entry format
 
@@ -150,7 +150,7 @@ mcpServers:
 
 ### After config changes
 
-Restart the Renco session for changes to take effect. The MCP connection is
+Restart the Son of Anton session for changes to take effect. The MCP connection is
 established at session startup.
 
 ### Verifying MCP tools are available

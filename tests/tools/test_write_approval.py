@@ -1,5 +1,5 @@
 """Tests for the memory/skill write-approval gate (tools/write_approval.py)
-and the shared slash-command handlers (renco_cli/write_approval_commands.py).
+and the shared slash-command handlers (son_of_anton_cli/write_approval_commands.py).
 
 Covers the boolean write_approval gate (off by default = write freely; on =
 require approval) for both subsystems, the foreground-vs-background staging
@@ -16,17 +16,17 @@ import pytest
 
 
 @pytest.fixture
-def renco_home(monkeypatch):
-    d = tempfile.mkdtemp(prefix="renco_wa_test_")
-    home = os.path.join(d, ".renco")
+def son_of_anton_home(monkeypatch):
+    d = tempfile.mkdtemp(prefix="son_of_anton_wa_test_")
+    home = os.path.join(d, ".son-of-anton")
     os.makedirs(home)
-    monkeypatch.setenv("RENCO_HOME", home)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", home)
     yield home
     shutil.rmtree(d, ignore_errors=True)
 
 
 def _set_approval(subsystem, enabled):
-    import renco_cli.config as cfg
+    import son_of_anton_cli.config as cfg
     c = cfg.load_config()
     c.setdefault(subsystem, {})["write_approval"] = enabled
     cfg.save_config(c)
@@ -36,14 +36,14 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def test_default_gate_is_off(renco_home):
+def test_default_gate_is_off(son_of_anton_home):
     from tools import write_approval as wa
     # Default: gate off → writes flow freely.
     assert wa.write_approval_enabled("memory") is False
     assert wa.write_approval_enabled("skills") is False
 
 
-def test_invalid_subsystem_is_off(renco_home):
+def test_invalid_subsystem_is_off(son_of_anton_home):
     from tools import write_approval as wa
     assert wa.write_approval_enabled("bogus") is False
 
@@ -67,7 +67,7 @@ def test_normalize_enabled_coerces_values():
 # Memory gate
 # ---------------------------------------------------------------------------
 
-def test_memory_gate_off_allows_write(renco_home):
+def test_memory_gate_off_allows_write(son_of_anton_home):
     # Default (gate off) → write straight through, no staging.
     from tools.memory_tool import memory_tool, MemoryStore
     from tools import write_approval as wa
@@ -78,7 +78,7 @@ def test_memory_gate_off_allows_write(renco_home):
     assert wa.pending_count("memory") == 0
 
 
-def test_cli_memory_approve_without_live_agent_uses_fresh_store(renco_home, capsys):
+def test_cli_memory_approve_without_live_agent_uses_fresh_store(son_of_anton_home, capsys):
     """#46783: ``/memory approve`` from a context with no live agent (e.g. the
     Desktop GUI) passed ``memory_store=None`` into the shared handler, which
     returned "memory store unavailable" and applied nothing. The CLI handler must
@@ -86,7 +86,7 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(renco_home, caps
     import json
     from tools.memory_tool import memory_tool, MemoryStore
     from tools import write_approval as wa
-    from renco_cli.cli_commands_mixin import CLICommandsMixin
+    from son_of_anton_cli.cli_commands_mixin import CLICommandsMixin
 
     _set_approval("memory", True)
     staging = MemoryStore(); staging.load_from_disk()
@@ -108,13 +108,13 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(renco_home, caps
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
 
-def test_load_on_disk_store_honors_configured_limits_and_permissions(renco_home, monkeypatch):
+def test_load_on_disk_store_honors_configured_limits_and_permissions(son_of_anton_home, monkeypatch):
     """Fresh approval stores must match the live agent's limits and target gates."""
     from tools.memory_tool import load_on_disk_store
 
     # Config override path: helper picks up configured limits and store flags.
     monkeypatch.setattr(
-        "renco_cli.config.load_config",
+        "son_of_anton_cli.config.load_config",
         lambda: {
             "memory": {
                 "memory_char_limit": 999,
@@ -134,7 +134,7 @@ def test_load_on_disk_store_honors_configured_limits_and_permissions(renco_home,
     def _boom():
         raise RuntimeError("no config")
 
-    monkeypatch.setattr("renco_cli.config.load_config", _boom)
+    monkeypatch.setattr("son_of_anton_cli.config.load_config", _boom)
     fallback = load_on_disk_store()
     assert fallback.memory_char_limit == 2200
     assert fallback.user_char_limit == 1375
@@ -162,8 +162,8 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 
 
-def test_handle_approve_all(renco_home):
-    from renco_cli.write_approval_commands import handle_pending_subcommand
+def test_handle_approve_all(son_of_anton_home):
+    from son_of_anton_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import MemoryStore
     from tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
@@ -177,8 +177,8 @@ def test_handle_approve_all(renco_home):
     assert len(store.user_entries) == 2
 
 
-def test_handle_approval_on(renco_home):
-    from renco_cli.write_approval_commands import handle_pending_subcommand
+def test_handle_approval_on(son_of_anton_home):
+    from son_of_anton_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
     captured = {}
     out = handle_pending_subcommand(
@@ -189,8 +189,8 @@ def test_handle_approval_on(renco_home):
     assert "on" in out
 
 
-def test_handle_approval_off(renco_home):
-    from renco_cli.write_approval_commands import handle_pending_subcommand
+def test_handle_approval_off(son_of_anton_home):
+    from son_of_anton_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
     captured = {}
     out = handle_pending_subcommand(
@@ -214,7 +214,7 @@ def approval_callback_cleanup():
     set_approval_callback(None)
 
 
-def test_memory_inline_approve_writes(renco_home, approval_callback_cleanup):
+def test_memory_inline_approve_writes(son_of_anton_home, approval_callback_cleanup):
     from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
     from tools import write_approval as wa
@@ -237,7 +237,7 @@ def test_memory_inline_approve_writes(renco_home, approval_callback_cleanup):
     assert "approved fact" in calls[0][0]
 
 
-def test_memory_inline_deny_blocks(renco_home, approval_callback_cleanup):
+def test_memory_inline_deny_blocks(son_of_anton_home, approval_callback_cleanup):
     from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
     from tools import write_approval as wa
@@ -252,7 +252,7 @@ def test_memory_inline_deny_blocks(renco_home, approval_callback_cleanup):
     assert wa.pending_count("memory") == 0  # denied, not staged
 
 
-def test_memory_invalid_params_rejected_before_staging(renco_home):
+def test_memory_invalid_params_rejected_before_staging(son_of_anton_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.
     from tools.memory_tool import memory_tool, MemoryStore

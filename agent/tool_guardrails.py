@@ -600,7 +600,7 @@ class ToolCallGuardrailController:
         ):
             ordinal = f"{count}{'th' if 11 <= count % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(count % 10, 'th')}"
             notice = (
-                f"[renco note: this is the {ordinal} consecutive identical call to "
+                f"[son-of-anton note: this is the {ordinal} consecutive identical call to "
                 f"{tool_name} with identical arguments returning the same result. "
                 "Do not repeat it — change arguments, use a different tool, or "
                 "proceed with what you have.]"
@@ -645,7 +645,7 @@ class ToolCallGuardrailController:
         first_id = self._identical_streak_first_call_id
         ref = f" (tool_call_id {first_id})" if first_id else ""
         stub = (
-            f"[renco note: this result is byte-identical to the {tool_name} "
+            f"[son-of-anton note: this result is byte-identical to the {tool_name} "
             f"result earlier this turn{ref}. Refer to that result; it has not "
             f"changed. Args: {args_preview}]"
         )

@@ -9,11 +9,11 @@ own glyph lines in the conversation thread).
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli_obj.model = model
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]

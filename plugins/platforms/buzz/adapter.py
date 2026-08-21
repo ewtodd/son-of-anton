@@ -1,9 +1,9 @@
 """
-Buzz Platform Adapter for Renco Agent.
+Buzz Platform Adapter for Son of Anton Agent.
 
 A plugin-based gateway adapter that connects to a Buzz community relay
 (Block's open-source human+agent collaboration platform, built on the
-Nostr protocol) and relays messages to/from the Renco agent.
+Nostr protocol) and relays messages to/from the Son of Anton agent.
 
 The adapter does not speak Nostr itself — it shells out to the ``buzz``
 CLI binary ("JSON in, JSON out") via ``asyncio.create_subprocess_exec``.
@@ -32,7 +32,7 @@ Or via environment variables (overrides config.yaml):
     BUZZ_ALLOW_ALL_USERS
 
 The only secret is BUZZ_PRIVATE_KEY (nsec or hex) — it belongs in
-``~/.renco/.env``.  It is passed to the CLI via the subprocess
+``~/.son-of-anton/.env``.  It is passed to the CLI via the subprocess
 environment and is never logged.
 """
 
@@ -105,7 +105,7 @@ _CLI_TIMEOUT = 30.0
 _WS_AUTH_TIMEOUT = 20.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
-_WS_MEMBERSHIP_SUB_ID = "renco-buzz-membership"
+_WS_MEMBERSHIP_SUB_ID = "son-of-anton-buzz-membership"
 
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
@@ -805,7 +805,7 @@ class BuzzAdapter(BasePlatformAdapter):
         (kind 44100 p-tagged to us) for live DM discovery."""
         subscriptions: Dict[str, Optional[str]] = {}
         for index, channel_id in enumerate(list(self._channel_state)):
-            subscription_id = f"renco-buzz-{index}"
+            subscription_id = f"son-of-anton-buzz-{index}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
         if self._self_pubkey:
@@ -831,7 +831,7 @@ class BuzzAdapter(BasePlatformAdapter):
         for channel_id in self._channel_state:
             if channel_id in before:
                 continue
-            subscription_id = f"renco-buzz-dm-{len(subscriptions)}"
+            subscription_id = f"son-of-anton-buzz-dm-{len(subscriptions)}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
             logger.info("Buzz: subscribed to new conversation %s", channel_id)
@@ -1323,7 +1323,7 @@ def _env_enablement() -> Optional[dict]:
     """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
 
     Called BEFORE adapter construction so env-only setups show up in
-    ``renco gateway status`` and ``get_connected_platforms()``.  Returns
+    ``son-of-anton gateway status`` and ``get_connected_platforms()``.  Returns
     ``None`` when Buzz isn't minimally configured.
 
     The special ``home_channel`` key is handled by the core hook — it becomes
@@ -1367,7 +1367,7 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     """One-shot send without a live adapter (out-of-process cron delivery).
 
-    Used by ``tools/send_message_tool`` when ``renco cron`` runs separately
+    Used by ``tools/send_message_tool`` when ``son-of-anton cron`` runs separately
     from the gateway process.  Without this hook, ``deliver=buzz`` cron jobs
     fail with ``No live adapter for platform 'buzz'``.
     """
@@ -1408,12 +1408,12 @@ async def _standalone_send(
 
 
 def interactive_setup() -> None:
-    """Interactive ``renco gateway setup`` flow for the Buzz platform.
+    """Interactive ``son-of-anton gateway setup`` flow for the Buzz platform.
 
-    Lazy-imports ``renco_cli.setup`` helpers so the plugin stays importable
+    Lazy-imports ``son_of_anton_cli.setup`` helpers so the plugin stays importable
     in non-CLI contexts (gateway runtime, tests).
     """
-    from renco_cli.setup import (
+    from son_of_anton_cli.setup import (
         prompt,
         prompt_yes_no,
         save_env_value,
@@ -1431,7 +1431,7 @@ def interactive_setup() -> None:
         if not prompt_yes_no("Reconfigure Buzz?", False):
             return
 
-    print_info("Connect Renco to a Buzz community (Block's Nostr-based human+agent platform).")
+    print_info("Connect Son of Anton to a Buzz community (Block's Nostr-based human+agent platform).")
     print_info("   Requires the buzz CLI binary and a Nostr key that is a community member.")
     print()
 
@@ -1480,12 +1480,12 @@ def interactive_setup() -> None:
         save_env_value("BUZZ_ALLOWED_USERS", allowed.replace(" ", "") if allowed else "")
 
     print()
-    print_success("Buzz configuration saved to ~/.renco/.env")
-    print_info("Restart the gateway for changes to take effect: renco gateway restart")
+    print_success("Buzz configuration saved to ~/.son-of-anton/.env")
+    print_info("Restart the gateway for changes to take effect: son-of-anton gateway restart")
 
 
 def register(ctx):
-    """Plugin entry point: called by the Renco plugin system."""
+    """Plugin entry point: called by the Son of Anton plugin system."""
     ctx.register_platform(
         name="buzz",
         label="Buzz",

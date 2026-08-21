@@ -104,17 +104,17 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
             self.attributes = {}
 
     gateway_snapshot = type("S", (), {"metrics": [
-        _M("renco.gateway.up"), _M("renco.gateway.active_agents"),
-        _M("renco.gateway.busy"), _M("renco.gateway.drainable"),
-        _M("renco.gateway.restart_requested"),
-        _M("renco.platform.up"), _M("renco.platform.degraded"),
+        _M("son-of-anton.gateway.up"), _M("son-of-anton.gateway.active_agents"),
+        _M("son-of-anton.gateway.busy"), _M("son-of-anton.gateway.drainable"),
+        _M("son-of-anton.gateway.restart_requested"),
+        _M("son-of-anton.platform.up"), _M("son-of-anton.platform.degraded"),
     ]})()
     cron_snapshot = type("S", (), {"metrics": [
-        _M("renco.cron.scheduler.heartbeat_age_seconds"),
-        _M("renco.cron.scheduler.last_success_age_seconds"),
-        _M("renco.cron.scheduler.catch_up_occurrences"),
-        _M("renco.cron.jobs.enabled"), _M("renco.cron.jobs.running"),
-        _M("renco.cron.jobs.overdue"),
+        _M("son-of-anton.cron.scheduler.heartbeat_age_seconds"),
+        _M("son-of-anton.cron.scheduler.last_success_age_seconds"),
+        _M("son-of-anton.cron.scheduler.catch_up_occurrences"),
+        _M("son-of-anton.cron.jobs.enabled"), _M("son-of-anton.cron.jobs.running"),
+        _M("son-of-anton.cron.jobs.overdue"),
     ]})()
     monkeypatch.setattr(gateway_health_export, "_read_gateway_snapshot", lambda config: gateway_snapshot)
     monkeypatch.setattr(gateway_health_export, "_read_cron_snapshot", lambda: cron_snapshot)
@@ -134,7 +134,7 @@ def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():
 
     text = Path("docs/observability/monitoring.md").read_text(encoding="utf-8")
 
-    assert "Renco Agent-owned Relay transport health" in text
+    assert "Son of Anton Agent-owned Relay transport health" in text
     assert "authoritative shared connector/platform state" in text
     assert "up to one second" in text
     assert "terminal" in text

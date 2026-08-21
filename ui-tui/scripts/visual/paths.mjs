@@ -2,10 +2,10 @@
 // resolve to a drive-root like C:\tmp on native Windows (and fail when the
 // directory doesn't exist) — os.tmpdir() is the platform-neutral answer.
 // Both render.tsx and shot.mjs derive the same directory from here;
-// RENCO_TUI_VISUAL_DIR overrides it for CI or side-by-side runs.
+// SON_OF_ANTON_TUI_VISUAL_DIR overrides it for CI or side-by-side runs.
 import { tmpdir } from 'os'
 import { join } from 'path'
 
 export function visualOutDir() {
-  return process.env.RENCO_TUI_VISUAL_DIR || join(tmpdir(), 'renco-tui-visual')
+  return process.env.SON_OF_ANTON_TUI_VISUAL_DIR || join(tmpdir(), 'son-of-anton-tui-visual')
 }

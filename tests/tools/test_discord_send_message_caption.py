@@ -1,6 +1,6 @@
 """Discord standalone MEDIA:<path> caption delivery.
 
-When `renco send --to discord "MEDIA:/x.png This Caption"` targets a normal
+When `son-of-anton send --to discord "MEDIA:/x.png This Caption"` targets a normal
 (non-forum) channel, the caption must ride on the media message content rather
 than being posted as a separate message before the attachment. The Discord REST
 calls are mocked at the aiohttp.ClientSession boundary.

@@ -1,10 +1,10 @@
 """Tests for /save — the conversation snapshot slash command.
 
-Regression: the old implementation wrote ``renco_conversation_<ts>.json``
+Regression: the old implementation wrote ``son_of_anton_conversation_<ts>.json``
 to the current working directory (CWD). Users who ran /save expected the
-file to be discoverable via ``renco sessions browse``, but CWD-resident
+file to be discoverable via ``son-of-anton sessions browse``, but CWD-resident
 snapshots are not indexed in the state DB and are generally invisible.
-The fix writes snapshots under ``~/.renco/sessions/saved/`` and prints
+The fix writes snapshots under ``~/.son-of-anton/sessions/saved/`` and prints
 the absolute path plus the resume hint for the live session.
 """
 
@@ -20,15 +20,15 @@ import pytest
 
 
 @pytest.fixture
-def renco_home(tmp_path, monkeypatch):
-    home = tmp_path / ".renco"
+def son_of_anton_home(tmp_path, monkeypatch):
+    home = tmp_path / ".son-of-anton"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("RENCO_HOME", str(home))
-    # Clear any cached renco_home computation
-    import renco_constants
-    if hasattr(renco_constants, "_renco_home_cache"):
-        renco_constants._renco_home_cache = None
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
+    # Clear any cached son_of_anton_home computation
+    import son_of_anton_constants
+    if hasattr(son_of_anton_constants, "_son_of_anton_home_cache"):
+        son_of_anton_constants._son_of_anton_home_cache = None
     return home
 
 
@@ -42,15 +42,15 @@ def _make_stub_cli(history):
     )
 
 
-def test_save_conversation_writes_under_renco_home(renco_home, tmp_path, monkeypatch, capsys):
-    """Snapshot must land under ~/.renco/sessions/saved/, not CWD."""
+def test_save_conversation_writes_under_son_of_anton_home(son_of_anton_home, tmp_path, monkeypatch, capsys):
+    """Snapshot must land under ~/.son-of-anton/sessions/saved/, not CWD."""
     # Change CWD to a different directory to prove the file does NOT go there.
     work = tmp_path / "somewhere-else"
     work.mkdir()
     monkeypatch.chdir(work)
 
-    # Import fresh to pick up the RENCO_HOME fixture
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "renco_constants"]:
+    # Import fresh to pick up the SON_OF_ANTON_HOME fixture
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "son_of_anton_constants"]:
         sys.modules.pop(mod, None)
 
     import cli  # noqa: F401  (module under test)
@@ -61,16 +61,16 @@ def test_save_conversation_writes_under_renco_home(renco_home, tmp_path, monkeyp
     ])
 
     # Call the unbound method against our stub.
-    cli.RencoCLI.save_conversation(stub, "/save json")
+    cli.SonOfAntonCLI.save_conversation(stub, "/save json")
 
     # File must NOT be in CWD
-    cwd_leak = list(work.glob("renco_conversation_*.json"))
+    cwd_leak = list(work.glob("son_of_anton_conversation_*.json"))
     assert not cwd_leak, f"snapshot leaked to CWD: {cwd_leak}"
 
-    # File MUST be under ~/.renco/sessions/saved/
-    saved_dir = renco_home / "sessions" / "saved"
+    # File MUST be under ~/.son-of-anton/sessions/saved/
+    saved_dir = son_of_anton_home / "sessions" / "saved"
     assert saved_dir.is_dir(), "expected saved/ subdirectory to be created"
-    files = list(saved_dir.glob("renco_conversation_*.json"))
+    files = list(saved_dir.glob("son_of_anton_conversation_*.json"))
     assert len(files) == 1, files
 
     payload = json.loads(files[0].read_text())
@@ -86,33 +86,33 @@ def test_save_conversation_writes_under_renco_home(renco_home, tmp_path, monkeyp
     # User-facing message must include the absolute path AND the resume hint.
     out = capsys.readouterr().out
     assert str(files[0]) in out, out
-    assert "renco --resume 20260101_120000_abc123" in out, out
+    assert "son-of-anton --resume 20260101_120000_abc123" in out, out
 
 
-def test_save_conversation_empty_history_does_nothing(renco_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "renco_constants"]:
+def test_save_conversation_empty_history_does_nothing(son_of_anton_home, capsys):
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "son_of_anton_constants"]:
         sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([])
-    cli.RencoCLI.save_conversation(stub, "/save json")
+    cli.SonOfAntonCLI.save_conversation(stub, "/save json")
 
-    saved_dir = renco_home / "sessions" / "saved"
+    saved_dir = son_of_anton_home / "sessions" / "saved"
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     assert "No conversation to save" in out
 
 
-def test_save_conversation_bare_shows_usage(renco_home, capsys):
+def test_save_conversation_bare_shows_usage(son_of_anton_home, capsys):
     """Bare /save prints the usage card and writes nothing."""
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "renco_constants"]:
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "son_of_anton_constants"]:
         sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])
-    cli.RencoCLI.save_conversation(stub, "/save")
+    cli.SonOfAntonCLI.save_conversation(stub, "/save")
 
-    saved_dir = renco_home / "sessions" / "saved"
+    saved_dir = son_of_anton_home / "sessions" / "saved"
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     # Usage card lists every format and the redact option
@@ -120,15 +120,15 @@ def test_save_conversation_bare_shows_usage(renco_home, capsys):
         assert token in out, (token, out)
 
 
-def test_save_conversation_bad_format_shows_usage(renco_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "renco_constants"]:
+def test_save_conversation_bad_format_shows_usage(son_of_anton_home, capsys):
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "son_of_anton_constants"]:
         sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])
-    cli.RencoCLI.save_conversation(stub, "/save pdf")
+    cli.SonOfAntonCLI.save_conversation(stub, "/save pdf")
 
-    saved_dir = renco_home / "sessions" / "saved"
+    saved_dir = son_of_anton_home / "sessions" / "saved"
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     assert "Usage:" in out

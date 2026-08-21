@@ -1,4 +1,4 @@
-"""Regression test: renco update must not load cryptography eagerly."""
+"""Regression test: son-of-anton update must not load cryptography eagerly."""
 
 import sys
 import subprocess
@@ -28,7 +28,7 @@ class TestLazySecretsImport:
 import sys
 
 # Import main (this builds the parser, including the secrets subparser)
-import renco_cli.main
+import son_of_anton_cli.main
 
 # Check if cryptography was loaded eagerly
 if 'cryptography.hazmat.bindings._rust' in sys.modules:
@@ -53,7 +53,7 @@ else:
 import sys
 
 # First verify it's NOT loaded after importing main
-import renco_cli.main
+import son_of_anton_cli.main
 assert 'cryptography.hazmat.bindings._rust' not in sys.modules, \\
     'cryptography already loaded before dispatch'
 
@@ -61,7 +61,7 @@ assert 'cryptography.hazmat.bindings._rust' not in sys.modules, \\
 # We can't easily run the actual dispatch without mocking argparse,
 # but we can at least verify the import inside _dispatch_secrets works
 # by checking that secrets_cli is not yet in sys.modules
-assert 'renco_cli.secrets_cli' not in sys.modules, \\
+assert 'son_of_anton_cli.secrets_cli' not in sys.modules, \\
     'secrets_cli already loaded before dispatch'
 
 print('PASS: secrets_cli and cryptography not loaded until dispatch')
@@ -75,18 +75,18 @@ sys.exit(0)
         )
 
     def test_update_check_no_cryptography(self) -> None:
-        """Running renco update --check should NOT load cryptography._rust."""
-        # Write a small script in the repo root so renco_cli is importable,
+        """Running son-of-anton update --check should NOT load cryptography._rust."""
+        # Write a small script in the repo root so son_of_anton_cli is importable,
         # and use a filename that doesn't trigger the live-system guard.
         repo_root = Path(__file__).parent.parent
         script = repo_root / "_test_lazy_secrets_check.py"
         script.write_text(
             """
 import sys
-sys.argv = ['renco', 'update', '--check']
+sys.argv = ['son-of-anton', 'update', '--check']
 
-import renco_cli.main
-from renco_cli.update_cmd import _cmd_update_check
+import son_of_anton_cli.main
+from son_of_anton_cli.update_cmd import _cmd_update_check
 
 assert 'cryptography.hazmat.bindings._rust' not in sys.modules, \\
     'cryptography._rust loaded during update path'

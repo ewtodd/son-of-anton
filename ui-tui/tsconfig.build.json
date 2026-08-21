@@ -2,7 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {
-      "@renco/ink": ["src/types/renco-ink.d.ts"]
+      "@sonofanton/ink": ["src/types/son-of-anton-ink.d.ts"]
     }
   }
 }

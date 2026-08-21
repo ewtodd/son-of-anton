@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 def _compressor(db: SessionDB | None = None, session_id: str = "") -> ContextCompressor:

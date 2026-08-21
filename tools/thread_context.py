@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Propagate agent-turn context into worker threads that dispatch Renco tools.
+"""Propagate agent-turn context into worker threads that dispatch Son of Anton tools.
 
 A bare ``threading.Thread`` / ``ThreadPoolExecutor`` worker starts with an
 empty ``contextvars.Context`` and no thread-local approval/sudo callbacks.

@@ -25,8 +25,8 @@ an ``[unverified]`` marker rather than silently blended in.
 
 Ledger path resolution (first wins):
   --ledger PATH
-  $RENCO_CITATION_LEDGER
-  $RENCO_HOME/cache/citations/ledger.json
+  $SON_OF_ANTON_CITATION_LEDGER
+  $SON_OF_ANTON_HOME/cache/citations/ledger.json
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _renco_home import get_renco_home  # noqa: E402
+from _son_of_anton_home import get_son_of_anton_home  # noqa: E402
 
 SCHEMA_VERSION = 1
 
@@ -65,10 +65,10 @@ _UNVERIFIED_RE = re.compile(r"\[unverified\]", re.IGNORECASE)
 def resolve_ledger_path(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
-    env = os.environ.get("RENCO_CITATION_LEDGER", "").strip()
+    env = os.environ.get("SON_OF_ANTON_CITATION_LEDGER", "").strip()
     if env:
         return Path(env).expanduser()
-    return get_renco_home() / "cache" / "citations" / "ledger.json"
+    return get_son_of_anton_home() / "cache" / "citations" / "ledger.json"
 
 
 def normalize_url(url: str) -> str:

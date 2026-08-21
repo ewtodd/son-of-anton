@@ -85,12 +85,12 @@ def test_upload_evidence_accepts_only_attachment_urls(tmp_path, monkeypatch):
     result = _mod.upload_evidence(
         [_mod.EvidenceFile("shot.png", "new screenshot: shot.png")],
         tmp_path,
-        "ewtodd/renco",
+        "ewtodd/son-of-anton",
         "bot-session-token",
     )
 
     assert result == {"shot.png": "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"}
-    assert calls[0][0] == ["gh", "image", "--repo", "ewtodd/renco", str(shot)]
+    assert calls[0][0] == ["gh", "image", "--repo", "ewtodd/son-of-anton", str(shot)]
     assert calls[0][1]["env"]["GH_SESSION_TOKEN"] == "bot-session-token"
 
 
@@ -114,7 +114,7 @@ def test_upload_evidence_reports_gh_image_error(tmp_path, monkeypatch, capsys):
         _mod.upload_evidence(
             [_mod.EvidenceFile("shot.png", "new screenshot: shot.png")],
             tmp_path,
-            "ewtodd/renco",
+            "ewtodd/son-of-anton",
             "bot-session-token",
         )
 
@@ -127,7 +127,7 @@ def test_upload_evidence_reports_gh_image_error(tmp_path, monkeypatch, capsys):
 def test_publish_marks_evidence_upload_failure_in_pr_comment(tmp_path, monkeypatch):
     comment = {
         "id": 123,
-        "body": "before\n<!-- renco-e2e-evidence:start -->\npending\n<!-- renco-e2e-evidence:end -->\nafter",
+        "body": "before\n<!-- son-of-anton-e2e-evidence:start -->\npending\n<!-- son-of-anton-e2e-evidence:end -->\nafter",
     }
     updates = []
 
@@ -161,7 +161,7 @@ def test_publish_marks_evidence_upload_failure_in_pr_comment(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="Failed to upload shot.png"):
         _mod.publish(
             "github-token",
-            "ewtodd/renco",
+            "ewtodd/son-of-anton",
             tmp_path,
             "69868",
             "image-token",
@@ -169,11 +169,11 @@ def test_publish_marks_evidence_upload_failure_in_pr_comment(tmp_path, monkeypat
 
     assert updates == [
         (
-            "https://api.github.com/repos/ewtodd/renco/issues/comments/123",
+            "https://api.github.com/repos/ewtodd/son-of-anton/issues/comments/123",
             "github-token",
             "PATCH",
             {
-                "body": "before\n<!-- renco-e2e-evidence:start -->\n<sub>inline evidence upload failed.</sub>\n\n<pre>Failed to upload shot.png: bad &lt;response&gt;</pre>\n<!-- renco-e2e-evidence:end -->\nafter"
+                "body": "before\n<!-- son-of-anton-e2e-evidence:start -->\n<sub>inline evidence upload failed.</sub>\n\n<pre>Failed to upload shot.png: bad &lt;response&gt;</pre>\n<!-- son-of-anton-e2e-evidence:end -->\nafter"
             },
         )
     ]
@@ -197,7 +197,7 @@ def test_publish_skips_when_no_review_comment_exists(tmp_path, monkeypatch, caps
 
     assert _mod.publish(
         "github-token",
-        "ewtodd/renco",
+        "ewtodd/son-of-anton",
         tmp_path,
         "83202",
         "image-token",
@@ -206,9 +206,9 @@ def test_publish_skips_when_no_review_comment_exists(tmp_path, monkeypatch, caps
 
 
 def test_find_review_comment_requires_the_evidence_marker():
-    pending = "<!-- renco-ci-review-bot -->\n<!-- renco-e2e-evidence:start -->\npending\n<!-- renco-e2e-evidence:end -->"
+    pending = "<!-- son-of-anton-ci-review-bot -->\n<!-- son-of-anton-e2e-evidence:start -->\npending\n<!-- son-of-anton-e2e-evidence:end -->"
 
-    assert _mod._find_review_comment([{"body": "<!-- renco-ci-review-bot --> no evidence"}]) is None
+    assert _mod._find_review_comment([{"body": "<!-- son-of-anton-ci-review-bot --> no evidence"}]) is None
     assert _mod._find_review_comment([{"body": pending, "id": 123}]) == {"body": pending, "id": 123}
 
 

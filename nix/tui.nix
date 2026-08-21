@@ -1,6 +1,6 @@
-# nix/tui.nix — Renco TUI (Ink/React) compiled with tsc and bundled
-{ rencoNpmLib, ... }:
-rencoNpmLib.buildNpmPackage {
+# nix/tui.nix — Son of Anton TUI (Ink/React) compiled with tsc and bundled
+{ son-of-antonNpmLib, ... }:
+son-of-antonNpmLib.buildNpmPackage {
   dirs = [
     "ui-tui"
     "apps/shared"
@@ -17,12 +17,12 @@ rencoNpmLib.buildNpmPackage {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p $out/lib/renco-tui
+    mkdir -p $out/lib/son-of-anton-tui
     # esbuild writes to ui-tui/dist/ from the source root (no cd).
-    cp -r ui-tui/dist $out/lib/renco-tui/dist
+    cp -r ui-tui/dist $out/lib/son-of-anton-tui/dist
 
     # package.json kept for "type": "module" resolution on `node dist/entry.js`.
-    cp ui-tui/package.json $out/lib/renco-tui/
+    cp ui-tui/package.json $out/lib/son-of-anton-tui/
 
     runHook postInstall
   '';

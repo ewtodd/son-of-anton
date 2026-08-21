@@ -1,9 +1,9 @@
 """Tests for OAuth server metadata persistence across process restarts.
 
 Covers:
-- :class:`RencoTokenStorage` ``.meta.json`` roundtrip (save / load / remove)
+- :class:`SonOfAntonTokenStorage` ``.meta.json`` roundtrip (save / load / remove)
 - The production manager provider
-  (:class:`tools.mcp_oauth_manager.RencoMCPOAuthProvider`) restoring metadata
+  (:class:`tools.mcp_oauth_manager.SonOfAntonMCPOAuthProvider`) restoring metadata
   on cold-load init and persisting metadata at the end of ``async_auth_flow``.
 
 Context
@@ -26,8 +26,8 @@ import pytest
 
 from mcp.shared.auth import OAuthMetadata
 
-from tools.mcp_oauth import RencoTokenStorage
-from tools.mcp_oauth_manager import _RENCO_PROVIDER_CLS
+from tools.mcp_oauth import SonOfAntonTokenStorage
+from tools.mcp_oauth_manager import _SON_OF_ANTON_PROVIDER_CLS
 
 
 def _make_metadata(token_endpoint: str = "https://auth.example.com/oauth/token") -> OAuthMetadata:
@@ -42,14 +42,14 @@ def _make_metadata(token_endpoint: str = "https://auth.example.com/oauth/token")
 
 
 # ---------------------------------------------------------------------------
-# RencoTokenStorage metadata roundtrip
+# SonOfAntonTokenStorage metadata roundtrip
 # ---------------------------------------------------------------------------
 
 
 class TestMetadataStorage:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        storage = RencoTokenStorage("example-server")
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        storage = SonOfAntonTokenStorage("example-server")
 
         meta = _make_metadata()
         storage.save_oauth_metadata(meta)
@@ -64,8 +64,8 @@ class TestMetadataStorage:
 
 
     def test_remove_deletes_meta_file(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        storage = RencoTokenStorage("cleanup-server")
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        storage = SonOfAntonTokenStorage("cleanup-server")
 
         storage.save_oauth_metadata(_make_metadata())
         assert storage._meta_path().exists()
@@ -75,20 +75,20 @@ class TestMetadataStorage:
 
 
 # ---------------------------------------------------------------------------
-# Manager-path provider (RencoMCPOAuthProvider) — production code path
+# Manager-path provider (SonOfAntonMCPOAuthProvider) — production code path
 # ---------------------------------------------------------------------------
 
 
-def _manager_provider_with_context(storage: RencoTokenStorage, **context_attrs):
+def _manager_provider_with_context(storage: SonOfAntonTokenStorage, **context_attrs):
     """Build an uninitialized manager provider with a mocked context.
 
     Bypasses the full OAuthClientProvider init so we can exercise the
     override logic in isolation.
     """
-    if _RENCO_PROVIDER_CLS is None:
+    if _SON_OF_ANTON_PROVIDER_CLS is None:
         pytest.skip("MCP SDK auth not available")
-    provider = _RENCO_PROVIDER_CLS.__new__(_RENCO_PROVIDER_CLS)
-    provider._renco_server_name = context_attrs.get("server_name", "srv")
+    provider = _SON_OF_ANTON_PROVIDER_CLS.__new__(_SON_OF_ANTON_PROVIDER_CLS)
+    provider._son_of_anton_server_name = context_attrs.get("server_name", "srv")
     context = MagicMock()
     context.storage = storage
     context.oauth_metadata = context_attrs.get("oauth_metadata")
@@ -102,13 +102,13 @@ def _manager_provider_with_context(storage: RencoTokenStorage, **context_attrs):
 class TestManagerOAuthProviderMetadata:
     def test_initialize_restores_metadata_from_disk(self, tmp_path, monkeypatch):
         """Cold-load: if we have no in-memory metadata but disk has some, restore it."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        storage = RencoTokenStorage("mgr-srv")
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        storage = SonOfAntonTokenStorage("mgr-srv")
         storage.save_oauth_metadata(_make_metadata("https://mgr.example.com/token"))
         provider = _manager_provider_with_context(storage, oauth_metadata=None)
 
         with patch.object(
-            _RENCO_PROVIDER_CLS.__bases__[0], "_initialize", new=AsyncMock()
+            _SON_OF_ANTON_PROVIDER_CLS.__bases__[0], "_initialize", new=AsyncMock()
         ):
             asyncio.run(provider._initialize())
 
@@ -119,8 +119,8 @@ class TestManagerOAuthProviderMetadata:
 
     def test_async_auth_flow_persists_on_completion(self, tmp_path, monkeypatch):
         """End-to-end: running the wrapped auth_flow persists discovered metadata."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path))
-        storage = RencoTokenStorage("flow-srv")
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
+        storage = SonOfAntonTokenStorage("flow-srv")
         provider = _manager_provider_with_context(
             storage,
             oauth_metadata=_make_metadata("https://flow.example.com/token"),
@@ -136,7 +136,7 @@ class TestManagerOAuthProviderMetadata:
         manager.invalidate_if_disk_changed = AsyncMock(return_value=False)
 
         with patch.object(
-            _RENCO_PROVIDER_CLS.__bases__[0],
+            _SON_OF_ANTON_PROVIDER_CLS.__bases__[0],
             "async_auth_flow",
             new=fake_parent_flow,
         ), patch("tools.mcp_oauth_manager.get_manager", return_value=manager):

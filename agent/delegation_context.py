@@ -1,7 +1,7 @@
 """Context-local state for delegate_task child execution.
 
-The parent Renco process may itself be a Kanban dispatcher worker with
-RENCO_KANBAN_* variables in process env. delegate_task children run inside the
+The parent Son of Anton process may itself be a Kanban dispatcher worker with
+SON_OF_ANTON_KANBAN_* variables in process env. delegate_task children run inside the
 same Python process, but they are not dispatcher-owned Kanban workers. This
 module lets code paths that resolve tool schemas or spawn subprocesses fail
 closed for delegated children without mutating global os.environ for the parent.
@@ -18,30 +18,30 @@ from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar(
-    "renco_delegated_child_context",
+    "son_of_anton_delegated_child_context",
     default=False,
 )
 
 # Set for any in-process execution that is NOT the dispatcher-owned worker even
-# though the worker's RENCO_KANBAN_* vars are legitimately in os.environ (cron
+# though the worker's SON_OF_ANTON_KANBAN_* vars are legitimately in os.environ (cron
 # jobs fired via the `cronjob` tool).  Kept separate from
 # _DELEGATED_CHILD_CONTEXT so the delegate_task-specific behaviour attached to
 # that flag (subprocess env scrubbing, its own error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar(
-    "renco_non_dispatcher_owned_context",
+    "son_of_anton_non_dispatcher_owned_context",
     default=False,
 )
 
-DELEGATED_CHILD_ENV_MARKER = "RENCO_DELEGATED_CHILD_CONTEXT"
+DELEGATED_CHILD_ENV_MARKER = "SON_OF_ANTON_DELEGATED_CHILD_CONTEXT"
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
-    "RENCO_KANBAN_TASK",
-    "RENCO_KANBAN_RUN_ID",
-    "RENCO_KANBAN_WORKSPACE",
-    "RENCO_KANBAN_WORKSPACES_ROOT",
-    "RENCO_KANBAN_CLAIM_LOCK",
-    "RENCO_KANBAN_BOARD",
-    "RENCO_KANBAN_DB",
+    "SON_OF_ANTON_KANBAN_TASK",
+    "SON_OF_ANTON_KANBAN_RUN_ID",
+    "SON_OF_ANTON_KANBAN_WORKSPACE",
+    "SON_OF_ANTON_KANBAN_WORKSPACES_ROOT",
+    "SON_OF_ANTON_KANBAN_CLAIM_LOCK",
+    "SON_OF_ANTON_KANBAN_BOARD",
+    "SON_OF_ANTON_KANBAN_DB",
 )
 
 
@@ -76,10 +76,10 @@ def non_dispatcher_owned_context() -> Iterator[None]:
 
     A Kanban worker is a normal CLI agent whose default toolset includes
     ``cronjob``; ``cronjob(action="run")`` runs ``run_job()`` inside the worker's
-    own process, where ``RENCO_KANBAN_TASK`` is legitimately set.  Without this
+    own process, where ``SON_OF_ANTON_KANBAN_TASK`` is legitimately set.  Without this
     marker the cron agent is misread as that worker: the kanban toolset is
     force-added, the worker protocol is injected into its system prompt, and
-    ``kanban_complete`` defaults ``task_id`` to ``$RENCO_KANBAN_TASK`` — letting
+    ``kanban_complete`` defaults ``task_id`` to ``$SON_OF_ANTON_KANBAN_TASK`` — letting
     an unrelated cron job close the worker's task and overwrite real results.
 
     Scoped via ContextVar rather than by clearing ``os.environ``: the env is
@@ -97,7 +97,7 @@ def non_dispatcher_owned_context() -> Iterator[None]:
 def is_dispatcher_owned_worker_context() -> bool:
     """Return True only when this execution owns the dispatcher's Kanban task.
 
-    The single predicate every ``RENCO_KANBAN_*`` identity gate should use
+    The single predicate every ``SON_OF_ANTON_KANBAN_*`` identity gate should use
     before trusting those vars.  False for delegate_task children and for cron
     jobs fired in-process from a worker.
     """
@@ -146,7 +146,7 @@ def delegated_child_subprocess_env(
 
     Most subprocess call sites historically used ``env=None`` to inherit the
     process environment.  In a ``delegate_task`` child, inheriting as-is leaks
-    parent dispatcher ``RENCO_KANBAN_*`` vars while losing the ContextVar in
+    parent dispatcher ``SON_OF_ANTON_KANBAN_*`` vars while losing the ContextVar in
     the new process.  This helper preserves normal ``env=None`` semantics for
     non-delegated calls, and only materializes a scrubbed env when the lineage
     marker must be propagated across a child-process boundary.

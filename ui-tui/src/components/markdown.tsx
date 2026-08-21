@@ -1,4 +1,4 @@
-import { Box, Link, stringWidth, Text } from '@renco/ink'
+import { Box, Link, stringWidth, Text } from '@sonofanton/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'

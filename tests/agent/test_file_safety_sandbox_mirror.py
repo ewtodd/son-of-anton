@@ -2,9 +2,9 @@
 
 The guard fires when a tool tries to write into the per-task mirror
 directory created by a non-local terminal backend (Docker, Daytona, etc.).
-Those paths look like ``…/sandboxes/<backend>/<task>/home/.renco/…`` and
+Those paths look like ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` and
 they accumulate divergent copies of authoritative profile state (SOUL.md,
-config.yaml, memories/*.md) because the host Renco process never reads
+config.yaml, memories/*.md) because the host Son of Anton process never reads
 them. Soft guard — defense in depth, NOT a security boundary.
 
 Reference: #32049 — under ``terminal.backend: docker``, the agent's
@@ -32,7 +32,7 @@ class TestClassifySandboxMirrorTarget:
         target = (
             tmp_path
             / "profiles" / "group1"
-            / "sandboxes" / "docker" / "default" / "home" / ".renco"
+            / "sandboxes" / "docker" / "default" / "home" / ".son-of-anton"
             / "profiles" / "group1" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
@@ -42,7 +42,7 @@ class TestClassifySandboxMirrorTarget:
         assert result is not None
         assert result["target_path"] == str(target.resolve())
         assert result["mirror_root"].endswith(
-            "sandboxes/docker/default/home/.renco"
+            "sandboxes/docker/default/home/.son-of-anton"
         )
         assert result["inner_path"] == "profiles/group1/SOUL.md"
 
@@ -60,7 +60,7 @@ class TestClassifySandboxMirrorTarget:
 
         target = (
             tmp_path
-            / "sandboxes" / backend / "task-42" / "home" / ".renco"
+            / "sandboxes" / backend / "task-42" / "home" / ".son-of-anton"
             / Path(inner)
         )
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +86,7 @@ class TestGetSandboxMirrorWarning:
     def test_non_mirror_returns_none(self, tmp_path):
         from agent.file_safety import get_sandbox_mirror_warning
 
-        target = tmp_path / ".renco" / "profiles" / "group1" / "SOUL.md"
+        target = tmp_path / ".son-of-anton" / "profiles" / "group1" / "SOUL.md"
         target.parent.mkdir(parents=True)
         target.write_text("# real SOUL\n")
 
@@ -98,7 +98,7 @@ class TestGetSandboxMirrorWarning:
         target = (
             tmp_path
             / "profiles" / "group1"
-            / "sandboxes" / "docker" / "default" / "home" / ".renco"
+            / "sandboxes" / "docker" / "default" / "home" / ".son-of-anton"
             / "profiles" / "group1" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
@@ -107,7 +107,7 @@ class TestGetSandboxMirrorWarning:
         warn = get_sandbox_mirror_warning(str(target))
         assert warn is not None
         # Must name the mirror root so the user can locate the sandbox.
-        assert "sandboxes/docker/default/home/.renco" in warn
+        assert "sandboxes/docker/default/home/.son-of-anton" in warn
         # Must hint at what the agent likely meant.
         assert "profiles/group1/SOUL.md" in warn
         # Must name the bypass kwarg shared with the cross-profile guard.
@@ -118,7 +118,7 @@ class TestGetSandboxMirrorWarning:
 
         target = (
             tmp_path
-            / "sandboxes" / "docker" / "t" / "home" / ".renco"
+            / "sandboxes" / "docker" / "t" / "home" / ".son-of-anton"
             / "profiles" / "g" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
@@ -143,13 +143,13 @@ class TestSandboxMirrorIsOrthogonalToCrossProfile:
 
     def test_same_profile_mirror_still_flagged(self, tmp_path, monkeypatch):
         import agent.file_safety as fs
-        monkeypatch.setattr(fs, "_renco_root_path", lambda: tmp_path)
-        monkeypatch.setattr(fs, "_renco_home_path", lambda: tmp_path / "profiles" / "group1")
+        monkeypatch.setattr(fs, "_son_of_anton_root_path", lambda: tmp_path)
+        monkeypatch.setattr(fs, "_son_of_anton_home_path", lambda: tmp_path / "profiles" / "group1")
 
         target = (
             tmp_path
             / "profiles" / "group1"
-            / "sandboxes" / "docker" / "default" / "home" / ".renco"
+            / "sandboxes" / "docker" / "default" / "home" / ".son-of-anton"
             / "profiles" / "group1" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)

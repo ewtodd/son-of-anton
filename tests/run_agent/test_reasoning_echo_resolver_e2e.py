@@ -14,24 +14,24 @@ feature silently dies and no current test catches it. This test closes that gap.
 
 It also pins the named-custom-provider case: a provider declared under
 `providers.<name>` resolves at runtime to `provider == "custom"` (see
-`renco_cli/runtime_provider.py`), and the echo flag must still take effect for
+`son_of_anton_cli/runtime_provider.py`), and the echo flag must still take effect for
 it. A future refactor keying the flag on provider *name* would reintroduce that
 miss; this test is the tripwire.
 
-Uses a temp RENCO_HOME + real `load_config_readonly` (the config cache is
+Uses a temp SON_OF_ANTON_HOME + real `load_config_readonly` (the config cache is
 path-keyed, so this is hermetic) — no live server, no hand-set flag.
 """
 
 from __future__ import annotations
 
-from renco_cli.runtime_provider import resolve_runtime_provider
+from son_of_anton_cli.runtime_provider import resolve_runtime_provider
 from agent.agent_runtime_helpers import copy_reasoning_content_for_api
 from run_agent import AIAgent
 
 
 def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
-    """Point RENCO_HOME at a temp profile declaring a named custom provider."""
-    home = tmp_path / "renco"
+    """Point SON_OF_ANTON_HOME at a temp profile declaring a named custom provider."""
+    home = tmp_path / "son-of-anton"
     home.mkdir()
     lines = [
         "model:",
@@ -47,10 +47,10 @@ def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
         "    key_env: LLAMACPP_KEY",
     ]
     (home / "config.yaml").write_text("\n".join(lines) + "\n")
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     # Drop any path-keyed config cache from a prior test.
     try:
-        from renco_cli import config as _cfg
+        from son_of_anton_cli import config as _cfg
         for name in ("_CONFIG_CACHE", "_config_cache"):
             if hasattr(_cfg, name):
                 getattr(_cfg, name).clear()
@@ -60,7 +60,7 @@ def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
 
 def _agent_with_init_flag() -> AIAgent:
     """Build an agent and materialize the echo flag the way init_agent does."""
-    from renco_cli.config import load_config_readonly
+    from son_of_anton_cli.config import load_config_readonly
     agent = object.__new__(AIAgent)
     agent._reasoning_echo_flag = bool(
         (load_config_readonly().get("model") or {}).get("reasoning_echo")

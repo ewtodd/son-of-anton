@@ -24,17 +24,17 @@ import cron.jobs as J
 
 @pytest.fixture
 def cron_store(tmp_path, monkeypatch):
-    renco_home = tmp_path / ".renco"
-    (renco_home / "cron").mkdir(parents=True)
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
-    monkeypatch.setattr(J, "RENCO_DIR", renco_home)
-    monkeypatch.setattr(J, "CRON_DIR", renco_home / "cron")
-    monkeypatch.setattr(J, "JOBS_FILE", renco_home / "cron" / "jobs.json")
-    monkeypatch.setattr(J, "OUTPUT_DIR", renco_home / "cron" / "output")
+    son_of_anton_home = tmp_path / ".son-of-anton"
+    (son_of_anton_home / "cron").mkdir(parents=True)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
+    monkeypatch.setattr(J, "SON_OF_ANTON_DIR", son_of_anton_home)
+    monkeypatch.setattr(J, "CRON_DIR", son_of_anton_home / "cron")
+    monkeypatch.setattr(J, "JOBS_FILE", son_of_anton_home / "cron" / "jobs.json")
+    monkeypatch.setattr(J, "OUTPUT_DIR", son_of_anton_home / "cron" / "output")
     J._cron_cadence_cache.clear()
     monkeypatch.setattr(J, "_persisted_error_recoveries", 0)
     monkeypatch.setattr(J, "_persisted_error_recoveries_recent", [])
-    return renco_home
+    return son_of_anton_home
 
 
 def _wedge(job_id: str, *, next_run_at: datetime, last_run_at: datetime) -> None:
@@ -62,7 +62,7 @@ class TestCronRearmRespectsScheduleLegality:
             next_run_at=datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc),
             last_run_at=datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc),
         )
-        with mock.patch.object(J, "_renco_now", lambda: now):
+        with mock.patch.object(J, "_son_of_anton_now", lambda: now):
             due = J.get_due_jobs()
         assert due == [], "Saturday must not fire a weekday-only job"
         rearmed = J.get_job(job["id"])
@@ -84,7 +84,7 @@ class TestCronRearmRespectsScheduleLegality:
             next_run_at=legal_next,
             last_run_at=now - timedelta(hours=27),
         )
-        with mock.patch.object(J, "_renco_now", lambda: now):
+        with mock.patch.object(J, "_son_of_anton_now", lambda: now):
             J.get_due_jobs()
         assert datetime.fromisoformat(J.get_job(job["id"])["next_run_at"]) == legal_next
         assert J.get_persisted_error_recovery_stats()["persisted_error_recoveries"] == 0
@@ -99,7 +99,7 @@ class TestCronRearmRespectsScheduleLegality:
             next_run_at=now + timedelta(minutes=5),
             last_run_at=now - timedelta(minutes=110),
         )
-        with mock.patch.object(J, "_renco_now", lambda: now):
+        with mock.patch.object(J, "_son_of_anton_now", lambda: now):
             due = J.get_due_jobs()
         assert any(j["id"] == job["id"] for j in due), (
             "wedged interval job must become due immediately after re-arm"

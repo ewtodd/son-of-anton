@@ -11,21 +11,21 @@
     { pkgs, self', ... }:
     let
       packages = builtins.attrValues self'.packages;
-      rencoNpmLib = self'.packages.default.passthru.rencoNpmLib;
+      son-of-antonNpmLib = self'.packages.default.passthru.son-of-antonNpmLib;
 
       # Collect all packageJsonPath values from npm workspace packages.
       npmPackageJsonPaths = builtins.filter (p: p != null) (
         map (p: p.passthru.packageJsonPath or null) packages
       );
 
-      rencoAgentDevShellHook = self'.packages.default.passthru.devShellHook;
+      son-of-antonAgentDevShellHook = self'.packages.default.passthru.devShellHook;
     in
     {
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
-          (pkgs.runCommand "renco" { } ''
+          (pkgs.runCommand "son-of-anton" { } ''
             mkdir -p $out/bin
-            install -Dm755 ${../renco} $out/bin/renco
+            install -Dm755 ${../son-of-anton} $out/bin/son-of-anton
           '')
           self'.packages.sandbox
           uv
@@ -43,21 +43,21 @@
         ]
         ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          ${rencoAgentDevShellHook}
-          ${rencoNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
+          ${son-of-antonAgentDevShellHook}
+          ${son-of-antonNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
 
           # Force Node to use Nix's playwright-test binary instead of node_modules/.bin
           export PATH="${pkgs.playwright-test}/bin:$PATH"
 
           # for the devshell to pick up the src
-          export RENCO_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
+          export SON_OF_ANTON_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
 
           # Let `uv run --active --no-sync` reuse Nix's provisioned Python
           # environment instead of creating an empty project .venv.
           export VIRTUAL_ENV="$(dirname "$(dirname "$(readlink -f "$(command -v python)")")")"
 
-          echo "Renco Agent dev shell in $RENCO_PYTHON_SRC_ROOT"
-          echo "Ready. Run 'renco' or 'sandbox renco' to start."
+          echo "Son of Anton Agent dev shell in $SON_OF_ANTON_PYTHON_SRC_ROOT"
+          echo "Ready. Run 'son-of-anton' or 'sandbox son-of-anton' to start."
         '';
       };
     };

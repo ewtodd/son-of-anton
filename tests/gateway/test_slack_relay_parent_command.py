@@ -21,13 +21,13 @@ def _wire(text: str, *, platform: str = "slack") -> dict:
 @pytest.mark.parametrize(
     ("wire_text", "expected"),
     [
-        ("/renco sethome", "/sethome"),
-        ("/renco\tsethome", "/sethome"),
+        ("/son-of-anton sethome", "/sethome"),
+        ("/son-of-anton\tsethome", "/sethome"),
         (
-            "/renco model gpt-5.6 --provider openai",
+            "/son-of-anton model gpt-5.6 --provider openai",
             "/model gpt-5.6 --provider openai",
         ),
-        ("/renco", "/help"),
+        ("/son-of-anton", "/help"),
     ],
 )
 def test_slack_relay_parent_becomes_gateway_command(wire_text: str, expected: str):

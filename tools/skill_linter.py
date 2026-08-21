@@ -11,7 +11,7 @@ instead of native tools, a missing author/license/metadata block, a
 marketing words in the description, ``platforms:`` gating vs POSIX-only
 primitives, and forbidden scaffolding files.
 
-Design contract (matches the Renco "no lazy-reading escape hatches / don't
+Design contract (matches the Son of Anton "no lazy-reading escape hatches / don't
 destroy the feature" posture):
 
 * Findings are **advisory** by default. ``lint_skill`` returns a list of
@@ -196,31 +196,31 @@ def _check_metadata_block(frontmatter: Dict[str, Any]) -> List[LintFinding]:
                 )
             )
     meta = frontmatter.get("metadata")
-    renco_meta = meta.get("renco") if isinstance(meta, dict) else None
-    if not isinstance(renco_meta, dict):
+    son_of_anton_meta = meta.get("son-of-anton") if isinstance(meta, dict) else None
+    if not isinstance(son_of_anton_meta, dict):
         findings.append(
             LintFinding(
                 WARNING,
                 "missing-metadata",
-                "frontmatter is missing metadata.renco.{tags, related_skills}.",
+                "frontmatter is missing metadata.son-of-anton.{tags, related_skills}.",
             )
         )
     else:
-        if "tags" not in renco_meta:
+        if "tags" not in son_of_anton_meta:
             findings.append(
                 LintFinding(
-                    WARNING, "missing-metadata", "metadata.renco.tags is missing."
+                    WARNING, "missing-metadata", "metadata.son-of-anton.tags is missing."
                 )
             )
     author = str(frontmatter.get("author", ""))
-    if author and author.strip().lower() in ("renco", "agent", "renco agent") and (
-        author != "Renco Agent"
+    if author and author.strip().lower() in ("son-of-anton", "agent", "son-of-anton agent") and (
+        author != "Son of Anton Agent"
     ):
         findings.append(
             LintFinding(
                 WARNING,
                 "author-caps",
-                f"author '{author}' should be 'Renco Agent' (proper caps) "
+                f"author '{author}' should be 'Son of Anton Agent' (proper caps) "
                 f"or a real contributor name.",
             )
         )

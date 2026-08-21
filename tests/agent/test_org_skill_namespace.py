@@ -235,11 +235,11 @@ class TestOrgPullIsWiredIn:
 
         main_src = (
             pathlib.Path(__file__).resolve().parents[2]
-            / "renco_cli"
+            / "son_of_anton_cli"
             / "main.py"
         ).read_text(encoding="utf-8")
         assert "maybe_pull_org_skills" in main_src, (
-            "`renco sync pull` must also refresh the org mirror."
+            "`son-of-anton sync pull` must also refresh the org mirror."
         )
 
     def test_sync_status_exposes_org_state(self):
@@ -258,8 +258,8 @@ class TestOrgPullIsWiredIn:
 
         root = pathlib.Path(__file__).resolve().parents[2]
         targets = [
-            root / "renco_cli" / "subcommands" / "sync.py",
-            root / "renco_cli" / "subcommands" / "skills.py",
+            root / "son_of_anton_cli" / "subcommands" / "sync.py",
+            root / "son_of_anton_cli" / "subcommands" / "skills.py",
         ]
         banned = re.compile(
             r"\(M[12]\)|\bHSP\b|HSP/1|§[0-9]|DEV-PHASE|hsp-1-contract"
@@ -273,11 +273,11 @@ class TestOrgPullIsWiredIn:
 
 
 class TestSkillSyncIsOneCommand:
-    """Every Skill Sync verb lives under `renco sync` for launch.
+    """Every Skill Sync verb lives under `son-of-anton sync` for launch.
 
     The surface is deliberately encapsulated: one command to learn, one to
     document, and top-level `sync` stays free of skill-management verbs that
-    belong elsewhere. `propose` in particular used to sit under `renco
+    belong elsewhere. `propose` in particular used to sit under `son-of-anton
     skills`, which split one feature across two commands.
     """
 
@@ -289,24 +289,24 @@ class TestSkillSyncIsOneCommand:
         ).read_text(encoding="utf-8")
 
     def test_propose_is_a_sync_subcommand(self):
-        sync_src = self._src("renco_cli", "subcommands", "sync.py")
+        sync_src = self._src("son_of_anton_cli", "subcommands", "sync.py")
         assert '"propose"' in sync_src, (
-            "`propose` must be a `renco sync` subcommand."
+            "`propose` must be a `son-of-anton sync` subcommand."
         )
 
     def test_propose_is_not_under_skills(self):
-        skills_src = self._src("renco_cli", "subcommands", "skills.py")
+        skills_src = self._src("son_of_anton_cli", "subcommands", "skills.py")
         assert '"propose"' not in skills_src, (
-            "`propose` must NOT remain under `renco skills` — Skill Sync is "
+            "`propose` must NOT remain under `son-of-anton skills` — Skill Sync is "
             "one command for launch."
         )
 
     def test_sync_usage_lists_propose(self):
-        main_src = self._src("renco_cli", "main.py")
-        usage_start = main_src.index("usage: renco sync ")
+        main_src = self._src("son_of_anton_cli", "main.py")
+        usage_start = main_src.index("usage: son-of-anton sync ")
         usage_block = main_src[usage_start : usage_start + 1400]
         assert "propose" in usage_block, (
-            "`renco sync` usage must list the propose verb."
+            "`son-of-anton sync` usage must list the propose verb."
         )
 
 
@@ -374,9 +374,9 @@ class TestLocalEditsSurviveOrgUpdates:
     def test_auto_propose_defaults_off(self, monkeypatch):
         from tools import skills_sync_client as ssc
 
-        monkeypatch.delenv("RENCO_SYNC_ORG_AUTO_PROPOSE", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_SYNC_ORG_AUTO_PROPOSE", raising=False)
         monkeypatch.setattr(
-            "renco_cli.config.load_config", lambda: {}, raising=False
+            "son_of_anton_cli.config.load_config", lambda: {}, raising=False
         )
         # Default must be OFF: silently pushing every agent edit to the whole
         # organisation is not a safe default.
@@ -385,5 +385,5 @@ class TestLocalEditsSurviveOrgUpdates:
     def test_auto_propose_can_be_enabled_by_env(self, monkeypatch):
         from tools import skills_sync_client as ssc
 
-        monkeypatch.setenv("RENCO_SYNC_ORG_AUTO_PROPOSE", "1")
+        monkeypatch.setenv("SON_OF_ANTON_SYNC_ORG_AUTO_PROPOSE", "1")
         assert ssc.sync_org_auto_propose() is True

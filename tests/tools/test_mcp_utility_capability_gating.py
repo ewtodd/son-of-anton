@@ -2,7 +2,7 @@
 
 Background
 ==========
-For every connected MCP server, renco-agent used to register four "utility"
+For every connected MCP server, son-of-anton used to register four "utility"
 tool schemas (``mcp_<server>_list_resources``, ``read_resource``,
 ``list_prompts``, ``get_prompt``) regardless of whether the server actually
 advertises those capabilities. The old gate used ``hasattr(server.session,

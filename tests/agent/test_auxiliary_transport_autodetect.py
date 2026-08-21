@@ -126,7 +126,7 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
         AnthropicAuxiliaryClient,
     )
 
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path))
     # sk-kimi- prefix triggers /coding endpoint auto-detection
     monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-faketesttoken123")
 

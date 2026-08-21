@@ -1,7 +1,7 @@
 """Tests for cold-start credits hydration at session open.
 
 The L3 cold-start seed primes agent._credits_state from /api/oauth/account (or a
-RENCO_DEV_CREDITS_FIXTURE) so depletion AND the 90% grant warning fire immediately
+SON_OF_ANTON_DEV_CREDITS_FIXTURE) so depletion AND the 90% grant warning fire immediately
 at session open, not only after the first inference header. These tests assert the
 notice policy fires correctly for a seed-shaped CreditsState with the warn90 latch
 primed the way conversation_loop does it.
@@ -48,7 +48,7 @@ def test_cold_start_healthy_no_notice():
 
 
 def test_dev_fixtures_drive_cold_start():
-    """Every RENCO_DEV_CREDITS_FIXTURE state produces a valid seed CreditsState."""
+    """Every SON_OF_ANTON_DEV_CREDITS_FIXTURE state produces a valid seed CreditsState."""
     import os
 
     from agent.credits_tracker import dev_fixture_credits_state
@@ -59,15 +59,15 @@ def test_dev_fixtures_drive_cold_start():
         "depleted": ["credits.depleted"],
     }
     for name, want in expected.items():
-        os.environ["RENCO_DEV_CREDITS"] = "1"  # fixtures gate on the dev flag
-        os.environ["RENCO_DEV_CREDITS_FIXTURE"] = name
+        os.environ["SON_OF_ANTON_DEV_CREDITS"] = "1"  # fixtures gate on the dev flag
+        os.environ["SON_OF_ANTON_DEV_CREDITS_FIXTURE"] = name
         try:
             fx = dev_fixture_credits_state()
             assert fx is not None, name
             assert _cold_start_notices(fx) == want, (name, _cold_start_notices(fx))
         finally:
-            os.environ.pop("RENCO_DEV_CREDITS_FIXTURE", None)
-            os.environ.pop("RENCO_DEV_CREDITS", None)
+            os.environ.pop("SON_OF_ANTON_DEV_CREDITS_FIXTURE", None)
+            os.environ.pop("SON_OF_ANTON_DEV_CREDITS", None)
 
 
 # ── seed_credits_at_session_start: the shared session-open hydrator ───────────
@@ -106,13 +106,13 @@ def _seed(agent, fixture):
 
     from agent.credits_tracker import seed_credits_at_session_start
 
-    os.environ["RENCO_DEV_CREDITS"] = "1"  # fixtures gate on the dev flag
-    os.environ["RENCO_DEV_CREDITS_FIXTURE"] = fixture
+    os.environ["SON_OF_ANTON_DEV_CREDITS"] = "1"  # fixtures gate on the dev flag
+    os.environ["SON_OF_ANTON_DEV_CREDITS_FIXTURE"] = fixture
     try:
         return seed_credits_at_session_start(agent)
     finally:
-        os.environ.pop("RENCO_DEV_CREDITS_FIXTURE", None)
-        os.environ.pop("RENCO_DEV_CREDITS", None)
+        os.environ.pop("SON_OF_ANTON_DEV_CREDITS_FIXTURE", None)
+        os.environ.pop("SON_OF_ANTON_DEV_CREDITS", None)
 
 
 

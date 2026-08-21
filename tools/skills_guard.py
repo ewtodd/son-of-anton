@@ -9,7 +9,7 @@ and a trust-aware install policy that determines whether a skill is allowed
 based on both the scan verdict and the source's trust level.
 
 Trust levels:
-  - builtin:   Ships with Renco. Never scanned, always trusted.
+  - builtin:   Ships with Son of Anton. Never scanned, always trusted.
   - trusted:   openai/skills and anthropics/skills only. Caution verdicts allowed.
   - community: Everything else. Any findings = blocked unless --force.
 
@@ -135,9 +135,9 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.docker|\~/\.docker',
      "docker_dir_access", "high", "exfiltration",
      "references Docker config (may contain registry creds)"),
-    (r'\$HOME/\.renco/\.env|\~/\.renco/\.env',
-     "renco_env_access", "critical", "exfiltration",
-     "directly references Renco secrets file"),
+    (r'\$HOME/\.son-of-anton/\.env|\~/\.son-of-anton/\.env',
+     "son_of_anton_env_access", "critical", "exfiltration",
+     "directly references Son of Anton secrets file"),
     # Match `cat <secrets-file>` (reading credentials) but NOT `cat > <file>`
     # or `cat >> <file>`, which are output redirections that WRITE a file
     # (e.g. a setup doc telling the user to write their own keys into their
@@ -461,9 +461,9 @@ THREAT_PATTERNS = [
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
      "agent_config_mod", "critical", "persistence",
      "references agent config files (could persist malicious instructions across sessions)"),
-    (r'\.renco/config\.yaml|\.renco/SOUL\.md',
-     "renco_config_mod", "critical", "persistence",
-     "references Renco configuration files directly"),
+    (r'\.son-of-anton/config\.yaml|\.son-of-anton/SOUL\.md',
+     "son_of_anton_config_mod", "critical", "persistence",
+     "references Son of Anton configuration files directly"),
     (r'\.claude/settings|\.codex/config',
      "other_agent_config", "high", "persistence",
      "references other agent configuration files"),
@@ -1041,7 +1041,7 @@ def _unicode_char_name(char: str) -> str:
 # ---------------------------------------------------------------------------
 
 # Ignore-file names a skill may ship to exclude dev/docs artifacts from the
-# scan. `.skillignore` is the Renco-native name; `.clawhubignore` is honored
+# scan. `.skillignore` is the Son of Anton-native name; `.clawhubignore` is honored
 # for compatibility with skills published through ClawHub.
 _SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
 

@@ -32,27 +32,27 @@ def _clean_state():
 
 class TestRegisterCredentialFiles:
     def test_dict_with_path_key(self, tmp_path):
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "token.json").write_text("{}")
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "token.json").write_text("{}")
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             missing = register_credential_files([{"path": "token.json"}])
 
         assert missing == []
         mounts = get_credential_file_mounts()
         assert len(mounts) == 1
-        assert mounts[0]["host_path"] == str(renco_home / "token.json")
-        assert mounts[0]["container_path"] == "/root/.renco/token.json"
+        assert mounts[0]["host_path"] == str(son_of_anton_home / "token.json")
+        assert mounts[0]["container_path"] == "/root/.son-of-anton/token.json"
 
 
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "real.json").write_text("{}")
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "real.json").write_text("{}")
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             missing = register_credential_files([
                 {"path": "real.json", "name": "wrong.json"},
             ])
@@ -64,33 +64,33 @@ class TestRegisterCredentialFiles:
 
 class TestSkillsDirectoryMount:
     def test_returns_mount_when_skills_dir_exists(self, tmp_path):
-        renco_home = tmp_path / ".renco"
-        skills_dir = renco_home / "skills"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        skills_dir = son_of_anton_home / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "test-skill").mkdir()
         (skills_dir / "test-skill" / "SKILL.md").write_text("# test")
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             mounts = get_skills_directory_mount()
 
         assert len(mounts) >= 1
         assert mounts[0]["host_path"] == str(skills_dir)
-        assert mounts[0]["container_path"] == "/root/.renco/skills"
+        assert mounts[0]["container_path"] == "/root/.son-of-anton/skills"
 
 
     def test_custom_container_base(self, tmp_path):
-        renco_home = tmp_path / ".renco"
-        (renco_home / "skills").mkdir(parents=True)
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        (son_of_anton_home / "skills").mkdir(parents=True)
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
-            mounts = get_skills_directory_mount(container_base="/home/user/.renco")
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
+            mounts = get_skills_directory_mount(container_base="/home/user/.son-of-anton")
 
-        assert mounts[0]["container_path"] == "/home/user/.renco/skills"
+        assert mounts[0]["container_path"] == "/home/user/.son-of-anton/skills"
 
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""
-        renco_home = tmp_path / ".renco"
-        skills_dir = renco_home / "skills"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        skills_dir = son_of_anton_home / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "legit.md").write_text("# real skill")
         # Create a symlink pointing outside the skills tree
@@ -98,7 +98,7 @@ class TestSkillsDirectoryMount:
         secret.write_text("TOP SECRET")
         (skills_dir / "evil_link").symlink_to(secret)
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             mounts = get_skills_directory_mount()
 
         assert len(mounts) >= 1
@@ -114,12 +114,12 @@ class TestSkillsDirectoryMount:
 
     def test_no_symlinks_returns_original_dir(self, tmp_path):
         """When no symlinks exist, the original dir is returned (no copy)."""
-        renco_home = tmp_path / ".renco"
-        skills_dir = renco_home / "skills"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        skills_dir = son_of_anton_home / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "skill.md").write_text("ok")
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             mounts = get_skills_directory_mount()
 
         assert mounts[0]["host_path"] == str(skills_dir)
@@ -127,8 +127,8 @@ class TestSkillsDirectoryMount:
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):
-        renco_home = tmp_path / ".renco"
-        skills_dir = renco_home / "skills"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        skills_dir = son_of_anton_home / "skills"
         (skills_dir / "cat" / "myskill").mkdir(parents=True)
         (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
         (skills_dir / "cat" / "myskill" / "scripts").mkdir()
@@ -138,20 +138,20 @@ class TestIterSkillsFiles:
         secret.write_text("nope")
         (skills_dir / "cat" / "myskill" / "evil").symlink_to(secret)
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             files = iter_skills_files()
 
         paths = {f["container_path"] for f in files}
-        assert "/root/.renco/skills/cat/myskill/SKILL.md" in paths
-        assert "/root/.renco/skills/cat/myskill/scripts/run.sh" in paths
+        assert "/root/.son-of-anton/skills/cat/myskill/SKILL.md" in paths
+        assert "/root/.son-of-anton/skills/cat/myskill/scripts/run.sh" in paths
         # Symlink should be excluded
         assert not any("evil" in f["container_path"] for f in files)
 
     def test_empty_when_no_skills_dir(self, tmp_path):
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(renco_home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(son_of_anton_home)}):
             assert iter_skills_files() == []
 
 class TestPathTraversalSecurity:
@@ -167,11 +167,11 @@ class TestPathTraversalSecurity:
     """
 
     def test_dotdot_traversal_rejected(self, tmp_path, monkeypatch):
-        """'../sensitive' must not escape RENCO_HOME."""
-        monkeypatch.setenv("RENCO_HOME", str(tmp_path / ".renco"))
-        (tmp_path / ".renco").mkdir()
+        """'../sensitive' must not escape SON_OF_ANTON_HOME."""
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / ".son-of-anton"))
+        (tmp_path / ".son-of-anton").mkdir()
 
-        # Create a sensitive file one level above renco_home
+        # Create a sensitive file one level above son_of_anton_home
         sensitive = tmp_path / "sensitive.json"
         sensitive.write_text('{"secret": "value"}')
 
@@ -182,11 +182,11 @@ class TestPathTraversalSecurity:
 
     def test_deep_traversal_rejected(self, tmp_path, monkeypatch):
         """'../../etc/passwd' style traversal must be rejected."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
-        # Create a fake sensitive file outside renco_home
+        # Create a fake sensitive file outside son_of_anton_home
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
         (ssh_dir / "id_rsa").write_text("PRIVATE KEY")
@@ -198,9 +198,9 @@ class TestPathTraversalSecurity:
 
     def test_absolute_path_rejected(self, tmp_path, monkeypatch):
         """Absolute paths must be rejected regardless of whether they exist."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         # Create a file at an absolute path
         sensitive = tmp_path / "absolute.json"
@@ -212,31 +212,31 @@ class TestPathTraversalSecurity:
         assert get_credential_file_mounts() == []
 
 
-    def test_nested_subdir_inside_renco_home_allowed(self, tmp_path, monkeypatch):
-        """Files in subdirectories of RENCO_HOME must be allowed."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        subdir = renco_home / "creds"
+    def test_nested_subdir_inside_son_of_anton_home_allowed(self, tmp_path, monkeypatch):
+        """Files in subdirectories of SON_OF_ANTON_HOME must be allowed."""
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        subdir = son_of_anton_home / "creds"
         subdir.mkdir()
         (subdir / "oauth.json").write_text("{}")
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         result = register_credential_file("creds/oauth.json")
 
         assert result is True
 
     def test_symlink_traversal_rejected(self, tmp_path, monkeypatch):
-        """A symlink inside RENCO_HOME pointing outside must be rejected."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        """A symlink inside SON_OF_ANTON_HOME pointing outside must be rejected."""
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
-        # Create a sensitive file outside renco_home
+        # Create a sensitive file outside son_of_anton_home
         sensitive = tmp_path / "sensitive.json"
         sensitive.write_text('{"secret": "value"}')
 
-        # Create a symlink inside renco_home pointing outside
-        symlink = renco_home / "evil_link.json"
+        # Create a symlink inside son_of_anton_home pointing outside
+        symlink = son_of_anton_home / "evil_link.json"
         try:
             symlink.symlink_to(sensitive)
         except (OSError, NotImplementedError):
@@ -244,7 +244,7 @@ class TestPathTraversalSecurity:
 
         result = register_credential_file("evil_link.json")
 
-        # The resolved path escapes RENCO_HOME — must be rejected
+        # The resolved path escapes SON_OF_ANTON_HOME — must be rejected
         assert result is False
         assert get_credential_file_mounts() == []
 
@@ -256,20 +256,20 @@ class TestPathTraversalSecurity:
 class TestConfigPathTraversal:
     """terminal.credential_files in config.yaml must also reject traversal."""
 
-    def _write_config(self, renco_home: Path, cred_files: list):
+    def _write_config(self, son_of_anton_home: Path, cred_files: list):
         import yaml
-        config_path = renco_home / "config.yaml"
+        config_path = son_of_anton_home / "config.yaml"
         config_path.write_text(yaml.dump({"terminal": {"credential_files": cred_files}}))
 
     def test_config_traversal_rejected(self, tmp_path, monkeypatch):
-        """'../secret' in config.yaml must not escape RENCO_HOME."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        """'../secret' in config.yaml must not escape SON_OF_ANTON_HOME."""
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         sensitive = tmp_path / "secret.json"
         sensitive.write_text("{}")
-        self._write_config(renco_home, ["../secret.json"])
+        self._write_config(son_of_anton_home, ["../secret.json"])
 
         mounts = get_credential_file_mounts()
         host_paths = [m["host_path"] for m in mounts]
@@ -278,25 +278,25 @@ class TestConfigPathTraversal:
 
     def test_config_absolute_path_rejected(self, tmp_path, monkeypatch):
         """Absolute paths in config.yaml must be rejected."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         sensitive = tmp_path / "abs.json"
         sensitive.write_text("{}")
-        self._write_config(renco_home, [str(sensitive)])
+        self._write_config(son_of_anton_home, [str(sensitive)])
 
         mounts = get_credential_file_mounts()
         assert mounts == []
 
     def test_config_legitimate_file_works(self, tmp_path, monkeypatch):
-        """Normal files inside RENCO_HOME via config must still mount."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        """Normal files inside SON_OF_ANTON_HOME via config must still mount."""
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
-        (renco_home / "oauth.json").write_text("{}")
-        self._write_config(renco_home, ["oauth.json"])
+        (son_of_anton_home / "oauth.json").write_text("{}")
+        self._write_config(son_of_anton_home, ["oauth.json"])
 
         mounts = get_credential_file_mounts()
         assert len(mounts) == 1
@@ -312,81 +312,81 @@ class TestCacheDirectoryMounts:
 
     def test_returns_existing_cache_dirs(self, tmp_path, monkeypatch):
         """Existing cache dirs are returned with correct container paths."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        (renco_home / "cache" / "documents").mkdir(parents=True)
-        (renco_home / "cache" / "audio").mkdir(parents=True)
-        (renco_home / "cache" / "videos").mkdir(parents=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        (son_of_anton_home / "cache" / "documents").mkdir(parents=True)
+        (son_of_anton_home / "cache" / "audio").mkdir(parents=True)
+        (son_of_anton_home / "cache" / "videos").mkdir(parents=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         mounts = get_cache_directory_mounts()
         paths = {m["container_path"] for m in mounts}
-        assert "/root/.renco/cache/documents" in paths
-        assert "/root/.renco/cache/audio" in paths
-        assert "/root/.renco/cache/videos" in paths
+        assert "/root/.son-of-anton/cache/documents" in paths
+        assert "/root/.son-of-anton/cache/audio" in paths
+        assert "/root/.son-of-anton/cache/videos" in paths
 
 
     def test_legacy_dir_names_resolved(self, tmp_path, monkeypatch):
         """Old-style dir names (e.g. document_cache) are resolved correctly.
 
         Populates the legacy dirs with a sentinel file so they count as
-        ``has content`` for ``get_renco_dir``'s populated-legacy check
+        ``has content`` for ``get_son_of_anton_dir``'s populated-legacy check
         (see #27602 — empty legacy stubs are no longer honoured).
         """
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        # Use legacy dir name with content — get_renco_dir prefers
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        # Use legacy dir name with content — get_son_of_anton_dir prefers
         # populated old over new.
-        legacy_doc = renco_home / "document_cache"
-        legacy_img = renco_home / "image_cache"
+        legacy_doc = son_of_anton_home / "document_cache"
+        legacy_img = son_of_anton_home / "image_cache"
         legacy_doc.mkdir()
         legacy_img.mkdir()
         (legacy_doc / "cached.txt").write_bytes(b"x")
         (legacy_img / "cached.png").write_bytes(b"x")
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         mounts = get_cache_directory_mounts()
         host_paths = {m["host_path"] for m in mounts}
-        assert str(renco_home / "document_cache") in host_paths
-        assert str(renco_home / "image_cache") in host_paths
+        assert str(son_of_anton_home / "document_cache") in host_paths
+        assert str(son_of_anton_home / "image_cache") in host_paths
         # Container paths always use the new layout
         container_paths = {m["container_path"] for m in mounts}
-        assert "/root/.renco/cache/documents" in container_paths
-        assert "/root/.renco/cache/images" in container_paths
+        assert "/root/.son-of-anton/cache/documents" in container_paths
+        assert "/root/.son-of-anton/cache/images" in container_paths
 
-    def test_empty_renco_home(self, tmp_path, monkeypatch):
+    def test_empty_son_of_anton_home(self, tmp_path, monkeypatch):
         """Empty home → every staging dir is created and mounted (#76577).
 
         Docker snapshots the mount list at container creation; skipping
         not-yet-existing dirs meant the first attachment/clipboard file after
         container start dangled forever. All _CACHE_DIRS entries mount."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         mounts = get_cache_directory_mounts()
         container_paths = {m["container_path"] for m in mounts}
-        assert "/root/.renco/attachments" in container_paths
-        assert "/root/.renco/images" in container_paths
-        assert "/root/.renco/cache/images" in container_paths
+        assert "/root/.son-of-anton/attachments" in container_paths
+        assert "/root/.son-of-anton/images" in container_paths
+        assert "/root/.son-of-anton/cache/images" in container_paths
         for mount in mounts:
             assert Path(mount["host_path"]).is_dir()
 
     def test_images_upload_dir_is_mounted(self, tmp_path, monkeypatch):
         """The flat top-level ``images/`` upload dir is mounted (#69575).
 
-        Desktop / clipboard / PDF uploads land in ``RENCO_HOME/images``, not
+        Desktop / clipboard / PDF uploads land in ``SON_OF_ANTON_HOME/images``, not
         under ``cache/``. Without this entry vision_analyze on a desktop upload
         fails because the file is not reachable inside the sandbox.
         """
-        renco_home = tmp_path / ".renco"
-        (renco_home / "images").mkdir(parents=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        (son_of_anton_home / "images").mkdir(parents=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         mounts = get_cache_directory_mounts()
         by_container = {m["container_path"]: m["host_path"] for m in mounts}
-        assert "/root/.renco/images" in by_container
-        assert by_container["/root/.renco/images"] == str(renco_home / "images")
+        assert "/root/.son-of-anton/images" in by_container
+        assert by_container["/root/.son-of-anton/images"] == str(son_of_anton_home / "images")
 
     def test_images_upload_file_maps_into_container(self, tmp_path, monkeypatch):
         """A concrete upload under ``images/`` maps to its container path.
@@ -394,15 +394,15 @@ class TestCacheDirectoryMounts:
         This is the reverse mapping vision uses to translate a container-visible
         path back to the host mount; it must recognise the ``images/`` dir.
         """
-        renco_home = tmp_path / ".renco"
-        (renco_home / "images").mkdir(parents=True)
-        upload = renco_home / "images" / "upload_20260722_181019_1.png"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        (son_of_anton_home / "images").mkdir(parents=True)
+        upload = son_of_anton_home / "images" / "upload_20260722_181019_1.png"
         upload.write_bytes(bytes.fromhex("89504e470d0a1a0a"))
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         assert (
             map_cache_path_to_container(str(upload))
-            == "/root/.renco/images/upload_20260722_181019_1.png"
+            == "/root/.son-of-anton/images/upload_20260722_181019_1.png"
         )
 
 
@@ -410,15 +410,15 @@ class TestMapCachePathToContainer:
     """Tests for map_cache_path_to_container() — the backend-agnostic mapper."""
 
     def test_maps_path_under_cache_dir(self, tmp_path, monkeypatch):
-        renco_home = tmp_path / ".renco"
-        img_dir = renco_home / "cache" / "images"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        img_dir = son_of_anton_home / "cache" / "images"
         img_dir.mkdir(parents=True)
         host_path = str(img_dir / "generated.png")
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         assert (
             map_cache_path_to_container(host_path)
-            == "/root/.renco/cache/images/generated.png"
+            == "/root/.son-of-anton/cache/images/generated.png"
         )
 
 
@@ -427,37 +427,37 @@ class TestMapCachePathToContainer:
         Docker snapshots mounts at container creation, so a dir that appears
         later would dangle for the container's whole life. The map must
         therefore succeed (and the dir exist) even before first use."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
-        mapped = map_cache_path_to_container(str(renco_home / "cache" / "images" / "x.png"))
-        assert mapped == "/root/.renco/cache/images/x.png"
-        assert (renco_home / "cache" / "images").is_dir()
+        mapped = map_cache_path_to_container(str(son_of_anton_home / "cache" / "images" / "x.png"))
+        assert mapped == "/root/.son-of-anton/cache/images/x.png"
+        assert (son_of_anton_home / "cache" / "images").is_dir()
 
 
 class TestToAgentVisiblePathPerBackend:
     """#76577 follow-up: translation covers every backend that relocates the
-    Renco cache — not just docker — and skips the ones where the host path
+    Son of Anton cache — not just docker — and skips the ones where the host path
     stays correct (local; singularity auto-binds the host home)."""
 
     def _staged(self, tmp_path, monkeypatch):
-        renco_home = tmp_path / ".renco"
-        (renco_home / "attachments").mkdir(parents=True)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
-        return str(renco_home / "attachments" / "drop.zip")
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        (son_of_anton_home / "attachments").mkdir(parents=True)
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
+        return str(son_of_anton_home / "attachments" / "drop.zip")
 
-    def test_docker_maps_to_root_renco(self, tmp_path, monkeypatch):
+    def test_docker_maps_to_root_son_of_anton(self, tmp_path, monkeypatch):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         from tools.credential_files import to_agent_visible_cache_path
-        assert to_agent_visible_cache_path(staged) == "/root/.renco/attachments/drop.zip"
+        assert to_agent_visible_cache_path(staged) == "/root/.son-of-anton/attachments/drop.zip"
 
-    def test_ssh_maps_to_tilde_renco(self, tmp_path, monkeypatch):
+    def test_ssh_maps_to_tilde_son_of_anton(self, tmp_path, monkeypatch):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         from tools.credential_files import to_agent_visible_cache_path
-        assert to_agent_visible_cache_path(staged) == "~/.renco/attachments/drop.zip"
+        assert to_agent_visible_cache_path(staged) == "~/.son-of-anton/attachments/drop.zip"
 
     @pytest.mark.parametrize("backend", ["local", "singularity", ""])
     def test_untranslated_backends_keep_host_path(self, tmp_path, monkeypatch, backend):
@@ -478,12 +478,12 @@ class TestIterCacheFiles:
 
     def test_enumerates_files(self, tmp_path, monkeypatch):
         """Regular files in cache dirs are returned."""
-        renco_home = tmp_path / ".renco"
-        doc_dir = renco_home / "cache" / "documents"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        doc_dir = son_of_anton_home / "cache" / "documents"
         doc_dir.mkdir(parents=True)
         (doc_dir / "upload.zip").write_bytes(b"PK\x03\x04")
         (doc_dir / "report.pdf").write_bytes(b"%PDF-1.4")
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         entries = iter_cache_files()
         names = {Path(e["container_path"]).name for e in entries}
@@ -492,13 +492,13 @@ class TestIterCacheFiles:
 
     def test_skips_symlinks(self, tmp_path, monkeypatch):
         """Symlinks inside cache dirs are skipped."""
-        renco_home = tmp_path / ".renco"
-        doc_dir = renco_home / "cache" / "documents"
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        doc_dir = son_of_anton_home / "cache" / "documents"
         doc_dir.mkdir(parents=True)
         real_file = doc_dir / "real.txt"
         real_file.write_text("content")
         (doc_dir / "link.txt").symlink_to(real_file)
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         entries = iter_cache_files()
         names = [Path(e["container_path"]).name for e in entries]
@@ -508,19 +508,19 @@ class TestIterCacheFiles:
 
     def test_empty_cache(self, tmp_path, monkeypatch):
         """No cache dirs → empty list."""
-        renco_home = tmp_path / ".renco"
-        renco_home.mkdir()
-        monkeypatch.setenv("RENCO_HOME", str(renco_home))
+        son_of_anton_home = tmp_path / ".son-of-anton"
+        son_of_anton_home.mkdir()
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
         assert iter_cache_files() == []
 
 
 class TestMasterCredentialStoresAreNeverMountable:
-    """Containment is not enough — RENCO_HOME *is* where the keys live.
+    """Containment is not enough — SON_OF_ANTON_HOME *is* where the keys live.
 
     ``required_credential_files`` is skill-declared frontmatter, and skills are
     installed from the hub. The traversal guard already stops
-    ``../../.ssh/id_rsa`` from escaping RENCO_HOME, but every master
+    ``../../.ssh/id_rsa`` from escaping SON_OF_ANTON_HOME, but every master
     credential store sits *inside* it: a one-line declaration would otherwise
     bind-mount ``.env`` (every provider key) or ``auth.json`` (all provider
     tokens and OAuth grants) read-only into the sandbox the skill's own code
@@ -533,7 +533,7 @@ class TestMasterCredentialStoresAreNeverMountable:
 
     @staticmethod
     def _home(tmp_path):
-        home = tmp_path / ".renco"
+        home = tmp_path / ".son-of-anton"
         home.mkdir()
         (home / ".env").write_text("OPENAI_API_KEY=sk-proj-REAL\n")
         (home / "auth.json").write_text('{"providers":{}}')
@@ -559,7 +559,7 @@ class TestMasterCredentialStoresAreNeverMountable:
     )
     def test_master_credential_store_is_refused(self, tmp_path, rel_path):
         home = self._home(tmp_path)
-        with patch.dict(os.environ, {"RENCO_HOME": str(home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(home)}):
             assert register_credential_file(rel_path) is False, (
                 f"{rel_path} would be bind-mounted into the sandbox"
             )
@@ -568,28 +568,28 @@ class TestMasterCredentialStoresAreNeverMountable:
     def test_per_service_token_still_mounts(self, tmp_path):
         """The module's legitimate purpose must keep working."""
         home = self._home(tmp_path)
-        with patch.dict(os.environ, {"RENCO_HOME": str(home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(home)}):
             assert register_credential_file("google_token.json") is True
             mounts = get_credential_file_mounts()
         assert [m["container_path"] for m in mounts] == [
-            "/root/.renco/google_token.json"
+            "/root/.son-of-anton/google_token.json"
         ]
 
     def test_refused_entry_does_not_block_the_rest_of_the_batch(self, tmp_path):
         home = self._home(tmp_path)
-        with patch.dict(os.environ, {"RENCO_HOME": str(home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(home)}):
             missing = register_credential_files([".env", "google_token.json"])
             mounts = get_credential_file_mounts()
 
         paths = [m["container_path"] for m in mounts]
-        assert "/root/.renco/google_token.json" in paths
-        assert "/root/.renco/.env" not in paths
+        assert "/root/.son-of-anton/google_token.json" in paths
+        assert "/root/.son-of-anton/.env" not in paths
         assert ".env" in missing, "a refused store is reported back to the skill"
 
     def test_traversal_guard_still_applies(self, tmp_path):
         """The pre-existing containment check is untouched."""
         home = self._home(tmp_path)
-        with patch.dict(os.environ, {"RENCO_HOME": str(home)}):
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(home)}):
             assert register_credential_file("../../.ssh/id_rsa") is False
             assert register_credential_file("/etc/passwd") is False
 
@@ -602,7 +602,7 @@ class TestMasterCredentialStoresAreNeverMountable:
         import tools.credential_files as cf
 
         home = self._home(tmp_path)
-        with patch.dict(os.environ, {"RENCO_HOME": str(home)}), \
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(home)}), \
                 patch.object(cf, "get_read_block_error", None):
             with caplog.at_level("ERROR", logger="tools.credential_files"):
                 assert cf.register_credential_file("google_token.json") is False
@@ -618,7 +618,7 @@ class TestMasterCredentialStoresAreNeverMountable:
         def _boom(path):
             raise RuntimeError("guard exploded")
 
-        with patch.dict(os.environ, {"RENCO_HOME": str(home)}), \
+        with patch.dict(os.environ, {"SON_OF_ANTON_HOME": str(home)}), \
                 patch.object(cf, "get_read_block_error", _boom):
             with caplog.at_level("ERROR", logger="tools.credential_files"):
                 assert cf.register_credential_file("google_token.json") is False

@@ -1,4 +1,4 @@
-import { driveChargeSettlement, type SettlementOutcome } from '@renco/shared/charge-settlement'
+import { driveChargeSettlement, type SettlementOutcome } from '@sonofanton/shared/charge-settlement'
 
 import type {
   BillingChargeResponse,
@@ -68,9 +68,9 @@ const renderBillingError = (
 
     case 'remote_spending_disabled':
       // Account-wide switch is OFF (dual-emitted error/code). A billing admin can
-      // turn it on from the portal's Renco Agent page; this is NOT a per-terminal stop.
+      // turn it on from the portal's Son of Anton Agent page; this is NOT a per-terminal stop.
       sys(
-        "Remote spending is off for this account — a billing admin can turn it on from the portal's Renco Agent page."
+        "Remote spending is off for this account — a billing admin can turn it on from the portal's Son of Anton Agent page."
       )
 
       break

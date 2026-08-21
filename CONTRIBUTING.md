@@ -1,6 +1,6 @@
-# Contributing to Renco Agent
+# Contributing to Son of Anton Agent
 
-Thank you for contributing to Renco Agent! This guide covers everything you need: setting up your dev environment, understanding the architecture, deciding what to build, and getting your PR merged.
+Thank you for contributing to Son of Anton Agent! This guide covers everything you need: setting up your dev environment, understanding the architecture, deciding what to build, and getting your PR merged.
 
 ---
 
@@ -9,7 +9,7 @@ Thank you for contributing to Renco Agent! This guide covers everything you need
 We value contributions in this order:
 
 1. **Bug fixes** — crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Renco to work everywhere.
+2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Son of Anton to work everywhere.
 3. **Security hardening** — shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
 4. **Performance and robustness** — retry logic, error handling, graceful degradation.
 5. **New skills** — but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
@@ -24,15 +24,15 @@ A quick search before you build saves your time and keeps the PR queue clean —
 
 - **Search both open *and* merged PRs and issues** for your topic or error symptom — the duplicate-check in the PR template fires at review time, after you've already done the work:
   ```bash
-  gh search issues --repo ewtodd/renco "<your terms>"
-  gh search prs --repo ewtodd/renco --state all "<your terms>"
+  gh search issues --repo ewtodd/son-of-anton "<your terms>"
+  gh search prs --repo ewtodd/son-of-anton --state all "<your terms>"
   ```
-  Or use the web UI: [issues](https://github.com/ewtodd/renco/issues?q=) · [PRs (all states)](https://github.com/ewtodd/renco/pulls?q=is%3Apr).
+  Or use the web UI: [issues](https://github.com/ewtodd/son-of-anton/issues?q=) · [PRs (all states)](https://github.com/ewtodd/son-of-anton/pulls?q=is%3Apr).
 - **The issue tracker can lag the code.** Many requested features are already implemented in-tree, so also search the source (`search_files`, or your editor's grep) for the capability before proposing it.
 - **If an open PR already addresses it**, consider reviewing or improving that one instead of opening a competing duplicate.
 - **For larger work**, comment on the issue to signal you're working on it, so others don't start the same thing.
 
-Related: #38284 covers the agent-side analog — Renco itself checking existing issues and PRs before deep self-troubleshooting. This section is the human-contributor complement.
+Related: #38284 covers the agent-side analog — Son of Anton itself checking existing issues and PRs before deep self-troubleshooting. This section is the human-contributor complement.
 
 ---
 
@@ -56,26 +56,26 @@ This is the most common question for new contributors. The answer is almost alwa
 
 ### Should the Skill be bundled?
 
-Bundled skills (in `skills/`) ship with every Renco install. They should be **broadly useful to most users**:
+Bundled skills (in `skills/`) ship with every Son of Anton install. They should be **broadly useful to most users**:
 
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `renco skills browse` (labeled "official") and install it with `renco skills install` (no third-party warning, built-in trust).
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `son-of-anton skills browse` (labeled "official") and install it with `son-of-anton skills install` (no third-party warning, built-in trust).
 
-If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `renco skills install`.
+If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `son-of-anton skills install`.
 
 ---
 
 ## Memory Providers: Ship as a Standalone Plugin
 
-**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.renco/plugins/` (or via a pip entry point).
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.son-of-anton/plugins/` (or via a pip entry point).
 
 Standalone memory plugins:
 
-- Implement the same `MemoryProvider` ABC (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(renco_home, config)` for setup-wizard integration
+- Implement the same `MemoryProvider` ABC (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(son_of_anton_home, config)` for setup-wizard integration
 - Use the same discovery system — `discover_memory_providers()` picks them up from user/project plugin directories and pip entry points
-- Integrate with `renco memory setup` via `post_setup()` — no need to touch core code
+- Integrate with `son-of-anton memory setup` via `post_setup()` — no need to touch core code
 - Can register their own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
 - Get all the same lifecycle hooks and config plumbing as in-tree providers
 
@@ -89,11 +89,11 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 
 The same rule extends to **any plugin that integrates someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins, and similar third-party integrations. **These do not land in this repo.**
 
-The reason is maintenance load, not quality. Every external product absorbed into the core tree becomes ours to keep working against a fast-moving codebase, for a backend we don't own and can't control. Renco ships a lot and the core moves quickly; coupling third-party products into it creates an open-ended burden on the maintainers.
+The reason is maintenance load, not quality. Every external product absorbed into the core tree becomes ours to keep working against a fast-moving codebase, for a backend we don't own and can't control. Son of Anton ships a lot and the core moves quickly; coupling third-party products into it creates an open-ended burden on the maintainers.
 
 Publish these as a **standalone plugin repo** instead:
 
-- Implement the relevant ABC and use the existing plugin discovery path (`~/.renco/plugins/`, project `.renco/plugins/`, or a pip entry point) — see [Build a Renco Plugin](https://renco-agent.nousresearch.com/docs/guides/build-a-renco-plugin)
+- Implement the relevant ABC and use the existing plugin discovery path (`~/.son-of-anton/plugins/`, project `.son-of-anton/plugins/`, or a pip entry point) — see [Build a Son of Anton Plugin](https://son-of-anton.nousresearch.com/docs/guides/build-a-son-of-anton-plugin)
 - Register lifecycle hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), and CLI subcommands (`ctx.register_cli_command`) through the surface we already expose — no core changes needed
 - If your plugin needs a capability the framework doesn't expose, that's a feature request to **widen the generic plugin surface** (a new hook or `ctx` method) — never special-case your plugin in core
 - Promote it in the [Nous Research Discord](https://discord.gg/NousResearch) `#plugins-skills-and-skins` channel so users can find and install it
@@ -117,15 +117,15 @@ A well-built third-party-product plugin can clear automated review and still be 
 
 For most contributors, the best development bootstrap is the same path users
 take: run the standard installer, then work inside the repository it cloned.
-The installer creates the Renco venv, wires the `renco` command, stamps the
-install method for `renco update`, and clones the full git project into
-`$RENCO_HOME/renco-agent` (usually `~/.renco/renco-agent`). That keeps your
+The installer creates the Son of Anton venv, wires the `son-of-anton` command, stamps the
+install method for `son-of-anton update`, and clones the full git project into
+`$SON_OF_ANTON_HOME/son-of-anton` (usually `~/.son-of-anton/son-of-anton`). That keeps your
 development environment on the same layout the CLI, updater, lazy dependency
 installer, gateway, and docs assume.
 
 ```bash
-curl -fsSL https://renco-agent.nousresearch.com/install.sh | bash
-cd "${RENCO_HOME:-$HOME/.renco}/renco-agent"
+curl -fsSL https://son-of-anton.nousresearch.com/install.sh | bash
+cd "${SON_OF_ANTON_HOME:-$HOME/.son-of-anton}/son-of-anton"
 
 # Add dev/test extras on top of the standard install.
 uv pip install -e ".[all,dev]"
@@ -143,10 +143,10 @@ scripts/run_tests.sh
 
 ### Manual clone fallback
 
-Use this only if you intentionally do not want Renco' managed install layout
+Use this only if you intentionally do not want Son of Anton' managed install layout
 (for example, a throwaway clone inside a container or CI job). If you install
-this way, make sure you run the `renco` entrypoint from this venv; running the
-system `python3 -m renco_cli.main` can pick up unrelated system Python
+this way, make sure you run the `son-of-anton` entrypoint from this venv; running the
+system `python3 -m son_of_anton_cli.main` can pick up unrelated system Python
 packages.
 
 Create the venv **outside** the cloned source tree. A venv that lives inside
@@ -156,12 +156,12 @@ which silently destroys the running runtime mid-session. Keeping it outside the
 tree means no relative path from the workspace resolves to it.
 
 ```bash
-git clone https://github.com/ewtodd/renco.git
-cd renco-agent
+git clone https://github.com/ewtodd/son-of-anton.git
+cd son-of-anton
 
 # Create venv with Python 3.11, OUTSIDE the source tree
-uv venv ~/.renco/venvs/renco-dev --python 3.11
-export VIRTUAL_ENV="$HOME/.renco/venvs/renco-dev"
+uv venv ~/.son-of-anton/venvs/son-of-anton-dev --python 3.11
+export VIRTUAL_ENV="$HOME/.son-of-anton/venvs/son-of-anton-dev"
 export PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
@@ -174,28 +174,28 @@ npm install
 ### Configure for development
 
 ```bash
-mkdir -p ~/.renco/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.renco/config.yaml
-touch ~/.renco/.env
+mkdir -p ~/.son-of-anton/{cron,sessions,logs,memories,skills}
+cp cli-config.yaml.example ~/.son-of-anton/config.yaml
+touch ~/.son-of-anton/.env
 
 # Add at minimum an LLM provider key:
-echo "OPENROUTER_API_KEY=***" >> ~/.renco/.env
+echo "OPENROUTER_API_KEY=***" >> ~/.son-of-anton/.env
 ```
 
 ### Run
 
 ```bash
-# The standard installer already put `renco` on PATH.
-renco doctor
-renco chat -q "Hello"
+# The standard installer already put `son-of-anton` on PATH.
+son-of-anton doctor
+son-of-anton chat -q "Hello"
 ```
 
-If you used the manual clone fallback, run `./renco` from the checkout or
+If you used the manual clone fallback, run `./son-of-anton` from the checkout or
 symlink this clone's venv explicitly:
 
 ```bash
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/renco" ~/.local/bin/renco
+ln -sf "$(pwd)/venv/bin/son-of-anton" ~/.local/bin/son-of-anton
 ```
 
 ### Run tests
@@ -215,12 +215,12 @@ pytest tests/ -v
 ## Project Structure
 
 ```
-renco-agent/
+son-of-anton/
 ├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
-├── cli.py                    # RencoCLI class — interactive TUI, prompt_toolkit integration
+├── cli.py                    # SonOfAntonCLI class — interactive TUI, prompt_toolkit integration
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (renco-cli, renco-telegram, etc.)
-├── renco_state.py           # SQLite session database with FTS5 full-text search, session titles
+├── toolsets.py               # Tool groupings and presets (son-of-anton-cli, son-of-anton-telegram, etc.)
+├── son_of_anton_state.py           # SQLite session database with FTS5 full-text search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
@@ -231,7 +231,7 @@ renco-agent/
 │   ├── model_metadata.py         # Model context lengths, token estimation
 │   └── trajectory.py             # Trajectory saving helpers
 │
-├── renco_cli/               # CLI command implementations
+├── son_of_anton_cli/               # CLI command implementations
 │   ├── main.py                   # Entry point, argument parsing, command dispatch
 │   ├── config.py                 # Config management, migration, env var definitions
 │   ├── setup.py                  # Interactive setup wizard
@@ -272,28 +272,28 @@ renco-agent/
 │   ├── install.ps1               # Windows PowerShell installer
 │   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
 │
-├── skills/                   # Bundled skills (copied to ~/.renco/skills/ on install)
+├── skills/                   # Bundled skills (copied to ~/.son-of-anton/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
 ├── tests/                    # Test suite
-├── website/                  # Documentation site (renco-agent.nousresearch.com)
+├── website/                  # Documentation site (son-of-anton.nousresearch.com)
 │
-├── cli-config.yaml.example   # Example configuration (copied to ~/.renco/config.yaml)
+├── cli-config.yaml.example   # Example configuration (copied to ~/.son-of-anton/config.yaml)
 └── AGENTS.md                 # Development guide for AI coding assistants
 ```
 
-### User configuration (stored in `~/.renco/`)
+### User configuration (stored in `~/.son-of-anton/`)
 
 | Path | Purpose |
 |------|---------|
-| `~/.renco/config.yaml` | Settings (model, terminal, toolsets, compression, etc.) |
-| `~/.renco/.env` | API keys and secrets |
-| `~/.renco/auth.json` | OAuth credentials (Nous Portal) |
-| `~/.renco/skills/` | All active skills (bundled + hub-installed + agent-created) |
-| `~/.renco/memories/` | Persistent memory (MEMORY.md, USER.md) |
-| `~/.renco/state.db` | SQLite session database |
-| `~/.renco/sessions/` | Gateway routing index (`sessions.json`), request-dump breadcrumbs, gateway `*.jsonl` transcripts, and (optionally) per-session JSON snapshots when `sessions.write_json_snapshots: true` is set. The per-session snapshots are off by default; state.db is canonical. |
-| `~/.renco/cron/` | Scheduled job data |
-| `~/.renco/whatsapp/session/` | WhatsApp bridge credentials |
+| `~/.son-of-anton/config.yaml` | Settings (model, terminal, toolsets, compression, etc.) |
+| `~/.son-of-anton/.env` | API keys and secrets |
+| `~/.son-of-anton/auth.json` | OAuth credentials (Nous Portal) |
+| `~/.son-of-anton/skills/` | All active skills (bundled + hub-installed + agent-created) |
+| `~/.son-of-anton/memories/` | Persistent memory (MEMORY.md, USER.md) |
+| `~/.son-of-anton/state.db` | SQLite session database |
+| `~/.son-of-anton/sessions/` | Gateway routing index (`sessions.json`), request-dump breadcrumbs, gateway `*.jsonl` transcripts, and (optionally) per-session JSON snapshots when `sessions.write_json_snapshots: true` is set. The per-session snapshots are off by default; state.db is canonical. |
+| `~/.son-of-anton/cron/` | Scheduled job data |
+| `~/.son-of-anton/whatsapp/session/` | WhatsApp bridge credentials |
 
 ---
 
@@ -320,7 +320,7 @@ User message → AIAgent._run_agent_loop()
 
 - **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`renco_state.py`) with full-text search and unique session titles. Per-session JSON snapshots in `~/.renco/sessions/` were superseded by the SQLite store and are off by default; opt back in with `sessions.write_json_snapshots: true` if you have external tooling that consumes the JSON files directly.
+- **Session persistence**: All conversations are stored in SQLite (`son_of_anton_state.py`) with full-text search and unique session titles. Per-session JSON snapshots in `~/.son-of-anton/sessions/` were superseded by the SQLite store and are off by default; opt back in with `sessions.write_json_snapshots: true` if you have external tooling that consumes the JSON files directly.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
 - **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
@@ -392,7 +392,7 @@ imported by `discover_builtin_tools()` in `tools/registry.py` when `model_tools`
 loads. There is **no** manual import list in `model_tools.py` to maintain.
 
 You must still add the tool name to the appropriate list in `toolsets.py`
-(for example `_RENCO_CORE_TOOLS` or a dedicated toolset); otherwise the tool
+(for example `_SON_OF_ANTON_CORE_TOOLS` or a dedicated toolset); otherwise the tool
 registers but is never exposed to the agent. If you introduce a new toolset,
 add it in `toolsets.py` and wire it into the relevant platform presets.
 
@@ -441,7 +441,7 @@ prerequisites:                     # Optional legacy runtime requirements
   env_vars: [MY_API_KEY]           #   Backward-compatible alias for required env vars
   commands: [curl, jq]             #   Advisory only; does not hide the skill
 metadata:
-  renco:
+  son-of-anton:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
     fallback_for_toolsets: [web]       # Optional — show only when toolset is unavailable
@@ -490,11 +490,11 @@ If the field is omitted or empty, the skill loads on all platforms (backward com
 
 Skills can declare conditions that control when they appear in the system prompt, based on which tools and toolsets are available in the current session. This is primarily used for **fallback skills** — alternatives that should only be shown when a primary tool is unavailable.
 
-Four fields are supported under `metadata.renco`:
+Four fields are supported under `metadata.son-of-anton`:
 
 ```yaml
 metadata:
-  renco:
+  son-of-anton:
     fallback_for_toolsets: [web]      # Show ONLY when these toolsets are unavailable
     requires_toolsets: [terminal]     # Show ONLY when these toolsets are available
     fallback_for_tools: [web_search]  # Show ONLY when these specific tools are unavailable
@@ -512,17 +512,17 @@ metadata:
 ```yaml
 # DuckDuckGo search — shown when Firecrawl (web toolset) is unavailable
 metadata:
-  renco:
+  son-of-anton:
     fallback_for_toolsets: [web]
 
 # Smart home skill — only useful when terminal is available
 metadata:
-  renco:
+  son-of-anton:
     requires_toolsets: [terminal]
 
 # Local browser fallback — shown when Browserbase is unavailable
 metadata:
-  renco:
+  son-of-anton:
     fallback_for_toolsets: [browser]
 ```
 
@@ -540,7 +540,7 @@ required_environment_variables:
     required_for: full functionality
 ```
 
-The user may skip setup and keep loading the skill. Renco only exposes metadata (`stored_as`, `skipped`, `validated`) to the model — never the secret value.
+The user may skip setup and keep loading the skill. Son of Anton only exposes metadata (`stored_as`, `skipped`, `validated`) to the model — never the secret value.
 
 Legacy `prerequisites.env_vars` remains supported and is normalized into the new representation.
 
@@ -550,7 +550,7 @@ prerequisites:
   commands: [curl, jq]            # Advisory CLI checks
 ```
 
-Gateway and messaging sessions never collect secrets in-band; they instruct the user to run `renco setup` or update `~/.renco/.env` locally.
+Gateway and messaging sessions never collect secrets in-band; they instruct the user to run `son-of-anton setup` or update `~/.son-of-anton/.env` locally.
 
 **When to declare required environment variables:**
 - The skill uses an API key or token that should be collected securely at load time
@@ -578,7 +578,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
    Good: `Search arXiv papers by keyword, author, category, or ID.`
    Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
 
-2. **Tools referenced in SKILL.md prose must be native Renco tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+2. **Tools referenced in SKILL.md prose must be native Son of Anton tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
 
    Do NOT name shell utilities the agent already has wrapped:
 
@@ -595,7 +595,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
 
 3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only).
 
-4. **`author` credits the human contributor first.** For external contributions, the contributor's real name + GitHub handle goes first (`Jane Doe (jane-doe)`); "Renco Agent" is the secondary collaborator. If the contributor's commit shows "Renco Agent" as author because they used Renco to draft the skill, replace it with their actual name — credit the human, not the tool.
+4. **`author` credits the human contributor first.** For external contributions, the contributor's real name + GitHub handle goes first (`Jane Doe (jane-doe)`); "Son of Anton Agent" is the secondary collaborator. If the contributor's commit shows "Son of Anton Agent" as author because they used Son of Anton to draft the skill, replace it with their actual name — credit the human, not the tool.
 
 5. **SKILL.md body uses the modern section order.** `# <Skill> Skill` title, 2-3 sentence intro stating what it does and what it doesn't do, then:
    - `## When to Use` — trigger conditions
@@ -616,20 +616,20 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
 
 ### Skill guidelines
 
-- **No external dependencies unless absolutely necessary.** Prefer stdlib Python, curl, and existing Renco tools (`web_extract`, `terminal`, `read_file`).
+- **No external dependencies unless absolutely necessary.** Prefer stdlib Python, curl, and existing Son of Anton tools (`web_extract`, `terminal`, `read_file`).
 - **Progressive disclosure.** Put the most common workflow first. Edge cases and advanced usage go at the bottom.
 - **Include helper scripts** for XML/JSON parsing or complex logic — don't expect the LLM to write parsers inline every time.
-- **Test it.** Run `renco --toolsets skills -q "Use the X skill to do Y"` and verify the agent follows the instructions correctly.
+- **Test it.** Run `son-of-anton --toolsets skills -q "Use the X skill to do Y"` and verify the agent follows the instructions correctly.
 
 ---
 
 ## Adding a Skin / Theme
 
-Renco uses a data-driven skin system — no code changes needed to add a new skin.
+Son of Anton uses a data-driven skin system — no code changes needed to add a new skin.
 
 **Option A: User skin (YAML file)**
 
-Create `~/.renco/skins/<name>.yaml`:
+Create `~/.son-of-anton/skins/<name>.yaml`:
 
 ```yaml
 name: mytheme
@@ -663,19 +663,19 @@ All fields are optional — missing values inherit from the default skin.
 
 **Option B: Built-in skin**
 
-Add to `_BUILTIN_SKINS` dict in `renco_cli/skin_engine.py`. Use the same schema as above but as a Python dict. Built-in skins ship with the package and are always available.
+Add to `_BUILTIN_SKINS` dict in `son_of_anton_cli/skin_engine.py`. Use the same schema as above but as a Python dict. Built-in skins ship with the package and are always available.
 
 **Activating:**
 - CLI: `/skin mytheme` or set `display.skin: mytheme` in config.yaml
 - Config: `display: { skin: mytheme }`
 
-See `renco_cli/skin_engine.py` for the full schema and existing skins as examples.
+See `son_of_anton_cli/skin_engine.py` for the full schema and existing skins as examples.
 
 ---
 
 ## Cross-Platform Compatibility
 
-Renco runs on Linux, macOS, and native Windows (plus WSL2). When writing code
+Son of Anton runs on Linux, macOS, and native Windows (plus WSL2). When writing code
 that touches the OS, assume *any* platform can hit your code path.
 
 > **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
@@ -703,7 +703,7 @@ that touches the OS, assume *any* platform can hit your code path.
        ...
    ```
 
-   If you specifically need the renco wrapper (it has a stdlib fallback
+   If you specifically need the son-of-anton wrapper (it has a stdlib fallback
    for scaffold-phase imports before pip install finishes), use
    `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
@@ -722,7 +722,7 @@ that touches the OS, assume *any* platform can hit your code path.
 
    For process enumeration: PowerShell's `Get-CimInstance Win32_Process` is
    the modern replacement for `wmic process`. See
-   `renco_cli/gateway.py::_scan_gateway_pids` for the pattern.
+   `son_of_anton_cli/gateway.py::_scan_gateway_pids` for the pattern.
    ```
 
 3. **File encoding.** Windows may save `.env` files in `cp1252`. Always
@@ -789,7 +789,7 @@ that touches the OS, assume *any* platform can hit your code path.
     process. `pythonw.exe` is the no-console variant. Combine with
     `CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
     CREATE_BREAKAWAY_FROM_JOB` in `subprocess.Popen(creationflags=...)`.
-    See `renco_cli/gateway_windows.py::_spawn_detached` for the reference
+    See `son_of_anton_cli/gateway_windows.py::_spawn_detached` for the reference
     implementation.
 
 10. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
@@ -827,7 +827,7 @@ that touches the OS, assume *any* platform can hit your code path.
     (["schtasks", "/TR", some_cmd])` → schtasks itself parses `/TR`, AND
     the `some_cmd` string is re-parsed by `cmd.exe` when the task fires.
     Different parsers, different escape rules. Use two separate quoting
-    helpers and never cross them. See `renco_cli/gateway_windows.py::
+    helpers and never cross them. See `son_of_anton_cli/gateway_windows.py::
     _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
     pair.
 
@@ -847,7 +847,7 @@ Symlinks, 0o600 permissions, SIGALRM, os.setsid/fork are all unix-only.
 
 ## Security Considerations
 
-Renco has terminal access. Security matters.
+Son of Anton has terminal access. Security matters.
 
 ### Existing protections
 
@@ -929,7 +929,7 @@ refactor/description   # Code restructuring
 ### Before submitting
 
 1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
-2. **Test manually**: Run `renco` and exercise the code path you changed
+2. **Test manually**: Run `son-of-anton` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
@@ -972,8 +972,8 @@ test(tools): add unit tests for file_operations
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/ewtodd/renco/issues)
-- Include: OS, Python version, Renco version (`renco --version`), full error traceback
+- Use [GitHub Issues](https://github.com/ewtodd/son-of-anton/issues)
+- Include: OS, Python version, Son of Anton version (`son-of-anton --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

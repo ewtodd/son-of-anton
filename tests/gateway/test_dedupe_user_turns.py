@@ -7,7 +7,7 @@ The dedupe guard checks has_platform_message_id before persisting.
 """
 
 from gateway.session import SessionStore
-from renco_state import SessionDB
+from son_of_anton_state import SessionDB
 
 
 class TestHasPlatformMessageId:

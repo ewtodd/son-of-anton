@@ -5,7 +5,7 @@ Tests for the code execution sandbox (programmatic tool calling).
 
 These tests monkeypatch handle_function_call so they don't require API keys
 or a running terminal backend. They verify the core sandbox mechanics:
-UDS socket lifecycle, renco_tools generation, timeout enforcement,
+UDS socket lifecycle, son_of_anton_tools generation, timeout enforcement,
 output capping, tool call counting, and error propagation.
 
 Run with:  python -m pytest tests/test_code_execution.py -v
@@ -40,7 +40,7 @@ from unittest.mock import patch, MagicMock
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
-    generate_renco_tools_module,
+    generate_son_of_anton_tools_module,
     check_sandbox_requirements,
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
@@ -81,30 +81,30 @@ class TestSandboxRequirements(unittest.TestCase):
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
 
 
-class TestRencoToolsGeneration(unittest.TestCase):
+class TestSonOfAntonToolsGeneration(unittest.TestCase):
     def test_generates_all_allowed_tools(self):
-        src = generate_renco_tools_module(list(SANDBOX_ALLOWED_TOOLS))
+        src = generate_son_of_anton_tools_module(list(SANDBOX_ALLOWED_TOOLS))
         for tool in SANDBOX_ALLOWED_TOOLS:
             self.assertIn(f"def {tool}(", src)
 
 
     def test_empty_list_generates_nothing(self):
-        src = generate_renco_tools_module([])
+        src = generate_son_of_anton_tools_module([])
         self.assertNotIn("def terminal(", src)
         self.assertIn("def _call(", src)  # infrastructure still present
 
 
     def test_file_transport_uses_tempfile_fallback_for_rpc_dir(self):
-        src = generate_renco_tools_module(["terminal"], transport="file")
+        src = generate_son_of_anton_tools_module(["terminal"], transport="file")
         self.assertIn("import json, os, shlex, tempfile, threading, time", src)
-        self.assertIn("os.path.join(tempfile.gettempdir(), \"renco_rpc\")", src)
-        self.assertNotIn('os.environ.get("RENCO_RPC_DIR", "/tmp/renco_rpc")', src)
+        self.assertIn("os.path.join(tempfile.gettempdir(), \"son_of_anton_rpc\")", src)
+        self.assertNotIn('os.environ.get("SON_OF_ANTON_RPC_DIR", "/tmp/son_of_anton_rpc")', src)
 
     def test_uds_transport_serializes_concurrent_calls(self):
         """Regression: UDS _call() must hold a lock across send+recv so that
         concurrent tool calls from multiple threads don't interleave on the
         shared socket and receive each other's responses."""
-        src = generate_renco_tools_module(["terminal"], transport="uds")
+        src = generate_son_of_anton_tools_module(["terminal"], transport="uds")
         self.assertIn("_call_lock = threading.Lock()", src)
         self.assertIn("with _call_lock:", src)
 
@@ -112,7 +112,7 @@ class TestRencoToolsGeneration(unittest.TestCase):
         """Regression: file transport _call() must allocate `_seq` under a
         lock, otherwise concurrent threads can pick the same seq and clobber
         each other's request files."""
-        src = generate_renco_tools_module(["terminal"], transport="file")
+        src = generate_son_of_anton_tools_module(["terminal"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
 
@@ -150,13 +150,13 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         mkdir_cmd = env.commands[1][0]
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
         cleanup_cmd = env.commands[-1][0]
-        self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/renco_exec_", mkdir_cmd)
-        self.assertIn("RENCO_RPC_DIR=/data/data/com.termux/files/usr/tmp/renco_exec_", run_cmd)
-        self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/renco_exec_", cleanup_cmd)
-        self.assertNotIn("mkdir -p /tmp/renco_exec_", mkdir_cmd)
+        self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/son_of_anton_exec_", mkdir_cmd)
+        self.assertIn("SON_OF_ANTON_RPC_DIR=/data/data/com.termux/files/usr/tmp/son_of_anton_exec_", run_cmd)
+        self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/son_of_anton_exec_", cleanup_cmd)
+        self.assertNotIn("mkdir -p /tmp/son_of_anton_exec_", mkdir_cmd)
 
     def test_timezone_shell_quoted_in_remote_execution(self):
-        """RENCO_TIMEZONE must be shell-quoted in remote env_prefix to prevent injection."""
+        """SON_OF_ANTON_TIMEZONE must be shell-quoted in remote env_prefix to prevent injection."""
         class FakeEnv:
             def __init__(self):
                 self.commands = []
@@ -184,7 +184,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
              patch("tools.code_execution_tool._ship_file_to_remote"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=fake_thread), \
-             patch.dict(os.environ, {"RENCO_TIMEZONE": malicious_tz}):
+             patch.dict(os.environ, {"SON_OF_ANTON_TIMEZONE": malicious_tz}):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
@@ -234,14 +234,14 @@ class TestExecuteCode(unittest.TestCase):
 
     def test_repo_root_modules_are_importable(self):
         """Sandboxed scripts can import modules that live at the repo root."""
-        result = self._run('import renco_constants; print(renco_constants.__file__)')
+        result = self._run('import son_of_anton_constants; print(son_of_anton_constants.__file__)')
         self.assertEqual(result["status"], "success")
-        self.assertIn("renco_constants.py", result["output"])
+        self.assertIn("son_of_anton_constants.py", result["output"])
 
     def test_single_tool_call(self):
         """Script calls terminal and prints the result."""
         code = """
-from renco_tools import terminal
+from son_of_anton_tools import terminal
 result = terminal("echo hello")
 print(result.get("output", ""))
 """
@@ -268,7 +268,7 @@ print(result.get("output", ""))
         code = '''
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from renco_tools import terminal
+from son_of_anton_tools import terminal
 
 N = 10
 
@@ -326,7 +326,7 @@ raise RuntimeError("deliberate crash")
     def test_shell_quote_helper(self):
         """shell_quote properly escapes dangerous characters."""
         code = """
-from renco_tools import shell_quote
+from son_of_anton_tools import shell_quote
 # String with backticks, quotes, and special chars
 dangerous = '`rm -rf /` && $(whoami) "hello"'
 escaped = shell_quote(dangerous)
@@ -342,7 +342,7 @@ assert escaped.startswith("'")
     def test_json_parse_helper_bom(self):
         """json_parse strips a leading UTF-8 BOM and tolerates control chars (#57870)."""
         code = """
-from renco_tools import json_parse
+from son_of_anton_tools import json_parse
 # A leading UTF-8 BOM (e.g. from Windows CLI output) must also parse (#57870)
 bom_text = "\\ufeff" + '{"body": "bom-ok"}'
 bom_result = json_parse(bom_text)
@@ -357,7 +357,7 @@ print("bom:" + bom_result["body"])
     def test_retry_helper_all_fail(self):
         """retry raises the last error when all attempts fail."""
         code = """
-from renco_tools import retry
+from son_of_anton_tools import retry
 def always_fail():
     raise ValueError("nope")
 try:
@@ -422,12 +422,12 @@ class TestStubSchemaDrift(unittest.TestCase):
 
 
     def test_generated_module_accepts_all_params(self):
-        """The generated renco_tools.py module should accept all current params
+        """The generated son_of_anton_tools.py module should accept all current params
         without TypeError when called with keyword arguments."""
-        src = generate_renco_tools_module(list(SANDBOX_ALLOWED_TOOLS))
+        src = generate_son_of_anton_tools_module(list(SANDBOX_ALLOWED_TOOLS))
 
         # Compile the generated module to check for syntax errors
-        compile(src, "renco_tools.py", "exec")
+        compile(src, "son_of_anton_tools.py", "exec")
 
         # Verify specific parameter signatures are in the source
         # search_files must accept context, offset, output_mode
@@ -532,15 +532,15 @@ class TestEnvVarFiltering(unittest.TestCase):
         self.assertNotIn("MODAL_TOKEN_SECRET", child_env)
 
 
-    def test_renco_rpc_socket_injected(self):
+    def test_son_of_anton_rpc_socket_injected(self):
         child_env = self._get_child_env()
-        self.assertIn("RENCO_RPC_SOCKET", child_env)
+        self.assertIn("SON_OF_ANTON_RPC_SOCKET", child_env)
 
 
     def test_timezone_injected_when_set(self):
         env_backup = os.environ.copy()
         try:
-            os.environ["RENCO_TIMEZONE"] = "America/New_York"
+            os.environ["SON_OF_ANTON_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
             self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
@@ -550,7 +550,7 @@ class TestEnvVarFiltering(unittest.TestCase):
     def test_timezone_not_set_when_empty(self):
         env_backup = os.environ.copy()
         try:
-            os.environ.pop("RENCO_TIMEZONE", None)
+            os.environ.pop("SON_OF_ANTON_TIMEZONE", None)
             child_env = self._get_child_env()
             if "TZ" in child_env:
                 self.assertNotEqual(child_env["TZ"], "")
@@ -634,7 +634,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
         code = (
-            "from renco_tools import terminal\n"
+            "from son_of_anton_tools import terminal\n"
             "print('fallback ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -664,7 +664,7 @@ class TestLoadConfig(unittest.TestCase):
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("renco_cli.config.read_raw_config", return_value={}):
+             patch("son_of_anton_cli.config.read_raw_config", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 
@@ -767,7 +767,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
     """The per-session RPC token must gate socket dispatch (fail-closed).
 
     Regression coverage for the execute_code tool-socket hardening: a
-    request without the matching RENCO_RPC_TOKEN must be rejected before
+    request without the matching SON_OF_ANTON_RPC_TOKEN must be rejected before
     the tool is dispatched, while a request carrying the correct token
     round-trips normally.
     """
@@ -857,9 +857,9 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
 
     def test_generated_module_sends_token(self):
-        """The generated renco_tools module reads RENCO_RPC_TOKEN and sends it."""
-        src = generate_renco_tools_module(["terminal"], transport="uds")
-        self.assertIn("RENCO_RPC_TOKEN", src)
+        """The generated son_of_anton_tools module reads SON_OF_ANTON_RPC_TOKEN and sends it."""
+        src = generate_son_of_anton_tools_module(["terminal"], transport="uds")
+        self.assertIn("SON_OF_ANTON_RPC_TOKEN", src)
         self.assertIn('"token"', src)
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Google Workspace API CLI for Renco Agent.
+"""Google Workspace API CLI for Son of Anton Agent.
 
 Uses the Google Workspace CLI (`gws`) when available, but preserves the
-existing Renco-facing JSON contract and falls back to the Python client
+existing Son of Anton-facing JSON contract and falls back to the Python client
 libraries if `gws` is not installed.
 
 Usage:
@@ -31,16 +31,16 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
-# Ensure sibling modules (_renco_home) are importable when run standalone.
+# Ensure sibling modules (_son_of_anton_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from _renco_home import get_renco_home
+from _son_of_anton_home import get_son_of_anton_home
 
-RENCO_HOME = get_renco_home()
-TOKEN_PATH = RENCO_HOME / "google_token.json"
-CLIENT_SECRET_PATH = RENCO_HOME / "google_client_secret.json"
+SON_OF_ANTON_HOME = get_son_of_anton_home()
+TOKEN_PATH = SON_OF_ANTON_HOME / "google_token.json"
+CLIENT_SECRET_PATH = SON_OF_ANTON_HOME / "google_client_secret.json"
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -80,7 +80,7 @@ def _stored_token_scopes() -> list[str]:
 
 
 def _gws_binary() -> str | None:
-    override = os.getenv("RENCO_GWS_BIN")
+    override = os.getenv("SON_OF_ANTON_GWS_BIN")
     if override:
         return override
     return shutil.which("gws")
@@ -1052,7 +1052,7 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Google Workspace API for Renco Agent")
+    parser = argparse.ArgumentParser(description="Google Workspace API for Son of Anton Agent")
     sub = parser.add_subparsers(dest="service", required=True)
 
     # --- Gmail ---

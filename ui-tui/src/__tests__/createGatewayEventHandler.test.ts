@@ -243,11 +243,11 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({
-      payload: { text: "💾 Self-improvement review: Skill 'renco-release' patched" },
+      payload: { text: "💾 Self-improvement review: Skill 'son-of-anton-release' patched" },
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'renco-release' patched")
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'son-of-anton-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {
@@ -552,7 +552,7 @@ describe('createGatewayEventHandler', () => {
         cwd: '/repo',
         python: '/opt/venv/bin/python',
         stderr_tail:
-          '[startup] timed out\nModuleNotFoundError: No module named openai\nFileNotFoundError: ~/.renco/config.yaml'
+          '[startup] timed out\nModuleNotFoundError: No module named openai\nFileNotFoundError: ~/.son-of-anton/config.yaml'
       },
       type: 'gateway.start_timeout'
     } as any)
@@ -567,10 +567,10 @@ describe('createGatewayEventHandler', () => {
   it('prefers raw text over Rich-rendered ANSI on message.complete (#16391)', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
-    const raw = 'Renco here.\n\nLine two.'
+    const raw = 'Son of Anton here.\n\nLine two.'
     // Rich-rendered ANSI (`final_response_markdown: render`) used to win,
     // which left visible escape codes in Ink output. Raw text must win.
-    const rendered = '\u001b[33mRenco here.\u001b[0m\n\n\u001b[2mLine two.\u001b[0m'
+    const rendered = '\u001b[33mSon of Anton here.\u001b[0m\n\n\u001b[2mLine two.\u001b[0m'
 
     onEvent({ payload: { rendered, text: raw }, type: 'message.complete' } as any)
 
@@ -756,7 +756,7 @@ describe('createGatewayEventHandler', () => {
     onEvent({
       payload: {
         message:
-          'agent init failed: No LLM provider configured. Run `renco model` to select a provider, or run `renco setup` for first-time configuration.'
+          'agent init failed: No LLM provider configured. Run `son-of-anton model` to select a provider, or run `son-of-anton setup` for first-time configuration.'
       },
       type: 'error'
     } as any)
@@ -789,12 +789,12 @@ describe('createGatewayEventHandler', () => {
     }
 
     // Dark terminal (clean env): the dark-authored `colors` block wins.
-    vi.stubEnv('RENCO_TUI_BACKGROUND', '')
+    vi.stubEnv('SON_OF_ANTON_TUI_BACKGROUND', '')
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#00FF88')
 
     // Light terminal: the hand-tuned light_colors block wins over adaptation.
-    vi.stubEnv('RENCO_TUI_BACKGROUND', '#ffffff')
+    vi.stubEnv('SON_OF_ANTON_TUI_BACKGROUND', '#ffffff')
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#8B0000')
     vi.unstubAllEnvs()
@@ -933,7 +933,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'old-session' })
 
     createGatewayEventHandler(ctx)({
-      payload: { phrase: 'hey renco', start_new_session: true },
+      payload: { phrase: 'hey son-of-anton', start_new_session: true },
       type: 'wake.detected'
     } as any)
 
@@ -952,7 +952,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'current-session' })
 
     createGatewayEventHandler(ctx)({
-      payload: { phrase: 'hey renco', start_new_session: false },
+      payload: { phrase: 'hey son-of-anton', start_new_session: false },
       type: 'wake.detected'
     } as any)
 

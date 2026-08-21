@@ -3,8 +3,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const MAX = 1000
-const dir = process.env.RENCO_HOME ?? join(homedir(), '.renco')
-const file = join(dir, '.renco_history')
+const dir = process.env.SON_OF_ANTON_HOME ?? join(homedir(), '.son-of-anton')
+const file = join(dir, '.son_of_anton_history')
 
 let cache: string[] | null = null
 

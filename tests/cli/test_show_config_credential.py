@@ -1,6 +1,6 @@
 """Regression test: /config must show the LIVE agent credential.
 
-RencoCLI.__init__ seeds ``self.api_key`` from OPENAI_API_KEY /
+SonOfAntonCLI.__init__ seeds ``self.api_key`` from OPENAI_API_KEY /
 OPENROUTER_API_KEY env vars before provider resolution runs. On any
 non-OpenAI provider (Nous, Anthropic, ...) the constructor value is a
 different vendor's key than the one actually used for requests, so
@@ -12,11 +12,11 @@ agent exists.
 from datetime import datetime
 from types import SimpleNamespace
 
-from cli import RencoCLI
+from cli import SonOfAntonCLI
 
 
 def _run_show_config(stand_in, capsys):
-    RencoCLI.show_config(stand_in)
+    SonOfAntonCLI.show_config(stand_in)
     return capsys.readouterr().out
 
 

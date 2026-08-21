@@ -83,7 +83,7 @@ class MonitoringEmitter:
             if self._started:
                 return
             self._thread = threading.Thread(
-                target=self._run, name="renco-monitoring-dispatch", daemon=True
+                target=self._run, name="son-of-anton-monitoring-dispatch", daemon=True
             )
             self._thread.start()
             self._started = True
@@ -143,7 +143,7 @@ class MonitoringEmitter:
 
         waiter = threading.Thread(
             target=_wait_for_completion,
-            name="renco-monitoring-flush",
+            name="son-of-anton-monitoring-flush",
             daemon=True,
         )
         waiter.start()

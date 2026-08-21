@@ -270,7 +270,7 @@ class TestFormatFooter:
         import tempfile
         from gateway.platforms.base import BasePlatformAdapter
 
-        tmp = tempfile.mkdtemp(prefix="renco_footer_")
+        tmp = tempfile.mkdtemp(prefix="son_of_anton_footer_")
         try:
             cfg = os.path.join(tmp, "config.yaml")
             with open(cfg, "w") as fh:
@@ -299,17 +299,17 @@ class TestFormatFooter:
 
 class TestVerifierEnabled:
     def test_default_is_enabled(self, monkeypatch):
-        monkeypatch.delenv("RENCO_FILE_MUTATION_VERIFIER", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_FILE_MUTATION_VERIFIER", raising=False)
         agent = _bare_agent()
         # With no env and no config present, safe default is True.
         # load_config may surface a user config.yaml in some envs — stub it.
-        import renco_cli.config as _cfg_mod
+        import son_of_anton_cli.config as _cfg_mod
         monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
         assert agent._file_mutation_verifier_enabled() is True
 
     @pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off"])
     def test_env_disables(self, monkeypatch, value):
-        monkeypatch.setenv("RENCO_FILE_MUTATION_VERIFIER", value)
+        monkeypatch.setenv("SON_OF_ANTON_FILE_MUTATION_VERIFIER", value)
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
 
@@ -323,11 +323,11 @@ class TestVerifierEnabled:
         cached after the first call; the env-var override must still win on
         every call, cached or not.
         """
-        monkeypatch.delenv("RENCO_FILE_MUTATION_VERIFIER", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_FILE_MUTATION_VERIFIER", raising=False)
         agent = _bare_agent()
         calls = {"n": 0}
 
-        import renco_cli.config as _cfg_mod
+        import son_of_anton_cli.config as _cfg_mod
 
         def counting_load():
             calls["n"] += 1
@@ -343,16 +343,16 @@ class TestVerifierEnabled:
         assert agent._file_mutation_verifier_enabled() is True
         assert calls["n"] == 1
         # Env override stays authoritative even after the cache is warm.
-        monkeypatch.setenv("RENCO_FILE_MUTATION_VERIFIER", "0")
+        monkeypatch.setenv("SON_OF_ANTON_FILE_MUTATION_VERIFIER", "0")
         assert agent._file_mutation_verifier_enabled() is False
         assert calls["n"] == 1  # env path never touches config
 
     def test_cache_respects_config_value(self, monkeypatch):
         """A disabled config value is cached as False, not re-read."""
-        monkeypatch.delenv("RENCO_FILE_MUTATION_VERIFIER", raising=False)
+        monkeypatch.delenv("SON_OF_ANTON_FILE_MUTATION_VERIFIER", raising=False)
         agent = _bare_agent()
 
-        import renco_cli.config as _cfg_mod
+        import son_of_anton_cli.config as _cfg_mod
         monkeypatch.setattr(
             _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": False}}
         )

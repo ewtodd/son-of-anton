@@ -1,4 +1,4 @@
-import { Box, Text } from '@renco/ink'
+import { Box, Text } from '@sonofanton/ink'
 import { useEffect, useState } from 'react'
 
 import { Dialog } from '../../components/overlay.js'

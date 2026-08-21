@@ -19,13 +19,13 @@ from pathlib import Path
 
 import yaml
 
-import renco_cli.plugins as plugins_mod
-from renco_cli.plugins import PluginManager, VALID_HOOKS
+import son_of_anton_cli.plugins as plugins_mod
+from son_of_anton_cli.plugins import PluginManager, VALID_HOOKS
 
 
-def _make_enabled_plugin(renco_home: Path, name: str, register_body: str) -> Path:
-    """Create a plugin under <renco_home>/plugins/<name> and opt it in."""
-    plugin_dir = renco_home / "plugins" / name
+def _make_enabled_plugin(son_of_anton_home: Path, name: str, register_body: str) -> Path:
+    """Create a plugin under <son_of_anton_home>/plugins/<name> and opt it in."""
+    plugin_dir = son_of_anton_home / "plugins" / name
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         yaml.safe_dump({"name": name, "version": "0.1.0"}), encoding="utf-8",
@@ -35,7 +35,7 @@ def _make_enabled_plugin(renco_home: Path, name: str, register_body: str) -> Pat
         f"    {register_body}\n",
         encoding="utf-8",
     )
-    cfg_path = renco_home / "config.yaml"
+    cfg_path = son_of_anton_home / "config.yaml"
     cfg = {}
     if cfg_path.exists():
         cfg = yaml.safe_load(cfg_path.read_text()) or {}
@@ -50,17 +50,17 @@ def test_transform_llm_output_in_valid_hooks():
 
 def test_hook_receives_expected_kwargs(tmp_path, monkeypatch):
     """Hook callback should see response_text + session_id + model + platform."""
-    renco_home = tmp_path / "renco_test"
-    renco_home.mkdir(exist_ok=True)
+    son_of_anton_home = tmp_path / "son_of_anton_test"
+    son_of_anton_home.mkdir(exist_ok=True)
     _make_enabled_plugin(
-        renco_home, "capture_hook",
+        son_of_anton_home, "capture_hook",
         register_body=(
             'ctx.register_hook("transform_llm_output", '
             'lambda **kw: f"{kw[\'response_text\']}|{kw[\'session_id\']}|'
             '{kw[\'model\']}|{kw[\'platform\']}")'
         ),
     )
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
     mgr = PluginManager()
     mgr.discover_and_load()
@@ -87,17 +87,17 @@ def test_hook_exception_does_not_replace_response(tmp_path, monkeypatch):
     to the results list, and the walk in run_agent.py finds nothing to
     replace with.
     """
-    renco_home = tmp_path / "renco_test"
-    renco_home.mkdir(exist_ok=True)
+    son_of_anton_home = tmp_path / "son_of_anton_test"
+    son_of_anton_home.mkdir(exist_ok=True)
     _make_enabled_plugin(
-        renco_home, "raising_hook",
+        son_of_anton_home, "raising_hook",
         register_body=(
             'def _boom(**kw):\n'
             '        raise RuntimeError("boom")\n'
             '    ctx.register_hook("transform_llm_output", _boom)'
         ),
     )
-    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(son_of_anton_home))
 
     mgr = PluginManager()
     mgr.discover_and_load()
@@ -121,7 +121,7 @@ def test_hook_exception_does_not_replace_response(tmp_path, monkeypatch):
 
 def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
     """With no plugins loaded, invoke_hook returns [] and the response is unchanged."""
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / "renco_empty"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "son_of_anton_empty"))
     plugins_mod._plugin_manager = PluginManager()
 
     mgr = plugins_mod._plugin_manager

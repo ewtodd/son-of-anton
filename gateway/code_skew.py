@@ -2,7 +2,7 @@
 
 The gateway is a single long-lived process; its ``sys.modules`` is frozen at
 boot. If the checkout is updated underneath it (a manual ``git pull``, or the
-window before ``renco update``'s graceful restart fires), a first-time lazy
+window before ``son-of-anton update``'s graceful restart fires), a first-time lazy
 import on a new code path can resolve a freshly-pulled consumer module against a
 stale cached dependency -> ImportError (see
 ``tests/test_stale_utils_module_import.py`` for the exact failure).
@@ -26,12 +26,12 @@ _boot_fingerprint: str | None = None
 def _fingerprint() -> str | None:
     """Current checkout fingerprint, reusing the CLI's git-rev reader.
 
-    ``renco_cli.main`` is always already imported in a gateway process (it's
+    ``son_of_anton_cli.main`` is always already imported in a gateway process (it's
     the entry point), so this import is free and avoids duplicating the
     worktree-aware ref resolution.
     """
     try:
-        from renco_cli.main import _read_git_revision_fingerprint
+        from son_of_anton_cli.main import _read_git_revision_fingerprint
 
         return _read_git_revision_fingerprint(_PROJECT_ROOT)
     except Exception:

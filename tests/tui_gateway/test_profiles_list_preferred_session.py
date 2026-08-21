@@ -3,7 +3,7 @@
 Why: the desktop BOTS roster previews ``last_session`` (the profile's most
 recently active session) but clicking a bot row opens the PINNED canonical
 chat — two different session identities, so the preview shows one
-conversation and the click lands in another (ewtodd/renco#88200).
+conversation and the click lands in another (ewtodd/son-of-anton#88200).
 The generic fix at the RPC layer: callers that know which session they care
 about pass ``preferred_session_ids={profile: session_id}`` and receive a
 precise ``preferred_session`` summary per profile — hidden sessions included,
@@ -33,15 +33,15 @@ import tui_gateway.server as srv
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    """Temp RENCO_HOME with the default profile plus one named profile."""
-    h = tmp_path / ".renco"
+    """Temp SON_OF_ANTON_HOME with the default profile plus one named profile."""
+    h = tmp_path / ".son-of-anton"
     (h / "profiles" / "ops").mkdir(parents=True)
-    monkeypatch.setenv("RENCO_HOME", str(h))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(h))
     return h
 
 
 def _db(profile_dir):
-    from renco_state import SessionDB
+    from son_of_anton_state import SessionDB
 
     return SessionDB(db_path=profile_dir / "state.db")
 

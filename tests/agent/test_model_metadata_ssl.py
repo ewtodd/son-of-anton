@@ -1,7 +1,7 @@
 """Tests for _resolve_requests_verify() env var precedence.
 
 Verifies that custom provider `/models` fetches honour the three supported
-CA bundle env vars (RENCO_CA_BUNDLE, REQUESTS_CA_BUNDLE, SSL_CERT_FILE)
+CA bundle env vars (SON_OF_ANTON_CA_BUNDLE, REQUESTS_CA_BUNDLE, SSL_CERT_FILE)
 in the documented priority order, and that non-existent paths are
 skipped gracefully rather than breaking the request.
 
@@ -17,7 +17,7 @@ import pytest
 from agent.model_metadata import _resolve_requests_verify
 
 
-_CA_ENV_VARS = ("RENCO_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE")
+_CA_ENV_VARS = ("SON_OF_ANTON_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE")
 
 
 @pytest.fixture
@@ -43,10 +43,10 @@ class TestResolveRequestsVerify:
 
 
 
-    def test_priority_renco_over_requests(self, clean_env, tmp_path, bundle_file):
+    def test_priority_son_of_anton_over_requests(self, clean_env, tmp_path, bundle_file):
         other = tmp_path / "other.pem"
         other.write_text("stub")
-        clean_env.setenv("RENCO_CA_BUNDLE", bundle_file)
+        clean_env.setenv("SON_OF_ANTON_CA_BUNDLE", bundle_file)
         clean_env.setenv("REQUESTS_CA_BUNDLE", str(other))
         assert _resolve_requests_verify() == bundle_file
 

@@ -96,7 +96,7 @@ class TestResolveAutoMainFirst:
         """
         import yaml
 
-        home = tmp_path / ".renco"
+        home = tmp_path / ".son-of-anton"
         home.mkdir()
         (home / "config.yaml").write_text(
             yaml.safe_dump(
@@ -114,7 +114,7 @@ class TestResolveAutoMainFirst:
                 }
             )
         )
-        monkeypatch.setenv("RENCO_HOME", str(home))
+        monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
 
         with patch(
             "agent.auxiliary_client.resolve_provider_client"
@@ -423,14 +423,14 @@ class TestResolveVisionMainFirst:
         ), patch(
             "agent.auxiliary_client.OpenAI",
         ) as mock_openai, patch(
-            "renco_cli.auth.resolve_api_key_provider_credentials",
+            "son_of_anton_cli.auth.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
-            "renco_cli.copilot_auth.copilot_request_headers",
+            "son_of_anton_cli.copilot_auth.copilot_request_headers",
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()
@@ -460,14 +460,14 @@ class TestResolveVisionMainFirst:
         with patch(
             "agent.auxiliary_client.OpenAI",
         ) as mock_openai, patch(
-            "renco_cli.auth.resolve_api_key_provider_credentials",
+            "son_of_anton_cli.auth.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
         ), patch(
-            "renco_cli.copilot_auth.copilot_request_headers",
+            "son_of_anton_cli.copilot_auth.copilot_request_headers",
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()

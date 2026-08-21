@@ -8,8 +8,8 @@ import sys
 import textwrap
 
 from agent.system_prompt import build_system_prompt, invalidate_system_prompt
-from renco_cli import plugins
-from renco_cli.plugins import PluginContext, PluginManager, PluginManifest
+from son_of_anton_cli import plugins
+from son_of_anton_cli.plugins import PluginContext, PluginManager, PluginManifest
 from run_agent import AIAgent
 
 
@@ -89,9 +89,9 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
 
         from agent.conversation_loop import _restore_or_build_system_prompt
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
-        from renco_cli import plugins
-        from renco_cli.plugins import PluginContext, PluginManager, PluginManifest
-        from renco_state import SessionDB
+        from son_of_anton_cli import plugins
+        from son_of_anton_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from son_of_anton_state import SessionDB
         from run_agent import AIAgent
 
         db = SessionDB(db_path=Path(os.environ["TEST_DB"]))
@@ -150,7 +150,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     for phase in ("first", "resume"):
         env = os.environ.copy()
         env.update(
-            RENCO_HOME=str(tmp_path / "renco-home"),
+            SON_OF_ANTON_HOME=str(tmp_path / "son-of-anton-home"),
             TEST_DB=str(db_path),
             TEST_CALLS=str(calls_path),
             TEST_PHASE=phase,

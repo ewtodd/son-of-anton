@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout } from '@renco/ink'
+import { Box, Text, useInput, useStdout } from '@sonofanton/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -172,7 +172,7 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
           Plugins Hub
         </Text>
         <Text color={t.color.muted}>no plugins installed</Text>
-        <Text color={t.color.muted}>install: renco plugins install owner/repo</Text>
+        <Text color={t.color.muted}>install: son-of-anton plugins install owner/repo</Text>
         <OverlayHint t={t}>Esc/q close</OverlayHint>
       </Box>
     )

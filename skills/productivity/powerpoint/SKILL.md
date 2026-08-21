@@ -6,7 +6,7 @@ author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [pptx, powerpoint, presentations, slides, office, python-pptx]
     category: productivity
     related_skills: [docx, xlsx, pdf]

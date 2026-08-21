@@ -205,7 +205,7 @@ def _query_osv(
         data=data,
         headers={
             "Content-Type": "application/json",
-            "User-Agent": "renco-agent-osv-check/1.0",
+            "User-Agent": "son-of-anton-osv-check/1.0",
         },
         method="POST",
     )

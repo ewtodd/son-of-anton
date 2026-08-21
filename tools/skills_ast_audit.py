@@ -7,7 +7,7 @@ import / dynamic attribute access patterns operators may want to eyeball when
 reviewing third-party skill code. Every pattern flagged here has legitimate
 uses; findings are hints for human review, not verdicts.
 
-CLI: ``renco skills audit --deep``
+CLI: ``son-of-anton skills audit --deep``
 """
 
 from __future__ import annotations

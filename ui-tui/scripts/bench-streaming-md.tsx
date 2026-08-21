@@ -21,7 +21,7 @@
 import { execFileSync } from 'child_process'
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@renco/ink'
+import { Box, renderSync } from '@sonofanton/ink'
 import React, { memo, useRef } from 'react'
 
 import { Md } from '../src/components/markdown.js'

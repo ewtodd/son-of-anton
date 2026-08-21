@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-import renco_state
-from renco_state import (
+import son_of_anton_state
+from son_of_anton_state import (
     SessionDB,
     is_malformed_db_error,
     repair_state_db_schema,
@@ -98,17 +98,17 @@ def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
     _corrupt_duplicate_fts(db_path)
-    monkeypatch.setattr(renco_state, "_repair_attempted_paths", set())
+    monkeypatch.setattr(son_of_anton_state, "_repair_attempted_paths", set())
 
     calls = {"n": 0}
-    real_repair = renco_state.repair_state_db_schema
+    real_repair = son_of_anton_state.repair_state_db_schema
 
     def fake_repair(path, **kw):
         calls["n"] += 1
         # Pretend repair failed so the guard's one-shot behavior is exercised.
         return {"repaired": False, "strategy": None, "backup_path": None, "error": "x"}
 
-    monkeypatch.setattr(renco_state, "repair_state_db_schema", fake_repair)
+    monkeypatch.setattr(son_of_anton_state, "repair_state_db_schema", fake_repair)
 
     with pytest.raises(sqlite3.DatabaseError):
         SessionDB(db_path=db_path)
@@ -116,7 +116,7 @@ def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
         SessionDB(db_path=db_path)
     assert calls["n"] == 1  # repair attempted only once across both opens
 
-    monkeypatch.setattr(renco_state, "repair_state_db_schema", real_repair)
+    monkeypatch.setattr(son_of_anton_state, "repair_state_db_schema", real_repair)
 
 
 
@@ -167,7 +167,7 @@ def _corrupt_fts_shadow_segments(db_path: Path) -> None:
 
 def test_fts_read_corruption_repaired_in_place(tmp_path):
     """``repair_state_db_schema`` rebuilds the FTS index so reads resume."""
-    from renco_state import _db_opens_cleanly
+    from son_of_anton_state import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -254,7 +254,7 @@ def _corrupt_fts_index_data(db_path: Path) -> None:
 
 def test_fts_write_corruption_detected_by_write_probe(tmp_path):
     """_db_opens_cleanly's rolled-back write probe flags FTS write corruption."""
-    from renco_state import _db_opens_cleanly
+    from son_of_anton_state import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -275,7 +275,7 @@ def test_fts_write_corruption_detected_by_write_probe(tmp_path):
 
 def test_fts_write_corruption_repaired_in_place(tmp_path):
     """repair_state_db_schema rebuilds the FTS index; reads + writes resume."""
-    from renco_state import _db_opens_cleanly
+    from son_of_anton_state import _db_opens_cleanly
 
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
@@ -359,7 +359,7 @@ def test_repair_rebuilds_stale_btree_indexes(tmp_path):
     _corrupt_btree_index(db_path, "idx_messages_session")
 
     # The real detector must see the real corruption...
-    reason = renco_state._db_opens_cleanly(db_path)
+    reason = son_of_anton_state._db_opens_cleanly(db_path)
     assert reason is not None
     assert "wrong # of entries in index idx_messages_session" in reason
 
@@ -370,7 +370,7 @@ def test_repair_rebuilds_stale_btree_indexes(tmp_path):
 
     # Post-repair the DB is genuinely healthy: detector and raw
     # integrity_check both agree, and the repaired index answers queries.
-    assert renco_state._db_opens_cleanly(db_path) is None
+    assert son_of_anton_state._db_opens_cleanly(db_path) is None
     raw = sqlite3.connect(str(db_path))
     assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     n = raw.execute(
@@ -403,7 +403,7 @@ def test_repair_stale_btree_index_preserves_rows(tmp_path):
 # Cross-process serialisation of the schema surgery
 # ---------------------------------------------------------------------------
 # A normal host runs several independent processes against one state.db: the
-# gateway service, the Desktop app's own `renco serve` backend, interactive
+# gateway service, the Desktop app's own `son-of-anton serve` backend, interactive
 # CLI sessions and the TUI slash worker. `_repair_attempt_lock` is a
 # threading.Lock and covers none of that, so two of them hitting a malformed
 # DB at once each ran the full writable_schema surgery + VACUUM on a private
@@ -425,7 +425,7 @@ time.sleep({hold})
 def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
     """Hold the repair flock for *db_path* in a real child process."""
     script = _HOLD_LOCK_SCRIPT.format(
-        root=str(Path(renco_state.__file__).parent),
+        root=str(Path(son_of_anton_state.__file__).parent),
         lock=str(db_path.with_name(db_path.name + ".repair.lock")),
         hold=hold_seconds,
     )
@@ -450,7 +450,7 @@ def test_repair_skips_surgery_while_another_process_holds_the_lock(
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
     _corrupt_duplicate_fts(db_path)
-    monkeypatch.setattr(renco_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(son_of_anton_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
 
     with _lock_held_by_other_process(db_path):
         report = repair_state_db_schema(db_path)
@@ -460,7 +460,7 @@ def test_repair_skips_surgery_while_another_process_holds_the_lock(
     # No surgery ran: no backup was taken and the DB is still malformed.
     assert report["backup_path"] is None
     assert not list(tmp_path.glob("state.db.malformed-backup-*"))
-    assert renco_state._db_opens_cleanly(db_path) is not None
+    assert son_of_anton_state._db_opens_cleanly(db_path) is not None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
@@ -470,7 +470,7 @@ def test_repair_reports_success_when_the_holder_already_healed_the_db(
     """Timing out against a healthy DB is a success, not an error."""
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
-    monkeypatch.setattr(renco_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(son_of_anton_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
 
     with _lock_held_by_other_process(db_path):
         report = repair_state_db_schema(db_path)
@@ -482,7 +482,7 @@ def test_repair_reports_success_when_the_holder_already_healed_the_db(
 _REPAIR_SCRIPT = """
 import sys, json
 sys.path.insert(0, {root!r})
-from renco_state import repair_state_db_schema
+from son_of_anton_state import repair_state_db_schema
 print(json.dumps(repair_state_db_schema({db!r})), flush=True)
 """
 
@@ -501,7 +501,7 @@ def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     _corrupt_duplicate_fts(db_path)
 
     script = _REPAIR_SCRIPT.format(
-        root=str(Path(renco_state.__file__).parent), db=str(db_path)
+        root=str(Path(son_of_anton_state.__file__).parent), db=str(db_path)
     )
     procs = [
         subprocess.Popen(
@@ -576,7 +576,7 @@ def test_backup_refusal_hard_stops_the_repair(tmp_path, monkeypatch):
     original_bytes = db_path.read_bytes()
 
     monkeypatch.setattr(
-        renco_state,
+        son_of_anton_state,
         "_backup_db_file",
         lambda p: (None, "a connection to it is still open in this process"),
     )
@@ -589,7 +589,7 @@ def test_backup_refusal_hard_stops_the_repair(tmp_path, monkeypatch):
     assert "still open" in report["error"]
     # No mutating strategy ran: the damaged source bytes are untouched.
     assert db_path.read_bytes() == original_bytes
-    assert renco_state._db_opens_cleanly(db_path) is not None
+    assert son_of_anton_state._db_opens_cleanly(db_path) is not None
 
 
 def test_backup_copy_failure_hard_stops_the_repair(tmp_path, monkeypatch):
@@ -599,7 +599,7 @@ def test_backup_copy_failure_hard_stops_the_repair(tmp_path, monkeypatch):
     _corrupt_duplicate_fts(db_path)
 
     monkeypatch.setattr(
-        renco_state,
+        son_of_anton_state,
         "_backup_db_file",
         lambda p: (None, "backup copy failed: [Errno 28] No space left on device"),
     )

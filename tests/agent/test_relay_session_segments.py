@@ -226,8 +226,8 @@ class TestCompactionRotation:
         _run_turn(coordinator, lease, "t1")
 
         new_seg = _session_pushes(fake)[-1]["metadata"]
-        assert new_seg.get("renco.session.segment") == 1
-        assert new_seg.get("renco.session.segment_reason") == "compaction"
+        assert new_seg.get("son-of-anton.session.segment") == 1
+        assert new_seg.get("son-of-anton.session.segment_reason") == "compaction"
 
     def test_unknown_session_compaction_is_noop(self, coordinator, monkeypatch):
         _set_segments(monkeypatch, on_compaction=True)
@@ -323,7 +323,7 @@ class TestMaxTurnsRotation:
         # segment 1; rotation before turn 4.
         sessions = _session_pushes(fake)
         assert len(sessions) == 3, "cap of 2 over 5 turns => 2 rotations"
-        assert sessions[-1]["metadata"].get("renco.session.segment_reason") == "max_turns"
+        assert sessions[-1]["metadata"].get("son-of-anton.session.segment_reason") == "max_turns"
 
     def test_zero_cap_means_unlimited(self, coordinator, monkeypatch):
         _set_segments(monkeypatch, max_turns=0)

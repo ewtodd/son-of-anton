@@ -4,12 +4,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import RencoCLI
-from renco_cli.commands import resolve_command
+from cli import SonOfAntonCLI
+from son_of_anton_cli.commands import resolve_command
 
 
 def _make_cli():
-    cli_obj = RencoCLI.__new__(RencoCLI)
+    cli_obj = SonOfAntonCLI.__new__(SonOfAntonCLI)
     cli_obj.config = {}
     cli_obj.console = MagicMock()
     cli_obj.agent = None
@@ -44,7 +44,7 @@ def test_egress_command_is_available_in_cli_registry():
 def test_process_command_egress_prints_proxy_status(monkeypatch):
     cli_obj = _make_cli()
     monkeypatch.setattr(
-        "renco_cli.proxy_cli.format_status_text",
+        "son_of_anton_cli.proxy_cli.format_status_text",
         lambda: "Egress proxy status\nEnabled: no",
     )
 
@@ -78,13 +78,13 @@ def test_show_session_status_prints_gateway_style_summary():
         "started_at": 1775791440,
     }
 
-    with patch("cli.display_renco_home", return_value="~/.renco"):
+    with patch("cli.display_son_of_anton_home", return_value="~/.son-of-anton"):
         cli_obj._show_session_status()
 
     printed = "\n".join(str(call.args[0]) for call in cli_obj.console.print.call_args_list)
-    assert "Renco CLI Status" in printed
+    assert "Son of Anton CLI Status" in printed
     assert "Session ID: session-123" in printed
-    assert "Path: ~/.renco" in printed
+    assert "Path: ~/.son-of-anton" in printed
     assert "Title: My titled session" in printed
     assert "Model: openai/gpt-5.4 (openai)" in printed
     assert "Tokens: 321" in printed
@@ -107,7 +107,7 @@ def test_show_session_status_includes_reasoning_approvals_context():
         "context_tokens": 50000, "context_length": 200000, "context_percent": 25,
     }
 
-    with patch("cli.display_renco_home", return_value="~/.renco"), \
+    with patch("cli.display_son_of_anton_home", return_value="~/.son-of-anton"), \
          patch("tools.approval._get_approval_mode", return_value="manual"), \
          patch("tools.approval.is_approval_bypass_active_for_session", return_value=False):
         cli_obj._show_session_status()
@@ -119,11 +119,11 @@ def test_show_session_status_includes_reasoning_approvals_context():
 
 
 def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, capsys):
-    """Profile detection works for custom-root deployments (not under ~/.renco)."""
+    """Profile detection works for custom-root deployments (not under ~/.son-of-anton)."""
     cli_obj = _make_cli()
     profile_home = tmp_path / "profiles" / "coder"
 
-    monkeypatch.setenv("RENCO_HOME", str(profile_home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(profile_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
 
     cli_obj._handle_profile_command()

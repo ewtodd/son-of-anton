@@ -3,7 +3,7 @@
 The gateway's loopback api_server refuses to start without a strong
 API_SERVER_KEY, and hosted cron fires are forwarded through it — so the
 stage2 keygen must succeed even when no ``.env`` exists yet. Historically it
-was gated on ``[ -f "$RENCO_HOME/.env" ]`` while the first-boot seed that
+was gated on ``[ -f "$SON_OF_ANTON_HOME/.env" ]`` while the first-boot seed that
 was supposed to create ``.env`` silently no-oped (``.env.example`` was
 excluded from the image by ``.dockerignore``), leaving 40%+ of the hosted
 fleet with no api_server and every scheduled cron fire silently lost.
@@ -39,7 +39,7 @@ def _keygen_block(text: str) -> str:
 
 def _path_guard_functions(text: str) -> str:
     start = text.index("path_has_symlink_component() {")
-    end = text.index("\n\nchown_renco_tree() {", start)
+    end = text.index("\n\nchown_son_of_anton_tree() {", start)
     return text[start:end]
 
 
@@ -60,9 +60,9 @@ def _run_keygen(
         # unguarded-command defects that would abort a real container boot.
         "set -eu\n"
         f"{env_setup}"
-        f'RENCO_HOME="{home}"\n'
-        # In tests we run unprivileged; as_renco is a passthrough then.
-        'as_renco() { "$@"; }\n'
+        f'SON_OF_ANTON_HOME="{home}"\n'
+        # In tests we run unprivileged; as_son_of_anton is a passthrough then.
+        'as_son_of_anton() { "$@"; }\n'
         f"{_path_guard_functions(stage2_text)}\n"
         f"{_keygen_block(stage2_text)}\n"
     )
@@ -133,7 +133,7 @@ def test_keygen_skips_when_container_env_provides_key(
 ) -> None:
     """`docker run -e API_SERVER_KEY=...` must win: no generated key.
 
-    Renco loads $RENCO_HOME/.env with override=True, so a key generated
+    Son of Anton loads $SON_OF_ANTON_HOME/.env with override=True, so a key generated
     into .env would silently shadow the operator's env-provided credential
     and 401 every client still using it.
     """
@@ -259,7 +259,7 @@ def test_keygen_weak_env_key_warning_suppressed_when_env_file_key_wins(
 
 
 def test_dockerignore_keeps_env_example_template() -> None:
-    """The first-boot seed copies /opt/renco/.env.example -> $RENCO_HOME/.env.
+    """The first-boot seed copies /opt/son-of-anton/.env.example -> $SON_OF_ANTON_HOME/.env.
 
     ``.env.*`` in .dockerignore matches the template, so an explicit
     ``!.env.example`` re-include must appear AFTER it (last match wins), and
@@ -277,7 +277,7 @@ def test_dockerignore_keeps_env_example_template() -> None:
             verdict = "included" if negate else "excluded"
     assert verdict == "included", (
         ".env.example must survive .dockerignore — docker/stage2-hook.sh "
-        "seeds $RENCO_HOME/.env from it on first boot"
+        "seeds $SON_OF_ANTON_HOME/.env from it on first boot"
     )
 
 

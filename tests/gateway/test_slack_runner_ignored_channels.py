@@ -29,7 +29,7 @@ async def test_runner_drops_slack_ignored_channel_before_auth_hooks_and_sessions
     # setup and one of these sentinels will fail the test.
     runner.session_store = object()
     monkeypatch.setattr(
-        "renco_cli.plugins.invoke_hook",
+        "son_of_anton_cli.plugins.invoke_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("hook should not run")),
     )
     runner._is_user_authorized = lambda source: (_ for _ in ()).throw(AssertionError("auth should not run"))

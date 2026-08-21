@@ -5,7 +5,7 @@ from __future__ import annotations
 import errno
 import sqlite3
 
-from renco_state import is_disk_full_error
+from son_of_anton_state import is_disk_full_error
 
 
 def test_enospc_oserror():

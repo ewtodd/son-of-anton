@@ -80,7 +80,7 @@ from gateway.platforms.base import (
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
-from renco_constants import get_renco_dir
+from son_of_anton_constants import get_son_of_anton_dir
 
 logger = logging.getLogger(__name__)
 
@@ -185,16 +185,16 @@ def _ext_for_mime(mime: str) -> Optional[str]:
     )
 
 
-# Inbound media cache lives under the user's renco dir so it survives
+# Inbound media cache lives under the user's son-of-anton dir so it survives
 # restarts and gateway reloads — same convention the Baileys bridge uses.
-_INBOUND_MEDIA_CACHE = Path(get_renco_dir("platforms/whatsapp_cloud/media", "whatsapp_cloud/media"))
+_INBOUND_MEDIA_CACHE = Path(get_son_of_anton_dir("platforms/whatsapp_cloud/media", "whatsapp_cloud/media"))
 
 
 def check_whatsapp_cloud_requirements() -> bool:
     """Return whether transport dependencies are available.
 
     aiohttp is needed for the webhook server (inbound). httpx is needed
-    for Graph API calls (outbound). Both ship with renco-agent's default
+    for Graph API calls (outbound). Both ship with son-of-anton's default
     dependency set, so this should always be True in normal installs.
     """
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
@@ -437,7 +437,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._set_fatal_error(
                 "whatsapp_cloud_deps_missing",
                 "aiohttp and httpx are required for whatsapp_cloud — "
-                "reinstall renco-agent.",
+                "reinstall son-of-anton.",
                 retryable=False,
             )
             return False
@@ -1203,7 +1203,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         WhatsApp renders ``audio/ogg; codecs=opus`` as the green
         voice-note bubble; other audio types (MP3, AAC, etc.) appear as
-        a generic audio attachment. Renco TTS produces MP3, so we try
+        a generic audio attachment. Son of Anton TTS produces MP3, so we try
         ffmpeg conversion to opus first and fall back to sending the
         MP3 as-is when ffmpeg is unavailable.
         """
@@ -1890,7 +1890,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         contacts_by_waid: Dict[str, str],
         metadata: Dict[str, Any],
     ) -> Optional[MessageEvent]:
-        """Convert a Cloud-API message object into a Renco MessageEvent.
+        """Convert a Cloud-API message object into a Son of Anton MessageEvent.
 
         Phase 4 expands beyond text to download inbound media (image,
         video, audio/voice, document, sticker) by ``media_id`` via the

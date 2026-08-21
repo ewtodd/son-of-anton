@@ -32,9 +32,9 @@ def test_frontmatter_required_fields():
     for field in ("name", "description", "version", "author", "license", "platforms"):
         assert field in fm, f"missing frontmatter field: {field}"
     assert fm["name"] == "meeting-action-items"
-    renco = fm["metadata"]["renco"]
-    assert renco["tags"]
-    assert "related_skills" in renco
+    son_of_anton = fm["metadata"]["son-of-anton"]
+    assert son-of-anton["tags"]
+    assert "related_skills" in son_of_anton
 
 
 def test_description_hardline():
@@ -46,14 +46,14 @@ def test_description_hardline():
 
 def test_author_credits_human_first():
     fm, _ = _frontmatter_and_body()
-    assert not fm["author"].startswith("Renco Agent"), "human contributor must be credited first"
+    assert not fm["author"].startswith("Son of Anton Agent"), "human contributor must be credited first"
     assert "benbarclay" in fm["author"]
 
 
 def test_related_skills_resolve_in_repo():
     fm, _ = _frontmatter_and_body()
     repo_root = SKILL_PATH.parents[3]
-    for name in fm["metadata"]["renco"]["related_skills"]:
+    for name in fm["metadata"]["son-of-anton"]["related_skills"]:
         hits = (
             list(repo_root.glob(f"skills/*/{name}/SKILL.md"))
             + list(repo_root.glob(f"optional-skills/*/{name}/SKILL.md"))

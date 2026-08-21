@@ -9,7 +9,7 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 
 from .method_ctx import HandlerRegistry
 
-from renco_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+from son_of_anton_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -24,7 +24,7 @@ def _(rid, params: dict) -> dict:
         with _profile_db(params) as db:
             if db is None:
                 return _ok(rid, {"repos": []})
-            from renco_cli import projects_db as pdb
+            from son_of_anton_cli import projects_db as pdb
 
             policy = _repo_discovery_policy()
             policy_key = _repo_discovery_policy_key(policy)
@@ -36,7 +36,7 @@ def _(rid, params: dict) -> dict:
                 )
                 # `scan=true` (set by the desktop in remote-gateway mode): run a
                 # backend-side filesystem scan of the policy roots so repos with
-                # zero Renco sessions still surface. The desktop's native scan
+                # zero Son of Anton sessions still surface. The desktop's native scan
                 # only runs on the local filesystem; on a remote connection it
                 # must ask the host to scan itself (#81723).
                 if params.get("scan") and policy["enabled"]:
@@ -56,7 +56,7 @@ def _(rid, params: dict) -> dict:
     the merged repo list. The native crawl runs on the desktop (local fs); this
     caches the result so later reads are instant instead of re-walking disk."""
     try:
-        from renco_cli import projects_db as pdb
+        from son_of_anton_cli import projects_db as pdb
 
         policy = _repo_discovery_policy()
         policy_key = _repo_discovery_policy_key(policy)
@@ -174,7 +174,7 @@ def _(rid, params: dict) -> dict:
     key = params.get("key", "")
     if key == "provider":
         try:
-            from renco_cli.models import list_available_providers, normalize_provider
+            from son_of_anton_cli.models import list_available_providers, normalize_provider
 
             model = _resolve_model()
             parts = model.split("/", 1)
@@ -191,9 +191,9 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5013, str(e))
     if key == "profile":
-        from renco_constants import display_renco_home
+        from son_of_anton_constants import display_son_of_anton_home
 
-        return _ok(rid, {"home": str(_renco_home), "display": display_renco_home()})
+        return _ok(rid, {"home": str(_son_of_anton_home), "display": display_son_of_anton_home()})
     if key == "project":
         cfg_terminal = _load_cfg().get("terminal") or {}
         raw = str(params.get("cwd", "") or cfg_terminal.get("cwd", "") or "").strip()
@@ -222,7 +222,7 @@ def _(rid, params: dict) -> dict:
     if key == "personality":
         # Report the EFFECTIVE personality via the single owner — a stale or
         # unknown name in config must not display as active.
-        from renco_cli.personality import active_personality_name
+        from son_of_anton_cli.personality import active_personality_name
 
         return _ok(
             rid,
@@ -339,7 +339,7 @@ def _(rid, params: dict) -> dict:
         display = _load_cfg().get("display")
         return _ok(rid, {"value": _display_mouse_tracking(display)})
     if key == "mtime":
-        cfg_path = _renco_home / "config.yaml"
+        cfg_path = _son_of_anton_home / "config.yaml"
         try:
             mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
         except Exception:
@@ -355,7 +355,7 @@ def _(rid, params: dict) -> dict:
 @method("setup.status")
 def _(rid, params: dict) -> dict:
     try:
-        from renco_cli.main import _has_any_provider_configured
+        from son_of_anton_cli.main import _has_any_provider_configured
 
         return _ok(rid, {"provider_configured": bool(_has_any_provider_configured())})
     except Exception as e:
@@ -374,9 +374,9 @@ def _(rid, params: dict) -> dict:
     surface onboarding before the user submits a doomed prompt.
     """
     try:
-        from renco_cli.runtime_provider import resolve_runtime_provider
-        from renco_cli.auth import has_usable_secret
-        from renco_cli.main import _has_any_provider_configured
+        from son_of_anton_cli.runtime_provider import resolve_runtime_provider
+        from son_of_anton_cli.auth import has_usable_secret
+        from son_of_anton_cli.main import _has_any_provider_configured
 
         requested = str(params.get("provider") or "").strip() or None
         runtime = resolve_runtime_provider(requested=requested)
@@ -394,7 +394,7 @@ def _(rid, params: dict) -> dict:
                     "provider": provider,
                     "model": runtime.get("model"),
                     "source": source,
-                    "error": "No Renco provider is configured.",
+                    "error": "No Son of Anton provider is configured.",
                 },
             )
 

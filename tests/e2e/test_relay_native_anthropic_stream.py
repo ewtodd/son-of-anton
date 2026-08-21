@@ -14,7 +14,7 @@ def test_anthropic_sdk_stream_runs_through_relay_managed_execution(
     from agent import relay_runtime
     from run_agent import AIAgent
 
-    monkeypatch.setenv("RENCO_HOME", str(tmp_path / "renco-home"))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "son-of-anton-home"))
     response_body = b"""event: message_start
 data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
 

@@ -1,4 +1,4 @@
-import { Text } from '@renco/ink'
+import { Text } from '@sonofanton/ink'
 
 import { Dialog, Overlay, type OverlayZone } from '../../components/overlay.js'
 import { defineWidgetApp } from '../registry.js'

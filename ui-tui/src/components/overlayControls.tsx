@@ -1,4 +1,4 @@
-import { Text, useInput } from '@renco/ink'
+import { Text, useInput } from '@sonofanton/ink'
 
 import type { Theme } from '../theme.js'
 

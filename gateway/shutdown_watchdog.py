@@ -12,7 +12,7 @@ This module provides:
    completed within ``restart_drain_timeout + grace``, it dumps all-thread
    stacks via ``faulthandler`` plus a metadata snapshot, then ``os._exit`` so
    the service manager can revive the process.
-2. An event-loop heartbeat file at ``<RENCO_HOME>/state/gateway.heartbeat`` so
+2. An event-loop heartbeat file at ``<SON_OF_ANTON_HOME>/state/gateway.heartbeat`` so
    external supervision can distinguish "process alive" from "loop frozen"
    (``gateway_state.json`` alone can't — it only rewrites on transitions/turns).
 3. A lifetime thread watchdog that can still diagnose and hard-exit when the
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-from renco_constants import get_renco_home
+from son_of_anton_constants import get_son_of_anton_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -209,23 +209,23 @@ def start_loop_liveness_watchdog(
     return _LoopLivenessWatchdogHandle(stop_event, thread)
 
 
-def _process_renco_home() -> Path:
-    """RENCO_HOME for process-level identity files (ignore profile overrides)."""
-    val = os.environ.get("RENCO_HOME", "").strip()
+def _process_son_of_anton_home() -> Path:
+    """SON_OF_ANTON_HOME for process-level identity files (ignore profile overrides)."""
+    val = os.environ.get("SON_OF_ANTON_HOME", "").strip()
     if val:
         return Path(val)
-    return get_renco_home()
+    return get_son_of_anton_home()
 
 
 def get_loop_heartbeat_path(home: Optional[Path] = None) -> Path:
-    """Return ``<RENCO_HOME>/state/gateway.heartbeat``."""
-    base = home if home is not None else _process_renco_home()
+    """Return ``<SON_OF_ANTON_HOME>/state/gateway.heartbeat``."""
+    base = home if home is not None else _process_son_of_anton_home()
     return base.joinpath(*_HEARTBEAT_RELATIVE)
 
 
 def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
     """Return the faulthandler / metadata dump path for a fired watchdog."""
-    base = home if home is not None else _process_renco_home()
+    base = home if home is not None else _process_son_of_anton_home()
     return base.joinpath(*_WATCHDOG_DUMP_RELATIVE)
 
 
@@ -408,7 +408,7 @@ def arm_shutdown_watchdog(
         except Exception:
             pass
         try:
-            from renco_logging import drain_log_queue
+            from son_of_anton_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
         except Exception:
             pass

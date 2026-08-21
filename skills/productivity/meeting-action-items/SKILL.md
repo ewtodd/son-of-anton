@@ -2,11 +2,11 @@
 name: meeting-action-items
 description: "Turn meeting notes into cited decisions, owners, tickets."
 version: 0.1.0
-author: Ben Barclay (benbarclay), Renco Agent
+author: Ben Barclay (benbarclay), Son of Anton Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  renco:
+  son-of-anton:
     tags: [Meetings, Action-Items, Follow-Up, Productivity]
     related_skills: [teams-meeting-pipeline, google-workspace, notion]
 ---

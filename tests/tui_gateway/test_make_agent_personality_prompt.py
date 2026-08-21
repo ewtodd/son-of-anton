@@ -38,7 +38,7 @@ def _call_make_agent(cfg):
         )
         stack.enter_context(
             patch(
-                "renco_cli.runtime_provider.resolve_runtime_provider",
+                "son_of_anton_cli.runtime_provider.resolve_runtime_provider",
                 return_value=_runtime(),
             )
         )

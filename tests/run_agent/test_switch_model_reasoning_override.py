@@ -59,7 +59,7 @@ class TestSwitchModelReasoningOverride:
             },
         }
 
-        with patch("renco_cli.config.load_config", return_value=fake_cfg):
+        with patch("son_of_anton_cli.config.load_config", return_value=fake_cfg):
             try:
                 switch_model(
                     agent,

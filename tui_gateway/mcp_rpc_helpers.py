@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, Tuple
 
 
 def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]:
-    """Resolve the optional ``profile`` param to a RENCO_HOME override token.
+    """Resolve the optional ``profile`` param to a SON_OF_ANTON_HOME override token.
 
     Returns ``(token, error)``: ``token`` is None for the launch profile (no
     override) or an opaque reset token; ``error`` is a JSON-RPC error dict
@@ -23,21 +23,21 @@ def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]
     profile = str(params.get("profile") or "").strip()
     if not profile:
         return None, None
-    from renco_cli.profiles import get_profile_dir
-    from renco_constants import set_renco_home_override
+    from son_of_anton_cli.profiles import get_profile_dir
+    from son_of_anton_constants import set_son_of_anton_home_override
 
     profile_dir = get_profile_dir(profile)
     if not profile_dir or not profile_dir.is_dir():
         return None, err_fn(rid, 4064, f"profile '{profile}' not found")
-    return set_renco_home_override(str(profile_dir)), None
+    return set_son_of_anton_home_override(str(profile_dir)), None
 
 
 def reset_profile(token) -> None:
     if token is not None:
         try:
-            from renco_constants import reset_renco_home_override
+            from son_of_anton_constants import reset_son_of_anton_home_override
 
-            reset_renco_home_override(token)
+            reset_son_of_anton_home_override(token)
         except Exception:
             pass
 
@@ -49,7 +49,7 @@ def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
     flag so a UI can tell an OAuth server that still needs authentication from
     one already authenticated.
     """
-    from renco_cli.mcp_config import _oauth_tokens_present
+    from son_of_anton_cli.mcp_config import _oauth_tokens_present
 
     cfg = cfg if isinstance(cfg, dict) else {}
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")

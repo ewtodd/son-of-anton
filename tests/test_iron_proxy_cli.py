@@ -1,4 +1,4 @@
-"""Unit tests for ``renco_cli.proxy_cli`` command handlers.
+"""Unit tests for ``son_of_anton_cli.proxy_cli`` command handlers.
 
 These tests cover the user-facing CLI surface that was previously
 uncovered.  We mock the iron_proxy module's side-effect functions
@@ -17,18 +17,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.proxy_sources import iron_proxy as ip
-from renco_cli import proxy_cli
+from son_of_anton_cli import proxy_cli
 
 
 @pytest.fixture
-def renco_home(tmp_path, monkeypatch):
-    """Point RENCO_HOME at a temp dir so the wizard doesn't touch the
+def son_of_anton_home(tmp_path, monkeypatch):
+    """Point SON_OF_ANTON_HOME at a temp dir so the wizard doesn't touch the
     operator's real config.  Also blanks any provider env vars so we
     don't accidentally read a real key."""
 
-    home = tmp_path / "renco"
+    home = tmp_path / "son-of-anton"
     home.mkdir()
-    monkeypatch.setenv("RENCO_HOME", str(home))
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
     for key in list(os.environ):
         if key.endswith("_API_KEY") or key in (
             "BWS_ACCESS_TOKEN", "ANTHROPIC_API_KEY",
@@ -58,14 +58,14 @@ def _args(**overrides):
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_install_success_returns_0(renco_home, monkeypatch):
-    monkeypatch.setattr(ip, "install_iron_proxy", lambda **kw: renco_home / "iron-proxy")
+def test_cmd_install_success_returns_0(son_of_anton_home, monkeypatch):
+    monkeypatch.setattr(ip, "install_iron_proxy", lambda **kw: son_of_anton_home / "iron-proxy")
     monkeypatch.setattr(ip, "iron_proxy_version", lambda b: "v0.39.0-test")
     rc = proxy_cli.cmd_install(_args())
     assert rc == 0
 
 
-def test_cmd_install_failure_returns_1(renco_home, monkeypatch):
+def test_cmd_install_failure_returns_1(son_of_anton_home, monkeypatch):
     def boom(**kw):
         raise RuntimeError("download failed")
     monkeypatch.setattr(ip, "install_iron_proxy", boom)
@@ -82,11 +82,11 @@ def test_cmd_install_failure_returns_1(renco_home, monkeypatch):
 
 
 
-def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(renco_home, monkeypatch):
+def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(son_of_anton_home, monkeypatch):
     """If BW returns {} (empty vault / scoped wrong / unreachable), fail
     loud rather than silently writing credential_source: bitwarden."""
 
-    from renco_cli.config import load_config, save_config
+    from son_of_anton_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg.setdefault("secrets", {})["bitwarden"] = {
@@ -97,11 +97,11 @@ def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(renco_home, monkeypatch
     save_config(cfg)
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "bwsk-test-token")
 
-    monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: renco_home / "iron-proxy")
+    monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: son_of_anton_home / "iron-proxy")
     monkeypatch.setattr(ip, "iron_proxy_version", lambda b: "test")
     monkeypatch.setattr(
         ip, "ensure_ca_cert",
-        lambda **kw: (renco_home / "ca.crt", renco_home / "ca.key"),
+        lambda **kw: (son_of_anton_home / "ca.crt", son_of_anton_home / "ca.key"),
     )
 
     # Mock fetch_bitwarden_secrets to return an empty dict (empty vault).
@@ -128,13 +128,13 @@ def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(renco_home, monkeypatch
 
 
 def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwarden(
-    renco_home, monkeypatch,
+    son_of_anton_home, monkeypatch,
 ):
     """When credential_source=bitwarden, cmd_start must wire
     refresh_secrets_from_bitwarden=True into start_proxy.  That's what
     delivers the rotation promise the docs make."""
 
-    from renco_cli.config import load_config, save_config
+    from son_of_anton_cli.config import load_config, save_config
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
@@ -188,7 +188,7 @@ def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwa
 
 
 
-def test_cmd_restart_propagates_start_failure(renco_home, monkeypatch):
+def test_cmd_restart_propagates_start_failure(son_of_anton_home, monkeypatch):
     monkeypatch.setattr(ip, "stop_proxy", lambda: True)
     monkeypatch.setattr(proxy_cli, "cmd_start", lambda args: 1)
     rc = proxy_cli.cmd_restart(_args())
@@ -196,7 +196,7 @@ def test_cmd_restart_propagates_start_failure(renco_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _load_env_file_into_environ — setup discovers keys kept only in ~/.renco/.env
+# _load_env_file_into_environ — setup discovers keys kept only in ~/.son-of-anton/.env
 # ---------------------------------------------------------------------------
 
 
@@ -204,7 +204,7 @@ def test_cmd_restart_propagates_start_failure(renco_home, monkeypatch):
 
 
 
-def test_cmd_status_returns_0(renco_home, monkeypatch):
+def test_cmd_status_returns_0(son_of_anton_home, monkeypatch):
     monkeypatch.setattr(ip, "get_status", lambda: ip.ProxyStatus())
     monkeypatch.setattr(ip, "load_mappings", lambda: [])
     monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
@@ -213,13 +213,13 @@ def test_cmd_status_returns_0(renco_home, monkeypatch):
 
 
 def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
-    renco_home, monkeypatch,
+    son_of_anton_home, monkeypatch,
 ):
     """cmd_disable must read status.pid (which incorporates the _pid_alive
     check) — NOT ip._read_pid() directly (which would fire a spurious
     'still running' warning for a stale pidfile from a crashed run)."""
 
-    from renco_cli.config import load_config, save_config
+    from son_of_anton_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
@@ -251,14 +251,14 @@ def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
     # assertion is that no "still running" message fired with a stale
     # pidfile.  That's covered by inspecting return code + config
     # mutation only.
-    from renco_cli.config import load_config as _lc
+    from son_of_anton_cli.config import load_config as _lc
     cfg2 = _lc()
     assert cfg2["proxy"]["enabled"] is False
 
 
-def test_cmd_config_returns_0_when_present(renco_home, monkeypatch):
+def test_cmd_config_returns_0_when_present(son_of_anton_home, monkeypatch):
     fake = ip.ProxyStatus()
-    fake.config_path = renco_home / "proxy.yaml"
+    fake.config_path = son_of_anton_home / "proxy.yaml"
     monkeypatch.setattr(ip, "get_status", lambda: fake)
     rc = proxy_cli.cmd_config(_args())
     assert rc == 0
@@ -273,11 +273,11 @@ def test_cmd_config_returns_0_when_present(renco_home, monkeypatch):
 
 def test_register_cli_uses_egress_command_dest():
     """The subparser dest must be 'egress_command' to stay disjoint from
-    the inbound OAuth 'renco proxy' subparser (dest='proxy_command').
+    the inbound OAuth 'son-of-anton proxy' subparser (dest='proxy_command').
     A future grep-and-refactor on proxy_command should not hit this
     subparser by accident."""
 
-    parser = argparse.ArgumentParser(prog="renco egress")
+    parser = argparse.ArgumentParser(prog="son-of-anton egress")
     proxy_cli.register_cli(parser)
     # Parse a no-op invocation and confirm the attribute name.
     args = parser.parse_args(["install"])
@@ -295,12 +295,12 @@ def test_register_cli_uses_egress_command_dest():
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(renco_home, monkeypatch):
+def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(son_of_anton_home, monkeypatch):
     """config keeps credential_source: bitwarden but secrets.bitwarden.enabled
     later flips to false — cmd_start must refuse, not silently start on
     host env (the silent-degrade class strict mode is meant to close)."""
 
-    from renco_cli.config import load_config, save_config
+    from son_of_anton_cli.config import load_config, save_config
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
@@ -318,14 +318,14 @@ def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(renco_home, monkeypa
 
 
 
-def test_cmd_setup_audit_log_failure_is_warning_not_abort(renco_home, monkeypatch):
+def test_cmd_setup_audit_log_failure_is_warning_not_abort(son_of_anton_home, monkeypatch):
     """On the pinned v0.39 the daemon never writes audit.log, so a
     pre-create failure must not abort the wizard."""
 
-    monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: renco_home / "iron-proxy")
+    monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: son_of_anton_home / "iron-proxy")
     monkeypatch.setattr(ip, "discover_provider_mappings", lambda **kw: [
         ip.TokenMapping(
-            proxy_token="renco-proxy-deadbeef",
+            proxy_token="son-of-anton-proxy-deadbeef",
             real_env_name="OPENROUTER_API_KEY",
             upstream_hosts=("openrouter.ai",),
         ),

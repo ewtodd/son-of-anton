@@ -2,18 +2,18 @@
 
 Plugins that want durable state today invent their own paths, and most of
 them invent the same wrong one: a scratch directory inside
-``<renco home>/plugins/<name>/``. That tree is the plugin *install* dir —
-``renco plugins remove`` deletes it and ``renco plugins update`` git-pulls
+``<son-of-anton home>/plugins/<name>/``. That tree is the plugin *install* dir —
+``son-of-anton plugins remove`` deletes it and ``son-of-anton plugins update`` git-pulls
 into it — so user data parked there dies with the code that wrote it.
 
 This module is the sanctioned alternative: one data root per plugin under
-``<renco home>/plugin-data/<name>/``, owned by the user, untouched by
+``<son-of-anton home>/plugin-data/<name>/``, owned by the user, untouched by
 install/update/remove. Agent-built plugins get durable state without
 inventing a storage story, and every plugin's data is inspectable in one
 predictable place.
 
 Secrets are deliberately NOT part of this convention — credential reads go
-through ``agent.secret_scope`` / ``.env`` like everywhere else in Renco.
+through ``agent.secret_scope`` / ``.env`` like everywhere else in Son of Anton.
 
 Usage::
 
@@ -37,7 +37,7 @@ from pathlib import Path
 
 __all__ = ["plugin_data_dir", "plugin_db"]
 
-# Mirrors the plugin-name shape `renco plugins install` accepts. Anything
+# Mirrors the plugin-name shape `son-of-anton plugins install` accepts. Anything
 # else could escape the data root via separators or traversal.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
 
@@ -51,14 +51,14 @@ def _validate_name(name: str) -> str:
 def plugin_data_dir(name: str) -> Path:
     """Return (and create) this plugin's durable data directory.
 
-    ``<renco home>/plugin-data/<name>/`` — survives plugin update and
+    ``<son-of-anton home>/plugin-data/<name>/`` — survives plugin update and
     removal, and follows the active profile because it resolves through
-    :func:`renco_constants.get_renco_home` on every call. Don't cache the
+    :func:`son_of_anton_constants.get_son_of_anton_home` on every call. Don't cache the
     result across profile switches.
     """
-    from renco_constants import get_renco_home
+    from son_of_anton_constants import get_son_of_anton_home
 
-    root = get_renco_home() / "plugin-data" / _validate_name(name)
+    root = get_son_of_anton_home() / "plugin-data" / _validate_name(name)
     root.mkdir(parents=True, exist_ok=True)
     return root
 

@@ -325,7 +325,7 @@ async def handle_ws(ws: Any) -> None:
             }
         )
         if ready_ok:
-            # Live-apply skins Renco activates mid-conversation.
+            # Live-apply skins Son of Anton activates mid-conversation.
             server._ensure_skin_watcher()
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.

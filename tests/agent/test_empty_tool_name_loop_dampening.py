@@ -121,7 +121,7 @@ def _text_resp(text: str) -> dict:
 
 @pytest.fixture()
 def agent_env():
-    """Spin up the mock provider + an isolated RENCO_HOME, yield (agent, helpers)."""
+    """Spin up the mock provider + an isolated SON_OF_ANTON_HOME, yield (agent, helpers)."""
     _MockHandler.captured_requests = []
     _MockHandler.response_queue = []
     srv = HTTPServer(("127.0.0.1", 0), _MockHandler)
@@ -129,15 +129,15 @@ def agent_env():
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
 
-    test_home = tempfile.mkdtemp(prefix="renco_e2e_47967_")
-    os.makedirs(os.path.join(test_home, ".renco"))
-    prev_home = os.environ.get("RENCO_HOME")
-    os.environ["RENCO_HOME"] = os.path.join(test_home, ".renco")
+    test_home = tempfile.mkdtemp(prefix="son_of_anton_e2e_47967_")
+    os.makedirs(os.path.join(test_home, ".son-of-anton"))
+    prev_home = os.environ.get("SON_OF_ANTON_HOME")
+    os.environ["SON_OF_ANTON_HOME"] = os.path.join(test_home, ".son-of-anton")
 
     # Import fresh so the patched conversation_loop is exercised even when the
     # module was imported earlier in the same worker.
     for mod in list(sys.modules):
-        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("renco_"):
+        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("son_of_anton_"):
             del sys.modules[mod]
     from run_agent import AIAgent
 
@@ -156,9 +156,9 @@ def agent_env():
         srv.shutdown()
         shutil.rmtree(test_home, ignore_errors=True)
         if prev_home is None:
-            os.environ.pop("RENCO_HOME", None)
+            os.environ.pop("SON_OF_ANTON_HOME", None)
         else:
-            os.environ["RENCO_HOME"] = prev_home
+            os.environ["SON_OF_ANTON_HOME"] = prev_home
 
 
 def _tool_results(handler) -> list[str]:

@@ -1,4 +1,4 @@
-import { Box, Text } from '@renco/ink'
+import { Box, Text } from '@sonofanton/ink'
 import { useState } from 'react'
 
 import type { Theme } from '../theme.js'

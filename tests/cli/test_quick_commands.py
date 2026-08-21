@@ -9,7 +9,7 @@ import pytest
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
 class TestCLIQuickCommands:
-    """Test quick command dispatch in RencoCLI.process_command."""
+    """Test quick command dispatch in SonOfAntonCLI.process_command."""
 
     @staticmethod
     def _printed_plain(call_arg):
@@ -18,8 +18,8 @@ class TestCLIQuickCommands:
         return str(call_arg)
 
     def _make_cli(self, quick_commands):
-        from cli import RencoCLI
-        cli = RencoCLI.__new__(RencoCLI)
+        from cli import SonOfAntonCLI
+        cli = SonOfAntonCLI.__new__(SonOfAntonCLI)
         cli.config = {"quick_commands": quick_commands}
         cli.console = MagicMock()
         cli.agent = None
@@ -126,7 +126,7 @@ class TestGatewayQuickCommands:
         """Quick command output must redact sensitive patterns before returning."""
         from gateway.run import GatewayRunner
 
-        # Ensure redaction is active regardless of host RENCO_REDACT_SECRETS state
+        # Ensure redaction is active regardless of host SON_OF_ANTON_REDACT_SECRETS state
         # or test ordering
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 

@@ -1,4 +1,4 @@
-import type { ScrollBoxHandle } from '@renco/ink'
+import type { ScrollBoxHandle } from '@sonofanton/ink'
 import {
   type RefObject,
   useCallback,

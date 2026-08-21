@@ -1,4 +1,4 @@
-# nix/nixosModules.nix — the NixOS module for renco-agent
+# nix/nixosModules.nix — the NixOS module for son-of-anton
 #
 # This module shares its options, its renderers for config.yaml, .env and
 # documents, and its state setup with the Home Manager module
@@ -10,23 +10,23 @@
 #   container.enable = false (default) → native systemd service
 #   container.enable = true            → OCI container (persistent writable layer)
 #
-# Container mode: renco runs from /nix/store bind-mounted read-only into a
+# Container mode: son-of-anton runs from /nix/store bind-mounted read-only into a
 # plain Ubuntu container. The writable layer (apt/pip/npm installs) persists
 # across restarts and agent updates. Only image/volume/options changes trigger
-# container recreation. Environment variables are written to $RENCO_HOME/.env
-# and read by renco at startup — no container recreation needed for env changes.
+# container recreation. Environment variables are written to $SON_OF_ANTON_HOME/.env
+# and read by son-of-anton at startup — no container recreation needed for env changes.
 #
-# Tool resolution: the renco wrapper uses --suffix PATH for nix store tools,
+# Tool resolution: the son-of-anton wrapper uses --suffix PATH for nix store tools,
 # so apt/uv-installed versions take priority. The container entrypoint provisions
 # extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
 # 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
 # writable tool prefixes for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:
-#   services.renco-agent = {
+#   services.son-of-anton = {
 #     enable = true;
 #     settings.model.default = "anthropic/claude-sonnet-4";
-#     environmentFiles = [ config.sops.secrets."renco/env".path ];
+#     environmentFiles = [ config.sops.secrets."son-of-anton/env".path ];
 #   };
 #
 { inputs, ... }:
@@ -41,26 +41,26 @@
     }:
 
     let
-      cfg = config.services.renco-agent;
+      cfg = config.services.son-of-anton;
       common = import ./moduleCommon.nix { inherit lib; };
 
       effectivePackage = common.effectivePackage cfg;
-      renco-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      son-of-anton = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-      rencoHome = "${cfg.stateDir}/.renco";
+      son-of-antonHome = "${cfg.stateDir}/.son-of-anton";
 
       # In container mode, the agent uses the mount path in the container.
       effectiveWorkDir = if cfg.container.enable then containerWorkDir else cfg.workingDirectory;
 
       # config.yaml mode: group-writable (0660) when interactive users share this
-      # RENCO_HOME via addToSystemPackages, so they can save settings through the
+      # SON_OF_ANTON_HOME via addToSystemPackages, so they can save settings through the
       # CLI/TUI without hitting EACCES; otherwise group-read-only (0640). Secrets
       # (.env) stay 0640 regardless.
       configYamlMode = if cfg.addToSystemPackages then "0660" else "0640";
 
-      containerName = "renco-agent";
+      containerName = "son-of-anton";
       containerDataDir = "/data"; # stateDir mount point inside container
-      containerHomeDir = "/home/renco";
+      containerHomeDir = "/home/son-of-anton";
 
       # ── Container mode helpers ──────────────────────────────────────────
       containerBin =
@@ -70,54 +70,54 @@
           "${pkgs.podman}/bin/podman";
 
       # Runs as root inside the container on every start. Provisions the
-      # renco user + sudo on first boot (writable layer persists), then
+      # son-of-anton user + sudo on first boot (writable layer persists), then
       # drops privileges. Supports arbitrary base images (Debian, Alpine, etc).
-      containerEntrypoint = pkgs.writeShellScript "renco-container-entrypoint" ''
+      containerEntrypoint = pkgs.writeShellScript "son-of-anton-container-entrypoint" ''
         set -eu
 
-        RENCO_UID="''${RENCO_UID:?RENCO_UID must be set}"
-        RENCO_GID="''${RENCO_GID:?RENCO_GID must be set}"
+        SON_OF_ANTON_UID="''${SON_OF_ANTON_UID:?SON_OF_ANTON_UID must be set}"
+        SON_OF_ANTON_GID="''${SON_OF_ANTON_GID:?SON_OF_ANTON_GID must be set}"
 
-        # ── Group: ensure a group with GID=$RENCO_GID exists ──
+        # ── Group: ensure a group with GID=$SON_OF_ANTON_GID exists ──
         # Check by GID (not name) to avoid collisions with pre-existing groups
         # (e.g. GID 100 = "users" on Ubuntu)
-        EXISTING_GROUP=$(getent group "$RENCO_GID" 2>/dev/null | cut -d: -f1 || true)
+        EXISTING_GROUP=$(getent group "$SON_OF_ANTON_GID" 2>/dev/null | cut -d: -f1 || true)
         if [ -n "$EXISTING_GROUP" ]; then
           GROUP_NAME="$EXISTING_GROUP"
         else
-          GROUP_NAME="renco"
+          GROUP_NAME="son-of-anton"
           if command -v groupadd >/dev/null 2>&1; then
-            groupadd -g "$RENCO_GID" "$GROUP_NAME"
+            groupadd -g "$SON_OF_ANTON_GID" "$GROUP_NAME"
           elif command -v addgroup >/dev/null 2>&1; then
-            addgroup -g "$RENCO_GID" "$GROUP_NAME" 2>/dev/null || true
+            addgroup -g "$SON_OF_ANTON_GID" "$GROUP_NAME" 2>/dev/null || true
           fi
         fi
 
-        # ── User: ensure a user with UID=$RENCO_UID exists ──
-        PASSWD_ENTRY=$(getent passwd "$RENCO_UID" 2>/dev/null || true)
+        # ── User: ensure a user with UID=$SON_OF_ANTON_UID exists ──
+        PASSWD_ENTRY=$(getent passwd "$SON_OF_ANTON_UID" 2>/dev/null || true)
         if [ -n "$PASSWD_ENTRY" ]; then
           TARGET_USER=$(echo "$PASSWD_ENTRY" | cut -d: -f1)
           TARGET_HOME=$(echo "$PASSWD_ENTRY" | cut -d: -f6)
         else
-          TARGET_USER="renco"
-          TARGET_HOME="/home/renco"
+          TARGET_USER="son-of-anton"
+          TARGET_HOME="/home/son-of-anton"
           if command -v useradd >/dev/null 2>&1; then
-            useradd -u "$RENCO_UID" -g "$RENCO_GID" -m -d "$TARGET_HOME" -s /bin/bash "$TARGET_USER"
+            useradd -u "$SON_OF_ANTON_UID" -g "$SON_OF_ANTON_GID" -m -d "$TARGET_HOME" -s /bin/bash "$TARGET_USER"
           elif command -v adduser >/dev/null 2>&1; then
-            adduser -u "$RENCO_UID" -D -h "$TARGET_HOME" -s /bin/sh -G "$GROUP_NAME" "$TARGET_USER" 2>/dev/null || true
+            adduser -u "$SON_OF_ANTON_UID" -D -h "$TARGET_HOME" -s /bin/sh -G "$GROUP_NAME" "$TARGET_USER" 2>/dev/null || true
           fi
         fi
         mkdir -p "$TARGET_HOME"
-        chown "$RENCO_UID:$RENCO_GID" "$TARGET_HOME"
+        chown "$SON_OF_ANTON_UID:$SON_OF_ANTON_GID" "$TARGET_HOME"
         chmod 0750 "$TARGET_HOME"
 
-        # Ensure RENCO_HOME is owned by the target user.
+        # Ensure SON_OF_ANTON_HOME is owned by the target user.
         # Use find instead of chown -R: chown strips the setgid bit (kernel
         # behavior), destroying the 2770 permissions the NixOS activation
         # script sets for group access by hostUsers.  Only touch files with
         # wrong ownership so correctly-owned dirs keep their permission bits.
-        if [ -n "''${RENCO_HOME:-}" ] && [ -d "$RENCO_HOME" ]; then
-          find "$RENCO_HOME" \! -user "$RENCO_UID" -exec chown "$RENCO_UID:$RENCO_GID" {} +
+        if [ -n "''${SON_OF_ANTON_HOME:-}" ] && [ -d "$SON_OF_ANTON_HOME" ]; then
+          find "$SON_OF_ANTON_HOME" \! -user "$SON_OF_ANTON_UID" -exec chown "$SON_OF_ANTON_UID:$SON_OF_ANTON_GID" {} +
         fi
 
         # ── Provision apt packages (first boot only, cached in writable layer) ──
@@ -125,7 +125,7 @@
         # nodejs/npm: writable node so npm i -g works (nix store copies are read-only)
         #   Node 22 via NodeSource — Ubuntu 24.04 ships Node 18 which is EOL.
         # curl: needed for uv installer + NodeSource setup
-        if [ ! -f /var/lib/renco-tools-provisioned ] && command -v apt-get >/dev/null 2>&1; then
+        if [ ! -f /var/lib/son-of-anton-tools-provisioned ] && command -v apt-get >/dev/null 2>&1; then
           echo "First boot: provisioning agent tools..."
           apt-get update -qq
           apt-get install -y -qq sudo curl ca-certificates gnupg
@@ -136,13 +136,13 @@
             > /etc/apt/sources.list.d/nodesource.list
           apt-get update -qq
           apt-get install -y -qq nodejs
-          touch /var/lib/renco-tools-provisioned
+          touch /var/lib/son-of-anton-tools-provisioned
         fi
 
-        if command -v sudo >/dev/null 2>&1 && [ ! -f /etc/sudoers.d/renco ]; then
+        if command -v sudo >/dev/null 2>&1 && [ ! -f /etc/sudoers.d/son-of-anton ]; then
           mkdir -p /etc/sudoers.d
-          echo "$TARGET_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/renco
-          chmod 0440 /etc/sudoers.d/renco
+          echo "$TARGET_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/son-of-anton
+          chmod 0440 /etc/sudoers.d/son-of-anton
         fi
 
         # uv (Python manager) — not in Ubuntu repos, retry-safe outside the sentinel
@@ -167,7 +167,7 @@
         fi
 
         if command -v setpriv >/dev/null 2>&1; then
-          exec setpriv --reuid="$RENCO_UID" --regid="$RENCO_GID" --init-groups "$@"
+          exec setpriv --reuid="$SON_OF_ANTON_UID" --regid="$SON_OF_ANTON_GID" --init-groups "$@"
         elif command -v su >/dev/null 2>&1; then
           exec su -s /bin/sh "$TARGET_USER" -c 'exec "$0" "$@"' -- "$@"
         else
@@ -178,7 +178,7 @@
 
       # Identity hash — only recreate container when structural config changes.
       # Package and entrypoint use stable symlinks (current-package, current-entrypoint)
-      # so they can update without recreation. Env vars go through $RENCO_HOME/.env.
+      # so they can update without recreation. Env vars go through $SON_OF_ANTON_HOME/.env.
       containerIdentity = builtins.hashString "sha256" (
         builtins.toJSON {
           schema = 4; # bump when identity inputs change (4: Node 18→22 via NodeSource)
@@ -192,15 +192,15 @@
 
       # The CLI on the host reads this file, in get_container_exec_info. The
       # file tells the CLI to run in the container and not on the host.
-      containerModeFile = pkgs.writeText "renco-container-mode" ''
+      containerModeFile = pkgs.writeText "son-of-anton-container-mode" ''
         # Written by the NixOS activation script. Do not edit manually.
         backend=${cfg.container.backend}
         container_name=${containerName}
         exec_user=${cfg.user}
-        renco_bin=${containerDataDir}/current-package/bin/renco
+        son_of_anton_bin=${containerDataDir}/current-package/bin/son-of-anton
       '';
 
-      # Default: /var/lib/renco/workspace → /data/workspace.
+      # Default: /var/lib/son-of-anton/workspace → /data/workspace.
       # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
       containerWorkDir =
         if lib.hasPrefix "${cfg.stateDir}/" cfg.workingDirectory then
@@ -219,7 +219,7 @@
         RestartSec = cfg.restartSec;
 
         # Shared-state: files created by the service should be group-writable
-        # so interactive users in the renco group can read/write them.
+        # so interactive users in the son-of-anton group can read/write them.
         UMask = "0007";
 
         # Hardening
@@ -236,16 +236,16 @@
       commonUnitEnvironment = {
         HOME = cfg.stateDir;
       }
-      // common.processEnvironment { inherit rencoHome; };
+      // common.processEnvironment { inherit son-of-antonHome; };
 
       unitPath = common.processPath { inherit pkgs cfg; };
 
     in
     {
-      options.services.renco-agent =
+      options.services.son-of-anton =
         common.sharedOptions {
-          defaultPackage = renco-agent;
-          defaultPackageText = lib.literalExpression "renco-agent.packages.\${system}.default";
+          defaultPackage = son-of-anton;
+          defaultPackageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
           defaultWorkingDirectory = "${cfg.stateDir}/workspace";
           defaultWorkingDirectoryText = lib.literalExpression ''"''${cfg.stateDir}/workspace"'';
         }
@@ -255,13 +255,13 @@
             # ── Service identity ───────────────────────────────────────────
             user = mkOption {
               type = types.str;
-              default = "renco";
+              default = "son-of-anton";
               description = "System user running the gateway.";
             };
 
             group = mkOption {
               type = types.str;
-              default = "renco";
+              default = "son-of-anton";
               description = "System group running the gateway.";
             };
 
@@ -274,16 +274,16 @@
             # ── Directories ────────────────────────────────────────────────
             stateDir = mkOption {
               type = types.str;
-              default = "/var/lib/renco";
-              description = "State directory. Contains .renco/ subdir (RENCO_HOME).";
+              default = "/var/lib/son-of-anton";
+              description = "State directory. Contains .son-of-anton/ subdir (SON_OF_ANTON_HOME).";
             };
 
             addToSystemPackages = mkOption {
               type = types.bool;
               default = false;
               description = ''
-                Add the renco CLI to environment.systemPackages and export
-                RENCO_HOME system-wide (via environment.variables) so interactive
+                Add the son-of-anton CLI to environment.systemPackages and export
+                SON_OF_ANTON_HOME system-wide (via environment.variables) so interactive
                 shells share state with the gateway service.
               '';
             };
@@ -324,8 +324,8 @@
                 type = types.listOf types.str;
                 default = [ ];
                 description = ''
-                  Interactive users who get a ~/.renco symlink to the service
-                  stateDir. These users are automatically added to the renco group.
+                  Interactive users who get a ~/.son-of-anton symlink to the service
+                  stateDir. These users are automatically added to the son-of-anton group.
                 '';
                 example = [ "sidbin" ];
               };
@@ -338,7 +338,7 @@
 
           # ── Merge MCP servers into settings ────────────────────────────────
           (lib.mkIf (cfg.mcpServers != { }) {
-            services.renco-agent.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
+            services.son-of-anton.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
           })
 
           # ── User / group ──────────────────────────────────────────────────
@@ -354,12 +354,12 @@
           })
 
           # ── Host CLI ──────────────────────────────────────────────────────
-          # Add the renco CLI to system PATH and export RENCO_HOME system-wide
+          # Add the son-of-anton CLI to system PATH and export SON_OF_ANTON_HOME system-wide
           # so interactive shells share state (sessions, skills, cron) with the
-          # gateway service instead of creating a separate ~/.renco/.
+          # gateway service instead of creating a separate ~/.son-of-anton/.
           (lib.mkIf cfg.addToSystemPackages {
             environment.systemPackages = [ effectivePackage ];
-            environment.variables.RENCO_HOME = rencoHome;
+            environment.variables.SON_OF_ANTON_HOME = son-of-antonHome;
           })
 
           # ── Host user group membership ─────────────────────────────────────
@@ -374,12 +374,12 @@
             assertions =
               common.pluginNameAssertions {
                 inherit cfg;
-                optionPath = "services.renco-agent";
+                optionPath = "services.son-of-anton";
               }
               ++ common.workspaceFilesAssertions {
                 inherit cfg;
-                opt = options.services.renco-agent.workingDirectory;
-                optionPath = "services.renco-agent";
+                opt = options.services.son-of-anton.workingDirectory;
+                optionPath = "services.son-of-anton";
               }
               ++ [
                 {
@@ -387,13 +387,13 @@
                   # process needs its own container and its own ports. This
                   # module does not do that.
                   assertion = !(cfg.container.enable && cfg.backend.mode != "none");
-                  message = "services.renco-agent: backend.mode is not supported together with container.enable — the container runs the gateway only.";
+                  message = "services.son-of-anton: backend.mode is not supported together with container.enable — the container runs the gateway only.";
                 }
               ];
           }
 
           # ── Per-user profile for extraPackages ───────────────────────────
-          # Wire extraPackages into the renco user's per-user profile so the
+          # Wire extraPackages into the son-of-anton user's per-user profile so the
           # login-shell snapshot (which rebuilds PATH from NixOS profiles) sees
           # them.  The systemd service PATH also includes them for direct access.
           (lib.mkIf (cfg.extraPackages != [ ]) {
@@ -409,10 +409,10 @@
             {
               warnings = [
                 ''
-                  services.renco-agent: container.enable is true and container.hostUsers
-                  is set, but addToSystemPackages is false. Without a host-installed renco
+                  services.son-of-anton: container.enable is true and container.hostUsers
+                  is set, but addToSystemPackages is false. Without a host-installed son-of-anton
                   binary, container routing will not work for interactive users.
-                  Set addToSystemPackages = true or ensure renco is on PATH.
+                  Set addToSystemPackages = true or ensure son-of-anton is on PATH.
                 ''
               ];
             }
@@ -422,45 +422,45 @@
           {
             systemd.tmpfiles.rules = [
               "d ${cfg.stateDir}                2770 ${cfg.user} ${cfg.group} - -"
-              "d ${rencoHome}                  2770 ${cfg.user} ${cfg.group} - -"
+              "d ${son-of-antonHome}                  2770 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.workingDirectory}        2770 ${cfg.user} ${cfg.group} - -"
             ]
-            ++ map (d: "d ${rencoHome}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs;
+            ++ map (d: "d ${son-of-antonHome}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs;
           }
 
           # ── Activation: link config + auth + documents ────────────────────
           {
-            system.activationScripts."renco-agent-setup" =
+            system.activationScripts."son-of-anton-setup" =
               lib.stringAfter
                 (
                   [ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets"
                 )
                 ''
                   # Ensure directories exist (activation runs before tmpfiles)
-                  mkdir -p ${rencoHome}
+                  mkdir -p ${son-of-antonHome}
                   mkdir -p ${cfg.stateDir}/home
                   mkdir -p ${cfg.workingDirectory}
-                  chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${rencoHome} ${cfg.stateDir}/home ${cfg.workingDirectory}
-                  chmod 2770 ${cfg.stateDir} ${rencoHome} ${cfg.workingDirectory}
+                  chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${son-of-antonHome} ${cfg.stateDir}/home ${cfg.workingDirectory}
+                  chmod 2770 ${cfg.stateDir} ${son-of-antonHome} ${cfg.workingDirectory}
                   chmod 0750 ${cfg.stateDir}/home
 
                   # Create subdirs, set setgid + group-writable, migrate existing files.
                   # Nix-managed .env/.managed stay 0640/0644; config.yaml uses
                   # configYamlMode (0660 under addToSystemPackages, else 0640).
-                  find ${rencoHome} -maxdepth 1 \
+                  find ${son-of-antonHome} -maxdepth 1 \
                     \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
                     -exec chmod g+rw {} + 2>/dev/null || true
                   for _subdir in ${lib.concatStringsSep " " common.stateSubdirs}; do
-                    mkdir -p "${rencoHome}/$_subdir"
-                    chown ${cfg.user}:${cfg.group} "${rencoHome}/$_subdir"
-                    chmod 2770 "${rencoHome}/$_subdir"
-                    find "${rencoHome}/$_subdir" -type f \
+                    mkdir -p "${son-of-antonHome}/$_subdir"
+                    chown ${cfg.user}:${cfg.group} "${son-of-antonHome}/$_subdir"
+                    chmod 2770 "${son-of-antonHome}/$_subdir"
+                    find "${son-of-antonHome}/$_subdir" -type f \
                       -exec chmod g+rw {} + 2>/dev/null || true
                   done
 
                   ${common.mkStateScript {
-                    inherit pkgs cfg rencoHome;
+                    inherit pkgs cfg son-of-antonHome;
                     workingDirectory = cfg.workingDirectory;
                     configWorkingDirectory = effectiveWorkDir;
                     owner = "${cfg.user}:${cfg.group}";
@@ -474,7 +474,7 @@
                     };
                   }}
 
-                  chown -h ${cfg.user}:${cfg.group} ${rencoHome}/plugins/nix-managed-* 2>/dev/null || true
+                  chown -h ${cfg.user}:${cfg.group} ${son-of-antonHome}/plugins/nix-managed-* 2>/dev/null || true
 
                   # Container mode metadata — tells the host CLI to exec into the
                   # container instead of running locally. Removed when container mode
@@ -482,11 +482,11 @@
                   ${
                     if cfg.container.enable then
                       ''
-                        install -o ${cfg.user} -g ${cfg.group} -m 0644 ${containerModeFile} ${rencoHome}/.container-mode
+                        install -o ${cfg.user} -g ${cfg.group} -m 0644 ${containerModeFile} ${son-of-antonHome}/.container-mode
                       ''
                     else
                       ''
-                        rm -f ${rencoHome}/.container-mode
+                        rm -f ${son-of-antonHome}/.container-mode
 
                         # Remove symlink bridge for hostUsers
                         ${lib.concatStringsSep "\n" (
@@ -494,12 +494,12 @@
                             user:
                             let
                               userHome = config.users.users.${user}.home;
-                              symlinkPath = "${userHome}/.renco";
+                              symlinkPath = "${userHome}/.son-of-anton";
                             in
                             ''
-                              if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${rencoHome}" ]; then
+                              if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${son-of-antonHome}" ]; then
                                 rm -f "${symlinkPath}"
-                                echo "renco-agent: removed symlink ${symlinkPath}"
+                                echo "son-of-anton: removed symlink ${symlinkPath}"
                               fi
                             ''
                           ) cfg.container.hostUsers
@@ -508,7 +508,7 @@
                   }
 
                   # ── Symlink bridge for interactive users ───────────────────────
-                  # Create ~/.renco -> stateDir/.renco for each hostUser so the
+                  # Create ~/.son-of-anton -> stateDir/.son-of-anton for each hostUser so the
                   # host CLI shares state with the container service.
                   # Only runs when container mode is enabled.
                   ${lib.optionalString cfg.container.enable (
@@ -517,19 +517,19 @@
                         user:
                         let
                           userHome = config.users.users.${user}.home;
-                          symlinkPath = "${userHome}/.renco";
+                          symlinkPath = "${userHome}/.son-of-anton";
                         in
                         ''
                           if [ -d "${symlinkPath}" ] && [ ! -L "${symlinkPath}" ]; then
                             # Real directory — back it up, then create symlink.
                             # (ln -sfn cannot atomically replace a directory.)
                             _backup="${symlinkPath}.bak.$(date +%s)"
-                            echo "renco-agent: backing up existing ${symlinkPath} to $_backup"
+                            echo "son-of-anton: backing up existing ${symlinkPath} to $_backup"
                             mv "${symlinkPath}" "$_backup"
                           fi
                           # For everything else (existing symlink, doesn't exist, etc.)
                           # ln -sfn handles it: replaces symlinks, creates new ones.
-                          ln -sfn "${rencoHome}" "${symlinkPath}"
+                          ln -sfn "${son-of-antonHome}" "${symlinkPath}"
                           chown -h ${user}:${cfg.group} "${symlinkPath}"
                         ''
                       ) cfg.container.hostUsers
@@ -542,14 +542,14 @@
           # MODE A: Native systemd service (default)
           # ══════════════════════════════════════════════════════════════════
           (lib.mkIf (!cfg.container.enable) {
-            systemd.services.renco-agent = {
-              description = "Renco Agent Gateway";
+            systemd.services.son-of-anton = {
+              description = "Son of Anton Agent Gateway";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
 
               # cfg.environment and cfg.environmentFiles are written to
-              # $RENCO_HOME/.env by the activation script. load_renco_dotenv()
+              # $SON_OF_ANTON_HOME/.env by the activation script. load_son_of_anton_dotenv()
               # reads them at Python startup — no systemd EnvironmentFile needed.
               environment = commonUnitEnvironment;
 
@@ -561,11 +561,11 @@
             };
           })
 
-          # ── The backend: renco serve or renco dashboard ─────────────────
+          # ── The backend: son-of-anton serve or son-of-anton dashboard ─────────────────
           # This is a different process from the gateway. Both use one
-          # RENCO_HOME.
+          # SON_OF_ANTON_HOME.
           (lib.mkIf (!cfg.container.enable && cfg.backend.mode != "none") {
-            systemd.services.renco-backend = {
+            systemd.services.son-of-anton-backend = {
               description = common.backendDescription cfg;
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
@@ -588,8 +588,8 @@
             # Ensure the container runtime is available
             virtualisation.docker.enable = lib.mkDefault (cfg.container.backend == "docker");
 
-            systemd.services.renco-agent = {
-              description = "Renco Agent Gateway (container)";
+            systemd.services.son-of-anton = {
+              description = "Son of Anton Agent Gateway (container)";
               wantedBy = [ "multi-user.target" ];
               after = [
                 "network-online.target"
@@ -619,8 +619,8 @@
 
                 if [ "$NEED_CREATE" = "true" ]; then
                   # Resolve numeric UID/GID — passed to entrypoint for in-container user setup
-                  RENCO_UID=$(${pkgs.coreutils}/bin/id -u ${cfg.user})
-                  RENCO_GID=$(${pkgs.coreutils}/bin/id -g ${cfg.user})
+                  SON_OF_ANTON_UID=$(${pkgs.coreutils}/bin/id -u ${cfg.user})
+                  SON_OF_ANTON_GID=$(${pkgs.coreutils}/bin/id -g ${cfg.user})
 
                   echo "Creating container..."
                   ${containerBin} create \
@@ -631,14 +631,14 @@
                     --volume ${cfg.stateDir}:${containerDataDir} \
                     --volume ${cfg.stateDir}/home:${containerHomeDir} \
                     ${lib.concatStringsSep " " (map (v: "--volume ${v}") cfg.container.extraVolumes)} \
-                    --env RENCO_UID="$RENCO_UID" \
-                    --env RENCO_GID="$RENCO_GID" \
-                    --env RENCO_HOME=${containerDataDir}/.renco \
-                    --env RENCO_MANAGED=true \
+                    --env SON_OF_ANTON_UID="$SON_OF_ANTON_UID" \
+                    --env SON_OF_ANTON_GID="$SON_OF_ANTON_GID" \
+                    --env SON_OF_ANTON_HOME=${containerDataDir}/.son-of-anton \
+                    --env SON_OF_ANTON_MANAGED=true \
                     --env HOME=${containerHomeDir} \
                     ${lib.concatStringsSep " " cfg.container.extraOptions} \
                     ${cfg.container.image} \
-                    ${containerDataDir}/current-package/bin/renco gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}
+                    ${containerDataDir}/current-package/bin/son-of-anton gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}
 
                   echo "${containerIdentity}" > ${identityFile}
                 fi

@@ -15,7 +15,7 @@ import pytest
 
 import agent.account_usage as account_usage
 from agent.account_usage import CreditsView, build_credits_view
-from renco_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
+from son_of_anton_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
 
 
 def _account(**kwargs) -> NousPortalAccountInfo:
@@ -30,13 +30,13 @@ def _account(**kwargs) -> NousPortalAccountInfo:
 def _logged_in_account(monkeypatch):
     """Stub the auth token + account fetch so build_credits_view runs offline."""
     monkeypatch.setattr(
-        "renco_cli.auth.get_provider_auth_state",
+        "son_of_anton_cli.auth.get_provider_auth_state",
         lambda provider: {"access_token": "tok", "portal_base_url": "https://portal.example.test"},
     )
 
     def _install(account):
         monkeypatch.setattr(
-            "renco_cli.nous_account.get_nous_portal_account_info",
+            "son_of_anton_cli.nous_account.get_nous_portal_account_info",
             lambda *a, **kw: account,
         )
 
@@ -119,7 +119,7 @@ def test_gateway_topup_not_logged_in(monkeypatch):
 def test_credits_command_fully_removed():
     """`/credits` and the old `/billing` are gone entirely — not commands, not
     aliases. Billing lives only on /topup, with NO aliases, on every platform."""
-    from renco_cli.commands import resolve_command, COMMAND_REGISTRY
+    from son_of_anton_cli.commands import resolve_command, COMMAND_REGISTRY
 
     # Both old names resolve to nothing.
     assert resolve_command("credits") is None

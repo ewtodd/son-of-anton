@@ -51,10 +51,10 @@ class TestBuildLearnPrompt:
         assert "count" in std and "60" in std
         # #3 platforms gating against OS-bound primitives.
         assert "platforms" in std
-        # author is always the literal Renco, never the host/OS identity (#52368).
-        assert "author: always the literal value `renco`" in std
+        # author is always the literal Son of Anton, never the host/OS identity (#52368).
+        assert "author: always the literal value `son-of-anton`" in std
         assert "never fill it from the host" in std
-        # #2 Renco-tool framing names the wrapped tools, not shell utilities.
+        # #2 Son of Anton-tool framing names the wrapped tools, not shell utilities.
         for tool in ("read_file", "search_files", "patch", "write_file"):
             assert tool in std
         # #6 scripts/references/templates layout.
@@ -110,7 +110,7 @@ class TestBuildLearnPrompt:
 
 class TestLearnRegistryWiring:
     def test_learn_is_registered_and_resolves(self):
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         cmd = resolve_command("learn")
         assert cmd is not None
@@ -119,6 +119,6 @@ class TestLearnRegistryWiring:
 
 
     def test_learn_is_not_cli_only(self):
-        from renco_cli.commands import resolve_command
+        from son_of_anton_cli.commands import resolve_command
 
         assert not resolve_command("learn").cli_only

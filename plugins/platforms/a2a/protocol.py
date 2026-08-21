@@ -122,7 +122,7 @@ def build_agent_card(
         "url": url,  # convenience for pre-1.0 clients; canonical is supportedInterfaces
         "version": "1.0.0",
         "provider": {
-            "organization": os.getenv("A2A_PROVIDER_ORG", "Renco Agent"),
+            "organization": os.getenv("A2A_PROVIDER_ORG", "Son of Anton Agent"),
             "url": os.getenv("A2A_PROVIDER_URL", "") or url,
         },
         "supportedInterfaces": [iface],
@@ -158,7 +158,7 @@ def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") ->
             skills.append({
                 "id": f"toolset.{ts_name}",
                 "name": ts_name,
-                "description": f"Renco '{ts_name}' capabilities",
+                "description": f"Son of Anton '{ts_name}' capabilities",
                 "tags": [ts_name] + tool_names[:10],
             })
     else:
@@ -166,7 +166,7 @@ def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") ->
             skills.append({
                 "id": f"toolset.{ts}",
                 "name": ts,
-                "description": f"Renco '{ts}' capabilities",
+                "description": f"Son of Anton '{ts}' capabilities",
                 "tags": [ts],
             })
     if not skills:
@@ -790,10 +790,10 @@ class TaskStore:
 
 def _conv_dir() -> Path:
     try:
-        from renco_constants import get_renco_home
-        base = Path(get_renco_home())
+        from son_of_anton_constants import get_son_of_anton_home
+        base = Path(get_son_of_anton_home())
     except Exception:
-        base = Path(os.path.expanduser("~/.renco"))
+        base = Path(os.path.expanduser("~/.son-of-anton"))
     return base / "a2a_conversations"
 
 

@@ -11,7 +11,7 @@ variant that the ``_UNSET``-strip guard does NOT catch:
     *concurrent* message A had ALREADY called ``set_session_vars``, B inherits
     A's **set** ContextVars. Between B's task start and B's own
     ``set_session_vars`` call, any subprocess B spawns reads A's
-    ``RENCO_SESSION_*`` identity through the subprocess-env bridge. The bridge's
+    ``SON_OF_ANTON_SESSION_*`` identity through the subprocess-env bridge. The bridge's
     strip-on-``_UNSET`` rule is no help: the inherited vars are set-to-A, not
     ``_UNSET``.
 
@@ -94,9 +94,9 @@ def _spawn_view():
     """What a subprocess spawned right now would see for the session vars."""
     env = _make_run_env({})
     return {
-        "RENCO_SESSION_CHAT_ID": env.get("RENCO_SESSION_CHAT_ID"),
-        "RENCO_SESSION_THREAD_ID": env.get("RENCO_SESSION_THREAD_ID"),
-        "RENCO_SESSION_KEY": env.get("RENCO_SESSION_KEY"),
+        "SON_OF_ANTON_SESSION_CHAT_ID": env.get("SON_OF_ANTON_SESSION_CHAT_ID"),
+        "SON_OF_ANTON_SESSION_THREAD_ID": env.get("SON_OF_ANTON_SESSION_THREAD_ID"),
+        "SON_OF_ANTON_SESSION_KEY": env.get("SON_OF_ANTON_SESSION_KEY"),
     }
 
 
@@ -138,14 +138,14 @@ def test_reset_session_vars_closes_inheritance_leak():
     captured = asyncio.run(_child_turn(reset_first=True))
 
     window = captured["window"]
-    for var in ("RENCO_SESSION_CHAT_ID", "RENCO_SESSION_THREAD_ID", "RENCO_SESSION_KEY"):
+    for var in ("SON_OF_ANTON_SESSION_CHAT_ID", "SON_OF_ANTON_SESSION_THREAD_ID", "SON_OF_ANTON_SESSION_KEY"):
         assert window[var] is None, (
             f"{var} leaked the parent session after reset: {window[var]!r}"
         )
 
     # B's own session still binds correctly after the reset window.
-    assert captured["bound"]["RENCO_SESSION_CHAT_ID"] == "FOREIGN_CHAT"
-    assert captured["bound"]["RENCO_SESSION_KEY"] == FOREIGN["session_key"]
+    assert captured["bound"]["SON_OF_ANTON_SESSION_CHAT_ID"] == "FOREIGN_CHAT"
+    assert captured["bound"]["SON_OF_ANTON_SESSION_KEY"] == FOREIGN["session_key"]
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ def test_reset_session_vars_closes_inheritance_leak():
 # ---------------------------------------------------------------------------
 #
 # ``_SESSION_ASYNC_DELIVERY`` is NOT in ``_VAR_MAP`` — it is a bool capability
-# flag read via ``async_delivery_supported()``, not a string ``RENCO_SESSION_*``
+# flag read via ``async_delivery_supported()``, not a string ``SON_OF_ANTON_SESSION_*``
 # var read via ``get_session_env``. So the ``for var in _VAR_MAP.values()`` loop
 # in ``reset_session_vars`` does not touch it; it must be reset explicitly.
 #
