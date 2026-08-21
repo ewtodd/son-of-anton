@@ -9,13 +9,13 @@ The adapter is deliberately stricter than the transport:
 * native binding must be exact before mutation;
 * the driver session id is injected by the adapter, never accepted from the
   model;
-* refs are usable only from the latest snapshot in this Hermes session;
+* refs are usable only from the latest snapshot in this Renco session;
 * every mutation invalidates refs and requires a fresh state read; and
 * changing from trusted input to ``dom_event`` is always explicit.
 
 Browser preparation remains a separate approved action. Existing-profile
 attachment is delegated to cua-driver's daemon authorization coordinator;
-ordinary Hermes tool approval never substitutes for protected consent.
+ordinary Renco tool approval never substitutes for protected consent.
 """
 
 from __future__ import annotations
@@ -428,7 +428,7 @@ class CuaTypedBrowserRoute:
                     "browser_existing_profile_not_granted",
                     "Attaching to an existing browser profile requires the "
                     "one-time opt-in `computer_use.grant_existing_profile: "
-                    "true` in config.yaml. Hermes cannot grant this at "
+                    "true` in config.yaml. Renco cannot grant this at "
                     "runtime, and an approval bypass does not substitute for "
                     "it. Use profile_mode=isolated_new to browse without it.",
                 )

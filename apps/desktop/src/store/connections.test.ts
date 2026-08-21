@@ -78,7 +78,7 @@ beforeEach(() => {
   wipeSessionListsForGatewaySwitch.mockClear()
   list.mockClear()
   setLastUsed.mockClear()
-  vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed } }, localStorage })
+  vi.stubGlobal('window', { rencoDesktop: { connections: { list, setLastUsed } }, localStorage })
 })
 
 afterEach(() => vi.unstubAllGlobals())

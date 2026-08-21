@@ -28,14 +28,14 @@ from cron.jobs import clear_run_claim
 
 @pytest.fixture
 def cron_store(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    (hermes_home / "cron").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
-    monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
-    monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
-    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
-    return hermes_home
+    renco_home = tmp_path / ".renco"
+    (renco_home / "cron").mkdir(parents=True)
+    monkeypatch.setenv("RENCO_HOME", str(renco_home))
+    monkeypatch.setattr(jobs_mod, "RENCO_DIR", renco_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", renco_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", renco_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", renco_home / "cron" / "output")
+    return renco_home
 
 
 def _make_oneshot(claimed: bool = True) -> dict:

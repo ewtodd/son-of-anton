@@ -11,7 +11,7 @@ import test from 'node:test'
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 test('resolves optional Capabilities components from the SDK namespace', () => {
-  assert.match(source, /import \* as sdk from '@hermes\/plugin-sdk'/)
+  assert.match(source, /import \* as sdk from '@renco\/plugin-sdk'/)
   assert.match(source, /const \{ McpTab, ToolsetConfigPanel \} = sdk/)
 })
 

@@ -44,7 +44,7 @@ function renderBotRow(input = 'alpha') {
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
-    ROSTER_KEY: ['hermes-bots', 'roster'],
+    ROSTER_KEY: ['renco-bots', 'roster'],
     $botMeta: atom({}),
     $botUnread: atom({}),
     $focusedBotProfile: atom('default'),
@@ -83,7 +83,7 @@ function renderBotRow(input = 'alpha') {
       warmProfile: profile => warmed.push(profile),
       request: async method =>
         method === 'profiles.list'
-          ? { profiles: [{ name, ui_meta: { 'hermes-bots': { chat: 'owner-chat' } } }] }
+          ? { profiles: [{ name, ui_meta: { 'renco-bots': { chat: 'owner-chat' } } }] }
           : { sessions: [] },
       notify: () => undefined,
       notifyError: () => undefined
@@ -173,7 +173,7 @@ test('behavior: remote default does not open this-device chat when the source di
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
-    ROSTER_KEY: ['hermes-bots', 'roster'],
+    ROSTER_KEY: ['renco-bots', 'roster'],
     $botMeta: atom({ default: { chat: 'this-device-chat' } }),
     $botUnread: atom({}),
     $focusedBotProfile: atom('default'),
@@ -206,7 +206,7 @@ test('behavior: remote default does not open this-device chat when the source di
       activeConnectionId: () => 'local',
       warmAgent: () => undefined,
       warmProfile: () => undefined,
-      request: async () => ({ profiles: [{ name: 'default', ui_meta: { 'hermes-bots': { chat: 'this-device-chat' } } }] }),
+      request: async () => ({ profiles: [{ name: 'default', ui_meta: { 'renco-bots': { chat: 'this-device-chat' } } }] }),
       notify: () => undefined,
       notifyError: (_err, msg) => errors.push(msg)
     },

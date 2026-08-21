@@ -59,7 +59,7 @@ WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
-_FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+_FENCE_MARKER_RE = re.compile(r"'?\x07?__RENCO_FENCE_[A-Za-z0-9]+__\x07?'?")
 
 
 def _strip_terminal_fence_leaks(text: str) -> str:
@@ -69,7 +69,7 @@ def _strip_terminal_fence_leaks(text: str) -> str:
 
     cleaned_lines: List[str] = []
     for line in text.splitlines(keepends=True):
-        had_terminal_wrapper = "__HERMES_FENCE_" in line or "\x1b]" in line
+        had_terminal_wrapper = "__RENCO_FENCE_" in line or "\x1b]" in line
         cleaned = _OSC_SEQUENCE_RE.sub("", line)
         cleaned = _FENCE_MARKER_RE.sub("", cleaned)
         cleaned = cleaned.replace("\x07", "")
@@ -799,7 +799,7 @@ DEFAULT_SEARCH_LIMIT = 50
 
 # Echoed by the size probe when the path exists but is not a regular file.
 # `wc -c` prints only digits, so this can never collide with a real size.
-NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
+NOT_REGULAR_SENTINEL = "__renco_not_regular__"
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -1152,7 +1152,7 @@ class ShellFileOperations(FileOperations):
         form (``/c/Users/x``) so bash builtins resolve them. But native
         Windows binaries invoked from that bash (ripgrep installed via
         winget/cargo/choco, native git, etc.) do not understand ``/c/...``
-        paths — and Hermes disables MSYS argument conversion for its bash
+        paths — and Renco disables MSYS argument conversion for its bash
         subprocesses (``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*``,
         see ``_apply_windows_msys_bash_env_defaults``), so nothing ever
         translates the MSYS form back. The native tool then fails with
@@ -1181,7 +1181,7 @@ class ShellFileOperations(FileOperations):
         same filesystem, not a non-atomic cross-device copy), preserves the
         existing file's mode if it exists, then renames over the target.
         On any failure the temp file is removed so we never leak a partial
-        ``.hermes-tmp`` file next to the user's data, and the original file
+        ``.renco-tmp`` file next to the user's data, and the original file
         is left untouched. Content rides stdin so there is no ARG_MAX limit.
 
         ``mkdir -p`` for the parent directory is folded into this script
@@ -1197,7 +1197,7 @@ class ShellFileOperations(FileOperations):
         # template basename: hidden so it doesn't show up in casual `ls`,
         # carries a marker so an orphaned temp (only possible on a hard
         # crash *between* cat and mv) is identifiable.
-        tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+        tmpl = self._escape_shell_arg(".renco-tmp.XXXXXX")
 
         # One shell script, fully quoted. Notes:
         #  - `mkdir -p "$d"` is folded in here so the parent directory is
@@ -1242,8 +1242,8 @@ class ShellFileOperations(FileOperations):
             # the one created/confirmed.
             'mkdir -p "$d"; '
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
-            '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
-            '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
+            '|| mktemp "$d/.renco-tmp.$$.XXXXXX" 2>/dev/null '
+            '|| { tmp="$d/.renco-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
             "trap 'rm -f \\\"$tmp\\\"' EXIT; "
             # preserve mode of an existing target (best-effort, never fatal)
@@ -1390,7 +1390,7 @@ class ShellFileOperations(FileOperations):
             "try:\n"
             "    size = os.path.getsize(p)\n"
             "    if size > MAX:\n"
-            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "        print('RENCO_UTF16:NO'); sys.exit(0)\n"
             "    with open(p, 'rb') as f:\n"
             "        data = f.read()\n"
             "    sample = data[:SAMPLE]\n"
@@ -1407,7 +1407,7 @@ class ShellFileOperations(FileOperations):
             "        elif odd == 0 and even >= 2:\n"
             "            enc = 'utf-16-be'\n"
             "    if enc is None:\n"
-            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "        print('RENCO_UTF16:NO'); sys.exit(0)\n"
             "    text = data.decode(enc, 'replace')\n"
             "    if text[:1] == '\\ufeff':\n"
             "        text = text[1:]\n"
@@ -1417,10 +1417,10 @@ class ShellFileOperations(FileOperations):
             "    sel = lines[offset - 1: offset - 1 + limit]\n"
             "    out = {'total_lines': total, 'encoding': enc,\n"
             "           'content': '\\n'.join(sel)}\n"
-            "    print('HERMES_UTF16:OK')\n"
+            "    print('RENCO_UTF16:OK')\n"
             "    print(json.dumps(out, ensure_ascii=True))\n"
             "except Exception:\n"
-            "    print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    print('RENCO_UTF16:NO'); sys.exit(0)\n"
         )
 
         result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
@@ -1428,10 +1428,10 @@ class ShellFileOperations(FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
 
         stdout = _strip_terminal_fence_leaks(result.stdout or "")
-        marker = stdout.find("HERMES_UTF16:OK")
+        marker = stdout.find("RENCO_UTF16:OK")
         if result.exit_code != 0 or marker < 0:
             return None
-        payload = stdout[marker + len("HERMES_UTF16:OK"):].strip()
+        payload = stdout[marker + len("RENCO_UTF16:OK"):].strip()
         try:
             data = json.loads(payload.split("\n", 1)[0] if "\n" in payload else payload)
             content = data["content"]
@@ -2100,7 +2100,7 @@ class ShellFileOperations(FileOperations):
         # backend has it, falling back to a PID-stamped name otherwise. We
         # then chmod the temp to match the existing file's mode (if any) so
         # the atomic swap doesn't silently widen or narrow permissions, and
-        # clean the temp up on any failure so we never leak a ``.hermes-tmp``
+        # clean the temp up on any failure so we never leak a ``.renco-tmp``
         # turd next to the user's file.
         # Encode once for byte count + sha256. surrogateescape is the exact
         # inverse of the decode that may have produced this content, so these
@@ -2407,7 +2407,7 @@ class ShellFileOperations(FileOperations):
         # A per-file `tsc --noEmit <file>` cannot read the project's
         # tsconfig.json, so for any .ts that belongs to a TS project it floods
         # phantom errors — unresolved path aliases (`@/…` → TS2307) and ambient
-        # globals (`Window.hermesDesktop` → TS2339) that are defined by the
+        # globals (`Window.rencoDesktop` → TS2339) that are defined by the
         # config it never loads. The delta filter then reports the misleading
         # "pre-existing lint errors … the file is still broken", which carries
         # no signal and wastes the caller's turns. When an ancestor
@@ -3160,7 +3160,7 @@ class ShellFileOperations(FileOperations):
         cmd_parts.append(self._escape_shell_arg(pattern))
         # rg is a native Windows binary when installed via winget/cargo/choco:
         # it needs the C:/... path form, not the MSYS /c/... form (which
-        # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
+        # nothing converts back — Renco sets MSYS_NO_PATHCONV for its bash).
         cmd_parts.append(self._escape_native_tool_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.

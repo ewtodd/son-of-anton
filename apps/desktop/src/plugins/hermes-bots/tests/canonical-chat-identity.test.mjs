@@ -284,7 +284,7 @@ test('pin: a waking-backend hydration timeout asks the SDK to retry internally',
   // (apps/desktop/src/sdk/index.ts) now, because only that layer sees the
   // $resumeExhaustedSessionId latch that the core stranded-session overlay
   // reads — a plugin-side retry can silently resolve while that overlay stays
-  // latched (hermes-agent#89617). This harness stubs host.openSession with a
+  // latched (renco-agent#89617). This harness stubs host.openSession with a
   // bare mock, so it can only prove the plugin ASKS for the retry, not that
   // the overlay never appears; see profile-routing.test.ts for that.
   const opts = []
@@ -389,8 +389,8 @@ function loadHelpers() {
     host: { state: { profile: { get: () => 'ops', listen: () => undefined } }, request: () => undefined }
   }
   const code = source
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')

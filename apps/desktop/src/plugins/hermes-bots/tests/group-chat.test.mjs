@@ -73,7 +73,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
         if (method === 'profiles.configure') {
           if (conflictOnce && !injectedConflict) {
             injectedConflict = true
-            sharedUiMeta['hermes-bots-groups'] = {
+            sharedUiMeta['renco-bots-groups'] = {
               version: 2,
               rooms: {
                 Shared: {
@@ -83,12 +83,12 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
                 }
               }
             }
-            uiMetaRevisions['hermes-bots-groups'] = 1
+            uiMetaRevisions['renco-bots-groups'] = 1
             return {
               applied: {
                 ui_meta: false,
-                ui_meta_conflicts: { 'hermes-bots-groups': { expected: 0, actual: 1 } },
-                ui_meta_revisions: { 'hermes-bots-groups': 1 }
+                ui_meta_conflicts: { 'renco-bots-groups': { expected: 0, actual: 1 } },
+                ui_meta_revisions: { 'renco-bots-groups': 1 }
               }
             }
           }
@@ -189,8 +189,8 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     }
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -532,7 +532,7 @@ test('group room messages and members mirror through bounded gateway profile met
   const configure = gc.requests.filter(call => call.method === 'profiles.configure').at(-1)
   assert.ok(configure, 'room updates are mirrored to the gateway')
   assert.equal(configure.params.name, 'default')
-  const envelope = configure.params.ui_meta['hermes-bots-groups']
+  const envelope = configure.params.ui_meta['renco-bots-groups']
   assert.equal(envelope.version, 3)
   const researchKey = Object.keys(envelope.rooms).find(key => envelope.rooms[key].name === 'Research')
   assert.ok(researchKey, 'Research room present under its durable key')
@@ -602,8 +602,8 @@ test('an explicit final-room disband may clear the gateway room mirror', async (
   await new Promise(resolve => setImmediate(resolve))
 
   const configure = gc.requests.filter(call => call.method === 'profiles.configure').at(-1)
-  assert.deepEqual(Object.keys(configure.params.ui_meta['hermes-bots-groups'].rooms), [])
-  assert.ok(configure.params.ui_meta['hermes-bots-groups'].deleted['name:Research'] > 0)
+  assert.deepEqual(Object.keys(configure.params.ui_meta['renco-bots-groups'].rooms), [])
+  assert.ok(configure.params.ui_meta['renco-bots-groups'].deleted['name:Research'] > 0)
 })
 
 test('pull-before-push merge preserves disjoint rooms, messages, and members', () => {
@@ -760,12 +760,12 @@ test('sync worker retries a gateway CAS conflict and publishes the merged room',
   })
 
   gc.scheduleGroupChatServerSync(gc.$groupChats.get(), { changedRooms: ['Shared'] })
-  for (let i = 0; i < 20 && (gc.uiMetaRevisions['hermes-bots-groups'] || 0) < 2; i++) {
+  for (let i = 0; i < 20 && (gc.uiMetaRevisions['renco-bots-groups'] || 0) < 2; i++) {
     await new Promise(resolve => setImmediate(resolve))
   }
 
-  const stored = gc.sharedUiMeta['hermes-bots-groups']
-  assert.equal(gc.uiMetaRevisions['hermes-bots-groups'], 2)
+  const stored = gc.sharedUiMeta['renco-bots-groups']
+  assert.equal(gc.uiMetaRevisions['renco-bots-groups'], 2)
   assert.equal(
     JSON.stringify(stored.rooms['name:Shared'].log.map(entry => entry.id).sort()),
     JSON.stringify(['writer-a:1', 'writer-b:1'])
@@ -1020,7 +1020,7 @@ test('fan-out class: a room write is mirrored to every reachable default-profile
       return { profiles: [{ name: 'default', ui_meta: {}, ui_meta_revisions: {} }] }
     }
     if (method === 'profiles.configure') {
-      return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots-groups': 1 } } }
+      return { applied: { ui_meta: true, ui_meta_revisions: { 'renco-bots-groups': 1 } } }
     }
     return {}
   }
@@ -1267,20 +1267,20 @@ test('source contract: workspace header offers disband behind a ConfirmDialog', 
   assert.match(pluginSource, /title: `Disband the \$\{group\} group chat`/)
 })
 
-test('default profile speaks as Hermes in room transcripts, not @default', () => {
+test('default profile speaks as Renco in room transcripts, not @default', () => {
   const gc = load(() => '(pass)')
   const line = gc.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hello room' }, 'builder')
-  assert.equal(line, 'Hermes: hello room')
+  assert.equal(line, 'Renco: hello room')
   assert.doesNotMatch(line, /default/)
 
   // Other members keep their profile name; the (you) suffix survives.
   const you = gc.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' }, 'default')
-  assert.equal(you, 'Hermes (you): hi')
+  assert.equal(you, 'Renco (you): hi')
   const plain = gc.formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' }, 'research')
   assert.equal(plain, 'builder: yo')
 })
 
-test('turn prompt addresses the default profile as @hermes', () => {
+test('turn prompt addresses the default profile as @renco', () => {
   const gc = load(() => '(pass)')
   const prompt = gc.buildGroupChatTurnPrompt({
     groupName: 'Core',
@@ -1288,7 +1288,7 @@ test('turn prompt addresses the default profile as @hermes', () => {
     viewer: { name: 'default', title: '' },
     deltaLines: []
   })
-  assert.match(prompt, /You are @hermes,/)
+  assert.match(prompt, /You are @renco,/)
   assert.doesNotMatch(prompt, /@default\b/)
 
   const peerView = gc.buildGroupChatTurnPrompt({
@@ -1297,19 +1297,19 @@ test('turn prompt addresses the default profile as @hermes', () => {
     viewer: { name: 'builder', title: '' },
     deltaLines: []
   })
-  assert.match(peerView, /group chat with @hermes/)
+  assert.match(peerView, /group chat with @renco/)
 })
 
-test('mention routing: @hermes resolves to the default member', () => {
+test('mention routing: @renco resolves to the default member', () => {
   const gc = load(() => '(pass)')
   const members = [{ name: 'default', title: '' }, { name: 'builder', title: '' }]
-  const parsed = gc.parseGroupChatMentions('@hermes take a look', members)
+  const parsed = gc.parseGroupChatMentions('@renco take a look', members)
   assert.equal(parsed.mentioned.has('default'), true)
   assert.equal(parsed.mentioned.size, 1)
 })
 
 test('source contract: workspace speaker labels use displayName with a click-to-reveal handle', () => {
-  // Speaker labels come from the roster displayName (default → Hermes)…
+  // Speaker labels come from the roster displayName (default → Renco)…
   assert.match(pluginSource, /displayName\(member \|\| \{ name: entry\.from\.name \}, meta\)/)
   // …and clicking a speaker reveals the full disambiguated handle, with the
   // gateway/device name appended for cross-connection speakers.
@@ -1606,7 +1606,7 @@ test('source contract: group chat message bodies opt back into selectable text',
 
 test('group room preview renders the bot HANDLE, not the raw profile name', () => {
   // #89484: the room line read "@default: …" while the bot answers to
-  // @hermes, so users concluded mention routing was broken.
+  // @renco, so users concluded mention routing was broken.
   assert.match(pluginSource, /const lastHandle = botHandle\(lastFrom \|\| 'bot', members\.find\(/)
   assert.match(pluginSource, /\? `\$\{last\.from\?\.kind === 'user' \? 'You' : `@\$\{lastHandle\}`\}/)
   assert.doesNotMatch(pluginSource, /`@\$\{last\.from\?\.name \|\| 'bot'\}`/)

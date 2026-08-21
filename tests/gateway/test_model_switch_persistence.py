@@ -186,20 +186,20 @@ class TestOneTurnNeverPersisted:
 
         import gateway.run as gateway_run
         from gateway.run import GatewayRunner
-        from hermes_cli.model_switch import ModelSwitchResult
+        from renco_cli.model_switch import ModelSwitchResult
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
+        renco_home = tmp_path / ".renco"
+        renco_home.mkdir()
+        (renco_home / "config.yaml").write_text(
             _yaml.safe_dump(
                 {"model": {"default": "old-model", "provider": "openrouter"}}
             ),
             encoding="utf-8",
         )
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_renco_home", renco_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch.switch_model",
+            "renco_cli.model_switch.switch_model",
             lambda **kw: ModelSwitchResult(
                 success=True,
                 new_model="gpt-5.5",
@@ -211,8 +211,8 @@ class TestOneTurnNeverPersisted:
                 provider_label="OpenRouter",
             ),
         )
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("renco_constants.get_renco_home", lambda: renco_home)
+        monkeypatch.setattr("renco_cli.config.get_renco_home", lambda: renco_home)
 
         runner = object.__new__(GatewayRunner)
         runner.adapters = {}

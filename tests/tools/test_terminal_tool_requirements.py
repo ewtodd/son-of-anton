@@ -145,9 +145,9 @@ class TestCheckFnTransientFailureSuppression:
             set_multiplex_active,
             set_secret_scope,
         )
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from renco_constants import (
+            reset_renco_home_override,
+            set_renco_home_override,
         )
         from model_tools import _clear_tool_defs_cache, get_tool_definitions
 
@@ -173,7 +173,7 @@ class TestCheckFnTransientFailureSuppression:
         )
         set_multiplex_active(True)
         try:
-            home_a = set_hermes_home_override(str(profile_a))
+            home_a = set_renco_home_override(str(profile_a))
             secrets_a = set_secret_scope({"PROFILE_CACHE_TEST_TOKEN": "token-a"})
             try:
                 tools_a = get_tool_definitions(
@@ -183,9 +183,9 @@ class TestCheckFnTransientFailureSuppression:
                 )
             finally:
                 reset_secret_scope(secrets_a)
-                reset_hermes_home_override(home_a)
+                reset_renco_home_override(home_a)
 
-            home_b = set_hermes_home_override(str(profile_b))
+            home_b = set_renco_home_override(str(profile_b))
             secrets_b = set_secret_scope({})
             try:
                 tools_b = get_tool_definitions(
@@ -195,7 +195,7 @@ class TestCheckFnTransientFailureSuppression:
                 )
             finally:
                 reset_secret_scope(secrets_b)
-                reset_hermes_home_override(home_b)
+                reset_renco_home_override(home_b)
 
             assert tool_name in {tool["function"]["name"] for tool in tools_a}
             assert tool_name not in {tool["function"]["name"] for tool in tools_b}

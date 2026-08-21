@@ -1,7 +1,7 @@
 """Authorization plumbing for the cua-driver typed browser route.
 
 Covers the authorization modes that let ``existing_profile`` attachment (and
-bounded automation generally) work from Hermes:
+bounded automation generally) work from Renco:
 
 * ``bounded`` permission mode — a private embedded daemon launched with a
   user-reviewed capability manifest (``--capability-manifest`` +
@@ -38,7 +38,7 @@ class _PrepareDriver:
 
 def _route(driver: _PrepareDriver) -> CuaTypedBrowserRoute:
     return CuaTypedBrowserRoute(
-        session_id="hermes-a",
+        session_id="renco-a",
         call_tool=driver.call,
         has_tool=driver.has_tool,
     )
@@ -64,7 +64,7 @@ def test_existing_profile_prepare_delegates_authorization_to_driver():
                 "pid": 101,
                 "window_id": 202,
                 "strategy": {"kind": "existing_profile"},
-                "session": "hermes-a",
+                "session": "renco-a",
             },
         )
     ]

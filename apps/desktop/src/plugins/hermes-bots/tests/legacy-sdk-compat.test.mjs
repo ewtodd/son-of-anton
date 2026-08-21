@@ -9,7 +9,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 const OPTIONAL_CAPABILITY_EXPORTS = new Set(['McpTab', 'ToolsetConfigPanel', 'SkillsView'])
 
 function sdkNamedImports(source) {
-  const match = source.match(/import\s+\{([\s\S]*?)\}\s+from '@hermes\/plugin-sdk'/)
+  const match = source.match(/import\s+\{([\s\S]*?)\}\s+from '@renco\/plugin-sdk'/)
 
   assert.ok(match, 'plugin.js must retain the mandatory named SDK import')
 
@@ -40,7 +40,7 @@ ${exports}
 }
 
 function writeLegacySdk(root) {
-  const packageRoot = join(root, 'node_modules', '@hermes', 'plugin-sdk')
+  const packageRoot = join(root, 'node_modules', '@renco', 'plugin-sdk')
   const exportNames = sdkNamedImports(pluginSource).filter(
     name => !OPTIONAL_CAPABILITY_EXPORTS.has(name)
   )
@@ -48,7 +48,7 @@ function writeLegacySdk(root) {
   mkdirSync(packageRoot, { recursive: true })
   writeFileSync(
     join(packageRoot, 'package.json'),
-    `${JSON.stringify({ name: '@hermes/plugin-sdk', type: 'module', exports: './index.js' }, null, 2)}\n`
+    `${JSON.stringify({ name: '@renco/plugin-sdk', type: 'module', exports: './index.js' }, null, 2)}\n`
   )
   writeFileSync(join(packageRoot, 'index.js'), proxyModule(exportNames))
 }
@@ -74,7 +74,7 @@ function writeReactStubs(root) {
 }
 
 test('legacy SDK without optional capability exports still links Bot Mode', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'hermes-bot-mode-legacy-sdk-'))
+  const root = mkdtempSync(join(tmpdir(), 'renco-bot-mode-legacy-sdk-'))
   const pluginPath = join(root, 'plugin.js')
 
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -86,6 +86,6 @@ test('legacy SDK without optional capability exports still links Bot Mode', asyn
 
   const loaded = await import(pathToFileURL(pluginPath).href)
 
-  assert.equal(loaded.default.id, 'hermes-bots')
+  assert.equal(loaded.default.id, 'renco-bots')
   assert.equal(typeof loaded.default.register, 'function')
 })

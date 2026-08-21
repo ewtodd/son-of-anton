@@ -1,4 +1,4 @@
-# nix/packages.nix — Hermes Agent package built with uv2nix
+# nix/packages.nix — Renco Agent package built with uv2nix
 { inputs, ... }:
 {
   perSystem =
@@ -12,7 +12,7 @@
 
       sandbox = pkgs.callPackage ./sandbox.nix { };
 
-      minimal = pkgs.callPackage ./hermes-agent.nix {
+      minimal = pkgs.callPackage ./renco-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
         # Only embed clean revs — dirtyRev doesn't represent any upstream
@@ -65,11 +65,11 @@
           extraDependencyGroups = [ "messaging" ];
         };
 
-        tui = full.hermesTui;
-        web = full.hermesWeb;
-        desktop = full.hermesDesktop;
+        tui = full.rencoTui;
+        web = full.rencoWeb;
+        desktop = full.rencoDesktop;
 
-        update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
+        update-npm-lockfile = full.rencoNpmLib.updateNpmLockfile;
       };
     };
 }

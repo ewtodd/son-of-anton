@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-// The Skills Hub picker embed posts {type:'hermes-skill-pick'} messages and
+// The Skills Hub picker embed posts {type:'renco-skill-pick'} messages and
 // the plugin installs via skills.manage. The handler checked only
 // event.origin — any window on the hub origin (e.g. an OAuth popup returned
 // to the hub) could trigger an install while the picker is open, and any

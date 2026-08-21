@@ -43,10 +43,10 @@ function loadProvide({ roster, active = 'default', focused = active, meta = {} }
       // writes — the bug behind issue #89303 was invisible under the old
       // key-ignoring mock.
       getQueryData: key =>
-        key.length === 3 && key[0] === 'hermes-bots' && key[1] === 'roster'
+        key.length === 3 && key[0] === 'renco-bots' && key[1] === 'roster'
           ? roster
           : undefined,
-      getQueriesData: () => (Array.isArray(roster?.profiles) ? [[['hermes-bots', 'roster', 'local'], roster]] : []),
+      getQueriesData: () => (Array.isArray(roster?.profiles) ? [[['renco-bots', 'roster', 'local'], roster]] : []),
       invalidateQueries: () => undefined,
       setQueryData: () => undefined
     },
@@ -64,8 +64,8 @@ function loadProvide({ roster, active = 'default', focused = active, meta = {} }
     sdk: new Proxy({}, { get: () => undefined })
   }
   const code = source
-    .replace(/^import \* as sdk from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import \* as sdk from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
@@ -104,7 +104,7 @@ test('offers roster handles for a matching prefix, excluding the active profile'
   const all = provide('')
   const inserts = all.map(i => i.insert)
 
-  assert.ok(inserts.includes('@hermes'), 'default surfaces as @hermes')
+  assert.ok(inserts.includes('@renco'), 'default surfaces as @renco')
   assert.ok(inserts.includes('@writer-homelab'), 'multi-source handle used')
   assert.ok(!inserts.includes('@researcher'), 'active profile excluded')
 })

@@ -21,7 +21,7 @@ interface ResizeState {
  * frameless window must not expose a system resize hot-zone, or every drag
  * grows it), so resizing has to be programmatic: the handle reports absolute
  * screen bounds and main flips resizable on for the setBounds call. Same
- * pattern as the pet overlay's wheel-scale (`hermes:pet-overlay:set-bounds`).
+ * pattern as the pet overlay's wheel-scale (`renco:pet-overlay:set-bounds`).
  *
  * The top-left corner is anchored; only the bottom-right follows the pointer.
  * Deltas are read in SCREEN coordinates, like the composer drag: client
@@ -73,7 +73,7 @@ export function useHudResizeHandle(): {
       const dx = event.screenX - state.startX
       const dy = event.screenY - state.startY
 
-      window.hermesDesktop?.hud?.setBounds?.({
+      window.rencoDesktop?.hud?.setBounds?.({
         x: state.originX,
         y: state.originY,
         width: Math.max(HUD_MIN_WIDTH, state.originW + dx),

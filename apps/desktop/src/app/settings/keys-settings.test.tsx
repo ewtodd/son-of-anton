@@ -10,7 +10,7 @@ const getEnvVars = vi.fn()
 
 stubResizeObserver()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/renco', () => ({
   deleteEnvVar: vi.fn(),
   getEnvVars: () => getEnvVars(),
   revealEnvVar: vi.fn(),

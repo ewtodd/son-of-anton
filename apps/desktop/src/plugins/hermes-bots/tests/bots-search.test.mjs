@@ -47,7 +47,7 @@ test('bot search matches profile handles and preserves roster order', () => {
     ['agency-audio-designer', 'agency-ai-engineer']
   )
   assert.deepEqual(
-    filterBots(roster, meta, '@hermes').map(bot => bot.name),
+    filterBots(roster, meta, '@renco').map(bot => bot.name),
     ['default']
   )
   assert.deepEqual(

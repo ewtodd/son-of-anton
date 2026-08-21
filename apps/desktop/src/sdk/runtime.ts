@@ -1,6 +1,6 @@
 /**
  * Runtime SDK injection — the other half of the vscode-module model. Bundled
- * plugins resolve `@hermes/plugin-sdk` through the vite alias; RUNTIME-loaded
+ * plugins resolve `@renco/plugin-sdk` through the vite alias; RUNTIME-loaded
  * plugins (disk / fetched) import the same specifier and get the same object:
  * the loader rewrites bare specifiers to shim modules that re-export the
  * live namespaces installed here. React ships as the app's singletons —
@@ -14,10 +14,10 @@ import * as jsxRuntime from 'react/jsx-runtime'
 import * as sdk from './index'
 
 const GLOBALS = {
-  __HERMES_PLUGIN_SDK__: sdk,
-  __HERMES_REACT__: React,
-  __HERMES_REACT_JSX__: jsxRuntime,
-  __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+  __RENCO_PLUGIN_SDK__: sdk,
+  __RENCO_REACT__: React,
+  __RENCO_REACT_JSX__: jsxRuntime,
+  __RENCO_REACT_JSX_DEV__: jsxDevRuntime
 } as const
 
 export function installPluginSdk(): void {
@@ -44,10 +44,10 @@ let cached: Record<string, string> | null = null
 /** Specifier -> shim URL map for the runtime loader (longest keys first). */
 export function sdkImportMap(): Record<string, string> {
   cached ??= {
-    '@hermes/plugin-sdk': shimUrl('__HERMES_PLUGIN_SDK__'),
-    'react/jsx-dev-runtime': shimUrl('__HERMES_REACT_JSX_DEV__'),
-    'react/jsx-runtime': shimUrl('__HERMES_REACT_JSX__'),
-    react: shimUrl('__HERMES_REACT__')
+    '@renco/plugin-sdk': shimUrl('__RENCO_PLUGIN_SDK__'),
+    'react/jsx-dev-runtime': shimUrl('__RENCO_REACT_JSX_DEV__'),
+    'react/jsx-runtime': shimUrl('__RENCO_REACT_JSX__'),
+    react: shimUrl('__RENCO_REACT__')
   }
 
   return cached

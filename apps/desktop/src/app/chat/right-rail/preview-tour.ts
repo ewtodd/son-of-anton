@@ -1,7 +1,7 @@
 /**
  * PREVIEW TOUR — runs tour actions inside the preview pane's guest page, so a
  * tour can walk through ANY web app open in the in-app browser, not just
- * Hermes itself.
+ * Renco itself.
  *
  * The guest page is out-of-process; nothing here can touch its DOM directly.
  * Instead the first action injects a self-contained bundle over
@@ -27,23 +27,23 @@ import { activePreviewScriptRunner } from './preview-script-runner'
 function buildTourScript(action: TourAction): string {
   return `(function () {
   var w = window;
-  if (!w.__hermesTourEngine) {
+  if (!w.__rencoTourEngine) {
     ${driverIife}
-    w.__hermesTourHolder = {};
-    w.__hermesTourCollect = (${collectTourTargets.toString()});
-    w.__hermesTourEngine = (${runTourEngine.toString()});
+    w.__rencoTourHolder = {};
+    w.__rencoTourCollect = (${collectTourTargets.toString()});
+    w.__rencoTourEngine = (${runTourEngine.toString()});
   }
-  if (!document.getElementById('__hermes-tour-style')) {
+  if (!document.getElementById('__renco-tour-style')) {
     var style = document.createElement('style');
-    style.id = '__hermes-tour-style';
+    style.id = '__renco-tour-style';
     style.textContent = ${JSON.stringify(driverCss)};
     (document.head || document.documentElement).appendChild(style);
   }
-  return JSON.stringify(w.__hermesTourEngine(
+  return JSON.stringify(w.__rencoTourEngine(
     w.driver.js.driver,
-    w.__hermesTourHolder,
+    w.__rencoTourHolder,
     ${JSON.stringify(action)},
-    w.__hermesTourCollect,
+    w.__rencoTourCollect,
     document
   ));
 })()`

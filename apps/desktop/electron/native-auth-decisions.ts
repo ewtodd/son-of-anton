@@ -34,7 +34,7 @@
  *   6. resolveGatedDownloadAuth — file save/read must present the SAME
  *      credentials as oauth REST. `saveGatewayFile` used to always ride the
  *      OAuth cookie partition, so a cookieless native (or native-password)
- *      session could list files via `hermes:api` and still 401 on Download.
+ *      session could list files via `renco:api` and still 401 on Download.
  *
  * All six are trivial once named; the value is the test that pins the
  * contract so the god-file call sites can't drift back to the buggy shape.

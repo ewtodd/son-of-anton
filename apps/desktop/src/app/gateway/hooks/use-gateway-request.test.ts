@@ -1,12 +1,12 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { HermesGateway } from '@/hermes'
+import type { RencoGateway } from '@/renco'
 import { $gateway } from '@/store/gateway'
 
 import { useGatewayRequest } from './use-gateway-request'
 
-const fakeGateway = { connectionState: 'open' } as unknown as HermesGateway
+const fakeGateway = { connectionState: 'open' } as unknown as RencoGateway
 
 afterEach(() => {
   $gateway.set(null)

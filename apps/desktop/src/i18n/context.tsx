@@ -1,6 +1,6 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getRencoConfigRecord, type RencoConfigRecord, saveRencoConfig } from '@/renco'
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
@@ -10,24 +10,24 @@ import type { Locale, Translations } from './types'
 export { LOCALE_META } from './languages'
 
 export interface I18nConfigClient {
-  getConfig: () => Promise<HermesConfigRecord>
-  saveConfig: (config: HermesConfigRecord) => Promise<{ ok: boolean }>
+  getConfig: () => Promise<RencoConfigRecord>
+  saveConfig: (config: RencoConfigRecord) => Promise<{ ok: boolean }>
 }
 
 const defaultConfigClient: I18nConfigClient = {
   getConfig: () => {
-    if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+    if (typeof window === 'undefined' || !window.rencoDesktop?.api) {
       return Promise.resolve({})
     }
 
-    return getHermesConfigRecord()
+    return getRencoConfigRecord()
   },
   saveConfig: config => {
-    if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+    if (typeof window === 'undefined' || !window.rencoDesktop?.api) {
       return Promise.resolve({ ok: true })
     }
 
-    return saveHermesConfig(config)
+    return saveRencoConfig(config)
   }
 }
 
@@ -35,11 +35,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
+export function getConfigDisplayLanguage(config: RencoConfigRecord): unknown {
   return isRecord(config.display) ? config.display.language : undefined
 }
 
-export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
+export function withConfigDisplayLanguage(config: RencoConfigRecord, locale: Locale): RencoConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
   return {

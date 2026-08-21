@@ -3,7 +3,7 @@
 Why: the desktop BOTS roster previews ``last_session`` (the profile's most
 recently active session) but clicking a bot row opens the PINNED canonical
 chat — two different session identities, so the preview shows one
-conversation and the click lands in another (NousResearch/hermes-agent#88200).
+conversation and the click lands in another (ewtodd/renco#88200).
 The generic fix at the RPC layer: callers that know which session they care
 about pass ``preferred_session_ids={profile: session_id}`` and receive a
 precise ``preferred_session`` summary per profile — hidden sessions included,
@@ -33,15 +33,15 @@ import tui_gateway.server as srv
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    """Temp HERMES_HOME with the default profile plus one named profile."""
-    h = tmp_path / ".hermes"
+    """Temp RENCO_HOME with the default profile plus one named profile."""
+    h = tmp_path / ".renco"
     (h / "profiles" / "ops").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setenv("RENCO_HOME", str(h))
     return h
 
 
 def _db(profile_dir):
-    from hermes_state import SessionDB
+    from renco_state import SessionDB
 
     return SessionDB(db_path=profile_dir / "state.db")
 

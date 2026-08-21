@@ -85,7 +85,7 @@ def _ensure_file_checkpoint(
         return
 
     # File tools resolve relative paths against the task's live/session cwd,
-    # which can differ from the Hermes process cwd (notably in Docker).  Resolve
+    # which can differ from the Renco process cwd (notably in Docker).  Resolve
     # through that same path pipeline before asking the checkpoint manager to
     # discover the project root.
     from tools.file_tools import _resolve_path_for_task
@@ -184,7 +184,7 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     """Resolve the per-batch concurrent tool deadline.
 
     Delegates to the unified resolver (#85125): ``timeouts.tools.concurrent_batch``
-    in config.yaml wins, the legacy ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` env var
+    in config.yaml wins, the legacy ``RENCO_CONCURRENT_TOOL_TIMEOUT_S`` env var
     remains the back-compat bridge, and ``0``/negative still disables the bound.
     """
     from agent.deadline import resolve_timeout
@@ -192,7 +192,7 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     return resolve_timeout(
         "tools.concurrent_batch",
         default=_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
-        env_var="HERMES_CONCURRENT_TOOL_TIMEOUT_S",
+        env_var="RENCO_CONCURRENT_TOOL_TIMEOUT_S",
     )
 
 
@@ -205,7 +205,7 @@ def _flush_session_db_after_tool_progress(
     """Flush tool-call progress before projecting it to any UI surface.
 
     Tool execution can perform side effects that terminate or restart the
-    current Hermes process before the normal turn-end persistence path runs.
+    current Renco process before the normal turn-end persistence path runs.
     Flush the already-appended assistant/tool messages immediately so the
     transcript survives destructive-but-valid tool calls.
     """
@@ -221,7 +221,7 @@ def _flush_session_db_after_tool_progress(
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
-        from hermes_state import classify_persistence_error
+        from renco_state import classify_persistence_error
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
@@ -235,7 +235,7 @@ def _image_generate_parallel_limit() -> int:
     intentionally conservative while allowing users to tune it per install.
     """
     try:
-        from hermes_cli.config import load_config
+        from renco_cli.config import load_config
 
         cfg = load_config() or {}
         image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
@@ -573,9 +573,9 @@ def _run_agent_tool_execution_middleware(
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
-    """Run Relay rewrites before Hermes policy and dispatch exactly once."""
+    """Run Relay rewrites before Renco policy and dispatch exactly once."""
     from agent import relay_tools
-    from hermes_cli.middleware import (
+    from renco_cli.middleware import (
         apply_tool_request_middleware,
         run_tool_execution_middleware,
     )
@@ -593,7 +593,7 @@ def _run_agent_tool_execution_middleware(
         with dispatch_lock:
             if state["dispatched"]:
                 raise RuntimeError(
-                    "Hermes tool execution callback invoked more than once"
+                    "Renco tool execution callback invoked more than once"
                 )
             state["dispatched"] = True
             state["blocked"] = False
@@ -624,7 +624,7 @@ def _run_agent_tool_execution_middleware(
             def _resolve_pre_tool_block():
                 nonlocal final_args
                 try:
-                    from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+                    from renco_cli.plugins import _dispatch_pre_tool_call_hooks
 
                     block_msg, modified_args = _dispatch_pre_tool_call_hooks(
                         function_name,
@@ -714,7 +714,7 @@ def _run_agent_tool_execution_middleware(
             _hb_stop.set()
             _hb_thread.join(timeout=2.0)
 
-    def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
+    def _renco_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
             function_name,
             relay_args,
@@ -749,7 +749,7 @@ def _run_agent_tool_execution_middleware(
     result, _relay_args = relay_tools.execute(
         function_name,
         function_args,
-        _hermes_pipeline,
+        _renco_pipeline,
         session_id=str(getattr(agent, "session_id", "") or ""),
         metadata={
             "task_id": effective_task_id or "",
@@ -778,7 +778,7 @@ def _resolve_sequential_tool_timeout() -> float | None:
 
     ``timeouts.tools.sequential_call`` in config.yaml wins; when unset, the
     sequential path inherits the concurrent batch deadline (same value, same
-    ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` legacy bridge) so the two executor
+    ``RENCO_CONCURRENT_TOOL_TIMEOUT_S`` legacy bridge) so the two executor
     paths cannot drift apart by default. ``0``/negative disables the bound.
 
     NOTE: this path deliberately does NOT use ``agent.deadline.run_bounded_sync``.
@@ -2070,7 +2070,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             def _execute(next_args: dict) -> Any:
                 session_db = agent._get_session_db_for_recall()
                 if not session_db:
-                    from hermes_state import format_session_db_unavailable
+                    from renco_state import format_session_db_unavailable
                     return json.dumps({"success": False, "error": format_session_db_unavailable()})
                 from tools.session_search_tool import session_search as _session_search
                 return _session_search(

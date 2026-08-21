@@ -34,7 +34,7 @@ interface PressState {
  * same clientX every frame — zero delta, and the drag dies one pixel in.
  *
  * The size is snapshotted at press and sent with every move, so main can pin it
- * (see hermes:hud:move-by — a transparent frameless window drifts wider on
+ * (see renco:hud:move-by — a transparent frameless window drifts wider on
  * Windows otherwise). Same shape as the pet overlay's drag.
  */
 export function useHudComposerDrag(enabled: boolean) {
@@ -136,7 +136,7 @@ export function useHudComposerDrag(enabled: boolean) {
       state.lastX = event.screenX
       state.lastY = event.screenY
 
-      window.hermesDesktop?.hud?.moveBy?.({
+      window.rencoDesktop?.hud?.moveBy?.({
         x: dx,
         y: dy,
         width: state.originW,

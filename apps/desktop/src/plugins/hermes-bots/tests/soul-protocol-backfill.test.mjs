@@ -26,9 +26,9 @@ I am the default profile on this machine.
 - Execute directly.
 `
 
-test('generated protocol uses hermes profile list, not the invalid profiles plural', () => {
-  assert.match(source, /run `hermes profile list` for the LIVE/)
-  assert.doesNotMatch(source, /run `hermes profiles list` for the LIVE/)
+test('generated protocol uses renco profile list, not the invalid profiles plural', () => {
+  assert.match(source, /run `renco profile list` for the LIVE/)
+  assert.doesNotMatch(source, /run `renco profiles list` for the LIVE/)
 })
 
 test('pre-existing custom SOUL is detected as missing the protocol', () => {
@@ -48,7 +48,7 @@ test('ensureMessagingProtocol appends once and does not duplicate', () => {
   assert.equal(hasMessagingProtocol(once), true)
   assert.match(once, /I am the default profile on this machine/)
   assert.match(once, /`researcher` — research specialist/)
-  assert.match(once, /@hermes/)
+  assert.match(once, /@renco/)
   assert.doesNotMatch(once, /@default/)
 
   const twice = ensureMessagingProtocol(once, 'default', roster)

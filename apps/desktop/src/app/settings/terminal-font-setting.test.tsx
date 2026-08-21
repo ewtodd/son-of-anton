@@ -14,8 +14,8 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn()
 }))
 
-vi.mock('@/hermes', () => ({
-  saveHermesConfig: (config: Record<string, unknown>) => mocks.save(config)
+vi.mock('@/renco', () => ({
+  saveRencoConfig: (config: Record<string, unknown>) => mocks.save(config)
 }))
 
 vi.mock('@/i18n', () => ({
@@ -40,8 +40,8 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('../hooks/use-config-record', () => ({
-  setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
+  setRencoConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
+  useRencoConfigRecord: () => ({ data: mocks.loadedConfig })
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -62,7 +62,7 @@ describe('TerminalFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     mocks.loadedConfig = {
-      display: { skin: 'hermes' },
+      display: { skin: 'renco' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: '' }
     }
     mocks.save.mockResolvedValue({ ok: true })
@@ -88,7 +88,7 @@ describe('TerminalFontSetting', () => {
     await flushAutosave()
 
     expect(mocks.save).toHaveBeenCalledWith({
-      display: { skin: 'hermes' },
+      display: { skin: 'renco' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: 'MesloLGS NF' }
     })
     expect(mocks.cache).toHaveBeenCalledWith(mocks.save.mock.calls[0][0])

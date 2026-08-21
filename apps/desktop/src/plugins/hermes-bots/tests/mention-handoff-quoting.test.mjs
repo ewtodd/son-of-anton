@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
-// The @mention middleware appends a handoff note whose hermes command the
+// The @mention middleware appends a handoff note whose renco command the
 // active agent runs verbatim in its terminal. The sender display name and
 // @handle used to be interpolated into the double-quoted -q argument (and
 // the recipient name sat unquoted after -p) with no escaping — a bot title
@@ -51,8 +51,8 @@ function load({
     }
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -68,19 +68,19 @@ function load({
   return { handler: middleware.data.handler }
 }
 
-/** Run the note's first hermes command under a stub that echoes each argv
+/** Run the note's first renco command under a stub that echoes each argv
  *  element — proves the shell received the interpolations as LITERALS. */
 function runHandoffCommand(noteText) {
-  const command = noteText.match(/`hermes -p [^`]*`/)[0].slice(1, -1)
-  const script = `hermes() { printf '%s\\037' "$@"; }\n${command}`
+  const command = noteText.match(/`renco -p [^`]*`/)[0].slice(1, -1)
+  const script = `renco() { printf '%s\\037' "$@"; }\n${command}`
   const result = spawnSync('sh', ['-c', script], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   return result.stdout.split('\x1f').slice(0, -1)
 }
 
 test('security: a poisoned bot title stays literal in the handoff command', async () => {
-  const quoteSentinel = `/tmp/hermes-bot-mode-mention-quote-${process.pid}`
-  const subSentinel = `/tmp/hermes-bot-mode-mention-sub-${process.pid}`
+  const quoteSentinel = `/tmp/renco-bot-mode-mention-quote-${process.pid}`
+  const subSentinel = `/tmp/renco-bot-mode-mention-sub-${process.pid}`
   rmSync(quoteSentinel, { force: true })
   rmSync(subSentinel, { force: true })
 
@@ -121,7 +121,7 @@ test('security: a hostile active profile name stays literal in the handoff comma
 test('regression: the handoff command quotes the recipient argument', async () => {
   const { handler } = load()
   const result = await handler({ text: 'ping @ops please' })
-  assert.match(result.text, /`hermes -p 'ops' chat --in ~/)
+  assert.match(result.text, /`renco -p 'ops' chat --in ~/)
 })
 
 test('behavior: a renamed default profile routes from another focused Bot Chat', async () => {
@@ -136,11 +136,11 @@ test('behavior: a renamed default profile routes from another focused Bot Chat',
 
   const result = await handler({ text: 'ask @lucy for a status update' })
 
-  assert.match(result.text, /`hermes -p 'default' chat --in ~/)
+  assert.match(result.text, /`renco -p 'default' chat --in ~/)
   assert.match(result.text, /Message from 🤖 Renametest \(@renametest\)/)
 })
 
-test('behavior: @dixie on a Connections bot stays in this chat and does not hermes -p', async () => {
+test('behavior: @dixie on a Connections bot stays in this chat and does not renco -p', async () => {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -181,8 +181,8 @@ test('behavior: @dixie on a Connections bot stays in this chat and does not herm
     }
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -197,7 +197,7 @@ test('behavior: @dixie on a Connections bot stays in this chat and does not herm
   const result = await middleware.data.handler({ text: '@dixie what is the disk space?' })
 
   assert.match(result.text, /stay on this device/i)
-  assert.doesNotMatch(result.text, /hermes -p 'dixie'/)
+  assert.doesNotMatch(result.text, /renco -p 'dixie'/)
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(delivered[0][0], 'mac-mini')
   assert.equal(delivered[0][1], 'dixie')

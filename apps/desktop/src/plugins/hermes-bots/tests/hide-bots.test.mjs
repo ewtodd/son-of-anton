@@ -40,8 +40,8 @@ function load({ toastsOn = false } = {}) {
     sdk: new Proxy({}, { get: () => undefined })
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -80,7 +80,7 @@ test('hide: saveBotMeta persists hidden:true locally and ships it in server ui_m
   assert.equal(writes.at(-1).key, 'bot-meta')
   assert.equal(writes.at(-1).value.default.hidden, true)
   const configure = t.requests.find(r => r.method === 'profiles.configure')
-  assert.equal(configure.params.ui_meta['hermes-bots'].hidden, true)
+  assert.equal(configure.params.ui_meta['renco-bots'].hidden, true)
 })
 
 test('roster: hidden bots are filtered out; remote-source rows of the same name stay visible', () => {
@@ -106,12 +106,12 @@ test('unhide: hidden:false clears locally AND survives a mergeServerMeta round-t
   await t.saveBotMeta('ghost', { hidden: false })
   assert.equal(t.$botMeta.get().ghost.hidden, false, 'local merge must clear the flag')
   const configure = t.requests.find(r => r.method === 'profiles.configure')
-  assert.equal(configure.params.ui_meta['hermes-bots'].hidden, false, 'server copy carries the literal false')
+  assert.equal(configure.params.ui_meta['renco-bots'].hidden, false, 'server copy carries the literal false')
 
   // Machine B: its stale local copy still says hidden:true; the server
   // overlay (which merges OVER local) must win with the false.
   t.$botMeta.set({ ghost: { hidden: true, title: 'Ghost' } })
-  t.mergeServerMeta([{ name: 'ghost', ui_meta: { 'hermes-bots': { hidden: false, title: 'Ghost' } } }])
+  t.mergeServerMeta([{ name: 'ghost', ui_meta: { 'renco-bots': { hidden: false, title: 'Ghost' } } }])
   assert.equal(t.$botMeta.get().ghost.hidden, false, 'server false must beat stale local true')
 })
 
@@ -121,7 +121,7 @@ test('cross-machine: a hide done elsewhere lands via mergeServerMeta and persist
   t.setPluginCtx({ storage: { set: (key, value) => writes.push({ key, value }) } })
   t.$botMeta.set({ ghost: { title: 'Ghost' } })
 
-  t.mergeServerMeta([{ name: 'ghost', ui_meta: { 'hermes-bots': { hidden: true, title: 'Ghost' } } }])
+  t.mergeServerMeta([{ name: 'ghost', ui_meta: { 'renco-bots': { hidden: true, title: 'Ghost' } } }])
 
   assert.equal(t.$botMeta.get().ghost.hidden, true)
   assert.equal(writes.at(-1).value.ghost.hidden, true)

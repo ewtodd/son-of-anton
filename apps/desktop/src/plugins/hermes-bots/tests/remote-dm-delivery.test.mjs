@@ -40,8 +40,8 @@ function runtime(hostOverrides = {}) {
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } }
   }
   const code = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -58,7 +58,7 @@ test('remote DM resumes the pinned canonical Bot Chat instead of creating a new 
       calls.push([method, params])
 
       if (method === 'profiles.list') {
-        return { profiles: [{ name: 'dixie', ui_meta: { 'hermes-bots': { chat: 'stored-42' } } }] }
+        return { profiles: [{ name: 'dixie', ui_meta: { 'renco-bots': { chat: 'stored-42' } } }] }
       }
 
       if (method === 'session.resume' && params.session_id === 'stored-42') {
@@ -116,11 +116,11 @@ test('remote DM carries sender attribution and relays the reply', async () => {
   await ctx.__dm.deliverRemoteRosterMentions(
     [{ name: 'dixie', connectionId: 'mac-mini', connectionLabel: 'Mac Mini', remoteSource: true }],
     'what is the disk space?',
-    { name: 'Hermes', handle: 'hermes' }
+    { name: 'Renco', handle: 'renco' }
   )
 
   assert.equal(submits.length, 1)
-  assert.match(submits[0], /^Message from 🤖 Hermes \(@hermes\): what is the disk space\?$/u)
+  assert.match(submits[0], /^Message from 🤖 Renco \(@renco\): what is the disk space\?$/u)
   assert.ok(
     notices.some(notice => /disk is 40% full/.test(notice?.message || '')),
     'the recipient reply must be relayed back as a notification'

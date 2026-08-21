@@ -2,7 +2,7 @@ import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import type { RpcEvent } from '@/types/hermes'
+import type { RpcEvent } from '@/types/renco'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 

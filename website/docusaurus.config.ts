@@ -3,15 +3,15 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Hermes Agent',
+  title: 'Renco Agent',
   tagline: 'The self-improving AI agent',
   favicon: 'img/favicon.ico',
 
-  url: 'https://hermes-agent.nousresearch.com',
+  url: 'https://renco-agent.nousresearch.com',
   baseUrl: '/docs/',
 
   organizationName: 'NousResearch',
-  projectName: 'hermes-agent',
+  projectName: 'renco-agent',
 
   onBrokenLinks: 'warn',
 
@@ -55,7 +55,7 @@ const config: Config = {
           {
             // Moved when the Plugins subcategory was created under
             // Developer Guide > Extending (docs restructure, July 2026)
-            from: '/guides/build-a-hermes-plugin',
+            from: '/guides/build-a-renco-plugin',
             to: '/developer-guide/plugins',
           },
           {
@@ -80,7 +80,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+          editUrl: 'https://github.com/ewtodd/renco/edit/main/website/',
         },
         blog: false,
         theme: {
@@ -91,7 +91,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/hermes-agent-banner.png',
+    image: 'img/renco-agent-banner.png',
     // Algolia DocSearch (replaces @easyops-cn/docusaurus-search-local).
     // The local plugin shipped a ~16 MB client-side lunr index that every
     // visitor downloaded and hydrated before their first result; DocSearch
@@ -103,7 +103,7 @@ const config: Config = {
     algolia: {
       appId: '2JLBVEYZN5',
       apiKey: '8fda2a49223ce185ac30c2dbf6898a07',
-      indexName: 'hermes docs',
+      indexName: 'renco docs',
       contextualSearch: true,
     },
     colorMode: {
@@ -117,9 +117,9 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Hermes Agent',
+      title: 'Renco Agent',
       logo: {
-        alt: 'Hermes Agent',
+        alt: 'Renco Agent',
         src: 'img/logo.png',
       },
       items: [
@@ -135,7 +135,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com/',
+          href: 'https://renco-agent.nousresearch.com/',
           label: 'Download',
           position: 'left',
         },
@@ -144,12 +144,12 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com',
+          href: 'https://renco-agent.nousresearch.com',
           label: 'Home',
           position: 'right',
         },
         {
-          href: 'https://github.com/NousResearch/hermes-agent',
+          href: 'https://github.com/ewtodd/renco',
           label: 'GitHub',
           position: 'right',
         },
@@ -176,15 +176,15 @@ const config: Config = {
           title: 'Community',
           items: [
             { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Issues', href: 'https://github.com/NousResearch/hermes-agent/issues' },
+            { label: 'GitHub Issues', href: 'https://github.com/ewtodd/renco/issues' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
-            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/' },
-            { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
+            { label: 'Desktop Download', href: 'https://renco-agent.nousresearch.com/' },
+            { label: 'GitHub', href: 'https://github.com/ewtodd/renco' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],
         },

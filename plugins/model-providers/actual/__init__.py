@@ -61,7 +61,7 @@ class ActualProfile(ProviderProfile):
         req.add_header("Accept", "application/json")
         req.add_header("User-Agent", _profile_user_agent())
 
-        from hermes_cli.urllib_security import open_credentialed_url
+        from renco_cli.urllib_security import open_credentialed_url
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:

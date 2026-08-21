@@ -60,7 +60,7 @@ export {
 } from './json-rpc-gateway'
 export { skillInvocationText } from './skill-scaffold'
 export {
-  type HermesSkin,
+  type RencoSkin,
   SKIN_BRANDING_TOKENS,
   SKIN_COLOR_TOKENS,
   type SkinBranding,
@@ -101,12 +101,12 @@ export {
   type WindowsBackgroundMaterial
 } from './translucency'
 export {
-  buildHermesWebSocketUrl,
+  buildRencoWebSocketUrl,
   type GatewayAuthMode,
   GatewayReauthRequiredError,
   type GatewayWsConnection,
   type GatewayWsUrlResult,
-  type HermesWebSocketUrlOptions,
+  type RencoWebSocketUrlOptions,
   isGatewayReauthRequired,
   resolveGatewayWsUrl,
   type ResolveGatewayWsUrlDeps,

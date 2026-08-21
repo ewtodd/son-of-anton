@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 // Newer desktop builds export the WHOLE core Capabilities surface (SkillsView,
-// hermes-agent#87317). The bot editor's Advanced section must render it pinned
+// renco-agent#87317). The bot editor's Advanced section must render it pinned
 // to the bot's profile — in Edit Profile directly, and in New Agent behind a
 // Capabilities tab that materializes the profile first. Feature-detected so
 // the plugin still loads (and keeps its checklist UI) on older desktops.
@@ -11,7 +11,7 @@ import test from 'node:test'
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 test('resolves SkillsView as an optional SDK namespace export', () => {
-  assert.match(source, /import \* as sdk from '@hermes\/plugin-sdk'/)
+  assert.match(source, /import \* as sdk from '@renco\/plugin-sdk'/)
   assert.match(source, /const SkillsView = typeof sdk === 'undefined' \? undefined : sdk\.SkillsView/)
 })
 

@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import runtime_provider as rp
-from hermes_cli.providers import nous_api_mode
+from renco_cli import runtime_provider as rp
+from renco_cli.providers import nous_api_mode
 
 PORTAL_URL = "https://inference-api.nousresearch.com/v1"
 # Staging / preview hosts used via NOUS_INFERENCE_BASE_URL — not the prod
@@ -55,9 +55,9 @@ class TestApiModeRouting:
 
     def test_determine_api_mode_honors_the_model_for_nous(self):
         """Callers that skip resolve_runtime_provider (fallback, switch_model
-        empty-mode path) must still land Claude on Messages — the Hermes
+        empty-mode path) must still land Claude on Messages — the Renco
         overlay alone advertises openai_chat for every Nous model."""
-        from hermes_cli.providers import determine_api_mode
+        from renco_cli.providers import determine_api_mode
 
         assert (
             determine_api_mode(
@@ -68,7 +68,7 @@ class TestApiModeRouting:
             == "anthropic_messages"
         )
         assert (
-            determine_api_mode("nous", PORTAL_URL, model="hermes-4-405b")
+            determine_api_mode("nous", PORTAL_URL, model="renco-4-405b")
             == "chat_completions"
         )
         # No model → historical OpenAI-wire default (safer than guessing).
@@ -117,7 +117,7 @@ class TestRuntimeResolution:
         monkeypatch.setattr(
             rp,
             "_get_model_config",
-            lambda: {"provider": "nous", "default": "hermes-4-405b"},
+            lambda: {"provider": "nous", "default": "renco-4-405b"},
         )
 
         resolved = rp.resolve_runtime_provider(
@@ -197,7 +197,7 @@ class TestClientShape:
         self, monkeypatch
     ):
         """The Anthropic SDK fills api_key from ANTHROPIC_API_KEY when the
-        constructor omits it. Hermes loads that env from ~/.hermes/.env, so
+        constructor omits it. Renco loads that env from ~/.renco/.env, so
         without an explicit clear every Portal request would dual-auth as
         X-Api-Key: sk-ant-… + Authorization: Bearer portal.jwt."""
         from agent.anthropic_adapter import build_anthropic_client
@@ -289,12 +289,12 @@ class TestPortalBodyFields:
         return build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
 
     def test_portal_tags_reach_the_messages_request(self):
-        from agent.portal_tags import hermes_client_tag
+        from agent.portal_tags import renco_client_tag
 
         tags = self._build()["extra_body"]["tags"]
 
-        assert "product=hermes-agent" in tags
-        assert hermes_client_tag() in tags
+        assert "product=renco-agent" in tags
+        assert renco_client_tag() in tags
         assert all(isinstance(tag, str) for tag in tags), (
             "Portal skips non-string tag entries unpredictably"
         )
@@ -439,16 +439,16 @@ class TestAuxiliaryDualWire:
         with (
             patch(
                 "agent.auxiliary_client._try_nous",
-                return_value=(plain, "hermes-4-405b"),
+                return_value=(plain, "renco-4-405b"),
             ),
             patch(
                 "agent.anthropic_adapter.build_anthropic_client",
                 side_effect=AssertionError("must not build Anthropic client"),
             ),
         ):
-            client, model = resolve_provider_client("nous", "hermes-4-405b")
+            client, model = resolve_provider_client("nous", "renco-4-405b")
 
-        assert model == "hermes-4-405b"
+        assert model == "renco-4-405b"
         assert client is plain
         assert not isinstance(client, AnthropicAuxiliaryClient)
 

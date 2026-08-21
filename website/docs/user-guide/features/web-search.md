@@ -7,12 +7,12 @@ sidebar_position: 6
 
 # Web Search & Extract
 
-Hermes Agent includes two model-callable web tools backed by multiple providers:
+Renco Agent includes two model-callable web tools backed by multiple providers:
 
 - **`web_search`** — search the web and return ranked results
 - **`web_extract`** — fetch and extract readable content from one or more URLs
 
-Both are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`.
+Both are configured through a single backend selection. Providers are chosen via `renco tools` or set directly in `config.yaml`.
 
 ## Backends
 
@@ -26,9 +26,9 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
-| **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **xAI (Grok)** | `XAI_API_KEY` or `renco auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
-Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Renco lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -36,10 +36,10 @@ Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecr
 A fresh install with **no web credentials at all** gets working `web_search` and `web_extract` out of the box: requests rotate round-robin across five vendors' public free tiers — **Exa, Parallel, Tavily, Firecrawl, and Keenable** — spreading load evenly, and a rate-limited request automatically retries on the next vendor in the ring (multi-hop, until one serves or all are throttled). No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For guaranteed, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
 :::
 
-**Choosing free vs paid explicitly:** in `hermes tools`, Exa, Parallel, and Keenable each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins that vendor's anonymous endpoint (even if you later add a key); picking Paid pins the keyed path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise the keyless ring).
+**Choosing free vs paid explicitly:** in `renco tools`, Exa, Parallel, and Keenable each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins that vendor's anonymous endpoint (even if you later add a key); picking Paid pins the keyed path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise the keyless ring).
 
 :::tip Nous Subscribers
-If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `renco setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `renco tools`.
 :::
 
 ---
@@ -64,12 +64,12 @@ If you specifically need the live DOM rather than extracted markdown — for exa
 
 ## Setup
 
-### Quick setup via `hermes tools`
+### Quick setup via `renco tools`
 
-Run `hermes tools`, navigate to **Web Search & Extract**, and pick a provider. The wizard prompts for the required URL or API key and writes it to your config.
+Run `renco tools`, navigate to **Web Search & Extract**, and pick a provider. The wizard prompts for the required URL or API key and writes it to your config.
 
 ```bash
-hermes tools
+renco tools
 ```
 
 ---
@@ -79,7 +79,7 @@ hermes tools
 Full-featured search and extract. Recommended for most users.
 
 ```bash
-# ~/.hermes/.env
+# ~/.renco/.env
 FIRECRAWL_API_KEY=fc-your-key-here
 ```
 
@@ -88,7 +88,7 @@ Get a key at [firecrawl.dev](https://firecrawl.dev). The free tier includes 500 
 **Self-hosted Firecrawl:** Point at your own instance instead of the cloud API:
 
 ```bash
-# ~/.hermes/.env
+# ~/.renco/.env
 FIRECRAWL_API_URL=http://localhost:3002
 ```
 
@@ -98,7 +98,7 @@ When `FIRECRAWL_API_URL` is set, the API key is optional (disable server auth wi
 
 ### SearXNG (free, self-hosted)
 
-SearXNG is a privacy-respecting, open-source metasearch engine that aggregates results from 70+ search engines. **No API key required** — just point Hermes at a running SearXNG instance.
+SearXNG is a privacy-respecting, open-source metasearch engine that aggregates results from 70+ search engines. **No API key required** — just point Renco at a running SearXNG instance.
 
 SearXNG is **search-only** — `web_extract` requires a separate extract provider.
 
@@ -147,7 +147,7 @@ docker cp searxng:/etc/searxng/settings.yml ~/searxng/searxng/settings.yml
 
 Open `~/searxng/searxng/settings.yml`.
 If `use_default_settings: true` is present, the file only contains your overrides. All other settings are inherited from the built-in defaults.
-To enable JSON responses for Hermes, add the following override:
+To enable JSON responses for Renco, add the following override:
 
 ```yaml
 search:
@@ -190,21 +190,21 @@ curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c \
 
 You should see something like `10 results`. If you get a `403 Forbidden`, JSON format is still disabled — recheck step 4.
 
-**7. Configure Hermes:**
+**7. Configure Renco:**
 
 ```bash
-# ~/.hermes/.env
+# ~/.renco/.env
 SEARXNG_URL=http://localhost:8888
 ```
 
-Then select SearXNG as the search backend in `~/.hermes/config.yaml`:
+Then select SearXNG as the search backend in `~/.renco/config.yaml`:
 
 ```yaml
 web:
   search_backend: "searxng"
 ```
 
-Or set via `hermes tools` → Web Search & Extract → SearXNG.
+Or set via `renco tools` → Web Search & Extract → SearXNG.
 
 ---
 
@@ -213,7 +213,7 @@ Or set via `hermes tools` → Web Search & Extract → SearXNG.
 Public SearXNG instances are listed at [searx.space](https://searx.space/). Filter by instances that have **JSON format enabled** (shown in the table).
 
 ```bash
-# ~/.hermes/.env
+# ~/.renco/.env
 SEARXNG_URL=https://searx.example.com
 ```
 
@@ -228,23 +228,23 @@ Public instances have rate limits, variable uptime, and may disable JSON format 
 SearXNG handles search; you need a separate provider for `web_extract`. Use the per-capability keys:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 web:
   search_backend: "searxng"
   extract_backend: "firecrawl"   # or tavily, exa, parallel
 ```
 
-With this config, Hermes uses SearXNG for all search queries and Firecrawl for URL extraction — combining free search with high-quality extraction.
+With this config, Renco uses SearXNG for all search queries and Firecrawl for URL extraction — combining free search with high-quality extraction.
 
 ---
 
 ### Tavily
 
-AI-optimised search and extract. Select Tavily in `hermes tools` (or set `web.backend: tavily`) to use it **keyless** with no account (rate-limited). Set an API key when you want higher limits.
+AI-optimised search and extract. Select Tavily in `renco tools` (or set `web.backend: tavily`) to use it **keyless** with no account (rate-limited). Set an API key when you want higher limits.
 
 ```bash
 # optional — skip this for keyless access after selecting Tavily
-# ~/.hermes/.env
+# ~/.renco/.env
 TAVILY_API_KEY=tvly-your-key-here
 ```
 
@@ -259,7 +259,7 @@ Empty installs keep Firecrawl as the named default. Keyless Tavily is not auto-s
 Neural search with semantic understanding. Good for research and finding conceptually related content.
 
 ```bash
-# ~/.hermes/.env
+# ~/.renco/.env
 EXA_API_KEY=your-exa-key-here
 ```
 
@@ -272,7 +272,7 @@ Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/mon
 AI-native search and extraction with deep research capabilities.
 
 ```bash
-# ~/.hermes/.env
+# ~/.renco/.env
 PARALLEL_API_KEY=your-parallel-key-here
 ```
 
@@ -287,20 +287,20 @@ Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.
 Works with either credential path — no new env vars, no new setup wizard:
 
 ```bash
-# ~/.hermes/.env (env-var path)
+# ~/.renco/.env (env-var path)
 XAI_API_KEY=sk-xai-your-key-here
 ```
 
 or for SuperGrok subscribers:
 
 ```bash
-hermes auth add xai-oauth
+renco auth add xai-oauth
 ```
 
 Then select xAI as the search backend:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 web:
   backend: "xai"
 ```
@@ -334,7 +334,7 @@ Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-
 Set one provider for all web capabilities:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 web:
   backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
@@ -344,7 +344,7 @@ web:
 Use different providers for search vs extract. This lets you combine free search (SearXNG) with a paid extract provider, or vice versa:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.renco/config.yaml
 web:
   search_backend: "searxng"     # used by web_search
   extract_backend: "firecrawl"  # used by web_extract
@@ -359,7 +359,7 @@ When per-capability keys are empty, both fall through to `web.backend`. Only whe
 
 ### Auto-detection
 
-If no backend has **ever** been selected (no `web.backend` / per-capability key written by you or `hermes tools`), Hermes picks the first available one based on which credentials are set:
+If no backend has **ever** been selected (no `web.backend` / per-capability key written by you or `renco tools`), Renco picks the first available one based on which credentials are set:
 
 | Credential present | Auto-selected backend |
 |--------------------|-----------------------|
@@ -372,7 +372,7 @@ If no backend has **ever** been selected (no `web.backend` / per-capability key 
 | `ddgs` package importable | ddgs |
 | *(nothing set at all)* | keyless ring: exa / parallel / tavily / firecrawl / keenable (round-robin) |
 
-**Keyless free-tier ring:** when *no* credential above is present, requests rotate across five vendors' public free tiers (Exa, Parallel, Tavily, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
+**Keyless free-tier ring:** when *no* credential above is present, requests rotate across five vendors' public free tiers (Exa, Parallel, Tavily, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `renco tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 
 **One-shot keyless rescue for keyed backends:** when your chosen/keyed backend fails a call (bad key, outage, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
 
@@ -382,7 +382,7 @@ xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` s
 
 ## Verify your setup
 
-Run `hermes setup` to see which web backend is detected:
+Run `renco setup` to see which web backend is detected:
 
 ```
 ✅ Web Search & Extract (searxng)
@@ -392,7 +392,7 @@ Or check via the CLI:
 
 ```bash
 # Activate the venv and run the web tools module directly
-source ~/.hermes/hermes-agent/.venv/bin/activate
+source ~/.renco/renco-agent/.venv/bin/activate
 python -m tools.web_tools
 ```
 
@@ -445,7 +445,7 @@ That's expected for pages over the character budget. The footer names the on-dis
 For agents that need to use SearXNG via `curl` directly (e.g. as a fallback when the web toolset isn't available), install the `searxng-search` optional skill:
 
 ```bash
-hermes skills install official/research/searxng-search
+renco skills install official/research/searxng-search
 ```
 
 This adds a skill that teaches the agent how to:

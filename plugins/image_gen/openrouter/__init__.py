@@ -9,7 +9,7 @@ content parts for grounding, and read the generated images back from
 
 Nous Portal proxies OpenRouter, so one implementation services both — we only
 swap the resolved ``(base_url, api_key)``. Credentials are resolved through the
-agent's existing :func:`~hermes_cli.runtime_provider.resolve_runtime_provider`,
+agent's existing :func:`~renco_cli.runtime_provider.resolve_runtime_provider`,
 which already understands OpenRouter's key pool and the Nous OAuth device-code
 token, so this plugin never reinvents auth.
 
@@ -89,7 +89,7 @@ logger = logging.getLogger(__name__)
 # is access-gated / unavailable / times out on this endpoint.
 #
 # Explicit override (OPENROUTER_IMAGE_MODEL, image_gen.<provider>.model, or
-# image_gen.model from ``hermes tools``): use exactly that model (no auto
+# image_gen.model from ``renco tools``): use exactly that model (no auto
 # fallback), so power users keep full control.
 DEFAULT_MODEL = "openai/gpt-5.4-image-2"
 _FALLBACK_MODEL = "google/gemini-3-pro-image"
@@ -116,7 +116,7 @@ _REQUEST_TIMEOUT = 300.0
 def _load_image_gen_config() -> Dict[str, Any]:
     """Read the ``image_gen`` section from config.yaml (``{}`` on failure)."""
     try:
-        from hermes_cli.config import load_config
+        from renco_cli.config import load_config
 
         cfg = load_config()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None
@@ -834,7 +834,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def _resolve_runtime(self) -> Dict[str, Any]:
         """Resolve ``(base_url, api_key)`` via the shared runtime resolver."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from renco_cli.runtime_provider import resolve_runtime_provider
 
         return resolve_runtime_provider(requested=self._runtime_name)
 
@@ -870,7 +870,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         dedicated ``GET /images/models`` catalog (40+ models: Seedream, Flux,
         Recraft, Qwen, MAI, Krea, ...) and the chat-completions image models,
         so every image model the endpoint serves — including ones released
-        after this code shipped — is selectable in ``hermes tools``. Nous
+        after this code shipped — is selectable in ``renco tools``. Nous
         Portal (no ``/images`` route) lists the chat-completions catalog only.
         Offline fallback: the static default chain plus the curated Image API
         snapshot.
@@ -1002,7 +1002,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         Precedence: explicit caller override (the ``model`` kwarg) → the
         provider's ``*_IMAGE_MODEL`` env override → scoped
         ``image_gen.<provider>.model`` → top-level ``image_gen.model`` (written
-        by ``hermes tools``) → the quality-first default chain.
+        by ``renco tools``) → the quality-first default chain.
 
         Any explicit user/model selection means "use this exact model", so no
         fallback. Only the bare default chain carries a Gemini fallback.
@@ -1232,7 +1232,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             return error_response(
                 error=(
                     f"No {self._display} credentials found. "
-                    f"Configure {self._display} in `hermes tools` → Image Generation."
+                    f"Configure {self._display} in `renco tools` → Image Generation."
                 ),
                 error_type="missing_api_key",
                 provider=self._name,
@@ -1264,8 +1264,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             # OpenRouter attribution headers (harmless against Nous Portal).
-            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-            "X-Title": "Hermes Agent",
+            "HTTP-Referer": "https://github.com/ewtodd/renco",
+            "X-Title": "Renco Agent",
         }
         last_error: Optional[Dict[str, Any]] = None
         for i, model_id in enumerate(model_chain):

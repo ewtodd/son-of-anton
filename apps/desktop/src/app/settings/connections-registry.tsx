@@ -214,7 +214,7 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
 
 /**
  * The connections registry section of Settings → Gateways: manage the named
- * agent sources (local runtime + any number of remote gateways / Hermes Cloud
+ * agent sources (local runtime + any number of remote gateways / Renco Cloud
  * instances / SSH hosts). Storage-level management — the active/primary
  * switchover UX is the connection-mode controls above this section.
  */
@@ -239,7 +239,7 @@ export function ConnectionsRegistrySection() {
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
 
-  const bridge = window.hermesDesktop?.connections
+  const bridge = window.rencoDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
 
@@ -454,7 +454,7 @@ export function ConnectionsRegistrySection() {
     [bridge, s.testFailed, s.testOk]
   )
 
-  // Fan out `hermes update` to every eligible source; per-connection results
+  // Fan out `renco update` to every eligible source; per-connection results
   // land as individual toasts so one dead box doesn't hide the others.
   const updateAll = useCallback(async () => {
     if (!bridge?.updateAll) {

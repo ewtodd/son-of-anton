@@ -11,7 +11,7 @@ Original PR #1811 by benfrank241, adapted to MemoryProvider ABC.
 
 Config via environment variables:
   HINDSIGHT_API_KEY                — API key for Hindsight Cloud
-  HINDSIGHT_BANK_ID                — memory bank identifier (default: hermes)
+  HINDSIGHT_BANK_ID                — memory bank identifier (default: renco)
   HINDSIGHT_BUDGET                 — recall budget: low/mid/high (default: mid)
   HINDSIGHT_API_URL                — API endpoint
   HINDSIGHT_MODE                   — cloud or local (default: cloud)
@@ -20,11 +20,11 @@ Config via environment variables:
   HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT — seconds to wait for a slow embedded daemon /health before treating it as stale (default: 30; set via config.json port_health_grace_timeout)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_OBSERVATION_SCOPES — observation scoping for retained memories: per_tag/combined/all_combinations, or a JSON list of tag-lists for custom scopes
-  HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories (default: hermes)
+  HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories (default: renco)
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
 
-Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
+Or via $RENCO_HOME/hindsight/config.json (profile-scoped), falling back to
 ~/.hindsight/config.json (legacy, shared) for backward compatibility.
 """
 
@@ -48,9 +48,9 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.secret_scope import get_secret
 
 from agent.memory_provider import MemoryProvider, RecallStatus
-from hermes_constants import get_hermes_home
+from renco_constants import get_renco_home
 from tools.registry import tool_error
-from hermes_cli.config import cfg_get
+from renco_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` stamped on retained memories — OPT-IN, empty by default.
 # AGENTS.md forbids shipping third-party attribution tags on-by-default until a
 # generic user-facing opt-in exists, so this stays unset unless the user sets it
-# via the ``retain_source`` config key or HINDSIGHT_RETAIN_SOURCE (e.g. "hermes").
+# via the ``retain_source`` config key or HINDSIGHT_RETAIN_SOURCE (e.g. "renco").
 _DEFAULT_RETAIN_SOURCE = ""
 # Hindsight brand mark — the logo is an eye ringed by graph nodes. Used for
 # the deterministic recall/retain indicators (overrides the generic core default).
@@ -155,14 +155,14 @@ def _check_local_runtime() -> tuple[bool, str | None]:
 
     On older CPUs, importing the local Hindsight stack can raise a runtime
     error from NumPy before the daemon starts. Treat that as "unavailable"
-    so Hermes can degrade gracefully instead of repeatedly trying to start
+    so Renco can degrade gracefully instead of repeatedly trying to start
     a broken local memory backend.
 
     The embedded daemon computes embeddings via ``sentence_transformers``
     (transformers + huggingface-hub). Importing ``hindsight`` /
     ``hindsight_embed`` alone succeeds even when that stack is broken, so
     without importing it here the probe would falsely report the backend
-    healthy and ``hermes memory status`` would stay green while the daemon
+    healthy and ``renco memory status`` would stay green while the daemon
     aborts at startup on every retain/recall. Import it too so the probe (and
     status) reports the real ImportError.
     """
@@ -182,17 +182,17 @@ def _local_runtime_hint(reason: str | None) -> str:
     is provided only by the ``hindsight-all`` package (its wheel ships the
     top-level ``hindsight`` module). ``plugin.yaml`` declares only
     ``hindsight-client`` (enough for cloud / local_external), so a user who
-    selected local_embedded without going through ``hermes memory setup`` — a
+    selected local_embedded without going through ``renco memory setup`` — a
     hand-written config, the legacy ``"mode": "local"`` alias, or a restored
     backup — hits ``ModuleNotFoundError: No module named 'hindsight'``.
-    NousResearch/hermes-agent#7718.
+    ewtodd/renco#7718.
     """
     text = (reason or "").lower()
     if "no module named" in text and ("hindsight'" in text or 'hindsight"' in text
                                       or "hindsight_embed" in text):
         return (
             f" Install the embedded runtime with: uv pip install --python "
-            f"{sys.executable} hindsight-all — or run 'hermes memory setup'. "
+            f"{sys.executable} hindsight-all — or run 'renco memory setup'. "
             "(local_embedded needs the 'hindsight-all' package, which provides the "
             "top-level 'hindsight' module; 'hindsight-client' alone only covers "
             "cloud / local_external.)"
@@ -410,14 +410,14 @@ def _load_config() -> dict:
     """Load config from profile-scoped path, legacy path, or env vars.
 
     Resolution order:
-      1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
+      1. $RENCO_HOME/hindsight/config.json  (profile-scoped)
       2. ~/.hindsight/config.json             (legacy, shared)
       3. Environment variables
     """
     from pathlib import Path
 
     # Profile-scoped path (preferred)
-    profile_path = get_hermes_home() / "hindsight" / "config.json"
+    profile_path = get_renco_home() / "hindsight" / "config.json"
     if profile_path.exists():
         try:
             return json.loads(profile_path.read_text(encoding="utf-8"))
@@ -443,8 +443,8 @@ def _load_config() -> dict:
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
         "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
         "banks": {
-            "hermes": {
-                "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
+            "renco": {
+                "bankId": os.environ.get("HINDSIGHT_BANK_ID", "renco"),
                 "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"),
                 "enabled": True,
             }
@@ -545,9 +545,9 @@ def _utc_timestamp() -> str:
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
-    """Return the Hindsight embedded profile name for this Hermes config."""
-    profile = config.get("profile", "hermes")
-    return str(profile or "hermes")
+    """Return the Hindsight embedded profile name for this Renco config."""
+    profile = config.get("profile", "renco")
+    return str(profile or "renco")
 
 
 def _load_simple_env(path) -> dict[str, str]:
@@ -556,7 +556,7 @@ def _load_simple_env(path) -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    # utf-8-sig, not plain utf-8: this is also used on the Hermes .env during
+    # utf-8-sig, not plain utf-8: this is also used on the Renco .env during
     # post_setup, and a Notepad BOM would otherwise stick to the first key.
     for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         if not line or line.startswith("#") or "=" not in line:
@@ -693,14 +693,14 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
     """Resolve a bank_id template string with the given placeholders.
 
     Supported placeholders (each is sanitized before substitution):
-      {profile}   — active Hermes profile name (from agent_identity)
-      {workspace} — Hermes workspace name (from agent_workspace)
+      {profile}   — active Renco profile name (from agent_identity)
+      {workspace} — Renco workspace name (from agent_workspace)
       {platform}  — "cli", "telegram", "discord", etc.
       {user}      — platform user id (gateway sessions)
       {session}   — current session id
 
     Missing/empty placeholders are rendered as the empty string and then
-    collapsed — e.g. ``hermes-{user}`` with no user becomes ``hermes``.
+    collapsed — e.g. ``renco-{user}`` with no user becomes ``renco``.
 
     If the template is empty, resolution falls back to *fallback*.
     Returns the sanitized bank id.
@@ -743,7 +743,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._config = None
         self._api_key = None
         self._api_url = _DEFAULT_API_URL
-        self._bank_id = "hermes"
+        self._bank_id = "renco"
         self._budget = "mid"
         self._mode = "cloud"
         self._llm_base_url = ""
@@ -834,7 +834,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # path.
         self._prefetch_waits_for_retain = True
         self._prefetch_retain_drain_timeout = 10.0
-        self._retain_context = "conversation between Hermes Agent and the User"
+        self._retain_context = "conversation between Renco Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
         # How many turns the last append-mode retain already shipped. Used to
@@ -906,11 +906,11 @@ class HindsightMemoryProvider(MemoryProvider):
             return ""
         return _local_runtime_hint(reason).strip()
 
-    def save_config(self, values, hermes_home):
-        """Write config to $HERMES_HOME/hindsight/config.json."""
+    def save_config(self, values, renco_home):
+        """Write config to $RENCO_HOME/hindsight/config.json."""
         import json
         from pathlib import Path
-        config_dir = Path(hermes_home) / "hindsight"
+        config_dir = Path(renco_home) / "hindsight"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "config.json"
         existing = {}
@@ -923,17 +923,17 @@ class HindsightMemoryProvider(MemoryProvider):
         from utils import atomic_json_write
         atomic_json_write(config_path, existing, mode=0o600)
 
-    def post_setup(self, hermes_home: str, config: dict) -> None:
+    def post_setup(self, renco_home: str, config: dict) -> None:
         """Custom setup wizard — installs only the deps needed for the selected mode."""
         import subprocess
         import shutil
         import sys
         from pathlib import Path
 
-        from hermes_cli.config import save_config
-        from hermes_cli.secret_prompt import masked_secret_prompt
+        from renco_cli.config import save_config
+        from renco_cli.secret_prompt import masked_secret_prompt
 
-        from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup
+        from renco_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup
 
         print("\n  Configuring Hindsight memory:\n")
 
@@ -993,7 +993,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
         print("\n  Checking dependencies...")
         # Environment-aware install: sealed hosted venvs redirect to the durable
-        # data-volume target instead of writing to /opt/hermes (NS-605).
+        # data-volume target instead of writing to /opt/renco (NS-605).
         from tools.lazy_deps import install_specs
 
         outcome = install_specs(deps_to_install, timeout=120)
@@ -1059,7 +1059,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if llm_key:
                 env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
             else:
-                env_path = Path(hermes_home) / ".env"
+                env_path = Path(renco_home) / ".env"
                 existing_llm_key = ""
                 if env_path.exists():
                     # utf-8-sig: a Notepad BOM must not hide the first key.
@@ -1070,7 +1070,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
 
         # Step 4: Save everything
-        provider_config.setdefault("bank_id", "hermes")
+        provider_config.setdefault("bank_id", "renco")
         provider_config.setdefault("recall_budget", "mid")
         # Read existing timeout from config if present, otherwise use default.
         # Preserve explicit 0 values instead of treating them as blank.
@@ -1086,10 +1086,10 @@ class HindsightMemoryProvider(MemoryProvider):
         config["memory"]["provider"] = "hindsight"
         save_config(config)
 
-        self.save_config(provider_config, hermes_home)
+        self.save_config(provider_config, renco_home)
 
         if env_writes:
-            env_path = Path(hermes_home) / ".env"
+            env_path = Path(renco_home) / ".env"
             env_path.parent.mkdir(parents=True, exist_ok=True)
             existing_lines = []
             if env_path.exists():
@@ -1119,7 +1119,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if mode == "local_embedded":
             materialized_config = dict(provider_config)
-            config_path = Path(hermes_home) / "hindsight" / "config.json"
+            config_path = Path(renco_home) / "hindsight" / "config.json"
             try:
                 materialized_config = json.loads(config_path.read_text(encoding="utf-8"))
             except Exception:
@@ -1127,7 +1127,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
             llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
             if not llm_api_key:
-                llm_api_key = _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
+                llm_api_key = _load_simple_env(Path(renco_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
             if not llm_api_key:
                 llm_api_key = _load_simple_env(_embedded_profile_env_path(materialized_config)).get(
                     "HINDSIGHT_API_LLM_API_KEY",
@@ -1145,14 +1145,14 @@ class HindsightMemoryProvider(MemoryProvider):
         print("\n  Start a new session to activate.\n")
 
     def _offer_starter_template(self, mode: str, provider_config: dict, env_writes: dict) -> None:
-        """Offer to seed the bank with a Hermes starter template (best-effort)."""
-        from hermes_cli.memory_setup import _CANCELLED, _curses_select
+        """Offer to seed the bank with a Renco starter template (best-effort)."""
+        from renco_cli.memory_setup import _CANCELLED, _curses_select
 
         from . import templates as _hs_templates
 
         default_url = _DEFAULT_LOCAL_URL if mode == "local_external" else _DEFAULT_API_URL
         api_url = provider_config.get("api_url") or default_url
-        bank_id = provider_config.get("bank_id", "hermes")
+        bank_id = provider_config.get("bank_id", "renco")
         api_key = env_writes.get("HINDSIGHT_API_KEY") or os.environ.get("HINDSIGHT_API_KEY", "") or None
         _hs_templates.run_template_step(
             api_url=api_url,
@@ -1176,8 +1176,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
-            {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
-            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
+            {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "renco"},
+            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: renco-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -1200,7 +1200,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "prefetch_waits_for_retain", "description": "Have the background next-turn prefetch wait for the just-completed retain to become recall-visible on the server (local queue drain + async operation completion) before recalling, so recall includes the just-completed turn (runs off the reply path, adds no response latency)", "default": True},
             {"key": "prefetch_retain_drain_timeout", "description": "Max seconds the background prefetch waits for the retain to become recall-visible (queue drain + server-side completion) before recalling anyway", "default": 10.0},
-            {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
+            {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Renco Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
@@ -1232,9 +1232,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
+                             self._config.get("profile", "renco"), llm_provider)
                 kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
+                    profile=self._config.get("profile", "renco"),
                     llm_provider=llm_provider,
                     llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", ""),
                     llm_model=self._config.get("llm_model", ""),
@@ -1588,7 +1588,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
                                installed, _MIN_CLIENT_VERSION)
                 # Environment-aware install: sealed hosted venvs redirect to the
-                # durable data-volume target instead of /opt/hermes (NS-605).
+                # durable data-volume target instead of /opt/renco (NS-605).
                 from tools.lazy_deps import install_specs
                 outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
                 if outcome.ok:
@@ -1646,8 +1646,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
-        banks = cfg_get(self._config, "banks", "hermes", default={})
-        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        banks = cfg_get(self._config, "banks", "renco", default={})
+        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "renco")
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(
             self._bank_id_template,
@@ -1696,7 +1696,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Retain controls
         self._auto_retain = self._config.get("auto_retain", True)
         self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
-        self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._retain_context = self._config.get("retain_context", "conversation between Renco Agent and the User")
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
@@ -1715,7 +1715,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         # On-by-default deterministic indicator: when auto-recall injects memory,
-        # Hermes emits a "👁️ Hindsight — recalled N memories" status line so the
+        # Renco emits a "👁️ Hindsight — recalled N memories" status line so the
         # user SEES memory working, independent of whether the model mentions it.
         # Off switch for customer-facing agents that shouldn't surface internals.
         self._recall_indicator = bool(self._config.get("recall_indicator", True))
@@ -1761,13 +1761,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 msg = (
                     "Hindsight local_embedded mode cannot run as root "
                     "(PostgreSQL initdb refuses root). Skipping the embedded "
-                    "memory daemon. Run Hermes as a non-root user, or switch "
-                    "to cloud / local_external mode via 'hermes memory setup'."
+                    "memory daemon. Run Renco as a non-root user, or switch "
+                    "to cloud / local_external mode via 'renco memory setup'."
                 )
                 logger.warning(msg)
                 # Surface to the terminal too — a daemon that never starts
                 # would otherwise fail silently and the user would only see
-                # Hermes get sluggish. (issue #13125)
+                # Renco get sluggish. (issue #13125)
                 try:
                     print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
                 except Exception:
@@ -1777,7 +1777,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
             def _start_daemon():
                 import traceback
-                log_dir = get_hermes_home() / "logs"
+                log_dir = get_renco_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:
@@ -1789,7 +1789,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
                     client = self._get_client()
-                    profile = self._config.get("profile", "hermes")
+                    profile = self._config.get("profile", "renco")
 
                     # Update the profile .env to match our current config so
                     # the daemon always starts with the right settings.
@@ -1914,7 +1914,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Opt-in: recall synchronously against the *current* message so the
         # injected memories match this turn's query rather than the previous
-        # turn's queued recall. See NousResearch/hermes-agent#5820.
+        # turn's queued recall. See ewtodd/renco#5820.
         if self._recall_sync:
             if self._recall_disabled():
                 self._record_recall_indicator(returned=False, count=0)
@@ -2259,7 +2259,7 @@ class HindsightMemoryProvider(MemoryProvider):
         Without this hook, initialize()-cached state (``_session_id``,
         ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
         pointing at the previous session and writes would land in the wrong
-        document. See hermes-agent#6672.
+        document. See renco-agent#6672.
 
         Always update ``_session_id`` so metadata and tags on subsequent
         retains reflect the active session. Always mint a fresh
@@ -2401,7 +2401,7 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 if self._mode == "local_embedded":
                     # HindsightEmbedded.close() delegates to its sync client.close().
-                    # When Hermes created/used that client on the shared async loop,
+                    # When Renco created/used that client on the shared async loop,
                     # closing it from this thread can raise "attached to a different
                     # loop" before aiohttp releases the session. Close the embedded
                     # inner async client on the shared loop first, then let the

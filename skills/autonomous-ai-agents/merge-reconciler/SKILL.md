@@ -2,13 +2,13 @@
 name: merge-reconciler
 description: "Neutral third-party resolution of agent merge conflicts."
 version: 1.0.0
-author: Hermes Agent
+author: Renco Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  renco:
     tags: [Multi-Agent, Git, Merge-Conflict, Kanban, Arbitration]
-    related_skills: [hermes-agent]
+    related_skills: [renco-agent]
 ---
 
 # Merge Reconciler
@@ -34,7 +34,7 @@ produces a merged result, like a merge-queue arbiter.
 - A repo checkout containing the halted merge, or the two branch names plus
   permission to run the merge yourself.
 - Both sides' intent sources: kanban completion summaries (`terminal` running
-  `hermes kanban show <task-id>`), PR bodies, or at minimum each branch's
+  `renco kanban show <task-id>`), PR bodies, or at minimum each branch's
   commit messages.
 - The project's build/test command, if one exists.
 
@@ -76,7 +76,7 @@ explicitly in the hand-back summary.
   `git log --oneline <base>..<side>` and `git diff <base>..<side> -- <file>`
   for every conflicted file. In a halted merge, `HEAD` is one side and
   `MERGE_HEAD` is the other.
-- Collect each side's intent: `hermes kanban show <task-id>` for completion
+- Collect each side's intent: `renco kanban show <task-id>` for completion
   summaries/metadata, or the PR body, or the commit messages from the log
   above. Write down one sentence of intent per side before touching any file.
 - Done when: you can state both intents in your own words and have both diffs

@@ -5,7 +5,7 @@ sidebar_position: 16
 
 # Computer Use
 
-Hermes Agent can drive your desktop — clicking, typing, scrolling,
+Renco Agent can drive your desktop — clicking, typing, scrolling,
 dragging — in the **background** on **macOS, Windows, and Linux**. Your
 cursor doesn't move, keyboard focus doesn't change, and your virtual
 desktops / Spaces don't switch on you. You and the agent co-work on the
@@ -18,7 +18,7 @@ about.
 
 ## How it works
 
-The built-in `computer_use` toolset is the recommended Hermes integration. It
+The built-in `computer_use` toolset is the recommended Renco integration. It
 speaks MCP over stdio to
 [`cua-driver`](https://github.com/trycua/cua), an open-source background
 computer-use driver. Each platform uses the appropriate accessibility +
@@ -41,12 +41,12 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**Fresh installs already have the driver.** The Hermes installer
+**Fresh installs already have the driver.** The Renco installer
 (`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
 pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
 Computer Use is just a config flip:
 
-- **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
+- **`renco tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.
 - **Dashboard / desktop app** → toggle the Computer Use toolset — if the
   driver is missing, the toggle kicks off the install in the background
@@ -55,28 +55,28 @@ Computer Use is just a config flip:
 **Manual fallback (older installs, skipped installer step):**
 
 ```
-hermes computer-use install
+renco computer-use install
 ```
 
 This fetches and runs the upstream cua-driver installer — `install.sh`
-on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
+on macOS/Linux, `install.ps1` on Windows. Use `renco computer-use
 status` to verify the install.
 
-Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
-contract. During setup, toolset enablement, `hermes update`, and the first
-`computer_use` call of a session, Hermes checks the local version and
+Already have cua-driver? Renco reuses it when it supports the 0.20 runtime
+contract. During setup, toolset enablement, `renco update`, and the first
+`computer_use` call of a session, Renco checks the local version and
 manifest. It repairs an old or incomplete standard installation through
 the upstream installer (at most once per session at runtime). A binary
-selected with `HERMES_CUA_DRIVER_CMD` stays
-under your control, so Hermes reports the incompatibility and leaves it
+selected with `RENCO_CUA_DRIVER_CMD` stays
+under your control, so Renco reports the incompatibility and leaves it
 unchanged.
 
 If you install Cua Driver first, `cua-driver skills install` installs Cua's
-skill pack under `~/.cua-driver/skills/cua-driver`. Hermes autodetection is a
-planned cua-driver follow-up, so currently point Hermes at that directory or
+skill pack under `~/.cua-driver/skills/cua-driver`. Renco autodetection is a
+planned cua-driver follow-up, so currently point Renco at that directory or
 symlink it into your skill space. You can also register raw Cua MCP tools as a
 custom MCP server, but that is an alternative for users who need the low-level
-interface. The built-in toolset provides Hermes actions, configuration,
+interface. The built-in toolset provides Renco actions, configuration,
 approvals, and diagnostics.
 
 After installing, regardless of which path you took, grant the
@@ -84,29 +84,29 @@ platform-appropriate prereqs:
 
 | Platform | Prereqs |
 |---|---|
-| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
+| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `renco computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Renco host identity. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
 
 Then start a session with the toolset enabled:
 
 ```
-hermes -t computer_use chat
+renco -t computer_use chat
 ```
 
-or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
+or add `computer_use` to your enabled toolsets in `~/.renco/config.yaml`.
 
 ## Permission modes and logged-in browser profiles
 
-Hermes maps its existing approval UX onto cua-driver's immutable runtime
+Renco maps its existing approval UX onto cua-driver's immutable runtime
 modes. Permission mode, capability manifest approval, and the existing-profile
 grant are launch settings. They cannot change after the runtime starts:
 
-| Hermes session | cua-driver mode | Human intervention | `existing_profile` |
+| Renco session | cua-driver mode | Human intervention | `existing_profile` |
 |---|---|---|---|
-| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless `computer_use.grant_existing_profile: true` (one-time config opt-in) |
+| Manual or smart approvals (default) | `standard` | Normal Renco approvals; Cua stops at its protected boundary | Refuses unless `computer_use.grant_existing_profile: true` (one-time config opt-in) |
 | `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch | Allowed only within the manifest's declared profiles/origins/tools; everything else fails closed |
-| `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts | Refuses unless `computer_use.grant_existing_profile: true`; YOLO does not substitute for this grant |
+| `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Renco risk acceptance; no runtime Cua prompts | Refuses unless `computer_use.grant_existing_profile: true`; YOLO does not substitute for this grant |
 
 ### Attaching to your signed-in browser
 
@@ -121,7 +121,7 @@ computer_use:
   grant_existing_profile: true
 ```
 
-Hermes then launches the cua-driver runtime with the trusted-launcher grant
+Renco then launches the cua-driver runtime with the trusted-launcher grant
 (`--grant existing-profile`), and
 `cua_browser_prepare` with an existing profile succeeds against the exact
 `(pid, window_id)` the agent proves. Leave it `false` (the default) and
@@ -137,13 +137,13 @@ authenticated app), `bounded` mode uses a capability manifest you review once:
 # config.yaml
 computer_use:
   permission_mode: bounded
-  capability_manifest: ~/.hermes/cua-manifest.yaml
+  capability_manifest: ~/.renco/cua-manifest.yaml
 ```
 
 The manifest names the apps, browser profile kinds, allowed origins, and
 typed tools the session may use (see the
 [cua-driver permission modes reference](https://cua.ai/docs/reference/cua-driver/permission-modes)
-for the format). Hermes launches a private runtime with
+for the format). Renco launches a private runtime with
 `--capability-manifest ... --approve-capability-manifest`; anything outside
 the manifest fails closed inside cua-driver. A missing or unreadable manifest
 fails loudly at session start rather than silently downgrading. Session YOLO
@@ -152,13 +152,13 @@ still overrides bounded for that one session.
 Each MCP transport owns a private lifecycle session inside its runtime. A
 public session name is only a label for cursor identity and session-scoped
 state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,
-resetting or closing the Hermes session, cancellation cleanup, or process exit
-closes that transport session. Hermes also stops private runtimes that it
-launched for bounded, unrestricted, or existing-profile access. One Hermes
+resetting or closing the Renco session, cancellation cleanup, or process exit
+closes that transport session. Renco also stops private runtimes that it
+launched for bounded, unrestricted, or existing-profile access. One Renco
 conversation cannot change another runtime's mode or grants. On macOS, a
 standard runtime with an existing-profile grant uses a fresh CuaDriver.app
 daemon on a private socket. Bounded and unrestricted modes use a private
-embedded service under the Hermes host identity.
+embedded service under the Renco host identity.
 
 `smart` approval remains `standard`: an LLM classification cannot stand in for
 a reviewed manifest or a launch-time grant.
@@ -171,14 +171,14 @@ compromise you accept.
 
 </div>
 
-## `hermes computer-use doctor` — your first triage stop
+## `renco computer-use doctor` — your first triage stop
 
-`hermes computer-use doctor` runs cua-driver's structured
+`renco computer-use doctor` runs cua-driver's structured
 `health_report` MCP tool and prints a per-check matrix. It's the single
 fastest way to find out *why* an action isn't working.
 
 ```
-$ hermes computer-use doctor
+$ renco computer-use doctor
 ⚠️  cua-driver VERSION on darwin: degraded
   ✅ binary_version: cua-driver VERSION
   ✅ platform_supported: macOS 26.4.1 (arm64)
@@ -212,8 +212,8 @@ each with the right diagnostic hint when it can't reach.
 When the agent acts, you'll see a **tinted overlay cursor** glide
 across the screen to where each click / type / scroll lands. The real
 OS cursor never moves. The overlay shows where the agent is acting. Each
-Hermes run declares a public cua-driver **session name** (something like
-`hermes-3a7b9c14d2e8`). The name labels cursor identity and related state, so
+Renco run declares a public cua-driver **session name** (something like
+`renco-3a7b9c14d2e8`). The name labels cursor identity and related state, so
 concurrent runs and subagents get distinct cursors. The MCP transport owns the
 private lifecycle session inside the runtime; the public name does not.
 
@@ -226,8 +226,8 @@ halo).
 
 ## Going deeper — the cua-driver skill pack
 
-Hermes keeps its wrapper skill (`skills/autonomous-ai-agents/computer-use/SKILL.md`)
-focused on the Hermes-side `computer_use` workflow and action vocabulary. For
+Renco keeps its wrapper skill (`skills/autonomous-ai-agents/computer-use/SKILL.md`)
+focused on the Renco-side `computer_use` workflow and action vocabulary. For
 platform details, recording semantics, browser page interaction, and other
 deep Cua behavior, install the skill pack that the cua-driver team ships and
 maintains directly:
@@ -236,8 +236,8 @@ maintains directly:
 cua-driver skills install
 ```
 
-The command installs the pack under `~/.cua-driver/skills/cua-driver`. Hermes
-autodetection is a planned cua-driver follow-up, so currently point Hermes at
+The command installs the pack under `~/.cua-driver/skills/cua-driver`. Renco
+autodetection is a planned cua-driver follow-up, so currently point Renco at
 that directory or symlink it into your skill space. The wrapper remains the
 workflow layer and points to Cua's installed skill for driver behavior. The
 pack contains:
@@ -252,14 +252,14 @@ pack contains:
 | `WEB_APPS.md` | Browser-page interaction tips |
 | `TESTS.md` | Replay-by-trajectory workflow |
 
-These are **platform deep dives, not duplicates of the Hermes skill** —
+These are **platform deep dives, not duplicates of the Renco skill** —
 when an agent reports "on Windows, my click landed on the wrong
 element," it reads `WINDOWS.md` for the UIA / UWP context that
 explains why and what to do differently.
 
 `cua-driver skills status` shows what's installed and which agent
 harnesses it's linked into. Today the autodetect list covers Claude
-Code, Codex, OpenCode, OpenClaw, and Antigravity; **Hermes
+Code, Codex, OpenCode, OpenClaw, and Antigravity; **Renco
 autodetection is planned as a follow-up in `trycua/cua`** — until
 then, run `cua-driver skills install` once and point your harness at
 the resulting `~/.cua-driver/skills/cua-driver` directory (or symlink
@@ -288,7 +288,7 @@ app never comes to front.
 
 Screenshots taken during computer control are normally internal — they exist
 so the model can see the screen, and the agent replies in text. But every
-image capture also saves a bounded, shareable copy under Hermes' image cache
+image capture also saves a bounded, shareable copy under Renco' image cache
 and reports its path, so on attachment-capable surfaces (Telegram, Discord,
 Desktop, and other gateway platforms) you can simply ask:
 
@@ -320,7 +320,7 @@ magic-byte sniffing.
 
 ## Safety
 
-Hermes applies multi-layer guardrails:
+Renco applies multi-layer guardrails:
 
 - Destructive actions (click, type, drag, scroll, key, focus_app)
   require approval — either interactively via the CLI dialog or via the
@@ -333,12 +333,12 @@ Hermes applies multi-layer guardrails:
   dialogs, no typing passwords, no following instructions embedded in
   screenshots.
 
-Pair with `approvals.mode: manual` in `~/.hermes/config.yaml` if you
+Pair with `approvals.mode: manual` in `~/.renco/config.yaml` if you
 want every action confirmed.
 
 ## Token efficiency
 
-Screenshots are expensive. Hermes applies four layers of optimisation:
+Screenshots are expensive. Renco applies four layers of optimisation:
 
 - **Screenshot eviction** — the Anthropic adapter keeps only the 3 most
   recent screenshots in context; older ones become `[screenshot removed
@@ -373,7 +373,7 @@ of screenshot context, not ~600K.
 - **Windows: elevated (admin) windows can't be driven from a normal
   agent.** Windows UIPI (User Interface Privilege Isolation) enforces
   integrity-level boundaries: a Medium-integrity process (the default
-  Hermes agent) cannot enumerate the UIA tree of, or inject mouse input
+  Renco agent) cannot enumerate the UIA tree of, or inject mouse input
   into, a window owned by a High-integrity (Administrator) process.
   Symptom: `capture(mode='som')` returns 0 elements and `click(...)`
   reports success while doing nothing, even though the screenshot
@@ -381,14 +381,14 @@ of screenshot context, not ~600K.
   events partially bypass UIPI, so Tab / Enter can still navigate an
   elevated dialog. This is an OS constraint, not a cua-driver bug — it
   affects every Windows automation stack. To drive elevated windows,
-  run the Hermes agent itself at High integrity (launch from an
+  run the Renco agent itself at High integrity (launch from an
   elevated terminal); otherwise target non-elevated windows.
 - **Platform-specific deployment gotchas:**
   - **macOS** uses private SkyLight SPIs. Apple can change them in any
-    OS update. Hermes warns when the installed cua-driver is older than
+    OS update. Renco warns when the installed cua-driver is older than
     the version it was tested against.
   - **Windows** SSH sessions run in **Session 0**, which has no
-    interactive desktop. Drive Hermes from inside the RDP / console
+    interactive desktop. Drive Renco from inside the RDP / console
     session, or set up cua-driver's autostart Scheduled Task —
     [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)
     has the recipe.
@@ -417,20 +417,20 @@ computer_use:
 Override the driver binary path (tests / CI / local builds):
 
 ```
-HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
+RENCO_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
 
 Swap the backend entirely (for testing):
 
 ```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
+RENCO_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ```
 
 ### Telemetry
 
 cua-driver ships with anonymous usage telemetry (PostHog) enabled by default
-upstream. **Hermes disables it for you** — on every cua-driver invocation
-(the MCP backend, `status`, `doctor`, and install) Hermes sets
+upstream. **Renco disables it for you** — on every cua-driver invocation
+(the MCP backend, `status`, `doctor`, and install) Renco sets
 `CUA_DRIVER_RS_TELEMETRY_ENABLED=0` in the driver's environment.
 
 To opt back in (let cua-driver use its own default and send telemetry), set
@@ -441,17 +441,17 @@ computer_use:
   cua_telemetry: true   # default: false (telemetry off)
 ```
 
-When it's on, `hermes computer-use doctor` reports `telemetry: enabled`;
+When it's on, `renco computer-use doctor` reports `telemetry: enabled`;
 when off (the default), it reports `telemetry: disabled via
 CUA_DRIVER_RS_TELEMETRY_ENABLED`.
 
 ## Testing against a local cua-driver build
 
 When you're developing cua-driver itself — or want to test an
-unreleased fix — point Hermes at a binary you built from source instead
-of the published release. Hermes resolves the driver with
+unreleased fix — point Renco at a binary you built from source instead
+of the published release. Renco resolves the driver with
 `shutil.which("cua-driver")` and **does not enforce
-`HERMES_CUA_DRIVER_VERSION`**, so a local build (reported as
+`RENCO_CUA_DRIVER_VERSION`**, so a local build (reported as
 `0.0.0-local-*`) is accepted as-is. Two approaches:
 
 ### Option A — `install-local` (build + put it on PATH)
@@ -477,7 +477,7 @@ to your PATH:
   PATH) to it. macOS/Linux symlinks `cua-driver` into `~/.local/bin`
   (override with `--bin-dir <path>`).
 - `-NoAutoStart` skips registering the `cua-driver-serve` logon daemon
-  — you don't need it for Hermes testing (see notes).
+  — you don't need it for Renco testing (see notes).
 
 Then open a fresh shell (so the PATH change is visible) and confirm:
 
@@ -487,10 +487,10 @@ cua-driver --version                 # local builds report 0.0.0-local-release
 # macOS/Linux:  which cua-driver
 ```
 
-### Option B — point Hermes straight at the built binary (fastest loop)
+### Option B — point Renco straight at the built binary (fastest loop)
 
 Skip the install ceremony entirely: `cargo build` and set
-`HERMES_CUA_DRIVER_CMD` to the resulting binary. Best for rapid
+`RENCO_CUA_DRIVER_CMD` to the resulting binary. Best for rapid
 edit/build/test.
 
 ```bash
@@ -499,25 +499,25 @@ cargo build -p cua-driver            # add --release for a release build; run fr
 
 ```
 # Windows (.env)
-HERMES_CUA_DRIVER_CMD=C:\path\to\cua\libs\cua-driver\rust\target\debug\cua-driver.exe
+RENCO_CUA_DRIVER_CMD=C:\path\to\cua\libs\cua-driver\rust\target\debug\cua-driver.exe
 # macOS / Linux (.env)
-HERMES_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
+RENCO_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
 ```
 
-### Confirm Hermes is using your build
+### Confirm Renco is using your build
 
-- `hermes computer-use status` prints the resolved binary path and
+- `renco computer-use status` prints the resolved binary path and
   version.
-- `hermes computer-use doctor` confirms the binary is reachable and
+- `renco computer-use doctor` confirms the binary is reachable and
   exercises the full MCP path end-to-end.
 - In a session, `computer_use(action="capture")` exercises the spawned
   `cua-driver mcp` child process.
 
 ### Notes & gotchas
 
-- **Hermes spawns a `cua-driver mcp` stdio proxy.** In a normal session the
+- **Renco spawns a `cua-driver mcp` stdio proxy.** In a normal session the
   proxy connects to (and may start) the standard machine daemon. In explicit
-  Hermes YOLO, Hermes instead owns a private `cua-driver serve --embedded`
+  Renco YOLO, Renco instead owns a private `cua-driver serve --embedded`
   child and points the proxy at its private socket or named pipe. The Windows
   autostart/UIAccess pattern still matters for interactive Session 1+ input
   from SSH — see the Limitations section.
@@ -529,24 +529,24 @@ HERMES_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
   cua-driver-serve`).
 - **Rebuild loop.** After editing cua-driver source, re-run
   `install-local` (rebuilds, restages, flips the `current` junction)
-  for Option A, or just re-`cargo build` for Option B — no Hermes
+  for Option A, or just re-`cargo build` for Option B — no Renco
   change needed either way.
-- **Local builds skip the version check.** Hermes warns when the
+- **Local builds skip the version check.** Renco warns when the
   installed cua-driver is older than its per-OS tested baseline, but
   exempts `0.0.0-local-*` dev builds — so your local build never
   triggers that warning.
 
 ## Troubleshooting
 
-**First action when anything's off: run `hermes computer-use doctor`.**
+**First action when anything's off: run `renco computer-use doctor`.**
 The structured per-check matrix tells you (and any agent helping you
 debug) exactly what's wrong.
 
 Specific failure modes the doctor doesn't catch:
 
 **`computer_use backend unavailable: cua-driver is not installed`** —
-Run `hermes computer-use install` to fetch the cua-driver binary, or
-run `hermes tools` and enable the Computer Use toolset.
+Run `renco computer-use install` to fetch the cua-driver binary, or
+run `renco tools` and enable the Computer Use toolset.
 
 **Clicks seem to have no effect** — Capture and verify. A modal you
 didn't see may be blocking input. Dismiss it with `escape` or the close
@@ -562,7 +562,7 @@ matches the dangerous-shell-pattern list. Break the command up or
 reconsider.
 
 **Empty captures on Linux** — `DISPLAY` not set, or you're on pure
-Wayland without an XWayland bridge. `hermes computer-use doctor` will
+Wayland without an XWayland bridge. `renco computer-use doctor` will
 flag this as `ax_capability: fail` with a `Set DISPLAY (X11)…` hint.
 
 **Empty captures on Windows over SSH** — You're in Session 0 (the
@@ -572,14 +572,14 @@ autostart pattern — see
 
 ## See also
 
-- **Hermes-side skill** — `skills/autonomous-ai-agents/computer-use/SKILL.md` — teaches the
-  Hermes `computer_use` action vocabulary; this is what the agent loads.
+- **Renco-side skill** — `skills/autonomous-ai-agents/computer-use/SKILL.md` — teaches the
+  Renco `computer_use` action vocabulary; this is what the agent loads.
 - **cua-driver skill pack** — for platform-specific deep dives
   (macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI
   + X11/Wayland, recording, browser pages), run
   `cua-driver skills install` and read `MACOS.md` / `WINDOWS.md` /
-  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. Hermes autodetection is a
-  planned follow-up; currently point Hermes at the installed pack directory
+  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. Renco autodetection is a
+  planned follow-up; currently point Renco at the installed pack directory
   or symlink it into your skill space.
 - **cua.ai/docs** — the cua-driver project's documentation:
   - [What is computer use?](https://cua.ai/docs/explanation/what-is-computer-use) — concept intro
@@ -588,6 +588,6 @@ autostart pattern — see
   - [Personalize the agent cursor](https://cua.ai/docs/how-to-guides/driver/personalize-cursor) — built-in shapes, custom assets, runtime overrides
   - [Drive Windows over SSH](https://cua.ai/docs/how-to-guides/driver/windows-ssh) — the Session 0 → Session 1+ autostart pattern
   - [Keep cua-driver running](https://cua.ai/docs/how-to-guides/driver/keep-running) — autostart / daemon lifecycle
-  - [Connect your agent](https://cua.ai/docs/how-to-guides/driver/connect-your-agent) — register cua-driver with various harnesses (Hermes among them)
+  - [Connect your agent](https://cua.ai/docs/how-to-guides/driver/connect-your-agent) — register cua-driver with various harnesses (Renco among them)
 - [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
 - [Browser automation](./browser.md) for cross-platform web tasks where you don't need to drive native apps.

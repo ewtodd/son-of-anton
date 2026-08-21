@@ -41,8 +41,8 @@ function load({ sdkDeleteProfile = false } = {}) {
     queryClient: { invalidateQueries: value => invalidations.push(value) }
   }
   const source = pluginSource
-    .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
-    .replace(/^import\s+\{[\s\S]*?\}\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\*\s+as\s+sdk\s+from '@renco\/plugin-sdk'\r?\n/m, '')
+    .replace(/^import\s+\{[\s\S]*?\}\s+from '@renco\/plugin-sdk'\r?\n/m, '')
     .replace(/^const \{ McpTab, ToolsetConfigPanel \} = sdk\r?\n/m, '')
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
@@ -104,5 +104,5 @@ test('regression: the bot context menu exposes a destructive delete action and c
   assert.match(pluginSource, /bot\.is_default \? null : jsx\(ContextMenuSeparator/)
   assert.match(pluginSource, /ConfirmDialog/)
   assert.match(pluginSource, /title: 'Delete bot and profile\?'/)
-  assert.match(pluginSource, /This will permanently delete the bot[\s\S]*?and its associated Hermes profile at[\s\S]*?This cannot be undone\./)
+  assert.match(pluginSource, /This will permanently delete the bot[\s\S]*?and its associated Renco profile at[\s\S]*?This cannot be undone\./)
 })

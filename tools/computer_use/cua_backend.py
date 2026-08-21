@@ -14,7 +14,7 @@ Linux is the most recent runtime (X11 today, Wayland via XWayland; pure-
 Wayland progress tracked upstream). It is enabled in
 `check_computer_use_requirements` alongside macOS and Windows. The plumbing
 in this file is OS-agnostic; per-host gaps (no DISPLAY, missing AT-SPI,
-etc.) surface as specific blocked checks via `hermes computer-use doctor`
+etc.) surface as specific blocked checks via `renco computer-use doctor`
 rather than failing silently.
 
 Install:
@@ -54,7 +54,7 @@ import uuid
 from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from renco_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
@@ -104,7 +104,7 @@ def _action_result_from(
     ``structuredContent`` (or any individual field) leaves the corresponding
     ActionResult attribute ``None``, so callers and tests see unchanged
     behavior on old drivers. See the action response shape in
-    cua-driver's mcp-tool-notes and NousResearch/hermes-agent#67052.
+    cua-driver's mcp-tool-notes and ewtodd/renco#67052.
     """
     sc = structured if isinstance(structured, dict) else {}
 
@@ -163,11 +163,11 @@ def _action_result_from(
 # hardcoded version floor, which would rot and can't know what "latest" is.
 #
 # There is intentionally no version *pin* knob: the upstream installer always
-# fetches the latest release, so a `HERMES_CUA_DRIVER_VERSION` env var would
+# fetches the latest release, so a `RENCO_CUA_DRIVER_VERSION` env var would
 # only have *looked* like it pinned. For a reproducible version, point
-# `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
+# `RENCO_CUA_DRIVER_CMD` at a specific binary instead.
 
-_CUA_DRIVER_CMD_ENV = "HERMES_CUA_DRIVER_CMD"
+_CUA_DRIVER_CMD_ENV = "RENCO_CUA_DRIVER_CMD"
 _CUA_DRIVER_DEFAULT_CMD = "cua-driver"
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
@@ -216,7 +216,7 @@ _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 def _computer_use_cfg() -> Dict[str, Any]:
     """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     try:
-        from hermes_cli.config import load_config
+        from renco_cli.config import load_config
 
         return (load_config() or {}).get("computer_use") or {}
     except Exception:
@@ -224,7 +224,7 @@ def _computer_use_cfg() -> Dict[str, Any]:
 
 
 def _cua_no_overlay() -> bool:
-    """True when Hermes should pass ``--no-overlay`` to cua-driver.
+    """True when Renco should pass ``--no-overlay`` to cua-driver.
 
     Reads ``computer_use.no_overlay``. Default ``None`` (auto-detect):
     disable the overlay where idle CPU burn is a known failure mode —
@@ -254,7 +254,7 @@ def _cua_no_overlay() -> bool:
 
 
 def _cua_telemetry_disabled() -> bool:
-    """True when Hermes should disable cua-driver telemetry for this user.
+    """True when Renco should disable cua-driver telemetry for this user.
 
     Reads ``computer_use.cua_telemetry`` (default False → telemetry off).
     Unreadable config falls SAFE toward disabling telemetry.
@@ -269,7 +269,7 @@ def _cua_configured_permission_mode() -> str:
     Reads ``computer_use.permission_mode`` (default ``standard``).  Only
     ``standard`` and ``bounded`` are honored here — ``unrestricted`` is
     deliberately NOT a config value: it stays tied to the explicit
-    per-session Hermes YOLO toggle so a stale config line can never
+    per-session Renco YOLO toggle so a stale config line can never
     silently bypass approvals. Unknown values fall closed to ``standard``.
     """
     raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
@@ -293,7 +293,7 @@ def _cua_grant_existing_profile() -> bool:
     """True when the user pre-authorized existing-profile browser attachment.
 
     Reads ``computer_use.grant_existing_profile`` (default False). This is
-    cua-driver's trusted-launcher grant. Hermes passes
+    cua-driver's trusted-launcher grant. Renco passes
     ``--grant existing-profile`` when it launches the standard-mode runtime.
     On macOS it also selects a private socket so the newly configured
     CuaDriver.app runtime cannot collide with an already-running default
@@ -364,7 +364,7 @@ def _standard_runtime_launch_args(
     if platform != "darwin":
         return result, None
     private_socket = socket_path or os.path.join(
-        tempfile.gettempdir(), f"hermes-cua-standard-{uuid.uuid4().hex[:12]}.sock"
+        tempfile.gettempdir(), f"renco-cua-standard-{uuid.uuid4().hex[:12]}.sock"
     )
     result.extend(["--socket", private_socket])
     return result, private_socket
@@ -451,10 +451,10 @@ def _empty_discovery_reason() -> str:
             "window discovery returned no windows; on macOS this usually "
             "means no shareable display (headless Mac or panel asleep) — "
             "wake the display or attach a monitor/HDMI dummy, then run "
-            "`hermes computer-use doctor`"
+            "`renco computer-use doctor`"
         )
     return (
-        "window discovery returned no windows; run `hermes computer-use "
+        "window discovery returned no windows; run `renco computer-use "
         "doctor` (display reachability, AX capability)"
     )
 
@@ -548,17 +548,17 @@ def _select_capture_target(
 
 
 def _wsl_windows_path_to_posix(path: str) -> str:
-    """Translate a Windows absolute manifest command when Hermes runs in WSL.
+    """Translate a Windows absolute manifest command when Renco runs in WSL.
 
     Windows cua-driver manifests can report ``C:\\Users\\...\\cua-driver.exe``
-    even though the Hermes process uses POSIX subprocess spawning inside WSL.
+    even though the Renco process uses POSIX subprocess spawning inside WSL.
     The same file is reachable through DrvFS as ``/mnt/c/Users/...``.
     Non-Windows paths and non-WSL hosts are returned unchanged.
     """
     if not re.match(r"^[A-Za-z]:[\\/]", path):
         return path
     try:
-        from hermes_constants import is_wsl
+        from renco_constants import is_wsl
 
         if not is_wsl():
             return path
@@ -575,11 +575,11 @@ class _EmbeddedCuaDaemon:
     """Private host-owned daemon for a non-standard permission mode.
 
     Cua Driver permission mode is immutable after daemon startup.  Reusing the
-    machine-wide daemon would therefore let one Hermes session's YOLO choice
+    machine-wide daemon would therefore let one Renco session's YOLO choice
     affect another session.  A private embedded daemon gives the requesting
     session its own socket, process, and launch-time authorization:
 
-    * ``unrestricted`` — explicit Hermes YOLO; launch-time risk
+    * ``unrestricted`` — explicit Renco YOLO; launch-time risk
       acknowledgement via ``--dangerously-bypass-approvals``.
     * ``bounded`` — a user-reviewed capability manifest
       (``computer_use.capability_manifest`` in config.yaml) approved at
@@ -644,7 +644,7 @@ class _EmbeddedCuaDaemon:
         self._stderr_thread: Optional[threading.Thread] = None
         token = uuid.uuid4().hex[:12]
         if sys.platform == "win32":
-            self.socket_path = rf"\\.\pipe\hermes-cua-{token}"
+            self.socket_path = rf"\\.\pipe\renco-cua-{token}"
         else:
             self.socket_path = os.path.join(
                 tempfile.gettempdir(), f"hc-{token}.sock"
@@ -718,7 +718,7 @@ class _EmbeddedCuaDaemon:
         self._stderr_thread = threading.Thread(
             target=self._drain_stderr,
             args=(self._process,),
-            name="hermes-cua-daemon-stderr",
+            name="renco-cua-daemon-stderr",
             daemon=True,
         )
         self._stderr_thread.start()
@@ -799,12 +799,12 @@ def _resolve_mcp_invocation(
 ) -> Tuple[str, List[str]]:
     """Return ``(command, args)`` that spawn cua-driver's stdio MCP server.
 
-    Surface 8 of NousResearch/hermes-agent#47072: instead of hardcoding
+    Surface 8 of ewtodd/renco#47072: instead of hardcoding
     ``["mcp"]`` we ask the driver itself via ``cua-driver manifest``
     (trycua/cua#1961). The manifest carries a stable ``mcp_invocation``
     pointer with both ``command`` and ``args``, so a future cua-driver
     that renames or relocates the subcommand keeps working without a
-    Hermes patch.
+    Renco patch.
 
     Falls back to ``(driver_cmd, ["mcp"])`` for older drivers that don't
     expose ``manifest``, or any indeterminate failure — the wrapper must
@@ -851,7 +851,7 @@ def _resolve_mcp_invocation(
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
         return driver_cmd, _mcp_args_with_overlay_flag(args, driver_cmd=driver_cmd)
-    # A Windows-installed cua-driver can hand a WSL-hosted Hermes an absolute
+    # A Windows-installed cua-driver can hand a WSL-hosted Renco an absolute
     # ``C:\...`` command; translate it to its DrvFS ``/mnt/<drive>/...`` form
     # BEFORE the path-separator check (backslash is not a separator on POSIX,
     # so the raw Windows string would otherwise be discarded here).
@@ -950,14 +950,14 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     """Return candidate cua-driver commands in resolution order.
 
     ``override`` is authoritative when supplied. Otherwise a non-empty
-    ``HERMES_CUA_DRIVER_CMD`` is authoritative; only when neither is set do we
+    ``RENCO_CUA_DRIVER_CMD`` is authoritative; only when neither is set do we
     use PATH and canonical install locations.
 
     Desktop apps launched from Finder/Dock often inherit a narrow PATH that
     omits user-local install directories. The upstream cua-driver installer
     commonly places the binary under ``~/.local/bin`` on POSIX systems, so a
-    Hermes Desktop/TUI session can otherwise filter out the `computer_use`
-    tool even though `hermes computer-use doctor` succeeds from a login shell.
+    Renco Desktop/TUI session can otherwise filter out the `computer_use`
+    tool even though `renco computer-use doctor` succeeds from a login shell.
     """
     configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
     if configured:
@@ -974,7 +974,7 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
         candidates.extend([
             # Official cua-driver installer location on Windows. Freshly
             # installed sessions inherit a stale PATH, so PATH lookup alone
-            # misses it until every Hermes process is restarted.
+            # misses it until every Renco process is restarted.
             os.path.join(
                 local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"
             ),
@@ -994,7 +994,7 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
 def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
     """Resolve the cua-driver executable for every runtime/status surface.
 
-    A supplied override (or ``HERMES_CUA_DRIVER_CMD``) is never silently
+    A supplied override (or ``RENCO_CUA_DRIVER_CMD``) is never silently
     replaced by another binary. Otherwise resolve PATH first, then canonical
     user-local installation locations used by the official installer.
     """
@@ -1030,7 +1030,7 @@ _CUA_DRIVER_RUNTIME_CONTRACT_ARGS = {
 
 
 def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str, Any]:
-    """Report whether a local driver can host Hermes' 0.20 integration."""
+    """Report whether a local driver can host Renco' 0.20 integration."""
     resolved = binary or resolve_cua_driver_cmd()
     if not resolved:
         return {
@@ -1098,7 +1098,7 @@ def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str
             "ready": False,
             "binary": resolved,
             "version": raw_version,
-            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+            "reason": "Renco computer use requires cua-driver 0.20.0 or newer",
         }
 
     invocation = manifest.get("mcp_invocation")
@@ -1208,7 +1208,7 @@ def cua_driver_update_nudge() -> Optional[str]:
     current = state.get("current_version") or "?"
     return (
         f"cua-driver {latest} is available (you have {current}); "
-        f"update with `hermes computer-use install --upgrade`."
+        f"update with `renco computer-use install --upgrade`."
     )
 
 
@@ -1228,7 +1228,7 @@ def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
 
     Returns the post-repair contract state (or the original state when no
     repair was attempted / the repair failed). Never raises. An explicit
-    ``HERMES_CUA_DRIVER_CMD`` override is authoritative even when broken, and
+    ``RENCO_CUA_DRIVER_CMD`` override is authoritative even when broken, and
     a missing binary means installation was never requested — both are left
     for the caller's error message.
     """
@@ -1248,7 +1248,7 @@ def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
         contract.get("reason") or "runtime contract is incomplete",
     )
     try:
-        from hermes_cli.tools_config import install_cua_driver
+        from renco_cli.tools_config import install_cua_driver
 
         if not install_cua_driver(upgrade=False, show_installer_progress=False):
             return contract
@@ -1296,10 +1296,10 @@ def cua_driver_install_hint() -> str:
         )
     return (
         "cua-driver is not installed. Install with one of:\n"
-        "  hermes computer-use install\n"
+        "  renco computer-use install\n"
         "Or run the upstream installer directly:\n"
         f"{installer}\n"
-        "Or run `hermes tools` and enable the Computer Use toolset to install it automatically."
+        "Or run `renco tools` and enable the Computer Use toolset to install it automatically."
     )
 
 
@@ -1332,7 +1332,7 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
 
 
 def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[UIElement]:
-    """Surface 2 of NousResearch/hermes-agent#47072: read the canonical
+    """Surface 2 of ewtodd/renco#47072: read the canonical
     ``structuredContent.elements`` array cua-driver-rs emits on every
     ``get_window_state`` response (trycua/cua#1961).
 
@@ -1535,7 +1535,7 @@ class _CuaDriverSession:
         self._session = None
         self._lock = threading.Lock()
         self._started = False
-        # Surface 4 of NousResearch/hermes-agent#47072: per-tool
+        # Surface 4 of ewtodd/renco#47072: per-tool
         # capability-token sets, populated from `tools/list` at session
         # init. Keys are tool names (e.g. "click", "get_window_state");
         # values are sets of capability strings (e.g.
@@ -1618,7 +1618,7 @@ class _CuaDriverSession:
                 command=command,
                 args=args,
                 # Apply the telemetry policy first (default: disabled), then
-                # sanitize Hermes-managed secrets out of the child env.
+                # sanitize Renco-managed secrets out of the child env.
                 env=_sanitize_subprocess_env(child_env),
             )
 
@@ -1756,12 +1756,12 @@ class _CuaDriverSession:
             # passes but the wrapper times out" reports are undiagnosable
             # from a bare "never reached ready".
             phase = getattr(self, "_startup_phase", "unknown")
-            from hermes_constants import display_hermes_home
+            from renco_constants import display_renco_home
             raise RuntimeError(
                 "cua-driver session never reached ready (timeout 30s; "
                 f"stuck in phase: {phase}). "
-                "Run `hermes computer-use doctor` and check "
-                f"{display_hermes_home()}/logs/agent.log for the phase timings."
+                "Run `renco computer-use doctor` and check "
+                f"{display_renco_home()}/logs/agent.log for the phase timings."
             )
         # If setup failed, the lifecycle coroutine set _setup_error
         # before setting _ready_event. Re-raise it on the caller's thread.
@@ -2112,7 +2112,7 @@ class _CuaDriverSession:
                 # "daemon is not running" is a PERMANENT condition for this
                 # invocation (`cua-driver call` requires the machine-wide
                 # daemon socket, which Linux installs typically never start —
-                # Hermes talks to the direct `cua-driver mcp` runtime
+                # Renco talks to the direct `cua-driver mcp` runtime
                 # instead). Retrying with backoff burns ~3.5s of sleeps per
                 # fallback for an outcome that cannot change; fail fast so
                 # callers surface a diagnosable error immediately.
@@ -2215,7 +2215,7 @@ class _CuaDriverSession:
     def _unknown_transport_outcome(name: str, exc: Exception) -> Dict[str, Any]:
         message = (
             f"cua-driver transport failed during {name}; the action outcome is "
-            "unknown, so Hermes did not replay it. Take fresh state before "
+            "unknown, so Renco did not replay it. Take fresh state before "
             "deciding whether to act again."
         )
         return {
@@ -2309,7 +2309,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
 
     `image_mime_types` is the explicit `mimeType` cua-driver emits on every
     image part as of trycua/cua#1961 (Surface 7 of
-    NousResearch/hermes-agent#47072). Each entry corresponds index-for-index
+    ewtodd/renco#47072). Each entry corresponds index-for-index
     with `images`; an empty string entry signals the part carried no
     mimeType (older cua-driver build), and the caller should fall back to
     base64-prefix sniffing.
@@ -2545,7 +2545,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # Exact identity for capture_after. App names may be generic on Linux
         # (for example, multiple unrelated Qt windows can say Qt6Application).
         self._last_target: Optional[Dict[str, Optional[int]]] = None
-        # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot
+        # Surface 6 of ewtodd/renco#47072: per-snapshot
         # `element_index -> element_token` map populated on capture().
         # Action tools (click/scroll/set_value/...) attach the matching
         # token alongside `element_index` so cua-driver detects "stale"
@@ -2557,17 +2557,17 @@ class CuaDriverBackend(ComputerUseBackend):
         # the private lifecycle and releases it when the connection closes.
         # start_session/end_session attach this stable label to cursor,
         # recording, and config state within that lifecycle. Doing so:
-        #   - Gets a distinct agent-cursor color per Hermes run, with
+        #   - Gets a distinct agent-cursor color per Renco run, with
         #     overlay rendering visualising where actions land
         #     (without moving the real OS cursor).
         #   - Gives config and recording state a stable owner label inside the
         #     transport-private lifecycle.
         # We mint a UUID4-based id once per CuaDriverBackend instance —
-        # one Hermes run = one backend = one label — and pass it as
+        # one Renco run = one backend = one label — and pass it as
         # `session` on every cua-driver tool call. Labels are an
         # part of the required Cua Driver 0.20 runtime contract checked at
         # backend startup.
-        self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
+        self._session_id: str = f"renco-{uuid.uuid4().hex[:12]}"
         self._typed_browser = CuaTypedBrowserRoute(
             session_id=self._session_id,
             call_tool=self._session.call_tool,
@@ -2598,7 +2598,7 @@ class CuaDriverBackend(ComputerUseBackend):
     def start(self) -> None:
         contract = cua_driver_runtime_contract_status()
         if not contract.get("ready"):
-            # An installed-but-incompatible driver (e.g. predating a Hermes
+            # An installed-but-incompatible driver (e.g. predating a Renco
             # version-floor bump) is a state we created — repair it once
             # automatically instead of failing every computer_use call.
             contract = _maybe_repair_runtime_contract(contract)
@@ -2606,15 +2606,15 @@ class CuaDriverBackend(ComputerUseBackend):
             reason = contract.get("reason") or "runtime contract is incomplete"
             if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
                 repair = (
-                    "Update the binary selected by HERMES_CUA_DRIVER_CMD or "
+                    "Update the binary selected by RENCO_CUA_DRIVER_CMD or "
                     "remove that override."
                 )
             else:
-                repair = "Run `hermes computer-use install` to repair it."
+                repair = "Run `renco computer-use install` to repair it."
             raise RuntimeError(f"cua-driver is not ready: {reason}. {repair}")
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
-        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # `computer-use` / `mcp` extras), not part of Renco' minimal core.
         # Lazy-install it on first use — the same pattern every other optional
         # backend uses — so users never hit an opaque `No module named 'mcp'`
         # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
@@ -2867,11 +2867,11 @@ class CuaDriverBackend(ComputerUseBackend):
     ) -> CaptureResult:
         """Capture the frontmost on-screen window or an exact known target.
 
-        Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
+        Maps renco `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
-        # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
+        # Surface 3 of ewtodd/renco#47072: read the canonical
         # `structuredContent.windows` array directly. Pre-fix the wrapper
         # also kept a text-line regex (`_WINDOW_LINE_RE`) as a fallback for
         # cua-driver builds that predated structuredContent; the supersede
@@ -3146,7 +3146,7 @@ class CuaDriverBackend(ComputerUseBackend):
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
-            # Surface 2 of NousResearch/hermes-agent#47072: prefer the
+            # Surface 2 of ewtodd/renco#47072: prefer the
             # canonical structuredContent.elements array (trycua/cua#1961).
             # Falls back to markdown regex parsing for cua-driver builds
             # that didn't carry the structured shape — those bounds come
@@ -3217,7 +3217,7 @@ class CuaDriverBackend(ComputerUseBackend):
         ``foreground_unsupported`` result instead of silently downgrading to
         background (which would land the input somewhere the model didn't
         expect). Returns an ActionResult to short-circuit on refusal, or None
-        to proceed. See NousResearch/hermes-agent#67052 phase B.
+        to proceed. See ewtodd/renco#67052 phase B.
         """
         if not delivery_mode or delivery_mode == "background":
             return None
@@ -3314,7 +3314,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
         # Choose tool by click_count only — single-vs-double — and pass the
         # button through to `click`'s `button` enum (Surface 5 of
-        # NousResearch/hermes-agent#47072). cua-driver-rs gained an explicit
+        # ewtodd/renco#47072). cua-driver-rs gained an explicit
         # `button: "left"|"right"|"middle"` arg on `click` in trycua/cua#1961
         # which rejects unknown buttons; before that, `middle` was silently
         # mapped to a left-click via name-routing through `right_click`.
@@ -3529,7 +3529,7 @@ class CuaDriverBackend(ComputerUseBackend):
         process.
 
         The default remains non-disruptive. ``raise_window=True`` is explicit,
-        separately approved by the Hermes adapter, and uses cua-driver's
+        separately approved by the Renco adapter, and uses cua-driver's
         standalone ``bring_to_front`` tool rather than an action property.
         """
         try:

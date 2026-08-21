@@ -1,8 +1,8 @@
-import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
+import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@renco/shared'
 import { atom } from 'nanostores'
 
-import type { HermesConnection } from '@/global'
-import { HermesGateway, setApiRequestConnection } from '@/hermes'
+import type { RencoConnection } from '@/global'
+import { RencoGateway, setApiRequestConnection } from '@/renco'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -21,12 +21,12 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
-const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
+const isOpen = (gateway: RencoGateway | null): boolean => gateway?.connectionState === 'open'
 
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
   onActiveConnectionInvalidated?: (fallbackProfile: string, activationEpoch: number) => void
-  onActiveConnectionChanged?: (connection: HermesConnection) => void
+  onActiveConnectionChanged?: (connection: RencoConnection) => void
   /**
    * Fires whenever applyActive() moves the active route to a (possibly
    * different) profile — including registry-internal eviction fallbacks
@@ -45,8 +45,8 @@ interface Secondary {
   profile: string
   /** Registry connection serving this socket; null = the local/legacy path. */
   connectionId: null | string
-  connection: HermesConnection | null
-  gateway: HermesGateway
+  connection: RencoConnection | null
+  gateway: RencoGateway
   activeRequests: number
   connectPromise: Promise<void> | null
   offEvent: () => void
@@ -89,16 +89,16 @@ const ACTIVATION_LEASE_MS = 30_000
 // runtime behavior is identical to plain module state.
 interface GatewayRegistryState {
   config: RegistryConfig | null
-  primaryGateway: HermesGateway | null
+  primaryGateway: RencoGateway | null
   primaryProfile: string
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
-  $gateway: ReturnType<typeof atom<HermesGateway | null>>
+  $gateway: ReturnType<typeof atom<RencoGateway | null>>
   $activeProfile: ReturnType<typeof atom<string>>
 }
 
-const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
+const STATE_KEY = Symbol.for('renco.desktop.gatewayRegistryState')
 
 function createRegistryState(): GatewayRegistryState {
   return {
@@ -111,7 +111,7 @@ function createRegistryState(): GatewayRegistryState {
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
-    $gateway: atom<HermesGateway | null>(null),
+    $gateway: atom<RencoGateway | null>(null),
     // The PROFILE the active gateway is routed to (bare profile name, never a
     // composite registry scope). Owned exclusively by applyActive() so the
     // published profile can never diverge from the socket actually selected —
@@ -175,7 +175,7 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
   g.config?.onEvent(event)
 }
 
-export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+export function setPrimaryGateway(gateway: RencoGateway | null, profile = 'default'): void {
   g.primaryGateway = gateway
   g.primaryProfile = normKey(profile)
 }
@@ -189,7 +189,7 @@ export function gatewayActivationEpoch(): number {
   return Number.isFinite(g.activationEpoch) ? g.activationEpoch : 0
 }
 
-export function activeGateway(): HermesGateway | null {
+export function activeGateway(): RencoGateway | null {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
@@ -258,7 +258,7 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   const gateway = activeGateway()
   g.$gateway.set(gateway)
   setGatewayState(gateway?.connectionState ?? 'closed')
-  // Push the active scope's registry connection into the hermes module (null
+  // Push the active scope's registry connection into the renco module (null
   // for the local pool) so connection-building WS calls (pluginSocket) resolve
   // through the same source of truth every activation path maintains here —
   // registry-agent activations included, not just profile switches.
@@ -280,7 +280,7 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   return true
 }
 
-function publishActiveConnection(connection: HermesConnection): void {
+function publishActiveConnection(connection: RencoConnection): void {
   if (g.config?.onActiveConnectionChanged) {
     g.config.onActiveConnectionChanged(connection)
   } else {
@@ -296,7 +296,7 @@ function clearTimer(entry: Secondary): void {
 }
 
 async function openSecondary(entry: Secondary): Promise<void> {
-  const desktop = window.hermesDesktop
+  const desktop = window.rencoDesktop
 
   if (!desktop) {
     return
@@ -390,7 +390,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     // busy on its next event. Lazy import: a static edge here closes a module
     // cycle (session-states → … → gateway) that leaves nanostores atoms
     // undefined at init for whichever module loads second. Best-effort catch:
-    // under partial vi.mock('@/hermes') harnesses the transitive graph can
+    // under partial vi.mock('@/renco') harnesses the transitive graph can
     // fail to load — a skipped reconcile there must not surface as an
     // unhandled rejection (the real graph always loads in production).
     void import('@/store/session-states')
@@ -445,7 +445,7 @@ function isMissingProfileError(error: unknown): boolean {
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
-  const gateway = new HermesGateway()
+  const gateway = new RencoGateway()
   const scope = registryBackendScopeKey(connectionId, profile)
 
   const entry: Secondary = {
@@ -497,7 +497,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
 async function sharedPrimaryRoute(profile: string): Promise<boolean> {
-  const desktop = window.hermesDesktop
+  const desktop = window.rencoDesktop
 
   if (!desktop) {
     return false
@@ -518,7 +518,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 async function gatewayForProfile(
   profile: string,
   leaseRequest = false
-): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
+): Promise<{ gateway: RencoGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
 
@@ -596,7 +596,7 @@ export async function requestGatewayForProfile<T>(
 
   try {
     if (!route.gateway) {
-      throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
+      throw new Error(`Renco gateway unavailable for profile "${route.key}"`)
     }
 
     const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
@@ -631,8 +631,8 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params)
   }
 
-  if (!window.hermesDesktop?.getConnectionFor) {
-    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+  if (!window.rencoDesktop?.getConnectionFor) {
+    throw new Error('This Desktop build cannot dial registry connections. Update Renco Desktop.')
   }
 
   const entry = g.secondaries.get(scope) ?? createSecondary(key, connectionId)
@@ -692,8 +692,8 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
     return openGatewayForProfile(profile)
   }
 
-  if (!window.hermesDesktop?.getConnectionFor) {
-    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+  if (!window.rencoDesktop?.getConnectionFor) {
+    throw new Error('This Desktop build cannot dial registry connections. Update Renco Desktop.')
   }
 
   const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
@@ -714,8 +714,8 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
     return true
   }
 
-  if (!window.hermesDesktop?.getConnectionFor) {
-    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+  if (!window.rencoDesktop?.getConnectionFor) {
+    throw new Error('This Desktop build cannot dial registry connections. Update Renco Desktop.')
   }
 
   const activationEpoch = beginGatewayActivation()
@@ -819,7 +819,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
 // Reconnect the active gateway after a transient request failure. Primary
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
-export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
+export async function ensureActiveGatewayOpen(): Promise<RencoGateway | null> {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
@@ -837,7 +837,7 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
   if (!isOpen(entry.gateway)) {
     // A remote/registry secondary can still be ACTIVATING (backend waking,
     // socket dialing). Failing instantly turned a routine cold start into
-    // "Hermes gateway is not connected" on the Sessions `+` action (#88880).
+    // "Renco gateway is not connected" on the Sessions `+` action (#88880).
     // Wait a bounded beat for the in-flight activation instead of erroring;
     // a genuinely dead gateway still returns null when the window closes.
     const deadline = Date.now() + ACTIVE_GATEWAY_OPEN_WAIT_MS
@@ -874,7 +874,7 @@ export function reconnectSecondaryGateways(): void {
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
 export function touchSecondaryGateways(): void {
-  const desktop = window.hermesDesktop
+  const desktop = window.rencoDesktop
 
   for (const entry of g.secondaries.values()) {
     if (entry.wantOpen) {

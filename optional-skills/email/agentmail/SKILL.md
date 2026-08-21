@@ -2,11 +2,11 @@
 name: agentmail
 description: "Give the agent its own inbox: send and receive email."
 version: 1.0.0
-author: teyrebaz33, Hermes Agent
+author: teyrebaz33, Renco Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  renco:
     tags: [email, communication, agentmail, mcp]
     category: email
 ---
@@ -37,7 +37,7 @@ AgentMail gives the agent its own identity and inbox.
 - Create an account and generate an API key (starts with `am_`)
 
 ### 2. Configure MCP Server
-Add to `~/.hermes/config.yaml` (paste your actual key — MCP env vars are not expanded from .env):
+Add to `~/.renco/config.yaml` (paste your actual key — MCP env vars are not expanded from .env):
 ```yaml
 mcp_servers:
   agentmail:
@@ -47,9 +47,9 @@ mcp_servers:
       AGENTMAIL_API_KEY: "am_your_key_here"
 ```
 
-### 3. Restart Hermes
+### 3. Restart Renco
 ```bash
-hermes
+renco
 ```
 All 11 AgentMail tools are now available automatically.
 
@@ -73,8 +73,8 @@ All 11 AgentMail tools are now available automatically.
 
 ### Create an inbox and send an email
 1. Create a dedicated inbox:
-   - Use `create_inbox` with a username (e.g. `hermes-agent`)
-   - The agent gets address: `hermes-agent@agentmail.to`
+   - Use `create_inbox` with a username (e.g. `renco-agent`)
+   - The agent gets address: `renco-agent@agentmail.to`
 2. Send an email:
    - Use `send_message` with `inbox_id`, `to`, `subject`, `text`
 3. Check for replies:
@@ -102,7 +102,7 @@ All 11 AgentMail tools are now available automatically.
 
 **Agent-to-human outreach:**
 ```
-1. create_inbox (username: "hermes-outreach")
+1. create_inbox (username: "renco-outreach")
 2. send_message (to: user@example.com, subject: "Hello", text: "...")
 3. list_threads to check for replies
 ```
@@ -117,7 +117,7 @@ All 11 AgentMail tools are now available automatically.
 ## Verification
 After setup, test with:
 ```
-hermes --toolsets mcp -q "Create an AgentMail inbox called test-agent and tell me its email address"
+renco --toolsets mcp -q "Create an AgentMail inbox called test-agent and tell me its email address"
 ```
 You should see the new inbox address returned.
 

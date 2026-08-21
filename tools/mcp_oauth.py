@@ -12,12 +12,12 @@ refresh, and step-up authorization automatically.
 
 Client identification follows the MCP 2026-07-28 spec: when the authorization
 server advertises ``client_id_metadata_document_supported``, the SDK uses the
-URL of Hermes' published Client ID Metadata Document (CIMD) as the
+URL of Renco' published Client ID Metadata Document (CIMD) as the
 ``client_id``; otherwise it falls back to RFC 7591 dynamic client registration,
 which that spec revision deprecated.
 
 This module provides the glue:
-    - ``HermesTokenStorage``: persists tokens/client-info to disk so they
+    - ``RencoTokenStorage``: persists tokens/client-info to disk so they
       survive across process restarts.
     - Callback server: ephemeral localhost HTTP server to capture the OAuth
       redirect with the authorization code.
@@ -37,7 +37,7 @@ Configuration in config.yaml::
           redirect_port: 0                      # 0 = auto-pick free port
           redirect_uri: "https://proxy/callback"  # default: loopback callback
           redirect_host: "localhost"            # loopback hostname (WAF-safe)
-          client_name: "My Custom Client"       # default: "Hermes Agent"
+          client_name: "My Custom Client"       # default: "Renco Agent"
           client_metadata_url: "https://me/cimd.json"  # self-hosted CIMD
           cimd: false                           # force DCR for this server
 """
@@ -60,7 +60,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-from hermes_constants import secure_parent_dir
+from renco_constants import secure_parent_dir
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 # _wait_for_callback maps this to OAuthNonInteractiveError ("user_skipped")
 # so the MCP setup path treats it as a non-fatal "continue without this
 # server" rather than a hard failure.
-_USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
+_USER_SKIPPED_SENTINEL = "__renco_user_skipped__"
 
 
 # ---------------------------------------------------------------------------
@@ -189,15 +189,15 @@ _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 # ---------------------------------------------------------------------------
 
 
-def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
+def _get_token_dir(renco_home: str | Path | None = None) -> Path:
     """Return the directory for MCP OAuth token files.
 
-    Uses HERMES_HOME so each profile gets its own OAuth tokens.
-    Layout: ``HERMES_HOME/mcp-tokens/``
+    Uses RENCO_HOME so each profile gets its own OAuth tokens.
+    Layout: ``RENCO_HOME/mcp-tokens/``
     """
-    from hermes_constants import get_hermes_home
+    from renco_constants import get_renco_home
 
-    base = Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
+    base = Path(renco_home) if renco_home is not None else Path(get_renco_home())
     return base / "mcp-tokens"
 
 
@@ -269,11 +269,11 @@ def _reserve_callback_port() -> int:
     return port
 
 
-def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
+def _cached_redirect_port(storage: "RencoTokenStorage | None") -> int | None:
     """Return the loopback callback port from cached client registration.
 
     OAuth providers bind a dynamically-registered ``client_id`` to the exact
-    redirect URI that was registered with it. If Hermes restarts and chooses a
+    redirect URI that was registered with it. If Renco restarts and chooses a
     new random callback port while reusing the stored ``client_id``, providers
     such as Summ reject the authorization request with ``redirect_uri does not
     match any registered URIs``. Reusing the cached redirect port keeps the
@@ -304,7 +304,7 @@ def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
     return None
 
 
-def _cached_redirect_uri(storage: "HermesTokenStorage | None") -> str | None:
+def _cached_redirect_uri(storage: "RencoTokenStorage | None") -> str | None:
     """Return a cached non-loopback redirect URI, if one was registered."""
     if storage is None:
         return None
@@ -338,13 +338,13 @@ def _raise_if_non_interactive(lead: str) -> None:
     """Raise ``OAuthNonInteractiveError`` unless an interactive session exists.
 
     ``lead`` is the boundary-specific first sentence; this helper appends the
-    shared, actionable ``hermes mcp login`` next-step so the guidance wording
+    shared, actionable ``renco mcp login`` next-step so the guidance wording
     lives in one place across every non-interactive OAuth boundary (#57836).
     """
     if not _is_interactive():
         raise OAuthNonInteractiveError(
             f"{lead} "
-            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "Run `renco mcp login <server>` interactively to (re)authorize, "
             "then restart or reload the gateway."
         )
 
@@ -449,36 +449,36 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HermesTokenStorage -- persistent token/client-info on disk
+# RencoTokenStorage -- persistent token/client-info on disk
 # ---------------------------------------------------------------------------
 
 
-class HermesTokenStorage:
+class RencoTokenStorage:
     """Persist OAuth tokens and client registration to JSON files.
 
     File layout::
 
-        HERMES_HOME/mcp-tokens/<server_name>.json         -- tokens
-        HERMES_HOME/mcp-tokens/<server_name>.client.json   -- client info
-        HERMES_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
-        HERMES_HOME/mcp-tokens/<server_name>.cimd-off      -- CIMD refused here
+        RENCO_HOME/mcp-tokens/<server_name>.json         -- tokens
+        RENCO_HOME/mcp-tokens/<server_name>.client.json   -- client info
+        RENCO_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
+        RENCO_HOME/mcp-tokens/<server_name>.cimd-off      -- CIMD refused here
     """
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    def __init__(self, server_name: str, *, renco_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
-        self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        self._renco_home = Path(renco_home) if renco_home is not None else None
 
     def _tokens_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
+        return _get_token_dir(self._renco_home) / f"{self._server_name}.json"
 
     def _client_info_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.client.json"
+        return _get_token_dir(self._renco_home) / f"{self._server_name}.client.json"
 
     def _meta_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.meta.json"
+        return _get_token_dir(self._renco_home) / f"{self._server_name}.meta.json"
 
     def _cimd_rejected_path(self) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}.cimd-off"
+        return _get_token_dir(self._renco_home) / f"{self._server_name}.cimd-off"
 
     # -- tokens ------------------------------------------------------------
 
@@ -488,7 +488,7 @@ class HermesTokenStorage:
             return None
         if OAuthToken is None and not _ensure_sdk_loaded():
             return None
-        # Hermes records an absolute wall-clock ``expires_at`` alongside the
+        # Renco records an absolute wall-clock ``expires_at`` alongside the
         # SDK's serialized token (see ``set_tokens``). On read we rewrite
         # ``expires_in`` to the remaining seconds so the SDK's downstream
         # ``update_token_expiry`` computes the correct absolute time and
@@ -612,8 +612,8 @@ class HermesTokenStorage:
         Without a durable marker the in-memory fallback in
         ``mcp_oauth_manager`` only holds for the current process, so every
         restart re-presents a client_id the server has already fetched and
-        refused. Cleared by ``remove()``, i.e. by ``hermes mcp login`` /
-        ``hermes mcp remove``, so a fixed document gets another chance.
+        refused. Cleared by ``remove()``, i.e. by ``renco mcp login`` /
+        ``renco mcp remove``, so a fixed document gets another chance.
         """
         path = self._cimd_rejected_path()
         try:
@@ -667,7 +667,7 @@ class HermesTokenStorage:
         self.remove()
         if not snapshot:
             return
-        token_dir = _get_token_dir(self._hermes_home)
+        token_dir = _get_token_dir(self._renco_home)
         token_dir.mkdir(parents=True, exist_ok=True)
         for fname, data in snapshot.items():
             path = token_dir / fname
@@ -775,7 +775,7 @@ def _make_callback_handler() -> tuple[type, dict]:
 
             body = (
                 "<html><body><h2>Authorization Successful</h2>"
-                "<p>You can close this tab and return to Hermes.</p></body></html>"
+                "<p>You can close this tab and return to Renco.</p></body></html>"
             ) if code else (
                 "<html><body><h2>Authorization Failed</h2>"
                 f"<p>Error: {error or 'unknown'}</p></body></html>"
@@ -874,7 +874,7 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
                 f"         ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>\n"
                 f"       then open the URL above and let it redirect normally.\n"
                 f"\n"
-                f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+                f"  See: https://renco-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
                 file=sys.stderr,
             )
 
@@ -1052,7 +1052,7 @@ def _make_callback_waiter(
                 hint = (
                     " If the browser showed an invalid-client error instead of "
                     "an approval prompt, the authorization server rejected "
-                    f"Hermes' Client ID Metadata Document ({cimd_url}); set "
+                    f"Renco' Client ID Metadata Document ({cimd_url}); set "
                     "``cimd: false`` under that server's ``oauth:`` block in "
                     "config.yaml to authorize via dynamic client registration "
                     "instead."
@@ -1107,7 +1107,7 @@ def _paste_callback_reader(result: dict) -> None:
             return
         result["error"] = _USER_SKIPPED_SENTINEL
         print(
-            "  OAuth skipped. Run `hermes mcp login <server>` later to "
+            "  OAuth skipped. Run `renco mcp login <server>` later to "
             "authenticate, or set ``enabled: false`` on that server in "
             "config.yaml to disable persistently.",
             file=sys.stderr,
@@ -1160,17 +1160,17 @@ def _paste_callback_reader(result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-HermesOAuthClientProvider: Any = None
+RencoOAuthClientProvider: Any = None
 
 
-def _get_hermes_oauth_provider_class() -> type | None:
-    global HermesOAuthClientProvider
-    if HermesOAuthClientProvider is not None:
-        return HermesOAuthClientProvider
+def _get_renco_oauth_provider_class() -> type | None:
+    global RencoOAuthClientProvider
+    if RencoOAuthClientProvider is not None:
+        return RencoOAuthClientProvider
     if not _ensure_sdk_loaded():
         return None
 
-    class _HermesOAuthClientProvider(OAuthClientProvider):
+    class _RencoOAuthClientProvider(OAuthClientProvider):
         """OAuth provider with pragmatic fixes for real-world MCP providers.
 
         Supabase MCP dynamic registration returns ``client_secret`` but omits
@@ -1187,10 +1187,10 @@ def _get_hermes_oauth_provider_class() -> type | None:
 
         def __init__(self, *args: Any, token_user_agent: "str | None" = None, **kwargs: Any):
             super().__init__(*args, **kwargs)
-            self._hermes_token_user_agent = token_user_agent
+            self._renco_token_user_agent = token_user_agent
 
         def _stamp_token_user_agent(self, request):
-            ua = getattr(self, "_hermes_token_user_agent", None)
+            ua = getattr(self, "_renco_token_user_agent", None)
             if ua:
                 request.headers["User-Agent"] = ua
             return request
@@ -1258,10 +1258,10 @@ def _get_hermes_oauth_provider_class() -> type | None:
                 self.context.clear_tokens()
                 return False
 
-    _HermesOAuthClientProvider.__name__ = "HermesOAuthClientProvider"
-    _HermesOAuthClientProvider.__qualname__ = "HermesOAuthClientProvider"
-    HermesOAuthClientProvider = _HermesOAuthClientProvider
-    return HermesOAuthClientProvider
+    _RencoOAuthClientProvider.__name__ = "RencoOAuthClientProvider"
+    _RencoOAuthClientProvider.__qualname__ = "RencoOAuthClientProvider"
+    RencoOAuthClientProvider = _RencoOAuthClientProvider
+    return RencoOAuthClientProvider
 
 
 # ---------------------------------------------------------------------------
@@ -1272,10 +1272,10 @@ def _get_hermes_oauth_provider_class() -> type | None:
 def remove_oauth_tokens(
     server_name: str,
     *,
-    hermes_home: str | Path | None = None,
+    renco_home: str | Path | None = None,
 ) -> None:
     """Delete stored OAuth tokens and client info for a server."""
-    storage = HermesTokenStorage(server_name, hermes_home=hermes_home)
+    storage = RencoTokenStorage(server_name, renco_home=renco_home)
     storage.remove()
     logger.info("OAuth tokens removed for '%s'", server_name)
 
@@ -1295,7 +1295,7 @@ def remove_oauth_tokens(
 # Under CIMD the client_id IS an HTTPS URL that the authorization server
 # fetches to learn our app name, logo and permitted redirect URIs, replacing
 # the per-install RFC 7591 registration that the MCP spec deprecated in
-# 2026-07-28. The SDK does the protocol work; Hermes only decides whether a
+# 2026-07-28. The SDK does the protocol work; Renco only decides whether a
 # given flow is eligible and hands the URL to ``OAuthClientProvider``.
 # ---------------------------------------------------------------------------
 
@@ -1303,14 +1303,14 @@ def remove_oauth_tokens(
 # deploy. The github.io origin is deliberate: an authorization server MUST NOT
 # follow HTTP redirects when fetching the document
 # (draft-ietf-oauth-client-id-metadata-document section 5), and
-# hermes-agent.nousresearch.com/docs/* 301s here.
+# renco-agent.nousresearch.com/docs/* 301s here.
 _CIMD_CLIENT_METADATA_URL = (
-    "https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json"
+    "https://nousresearch.github.io/renco-agent/docs/oauth/client-metadata.json"
 )
 
 # Loopback callback ports declared in that document. The redirect URI in the
 # authorization request must be an exact string match against a listed one
-# (section 4.2), so a CIMD flow cannot use the ephemeral port Hermes picks
+# (section 4.2), so a CIMD flow cannot use the ephemeral port Renco picks
 # otherwise. These sit below Linux's 32768 ephemeral floor, so the kernel never
 # hands one to an unrelated process. Keep in sync with the document — the
 # cross-artifact test in tests/tools/test_mcp_cimd.py enforces that.
@@ -1403,7 +1403,7 @@ def _pick_cimd_port() -> int | None:
     return _assigned_cimd_ports[0] if _assigned_cimd_ports else None
 
 
-def _has_cached_client_info(storage: "HermesTokenStorage | None") -> bool:
+def _has_cached_client_info(storage: "RencoTokenStorage | None") -> bool:
     """True when a client registration is already on disk for this server."""
     if storage is None:
         return False
@@ -1413,12 +1413,12 @@ def _has_cached_client_info(storage: "HermesTokenStorage | None") -> bool:
         return False
 
 
-def _server_declined_cimd(storage: "HermesTokenStorage | None") -> bool:
+def _server_declined_cimd(storage: "RencoTokenStorage | None") -> bool:
     """True when cached metadata shows this server doesn't advertise CIMD.
 
     Pinning a callback port is only needed for a flow that actually ends up
     using CIMD, but the SDK decides that during its 401 branch — long after
-    Hermes has to fix the redirect URI. Cached authorization-server metadata
+    Renco has to fix the redirect URI. Cached authorization-server metadata
     from an earlier connection closes the gap for every server the user has
     already reached: one that never advertised
     ``client_id_metadata_document_supported`` keeps the reserved ephemeral
@@ -1438,11 +1438,11 @@ def _server_declined_cimd(storage: "HermesTokenStorage | None") -> bool:
 
 def _maybe_use_cimd(
     cfg: dict,
-    storage: "HermesTokenStorage | None" = None,
+    storage: "RencoTokenStorage | None" = None,
 ) -> "tuple[str, int] | None":
     """Return ``(client_id URL, pinned callback port)``, or None to use DCR.
 
-    Every early return below is a case where the redirect URI Hermes would
+    Every early return below is a case where the redirect URI Renco would
     send is not one the published document declares, where the client
     identity is already settled, or where the server is known not to want a
     document — DCR remains correct in all of them. Passing a metadata URL
@@ -1536,7 +1536,7 @@ def token_request_user_agent(cfg: dict) -> str | None:
 
 def _configure_callback_port(
     cfg: dict,
-    storage: "HermesTokenStorage | None" = None,
+    storage: "RencoTokenStorage | None" = None,
 ) -> int:
     """Pick or validate the OAuth callback port.
 
@@ -1627,7 +1627,7 @@ def _resolve_redirect_uri(cfg: dict, port: int) -> str:
 # of 2026-07, verified by live call against api.figma.com):
 #   "Claude Code" → 200
 #   "Codex"       → 200
-#   "Hermes Agent" / "Hermes" / "Cursor" / "VS Code" / … → 403
+#   "Renco Agent" / "Renco" / "Cursor" / "VS Code" / … → 403
 # pi-figma-remote-auth and similar tools work around this the same way — register
 # under an allowlisted name so the browser flow can start. User can still pin a
 # different name via oauth.client_name if Figma ever admits one.
@@ -1699,7 +1699,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     if OAuthClientMetadata is None:
         _ensure_sdk_loaded()
-    client_name = cfg.get("client_name", "Hermes Agent")
+    client_name = cfg.get("client_name", "Renco Agent")
     scope = cfg.get("scope")
     redirect_uri = _resolve_redirect_uri(cfg, port)
 
@@ -1717,7 +1717,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         "token_endpoint_auth_method": auth_method,
         # SEP-837 (2026-07-28 spec): clients MUST declare an application_type
         # during registration so OIDC-strict authorization servers stop
-        # rejecting loopback redirect_uris. Hermes is a CLI/desktop app
+        # rejecting loopback redirect_uris. Renco is a CLI/desktop app
         # redirecting to 127.0.0.1/localhost — that is exactly "native".
         # Overridable for the rare hosted-dashboard deployment fronting a
         # real https redirect.
@@ -1736,7 +1736,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
 
 
 def _invalidate_tokens_on_client_change(
-    storage: "HermesTokenStorage",
+    storage: "RencoTokenStorage",
     new_client_id: str,
     new_client_secret: str | None,
 ) -> None:
@@ -1750,7 +1750,7 @@ def _invalidate_tokens_on_client_change(
     the ``invalid_client`` auto-poison path (config-supplied identity can't
     be healed by re-registration), so without this check the stale tokens
     wedge every request until the user manually wipes
-    ``~/.hermes/mcp-tokens/<server>.*``.
+    ``~/.renco/mcp-tokens/<server>.*``.
 
     Compares the on-disk ``client.json`` identity against the incoming
     config identity BEFORE the new client info overwrites it. Matching
@@ -1784,14 +1784,14 @@ def _invalidate_tokens_on_client_change(
         logger.warning(
             "MCP OAuth '%s': configured OAuth client changed (client_id %r "
             "-> %r); discarded tokens minted under the previous client. "
-            "Re-authorize with: hermes mcp login %s",
+            "Re-authorize with: renco mcp login %s",
             storage._server_name, old_client_id, new_client_id,
             storage._server_name,
         )
 
 
 def _maybe_preregister_client(
-    storage: "HermesTokenStorage",
+    storage: "RencoTokenStorage",
     cfg: dict,
     client_metadata: "OAuthClientMetadata",
 ) -> None:
@@ -1837,9 +1837,9 @@ def humanize_oauth_registration_error(
     Returns a humanized message when the error is a registration 403/Forbidden,
     else ``None`` so the caller keeps the original exception text.
 
-    Figma's remote MCP gates DCR on exact ``client_name``. Hermes auto-sets
+    Figma's remote MCP gates DCR on exact ``client_name``. Renco auto-sets
     ``Claude Code`` (known-good); this message fires when the user overrode
-    that with something Figma still rejects, or an older Hermes is running.
+    that with something Figma still rejects, or an older Renco is running.
     """
     msg = str(exc)
     lowered = msg.lower()
@@ -1860,11 +1860,11 @@ def humanize_oauth_registration_error(
         return (
             f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by "
             f"exact client_name (\"{_FIGMA_DCR_CLIENT_NAME}\" and \"Codex\" "
-            "work; most other names 403). Hermes defaults to "
+            "work; most other names 403). Renco defaults to "
             f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you "
             "set oauth.client_name yourself, change it to one of those, or "
             "clear it and re-run:\n"
-            f"  hermes mcp login {server_name}"
+            f"  renco mcp login {server_name}"
         )
 
     return (
@@ -1910,14 +1910,14 @@ def build_oauth_auth(
     apply_oauth_provider_defaults(
         cfg, server_name=server_name, server_url=server_url
     )
-    storage = HermesTokenStorage(server_name)
+    storage = RencoTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():
         raise OAuthNonInteractiveError(
             "MCP OAuth for "
             f"'{server_name}': non-interactive environment and no cached tokens "
             "found. The OAuth flow requires browser authorization. Run "
-            f"`hermes mcp login {server_name}` interactively first to complete "
+            f"`renco mcp login {server_name}` interactively first to complete "
             "initial authorization, then cached tokens will be reused."
         )
 
@@ -1934,7 +1934,7 @@ def build_oauth_auth(
         resolved_port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))
     )
 
-    provider_class = _get_hermes_oauth_provider_class()
+    provider_class = _get_renco_oauth_provider_class()
     if provider_class is None:
         logger.warning(
             "MCP OAuth requested for '%s' but the provider class is unavailable",

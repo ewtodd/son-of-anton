@@ -1,21 +1,21 @@
 /**
- * Hermes Bot Mode — a "one chat per agent" roster for the Hermes desktop.
+ * Renco Bot Mode — a "one chat per agent" roster for the Renco desktop.
  *
- * Left pane "Bots": one row per Hermes profile (a bot = an agent profile) with
+ * Left pane "Bots": one row per Renco profile (a bot = an agent profile) with
  * a customizable avatar (shape + color + eyes, image, or pet). Click opens that
  * bot's chat; right-click → Edit Profile (avatar, title, description).
  * "New Agent" creates a profile — Name / Title / Description with an
  * "Advanced" disclosure for full profile config.
  *
- * Right tile "Routines": scheduled tasks (Hermes cron jobs) scoped to the
+ * Right tile "Routines": scheduled tasks (Renco cron jobs) scoped to the
  * bot you're currently chatting with — follows the live gateway profile.
  *
  * Bots message each other straight into each bot's ONE canonical "Bot
  * Chat" — @-mentions deliver over gateway RPCs (no CLI relay), and
- * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
+ * bot-initiated sends use `renco -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
-import * as sdk from '@hermes/plugin-sdk'
+import * as sdk from '@renco/plugin-sdk'
 import {
   atom,
   Button,
@@ -61,7 +61,7 @@ import {
   Tip,
   useQuery,
   useValue
-} from '@hermes/plugin-sdk'
+} from '@renco/plugin-sdk'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
@@ -82,7 +82,7 @@ const blobatarSvg = typeof sdk === 'undefined' ? undefined : sdk.blobatarSvg
 // Feature-detected: older desktops fall back to the hand-rolled clock below.
 const createBudgetedLoop = typeof sdk === 'undefined' ? undefined : sdk.createBudgetedLoop
 
-const ID = 'hermes-bots'
+const ID = 'renco-bots'
 const ROSTER_KEY = [ID, 'roster']
 const ROUTINES_KEY = [ID, 'routines']
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -307,7 +307,7 @@ function groupActivityTone(kind) {
   return 'text-(--ui-text-tertiary)'
 }
 
-const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
+const GROUP_CHAT_SYNC_META_KEY = 'renco-bots-groups'
 // Gateway ui_meta is capped after Python JSON serialization. Keep a healthy
 // margin below that limit because Python escapes Unicode while JS does not.
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
@@ -919,7 +919,7 @@ function groupChatSyncPayloadEqual(left, right) {
 /** Every default-profile gateway route this Desktop can currently reach.
  *  The projection fans out to ALL of them, so any single gateway can die or
  *  be removed without losing the shared room state, and gateway-only
- *  clients (Hermes Go, headless backends) see rooms regardless of which
+ *  clients (Renco Go, headless backends) see rooms regardless of which
  *  gateway a Desktop was foregrounding when the room was used. */
 async function groupChatSyncTargetConnections() {
   const targets = new Set()
@@ -1177,7 +1177,7 @@ async function saveBotMeta(name, patch) {
   let serverRequest = null
   try {
     const { image, pet, ...rest } = next[name] || {}
-    serverRequest = Promise.resolve(host.request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } }))
+    serverRequest = Promise.resolve(host.request('profiles.configure', { name, ui_meta: { 'renco-bots': rest } }))
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -1334,7 +1334,7 @@ function hideOwnedBotSessions() {
 }
 
 // Titles Bot Mode itself mints for its plumbing sessions. Bot-to-bot CLI
-// handoffs (`hermes -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing`)
+// handoffs (`renco -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing`)
 // and mention handoffs create sessions with EXACTLY these titles; the
 // "Group: " prefix is the member-session title ensureGroupChatSession has
 // used since group chats shipped. Exact/prefix matching is deliberate — a
@@ -1424,7 +1424,7 @@ function pushLocalAvatars(roster) {
       avatarPushInflight.add(bot.name)
       host
         .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
+        .then(() => queryClient.invalidateQueries({ queryKey: ['renco-bots', 'roster'] }))
         .catch(() => avatarPushInflight.delete(bot.name))
       continue
     }
@@ -1444,7 +1444,7 @@ function pushLocalAvatars(roster) {
         png
           ? host
               .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: png })
-              .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
+              .then(() => queryClient.invalidateQueries({ queryKey: ['renco-bots', 'roster'] }))
           : Promise.reject(new Error('rasterize failed'))
       )
       .catch(() => avatarPushInflight.delete(bot.name))
@@ -1560,7 +1560,7 @@ function mergeServerMeta(roster, fetchedAt = 0) {
   const next = { ...local }
 
   for (const bot of roster) {
-    const server = bot.ui_meta?.['hermes-bots']
+    const server = bot.ui_meta?.['renco-bots']
     if (server && typeof server === 'object') {
       if (fetchedAt && fetchedAt < (botMetaWriteAt.get(bot.name) || 0)) {
         continue
@@ -1657,7 +1657,7 @@ async function duplicateBot(bot, roster) {
   return name
 }
 
-/** Permanently delete a bot's Hermes profile, then remove plugin-local state
+/** Permanently delete a bot's Renco profile, then remove plugin-local state
  * that would otherwise leave stale appearance/unread data behind.
  *
  * Prefer the SDK's `host.deleteProfile` when this Desktop build ships it: it
@@ -1667,7 +1667,7 @@ async function duplicateBot(bot, roster) {
  * roster's hover pre-warm just woke (right-click hovers the row!) holds the
  * profile dir open — the CLI's rmtree races the live backend and the
  * renderer's socket reconnect respawns it mid-delete, resurrecting the
- * directory (hermes-agent#52279). That is the "can't delete a bot" error. */
+ * directory (renco-agent#52279). That is the "can't delete a bot" error. */
 async function deleteBot(bot) {
   if (typeof host.deleteProfile === 'function') {
     await host.deleteProfile(bot.name)
@@ -1725,15 +1725,15 @@ async function deleteBot(bot) {
 // the root's overflow:hidden clips it, and NOTHING scrolls (#88). Capping
 // the viewport itself (inheriting the root's max-height) makes it the real
 // scroll container; lists shorter than the cap still shrink to fit.
-if (typeof document !== 'undefined' && !document.getElementById('hermes-bots-roster-css')) {
+if (typeof document !== 'undefined' && !document.getElementById('renco-bots-roster-css')) {
   const style = document.createElement('style')
-  style.id = 'hermes-bots-roster-css'
+  style.id = 'renco-bots-roster-css'
   style.textContent =
-    '.hermes-bots-roster [data-radix-scroll-area-viewport] > div {' +
+    '.renco-bots-roster [data-radix-scroll-area-viewport] > div {' +
     ' display: block !important; width: 100%; min-width: 0; }' +
-    '.hermes-scroll-cap > [data-radix-scroll-area-viewport] { max-height: inherit; }' +
-    '@keyframes hermes-bots-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }' +
-    '.hermes-bots-pulse { animation: hermes-bots-pulse 1.2s ease-in-out infinite; }'
+    '.renco-scroll-cap > [data-radix-scroll-area-viewport] { max-height: inherit; }' +
+    '@keyframes renco-bots-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }' +
+    '.renco-bots-pulse { animation: renco-bots-pulse 1.2s ease-in-out infinite; }'
   document.head.appendChild(style)
 }
 
@@ -2603,7 +2603,7 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
 
 // -- inline MCP setup (per-profile), driven by the mcp.servers.* gateway RPCs --
 // Feature-detected: if the gateway predates those RPCs the setup button hides
-// and the row falls back to the "run hermes mcp / Settings" hint. profile is
+// and the row falls back to the "run renco mcp / Settings" hint. profile is
 // the target bot's profile name (its config is what we write).
 
 async function mcpRpc(method, params) {
@@ -2770,8 +2770,8 @@ function McpSetupButton({ profile, entry, onDone, ensureProfile }) {
     try {
       if (host.openExternal) {
         host.openExternal(authUrl)
-      } else if (typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.openExternal) {
-        window.hermesDesktop.openExternal(authUrl)
+      } else if (typeof window !== 'undefined' && window.rencoDesktop && window.rencoDesktop.openExternal) {
+        window.rencoDesktop.openExternal(authUrl)
       } else {
         window.open(authUrl, '_blank')
       }
@@ -3338,7 +3338,7 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
               className: 'px-2 py-3 text-center text-xs leading-5 text-(--ui-text-tertiary)',
               children:
                 imagen === false
-                  ? 'No image model available. If you just enabled one (or updated Hermes), restart the gateway: Ctrl+K → "Restart gateway".'
+                  ? 'No image model available. If you just enabled one (or updated Renco), restart the gateway: Ctrl+K → "Restart gateway".'
                   : 'Checking image backend…'
             })
         : null,
@@ -3471,7 +3471,7 @@ function PetTab({ image, onImage }) {
   if (!pets.length) {
     return jsx('div', {
       className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-      children: 'No pets in the petdex gallery. Run `hermes pets` to explore.'
+      children: 'No pets in the petdex gallery. Run `renco pets` to explore.'
     })
   }
 
@@ -3588,14 +3588,14 @@ function PetTab({ image, onImage }) {
 // ── data ─────────────────────────────────────────────────────────────────────
 
 /** True once profiles.list reports the backend injects the bot-to-bot
- *  protocol into the system prompt itself (hermes-agent bot_mode_probe).
+ *  protocol into the system prompt itself (renco-agent bot_mode_probe).
  *  Gates every SOUL.md protocol append below. */
 let serverInjectsProtocol = false
 
 /** Pins to resolve precisely on the next roster poll: {profile: chatId}.
  *  The backend answers "what about THIS conversation" per entry
  *  (preferred_session), so a row's preview can describe the same session its
- *  click opens (hermes-agent#88200). Unknown params are ignored by older
+ *  click opens (renco-agent#88200). Unknown params are ignored by older
  *  gateways, which simply omit the field. */
 function preferredSessionIds(allMeta) {
   const pins = {}
@@ -3630,7 +3630,7 @@ function useRoster() {
       // carry a second copy. Older gateways lack the flag: keep appending.
       serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
 
-      // Multi-source desktops (hermes-agent #86875) also expose the union
+      // Multi-source desktops (renco-agent #86875) also expose the union
       // agent roster across every registered connection. Merge agents from
       // OTHER sources in as additional rows. Feature-detected + best-effort:
       // an older Desktop build (no host.agents) or a roster hiccup leaves
@@ -3865,22 +3865,22 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
 /** The @handle users tag a bot with. Multi-source rosters precompute the
  *  handle (bare name, or name-device when the profile exists on several
  *  registered sources) — prefer it when present. The primary profile's
- *  callable alias is 'hermes' — the mention middleware resolves it back to
+ *  callable alias is 'renco' — the mention middleware resolves it back to
  *  'default' — so the word 'default' never surfaces in the UI. */
 function botHandle(name, bot) {
   if (bot?.handle && bot.handle !== name) {
     return bot.handle
   }
 
-  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+  return (name || '').trim().toLowerCase() === 'default' ? 'renco' : name
 }
 
 /** Taggable @-forms derived from a bot's friendly names — the core profile
- *  display name (`hermes profile rename`) and the Bot Mode title. Free text
+ *  display name (`renco profile rename`) and the Bot Mode title. Free text
  *  reduces to the mention charset two ways: slugified ("Research Buddy" →
  *  research-buddy, the form autocomplete inserts) and collapsed
- *  (researchbuddy). Reserved tokens are dropped so a bot renamed "Hermes"
- *  can never hijack the primary profile's @hermes alias. */
+ *  (researchbuddy). Reserved tokens are dropped so a bot renamed "Renco"
+ *  can never hijack the primary profile's @renco alias. */
 function mentionNameForms(value) {
   const name = String(value || '').trim().toLowerCase()
 
@@ -3892,7 +3892,7 @@ function mentionNameForms(value) {
   const collapsed = name.replace(/[^a-z0-9_-]+/g, '')
 
   return [...new Set([slug, collapsed])].filter(
-    form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
+    form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'renco'].includes(form)
   )
 }
 
@@ -3904,7 +3904,7 @@ function mentionNameForms(value) {
 function botFriendlyNames(bot) {
   const localTitle = !bot?.remoteSource && typeof $botMeta !== 'undefined' ? $botMeta.get()?.[bot?.name]?.title : null
 
-  return [bot?.ui_meta?.['hermes-bots']?.title, localTitle, bot?.title, bot?.display_name]
+  return [bot?.ui_meta?.['renco-bots']?.title, localTitle, bot?.title, bot?.display_name]
 }
 
 /** The tag autocomplete inserts for a bot: the renamed (friendly) slug when
@@ -3993,8 +3993,8 @@ function resolveRosterMentions(text, roster, active = {}) {
   for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
     let token = match[2].toLowerCase()
 
-    if (token === 'hermes') {
-      token = byForm.has('hermes') ? 'hermes' : token
+    if (token === 'renco') {
+      token = byForm.has('renco') ? 'renco' : token
     }
 
     const bot = byForm.get(token)
@@ -4029,7 +4029,7 @@ async function ensureRemoteCanonicalChat(route, profile) {
   try {
     const listed = await host.requestProfile(route, 'profiles.list', {})
     const owner = listed?.profiles?.find(p => p.name === profile)
-    pinned = owner?.ui_meta?.['hermes-bots']?.chat || null
+    pinned = owner?.ui_meta?.['renco-bots']?.chat || null
   } catch {
     /* older remote gateway — title lookup below still works */
   }
@@ -4268,7 +4268,7 @@ let botOpenGeneration = 0
 
 async function openStoredBotChat(name, storedId, summary) {
   if (!storedId || typeof host.openSession !== 'function') {
-    throw new Error('This Hermes Desktop version cannot open stored sessions')
+    throw new Error('This Renco Desktop version cannot open stored sessions')
   }
 
   const hasAuthoritativeCount =
@@ -4276,7 +4276,7 @@ async function openStoredBotChat(name, storedId, summary) {
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
 
   // A profile backend that just woke up can lose the hydration-timeout race
-  // even though the session is fine (hermes-agent#89617) — clicking Retry
+  // even though the session is fine (renco-agent#89617) — clicking Retry
   // succeeds because the backend is warm by then. retryHydrationTimeoutOnce
   // asks the SDK layer to retry that same wait internally, BEFORE it arms the
   // core stranded-session overlay: a plugin-side retry can't do this because
@@ -4407,7 +4407,7 @@ function createCanonicalChat(name) {
 
 /** Open the bot's ONE forever chat and return the opened id (or the pin).
  *
- *  Identity rules (hermes-agent#88200 — the row must open the session its
+ *  Identity rules (renco-agent#88200 — the row must open the session its
  *  preview describes):
  *  - grandfather: no pin + an existing Bot Chat adopts the previewed session
  *    (`history`, the roster's last_session for this bot) instead of minting
@@ -4528,7 +4528,7 @@ async function prepareBotSource(bot, pinnedChat) {
   }
 
   if (typeof host.ensureAgent !== 'function') {
-    throw new Error('Update Hermes Desktop to chat with agents on other connections.')
+    throw new Error('Update Renco Desktop to chat with agents on other connections.')
   }
 
   await host.ensureAgent(bot.connectionId, bot.name)
@@ -4551,7 +4551,7 @@ async function prepareBotSource(bot, pinnedChat) {
     const refreshed = await host.request('profiles.list', {})
     const owner = refreshed?.profiles?.find(profile => profile.name === bot.name)
 
-    return owner?.ui_meta?.['hermes-bots']?.chat || null
+    return owner?.ui_meta?.['renco-bots']?.chat || null
   } catch {
     // Metadata refresh is best-effort; canonical creation remains the fallback.
     return null
@@ -4561,7 +4561,7 @@ async function prepareBotSource(bot, pinnedChat) {
 function displayName(bot, meta) {
   // Only THIN rows from another source trade the friendly name for their
   // connection label — the active gateway's own default must keep reading
-  // "Hermes". Annotated active rows carry sourceScoped too, and keying this
+  // "Renco". Annotated active rows carry sourceScoped too, and keying this
   // off sourceScoped renamed the user's main agent to an IP-derived label
   // (community report, Aug 17 2026).
   if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
@@ -4572,7 +4572,7 @@ function displayName(bot, meta) {
     return meta.title.trim()
   }
 
-  // Core-profile display name (profile.yaml, set via `hermes profile rename
+  // Core-profile display name (profile.yaml, set via `renco profile rename
   // default <name>` or the dashboard) — the CLI-level equivalent of a Bot
   // Mode title. Rides the profiles.list row; presentation-only.
   if (typeof bot?.display_name === 'string' && bot.display_name.trim()) {
@@ -4580,10 +4580,10 @@ function displayName(bot, meta) {
   }
 
   // The primary profile is literally named "default" — as a bot identity
-  // that reads like nobody bothered. Present it as Hermes (the agent it is)
+  // that reads like nobody bothered. Present it as Renco (the agent it is)
   // unless the user gives it a real title.
   if ((bot.name || '').trim().toLowerCase() === 'default' && !bot.title) {
-    return 'Hermes'
+    return 'Renco'
   }
 
   const raw = (bot.title || bot.name || '').replace(/[-_]+/g, ' ').trim()
@@ -4748,7 +4748,7 @@ function durableGroupChatMembers(bots) {
     // Keep the friendly identity on the stored descriptor: after a
     // connection switch the live roster row may be gone, and renamed-tag
     // mentions must still resolve against the persisted member.
-    const title = String(botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || '').trim()
+    const title = String(botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['renco-bots']?.title || bot.title || '').trim()
 
     return {
       name: bot.name,
@@ -4787,7 +4787,7 @@ function knownGroups(metaByName) {
 // actually speaks is its own turn's choice — replying with exactly "(pass)"
 // (or nothing, or failing) is silence. Hard caps end every turn; a round in
 // which everyone passed means the conversation settled. Each member runs its
-// turn in its OWN persistent per-group Hermes session and is fed only the
+// turn in its OWN persistent per-group Renco session and is fed only the
 // room messages that are NEW since it last saw the room.
 
 const GROUP_CHAT_MAX_ROUNDS = 3
@@ -4916,10 +4916,10 @@ function rotateGroupSpeakers(members, round) {
 }
 
 /** Transcript form of a room speaker's profile name. The primary profile is
- *  literally named "default" — render it as Hermes (matching displayName and
- *  the @hermes handle) so the main agent never loses its name in rooms. */
+ *  literally named "default" — render it as Renco (matching displayName and
+ *  the @renco handle) so the main agent never loses its name in rooms. */
 function groupSpeakerLabel(name) {
-  return (name || '').trim().toLowerCase() === 'default' ? 'Hermes' : name
+  return (name || '').trim().toLowerCase() === 'default' ? 'Renco' : name
 }
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
@@ -6012,7 +6012,7 @@ function messagingProtocolSection(name, roster) {
     'into it, like a DM. To message a teammate, run:',
     '',
     '```',
-    'hermes -p <agent-name> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from \uD83E\uDD16 ' + handle + ' (@' + handle + '): your message"',
+    'renco -p <agent-name> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from \uD83E\uDD16 ' + handle + ' (@' + handle + '): your message"',
     '',
     'Run the send with background=true and notify_on_complete=true on the',
     'terminal tool, then finish your turn — the reply arrives later as a',
@@ -6036,7 +6036,7 @@ function messagingProtocolSection(name, roster) {
     '"tell <name> ...", that is a handoff: message that agent, wait for the',
     'reply, and report back.',
     '',
-    'The roster grows over time — run `hermes profile list` for the LIVE',
+    'The roster grows over time — run `renco profile list` for the LIVE',
     'teammate list before a handoff. Teammates when you were created:',
     ...(teammates.length
       ? teammates.map(b => `- \`${b.name}\`${b.description ? ` — ${b.description}` : ''}`)
@@ -6151,7 +6151,7 @@ function previewKind(preview) {
   if (match) {
     // The captured name is whatever the delivery prefix carried — a raw
     // profile name. Map it the way every other surface does so the primary
-    // profile reads @hermes, never @default (#89484).
+    // profile reads @renco, never @default (#89484).
     const sender = (match[1] || match[2] || '').trim().toLowerCase()
     return { fromBot: sender ? botHandle(sender) : null }
   }
@@ -6220,7 +6220,7 @@ const WORKER_ACTIVE_WINDOW_S = 150
 /** True while this bot's freshest kanban/tool worker looks alive. Workers
  *  never surface in conversation lists, so without this a profile grinding
  *  through a 30-minute kanban task reads idle ("3 hr ago") the whole time
- *  (hermes-agent#90268). Older gateways omit worker_session — always false. */
+ *  (renco-agent#90268). Older gateways omit worker_session — always false. */
 function workerActiveAt(bot, now = Date.now()) {
   const ts = bot?.worker_session?.last_active || 0
   return Boolean(ts && now / 1000 - ts < WORKER_ACTIVE_WINDOW_S)
@@ -6455,7 +6455,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
                 : null,
               activeNow
                 ? jsx('span', {
-                    className: 'hermes-bots-pulse size-1.5 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
+                    className: 'renco-bots-pulse size-1.5 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
                     title: workerActive ? 'Working on a task right now' : 'Active in the last 90s'
                   })
                 : null,
@@ -6828,7 +6828,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   if (unsupported) {
     return jsx('div', {
       className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-      children: 'Full configuration needs a newer gateway (restart it after updating Hermes).'
+      children: 'Full configuration needs a newer gateway (restart it after updating Renco).'
     })
   }
 
@@ -6870,7 +6870,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   const enabledMcp = mcpList.filter(m => m.enabled).length
 
   // Newer desktop builds export the WHOLE core Capabilities surface
-  // (hermes-agent#87317): Skills (installed list + one-click hub installs +
+  // (renco-agent#87317): Skills (installed list + one-click hub installs +
   // full-skill detail), Tools (per-toolset config), and MCP — pinned to this
   // bot via fixedProfile, tab state kept out of the page router via embedded.
   // Render THAT instead of the checkbox stand-ins; writes go straight to the
@@ -6923,7 +6923,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
               onChange: event => setSkillFilter(event.target.value)
             }),
             jsx(ScrollArea, {
-              className: 'hermes-scroll-cap',
+              className: 'renco-scroll-cap',
               style: { maxHeight: 180 },
               children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
             }),
@@ -6944,7 +6944,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
         jsx('div', {
           className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
           children: jsx(ScrollArea, {
-            className: 'hermes-scroll-cap',
+            className: 'renco-scroll-cap',
             style: { maxHeight: 320 },
             children: jsx('div', {
               className: 'grid gap-1.5',
@@ -7001,7 +7001,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
                   children: 'No MCP servers configured or in the catalog.'
                 })
               : jsx(ScrollArea, {
-                  className: 'hermes-scroll-cap',
+                  className: 'renco-scroll-cap',
                   style: { maxHeight: 180 },
                   children: jsx('div', {
                     className: 'grid gap-1 p-2',
@@ -7064,13 +7064,13 @@ function AdvancedProfileConfig({ bot, state, setState }) {
 }
 
 // ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
-// https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
+// https://renco-agent.nousresearch.com/docs/skills?embed=picker hides the
 // docs chrome and adds "+ Add to this Agent" per card, posting
-// {type: 'hermes-skill-pick', ...} to us (hermes-agent#86243). We validate
+// {type: 'renco-skill-pick', ...} to us (renco-agent#86243). We validate
 // the origin, install via skills.manage, and bubble onInstalled so the
 // checklist above gains the row. Search-box fallback kept for offline use.
 
-const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const HUB_ORIGIN = 'https://renco-agent.nousresearch.com'
 const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
 
 function HubSkillsSection({ forProfile, onInstalled }) {
@@ -7103,7 +7103,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
 
       const data = event.data
 
-      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
+      if (!data || data.type !== 'renco-skill-pick' || !data.name) {
         return
       }
 
@@ -7220,7 +7220,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
                 },
                 children: jsx('iframe', {
                   src: HUB_PICKER_URL,
-                  title: 'Hermes Skills Hub',
+                  title: 'Renco Skills Hub',
                   ref: frameRef,
                   style: {
                     width: '133.34%',
@@ -7281,7 +7281,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
               children: 'No hub skills matched.'
             })
           : jsx(ScrollArea, {
-              className: 'hermes-scroll-cap',
+              className: 'renco-scroll-cap',
               style: { maxHeight: 150 },
               children: jsx('div', {
                 className: 'grid gap-1',
@@ -7862,7 +7862,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
         }
 
         try {
-          void requestForTarget('profiles.configure', { name: slug, ui_meta: { 'hermes-bots': look } }).catch(() => undefined)
+          void requestForTarget('profiles.configure', { name: slug, ui_meta: { 'renco-bots': look } }).catch(() => undefined)
 
           if (avatarImage) {
             void requestForTarget('profiles.set_asset', { name: slug, asset: 'avatar', data: avatarImage }).catch(() => undefined)
@@ -8252,7 +8252,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                         ? jsx('div', {
                             className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
                             children:
-                              'Capability catalog needs a newer gateway (restart it after updating Hermes).'
+                              'Capability catalog needs a newer gateway (restart it after updating Renco).'
                           })
                         : !caps
                           ? jsx('div', {
@@ -8278,7 +8278,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                       onChange: event => setCapFilter(event.target.value)
                                     }),
                                     jsx(ScrollArea, {
-                                      className: 'hermes-scroll-cap',
+                                      className: 'renco-scroll-cap',
                                       style: { maxHeight: 200 },
                                       children: jsx(CheckList, {
                                         items: capFilter.trim()
@@ -8310,7 +8310,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                   className: 'grid gap-1.5',
                                   children: [
                                     jsx(ScrollArea, {
-                                      className: 'hermes-scroll-cap',
+                                      className: 'renco-scroll-cap',
                                       style: { maxHeight: 200 },
                                       children: jsx(CheckList, {
                                         items: caps.toolsets,
@@ -8333,7 +8333,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                     className: 'grid gap-1.5',
                                     children: [
                                       jsx(ScrollArea, {
-                                        className: 'hermes-scroll-cap',
+                                        className: 'renco-scroll-cap',
                                         style: { maxHeight: 200 },
                                         children: jsx('div', {
                                           className: 'grid gap-1',
@@ -8449,7 +8449,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
 //
 // Jobs are namespaced "[bot:<name>] <routine>". A job running in the active
 // bot profile uses the plain instruction; a different profile keeps the
-// hermes -p <bot> chat delegation wrapper so the run reaches that bot's
+// renco -p <bot> chat delegation wrapper so the run reaches that bot's
 // history. The tile follows the bot you're chatting with (gateway profile).
 const BOT_TAG_RE = /^\[bot:([a-z0-9][a-z0-9_-]*)\]\s*/i
 const SAFE_ROUTINE_MARKER = '[bot-mode:routine:v2] '
@@ -8591,7 +8591,7 @@ function routinePrompt(bot, title, instruction, activeProfile) {
   return (
     `${SAFE_ROUTINE_MARKER}You are running the scheduled routine "${title}" for agent '${bot}'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
-    `hermes -p ${shellQuote(bot)} chat -c ${shellQuote(`Routine: ${title}`)} -q ${shellQuote(`[Scheduled routine] ${instruction}`)}\n\n` +
+    `renco -p ${shellQuote(bot)} chat -c ${shellQuote(`Routine: ${title}`)} -q ${shellQuote(`[Scheduled routine] ${instruction}`)}\n\n` +
     `If the command fails, report the error instead.`
   )
 }
@@ -8726,7 +8726,7 @@ function RoutineRow({ job, profile }) {
 
 // Structured schedule picker: frequency first, then only the detail that
 // frequency needs (time of day, weekday, day of month, interval). Emits a
-// Hermes-native schedule string; Advanced exposes it raw.
+// Renco-native schedule string; Advanced exposes it raw.
 const FREQUENCIES = [
   { id: 'once', label: 'Once, in\u2026' },
   { id: 'hourly', label: 'Every hour' },
@@ -8760,7 +8760,7 @@ const TIMES = (() => {
   return out
 })()
 
-/** Compose the Hermes schedule string from picker state. */
+/** Compose the Renco schedule string from picker state. */
 function composeSchedule(state) {
   const [h, m] = (state.time || '9:0').split(':').map(Number)
 
@@ -10529,7 +10529,7 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
                   const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
                   // Match this speaker back to its member descriptor so display
                   // names and disambiguating handles come from the roster (the
-                  // primary "default" profile renders as Hermes, remote dupes
+                  // primary "default" profile renders as Renco, remote dupes
                   // carry their @name-device handle) instead of raw profile ids.
                   const member = isUser
                     ? null
@@ -11045,7 +11045,7 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   const last = log.length ? log[log.length - 1] : null
   const lastAt = groupLastActivity(room)
   // Room previews speak the same handle vocabulary as the roster, mentions
-  // and the group prompt: the primary profile is @hermes, not @default.
+  // and the group prompt: the primary profile is @renco, not @default.
   const lastFrom = last?.from?.name || ''
   const lastHandle = botHandle(lastFrom || 'bot', members.find(member => member?.name === lastFrom))
   const preview = last
@@ -11199,7 +11199,7 @@ function BotsPane() {
   // freshly created bot tops the list until another bot gets a message.
   // No special slot for the primary bot — it competes on recency too.
   const activityOf = bot => {
-    const created = botRosterMeta(bot, allMeta)?.created || bot.ui_meta?.['hermes-bots']?.created || 0
+    const created = botRosterMeta(bot, allMeta)?.created || bot.ui_meta?.['renco-bots']?.created || 0
     const lastMsg = (botActivitySession(bot)?.last_active || 0) * 1000
 
     return Math.max(created, lastMsg)
@@ -11468,7 +11468,7 @@ function BotsPane() {
               children: [
                 jsx('div', {
                   children: gatewayUp
-                    ? `Roster unavailable: ${error instanceof Error ? error.message : 'gateway error'}. If your gateway predates profiles.list, update Hermes and restart the gateway.`
+                    ? `Roster unavailable: ${error instanceof Error ? error.message : 'gateway error'}. If your gateway predates profiles.list, update Renco and restart the gateway.`
                     : 'Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)'
                 }),
                 jsx(Button, {
@@ -11497,7 +11497,7 @@ function BotsPane() {
                     : 'All bots are hidden — use the eye button above to show them.'
                 })
               : jsx(ScrollArea, {
-                  className: 'hermes-bots-roster min-h-0 flex-1',
+                  className: 'renco-bots-roster min-h-0 flex-1',
                   children: jsx('div', {
                     className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
                     // Flat, Discord-style list: bot rows and group rows
@@ -11566,7 +11566,7 @@ function BotsPane() {
               children: [
                 'This will permanently delete the bot ',
                 jsx('span', { className: 'font-medium text-foreground', children: deleting.name }),
-                ' and its associated Hermes profile at ',
+                ' and its associated Renco profile at ',
                 jsx('span', { className: 'font-mono text-xs', children: deleting.path }),
                 '. This cannot be undone.'
               ]
@@ -11630,7 +11630,7 @@ export default {
     // query cache — useRoster keeps it ≤5s stale and the popover must answer
     // synchronously per keystroke. Multi-source rosters contribute their
     // precomputed @name-device handles via botHandle. The active profile is
-    // excluded (a bot doesn't @ itself); 'default' surfaces as @hermes.
+    // excluded (a bot doesn't @ itself); 'default' surfaces as @renco.
     ctx.register({
       id: 'mention-completions',
       area: COMPOSER_AREAS.atCompletions,
@@ -11687,10 +11687,10 @@ export default {
 
     // Keyframes for the pet bob — injected because plugin classes aren't in
     // the app's precompiled CSS. Idempotent across hot reloads.
-    if (!document.getElementById('hermes-bots-keyframes')) {
+    if (!document.getElementById('renco-bots-keyframes')) {
       const style = document.createElement('style')
-      style.id = 'hermes-bots-keyframes'
-      style.textContent = '@keyframes hermes-bots-bob { from { transform: translateY(0); } to { transform: translateY(-3px); } }'
+      style.id = 'renco-bots-keyframes'
+      style.textContent = '@keyframes renco-bots-bob { from { transform: translateY(0); } to { transform: translateY(-3px); } }'
       document.head.appendChild(style)
     }
 
@@ -11992,7 +11992,7 @@ export default {
             note +=
               '\n\n[@mention handoff — for each mentioned agent (' + localMentions.map(bot => botHandle(bot.name, bot)).join(', ') + '): ' +
               'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim (avoid double quotes in your composed message). Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
-              localMentions.map(bot => '`hermes -p ' + shellQuote(bot.name) + ' chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 ' + shellDoubleQuote(senderName) + ' (@' + shellDoubleQuote(botHandle(live.name)) + '): <your composed message>"`').join('\n') +
+              localMentions.map(bot => '`renco -p ' + shellQuote(bot.name) + ' chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 ' + shellDoubleQuote(senderName) + ' (@' + shellDoubleQuote(botHandle(live.name)) + '): <your composed message>"`').join('\n') +
               '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. ' +
               'Relay the reply back to the user, attributed to that agent.]'
           }
@@ -12001,7 +12001,7 @@ export default {
             const labels = remoteMentions.map(bot => `@${botHandle(bot.name, bot)} (${bot.connectionLabel || bot.connectionId})`).join(', ')
             note +=
               '\n\n[@mention — stay on this device. Desktop is delivering to ' + labels +
-              ' over Connections in the background. Do not run hermes -p for them and do not switch Gateway. Tell the user they were messaged here; when a reply lands, relay it attributed to that agent.]'
+              ' over Connections in the background. Do not run renco -p for them and do not switch Gateway. Tell the user they were messaged here; when a reply lands, relay it attributed to that agent.]'
           }
 
           return { ...draft, text: text + note }

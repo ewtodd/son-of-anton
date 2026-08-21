@@ -58,7 +58,7 @@ _TRANSPORT_CONNECT_TIMEOUT_SECONDS = 10.0
 
 _SIGN_IN_MESSAGE = (
     "BFL video generation needs a Nous Portal sign-in. "
-    "Ask the user to run `hermes model` and sign in to Nous, then retry."
+    "Ask the user to run `renco model` and sign in to Nous, then retry."
 )
 
 # ---------------------------------------------------------------------------
@@ -579,7 +579,7 @@ def _default_directory():
     On a messaging platform the user has no filesystem — the only way they
     ever see the clip is as an attachment — so it goes to the gateway's own
     video cache, which is an unconditionally allowed delivery root. Downloads
-    is not: an operator running HERMES_MEDIA_DELIVERY_STRICT=1 delivers only
+    is not: an operator running RENCO_MEDIA_DELIVERY_STRICT=1 delivers only
     from the cache roots, so a clip saved to Downloads there is dropped on the
     way out and the user is shown a reply with nothing attached.
     """
@@ -587,9 +587,9 @@ def _default_directory():
 
     if _delivers_as_an_attachment():
         try:
-            from hermes_constants import get_hermes_dir
+            from renco_constants import get_renco_dir
 
-            return get_hermes_dir("cache/videos", "video_cache")
+            return get_renco_dir("cache/videos", "video_cache")
         except Exception:
             logger.debug("Could not resolve the video cache dir; using Downloads", exc_info=True)
     downloads = Path.home() / "Downloads"
@@ -792,7 +792,7 @@ def _has_nous_credential() -> bool:
     if peek_nous_access_token():
         return True
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from renco_cli.auth import get_provider_auth_state
 
         state = get_provider_auth_state("nous") or {}
     except Exception:

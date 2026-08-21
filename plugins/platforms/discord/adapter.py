@@ -113,7 +113,7 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"^\s*(?:✅|❌)\s+Hermes update\s+"
+        r"^\s*(?:✅|❌)\s+Renco update\s+"
         r"(?:finished|failed|timed out)[\s\S]*$",
         re.IGNORECASE,
     ),
@@ -270,7 +270,7 @@ def _needs_server_members_intent(
     allowed_user_ids: set[str] | list[str] | None,
     allowed_role_ids: set[str] | list[str] | None,
 ) -> bool:
-    """Return True when Hermes must request Discord's Server Members intent.
+    """Return True when Renco must request Discord's Server Members intent.
 
     Message Content is always requested. Server Members is only needed when the
     allowlist contains usernames (not pure numeric IDs / ``*``) or when role
@@ -287,7 +287,7 @@ def _format_privileged_intents_guidance(*, needs_members: bool) -> str:
     lines = [
         "Discord rejected the connection because privileged Gateway Intents "
         "are not enabled for this bot in the Developer Portal.",
-        "Hermes is requesting:",
+        "Renco is requesting:",
         "  - Message Content Intent (required to read message text)",
     ]
     if needs_members:
@@ -300,7 +300,7 @@ def _format_privileged_intents_guidance(*, needs_members: bool) -> str:
             "Fix: https://discord.com/developers/applications → your application "
             "→ Bot → Privileged Gateway Intents → enable the intent(s) listed "
             "above → Save Changes, then restart the gateway.",
-            "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
+            "Docs: https://renco-agent.nousresearch.com/docs/user-guide/messaging/discord",
         ]
     )
     return "\n".join(lines)
@@ -336,10 +336,10 @@ class _DiscordNonConversationalMessageTracker:
         self._ids: dict[str, None] = dict.fromkeys(self._load())
 
     def _state_path(self) -> _Path:
-        from hermes_constants import get_hermes_home
+        from renco_constants import get_renco_home
 
         return (
-            get_hermes_home()
+            get_renco_home()
             / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
             / _DISCORD_NONCONVERSATIONAL_STATE_FILENAME
         )
@@ -550,13 +550,13 @@ def _build_allowed_mentions():
 
 def _discord_ready_timeout_seconds() -> float:
     """Return the Discord ready wait timeout during gateway startup."""
-    raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
+    raw = os.getenv("RENCO_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
     if raw:
         try:
             return max(0.0, float(raw))
         except ValueError:
             logger.warning(
-                "Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
+                "Ignoring invalid RENCO_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
                 raw,
             )
     return 30.0
@@ -922,7 +922,7 @@ class VoiceReceiver:
         piped WAV carries placeholder (0xFFFFFFFF) RIFF/data sizes that make
         strict readers misreport the length.
         """
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from renco_cli._subprocess_compat import windows_hide_flags
 
         subprocess.run(
             [
@@ -952,7 +952,7 @@ def _read_dm_role_auth_guild() -> Optional[int]:
 
     Reads ``discord.dm_role_auth_guild`` from config.yaml. This is
     deliberately a config.yaml-only setting (not an env var): per repo
-    policy, ``~/.hermes/.env`` is for secrets only, and this is a
+    policy, ``~/.renco/.env`` is for secrets only, and this is a
     behavioral setting. Guild IDs aren't secrets.
 
     Accepts ints or numeric strings in the config. Anything else
@@ -960,7 +960,7 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     default (DM role-auth disabled).
     """
     try:
-        from hermes_cli.config import read_raw_config
+        from renco_cli.config import read_raw_config
         cfg = read_raw_config() or {}
         discord_cfg = cfg.get("discord", {}) or {}
         raw = discord_cfg.get("dm_role_auth_guild")
@@ -1005,7 +1005,7 @@ def _read_discord_prompt_timeout() -> int:
     """
     raw: Any = None
     try:
-        from hermes_cli.config import read_raw_config
+        from renco_cli.config import read_raw_config
         cfg = read_raw_config() or {}
         approvals_cfg = cfg.get("approvals", {}) or {}
         raw = approvals_cfg.get("discord_prompt_timeout")
@@ -1081,8 +1081,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
-        self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
-        self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
+        self._text_batch_delay_seconds = env_float("RENCO_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
+        self._text_batch_split_delay_seconds = env_float("RENCO_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -1125,12 +1125,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._liveness_interval_seconds = self._finite_positive_config_float(
             "websocket_liveness_interval_seconds",
             15.0,
-            env_key="HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+            env_key="RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS",
         )
         self._liveness_failure_threshold = self._config_int(
             "websocket_liveness_failure_threshold",
             2,
-            env_key="HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+            env_key="RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD",
         )
         self._heartbeat_ack_max_age_seconds = self._finite_positive_config_float(
             "websocket_heartbeat_ack_max_age_seconds",
@@ -1147,9 +1147,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # shutdown from a runtime websocket crash.
         self._disconnecting = False
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
-        from hermes_constants import get_hermes_home
+        from renco_constants import get_renco_home
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
-        self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
+        self._discord_recovery_store = DiscordRecoveryStore(get_renco_home())
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -1210,7 +1210,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         discord.py reconnects normal gateway interruptions internally. When its
         top-level ``Bot.start()`` task actually exits after the adapter has been
-        marked running, the Discord websocket is dead while the Hermes gateway
+        marked running, the Discord websocket is dead while the Renco gateway
         process can remain alive. Treat that split-brain state as a retryable
         fatal adapter error so ``GatewayRunner._handle_adapter_fatal_error`` can
         remove this adapter and queue Discord for the existing reconnect watcher.
@@ -1535,7 +1535,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 False,
             )
         if _is("PrivilegedIntentsRequired"):
-            # Name the exact intents Hermes requested (#79430): Message
+            # Name the exact intents Renco requested (#79430): Message
             # Content always; Server Members only when username/role
             # allowlists actually need member lookups.
             guidance = _format_privileged_intents_guidance(
@@ -1706,7 +1706,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _platform_events_subscribed() -> bool:
         """has_hook fast-path shared by every Discord fire-site."""
         try:
-            from hermes_cli.lifecycle import has_hook
+            from renco_cli.lifecycle import has_hook
 
             return has_hook("gateway_platform_event")
         except Exception:
@@ -2094,7 +2094,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fix: await all pending text-batch tasks before delegating to the base
         cancel. The flush deadline is clamped below the gateway's per-adapter
-        disconnect budget (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``, default
+        disconnect budget (``RENCO_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``, default
         5s) so the gateway's outer ``wait_for`` can't hard-cancel us mid-flush —
         we cancel our own stragglers cleanly inside the budget instead.
         """
@@ -2131,7 +2131,7 @@ class DiscordAdapter(BasePlatformAdapter):
         ``GatewayRunner._adapter_disconnect_timeout_secs``.
         """
         budget = 5.0  # mirrors gateway _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
-        raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+        raw = os.getenv("RENCO_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
         if raw:
             try:
                 parsed = float(raw)
@@ -2205,9 +2205,9 @@ class DiscordAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     def _command_sync_state_path(self) -> _Path:
-        from hermes_constants import get_hermes_home
+        from renco_constants import get_renco_home
 
-        directory = get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        directory = get_renco_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -2567,7 +2567,7 @@ class DiscordAdapter(BasePlatformAdapter):
         is offline. Normal startup resume only handles sessions already marked
         resume_pending; this pass scans recent channel/thread history, records
         what it saw durably, and reuses the normal message handler for messages
-        that lack a substantive non-outage Hermes response. Emoji-only acks are
+        that lack a substantive non-outage Renco response. Emoji-only acks are
         deliberately not sufficient completion evidence.
         """
         if not self._client:
@@ -2835,7 +2835,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     async def _should_backfill_discord_message(self, message: Any) -> bool:
-        """Return True when a recent Discord message still needs Hermes work."""
+        """Return True when a recent Discord message still needs Renco work."""
         if not self._client or not getattr(self._client, "user", None):
             return False
         if getattr(getattr(message, "author", None), "id", None) == getattr(self._client.user, "id", None):
@@ -2851,9 +2851,9 @@ class DiscordAdapter(BasePlatformAdapter):
         return True
 
     def _is_down_notice_content(self, content: str) -> bool:
-        """Recognize only explicit Hermes/gateway outage notices."""
+        """Recognize only explicit Renco/gateway outage notices."""
         text = (content or "").lower()
-        subject = r"(?:hermes|the agent|agent|the gateway|gateway|bmo)"
+        subject = r"(?:renco|the agent|agent|the gateway|gateway|bmo)"
         state = r"(?:is|was|appears to be|is currently|was currently)"
         condition = r"(?:down|offline|unavailable|not running)"
         return re.search(rf"\b{subject}\s+{state}\s+{condition}\b", text) is not None
@@ -3136,7 +3136,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return "safe"
 
     def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Reduce command payloads to the semantic fields Hermes manages."""
+        """Reduce command payloads to the semantic fields Renco manages."""
         contexts = payload.get("contexts")
         integration_types = payload.get("integration_types")
         return {
@@ -4317,7 +4317,7 @@ class DiscordAdapter(BasePlatformAdapter):
             ],
         }
         try:
-            from hermes_cli.config import read_raw_config
+            from renco_cli.config import read_raw_config
             cfg = read_raw_config() or {}
             fx = ((cfg.get("discord") or {}).get("voice_fx") or {})
             if isinstance(fx, dict):
@@ -4331,7 +4331,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _load_discord_int_config(self, key: str, default: int, *, minimum: int = 0) -> int:
         """Read a non-secret integer from the top-level ``discord`` config."""
         try:
-            from hermes_cli.config import read_raw_config
+            from renco_cli.config import read_raw_config
             cfg = read_raw_config() or {}
             raw = (cfg.get("discord") or {}).get(key, default)
             value = int(raw)
@@ -4502,7 +4502,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Synthesise the ack via the configured TTS provider, then layer it.
         import uuid as _uuid
         audio_path = os.path.join(
-            tempfile.gettempdir(), "hermes_voice",
+            tempfile.gettempdir(), "renco_voice",
             f"ack_{_uuid.uuid4().hex[:12]}.mp3",
         )
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)
@@ -4984,7 +4984,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return bool(channel_ids & allowed)
 
     def _is_pairing_approved_user(self, user_id: str) -> bool:
-        """True when the Discord user has an explicit Hermes pairing grant."""
+        """True when the Discord user has an explicit Renco pairing grant."""
         user_id = str(user_id or "").strip()
         if not user_id:
             return False
@@ -5843,7 +5843,7 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_new(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reset", "New conversation started~")
 
-        @tree.command(name="reset", description="Reset your Hermes session")
+        @tree.command(name="reset", description="Reset your Renco session")
         async def slash_reset(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reset", "Session reset~")
 
@@ -5889,7 +5889,7 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_undo(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/undo")
 
-        @tree.command(name="status", description="Show Hermes session status")
+        @tree.command(name="status", description="Show Renco session status")
         async def slash_status(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/status", "Status sent~")
 
@@ -5897,7 +5897,7 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_sethome(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/sethome")
 
-        @tree.command(name="stop", description="Stop the running Hermes agent")
+        @tree.command(name="stop", description="Stop the running Renco agent")
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
@@ -5937,7 +5937,7 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_mcp(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-mcp")
 
-        @tree.command(name="reload-skills", description="Re-scan ~/.hermes/skills/ for new or removed skills")
+        @tree.command(name="reload-skills", description="Re-scan ~/.renco/skills/ for new or removed skills")
         async def slash_reload_skills(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-skills")
 
@@ -5959,11 +5959,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_voice(interaction: discord.Interaction, mode: str = ""):
             await self._run_simple_slash(interaction, f"/voice {mode}".strip())
 
-        @tree.command(name="update", description="Update Hermes Agent to the latest version")
+        @tree.command(name="update", description="Update Renco Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")
 
-        @tree.command(name="restart", description="Gracefully restart the Hermes gateway")
+        @tree.command(name="restart", description="Gracefully restart the Renco gateway")
         async def slash_restart(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/restart", "Restart requested~")
 
@@ -5977,10 +5977,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
 
-        @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
+        @tree.command(name="thread", description="Create a new thread and start a Renco session in it")
         @discord.app_commands.describe(
             name="Thread name",
-            message="Optional first message to send to Hermes in the thread",
+            message="Optional first message to send to Renco in the thread",
             auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
         )
         async def slash_thread(
@@ -6005,7 +6005,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
-        # hermes_cli/commands.py automatically appear as Discord slash
+        # renco_cli/commands.py automatically appear as Discord slash
         # commands without needing a manual entry here.
         def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = ""):
             """Build a discord.app_commands.Command that proxies to _run_simple_slash."""
@@ -6046,7 +6046,7 @@ class DiscordAdapter(BasePlatformAdapter):
         slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
         dropped_over_cap = 0
         try:
-            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
+            from renco_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
@@ -6091,7 +6091,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # autocomplete UX as for built-in commands. No per-platform plugin
         # API needed — plugin commands are platform-agnostic.
         try:
-            from hermes_cli.commands import _iter_plugin_command_entries
+            from renco_cli.commands import _iter_plugin_command_entries
 
             for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
                 discord_name = plugin_name.lower()[:32]
@@ -6304,7 +6304,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             cmd = discord.app_commands.Command(
                 name="skill",
-                description="Run a Hermes skill",
+                description="Run a Renco skill",
                 callback=_skill_handler,
             )
             tree.add_command(cmd)
@@ -6330,7 +6330,7 @@ class DiscordAdapter(BasePlatformAdapter):
         and the handler both read from these instance attributes
         directly, so an in-place mutation is sufficient.
         """
-        from hermes_cli.commands import discord_skill_commands_by_category
+        from renco_cli.commands import discord_skill_commands_by_category
 
         reserved = getattr(self, "_skill_group_reserved_names", set())
         categories, uncategorized, hidden = discord_skill_commands_by_category(
@@ -6474,7 +6474,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._threads.mark(thread_id)
 
-        # If a message was provided, kick off a new Hermes session in the thread
+        # If a message was provided, kick off a new Renco session in the thread
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
@@ -7170,7 +7170,7 @@ class DiscordAdapter(BasePlatformAdapter):
             }
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                seed_content = starter_message or f"\U0001f9f5 Thread created by Renco: **{name}**"
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
                     name=name,
@@ -7201,7 +7201,7 @@ class DiscordAdapter(BasePlatformAdapter):
         titles don't show raw <@id>, <@&id>, or <#id> markers — the ID
         isn't meaningful to humans glancing at the thread list (#6336).
         Real semantic naming is done after the first agent turn, when
-        Hermes has an LLM-generated session title and can safely rename
+        Renco has an LLM-generated session title and can safely rename
         only this newly-created thread.
         """
         content = (content or "").strip()
@@ -7209,7 +7209,7 @@ class DiscordAdapter(BasePlatformAdapter):
         content = re.sub(r"<@[!&]?\d+>", "", content)
         content = re.sub(r"<#\d+>", "", content)
         content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
+        thread_name = content[:80] if content else "Renco"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
         return thread_name
@@ -7234,7 +7234,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
                 try:
-                    setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                    setattr(thread, "_renco_auto_thread_initial_name", thread_name)
                 except Exception:
                     pass
                 return thread
@@ -7242,7 +7242,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 last_direct_error = direct_error
                 try:
                     seed_msg = await message.channel.send(
-                        f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
+                        f"\U0001f9f5 Thread created by Renco: **{thread_name}**"
                     )
                     thread = await seed_msg.create_thread(
                         name=thread_name,
@@ -7250,7 +7250,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         reason=reason,
                     )
                     try:
-                        setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                        setattr(thread, "_renco_auto_thread_initial_name", thread_name)
                     except Exception:
                         pass
                     return thread
@@ -7322,7 +7322,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if edit is None:
             return False
         try:
-            await edit(name=cleaned, reason="Hermes semantic session title")
+            await edit(name=cleaned, reason="Renco semantic session title")
             logger.info(
                 "[%s] Renamed Discord thread %s from %r to %r",
                 self.name, thread_id, current_name, cleaned,
@@ -7373,7 +7373,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
 
         thread_name = (name or "handoff").strip()[:80] or "handoff"
-        reason = "Hermes session handoff"
+        reason = "Renco session handoff"
 
         # First try: create a thread directly on the channel.
         try:
@@ -7396,7 +7396,7 @@ class DiscordAdapter(BasePlatformAdapter):
             send = getattr(parent, "send", None)
             if send is None:
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+            seed_msg = await send(f"\U0001f9f5 Renco handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
                 name=thread_name,
                 auto_archive_duration=1440,
@@ -7486,7 +7486,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             prompt_prefix = (
                 "⚠️ **Command Approval Required**\n\n"
-                "Do you want Hermes to run this command?\n\n"
+                "Do you want Renco to run this command?\n\n"
                 "**Requested command:**\n```bash\n"
             )
             if smart_denied:
@@ -7640,7 +7640,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 body = body[: max_desc - 3] + "..."
 
             embed = discord.Embed(
-                title="❓ Hermes needs your input",
+                title="❓ Renco needs your input",
                 description=body,
                 color=discord.Color.orange(),
             )
@@ -7709,7 +7709,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else "\n\nReply in this channel with your answer."
             )
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(),
+                "❓ **Renco needs your input**", str(question or "").strip(),
                 tail=clarify_tail,
             )
             msg = await channel.send(content=content, embed=embed, view=view) if view else await channel.send(content=content, embed=embed)
@@ -7727,7 +7727,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an interactive button-based update prompt (Yes / No).
 
-        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
+        Used by the gateway ``/update`` watcher when ``renco update --gateway``
         needs user input (stash restore, config migration).
         """
         if not self._client or not DISCORD_AVAILABLE:
@@ -7791,7 +7791,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(target_id))
 
             try:
-                from hermes_cli.providers import get_label
+                from renco_cli.providers import get_label
                 provider_label = get_label(current_provider)
             except Exception:
                 provider_label = current_provider
@@ -8190,7 +8190,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     # invocation for this message.
                     try:
                         await message.channel.send(
-                            "⚠️ Hermes could not create a Discord thread for "
+                            "⚠️ Renco could not create a Discord thread for "
                             "this message, so the request was not processed. Please retry."
                         )
                     except Exception as notify_error:
@@ -8276,7 +8276,7 @@ class DiscordAdapter(BasePlatformAdapter):
             role_authorized=role_authorized,
             auto_thread_created=auto_threaded_channel is not None,
             auto_thread_initial_name=(
-                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
+                getattr(auto_threaded_channel, "_renco_auto_thread_initial_name", None)
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
@@ -8651,7 +8651,7 @@ def _component_check_auth(
     Mirrors the gateway's external-surface authorization model: component
     button clicks must be explicitly authorized by a Discord user/role
     allowlist, a global user allowlist, an explicit allow-all flag, or
-    the pairing store (``hermes pairing approve``).
+    the pairing store (``renco pairing approve``).
 
     Behavior:
 
@@ -8715,7 +8715,7 @@ def _component_check_auth(
             return True
 
     # Check pairing store — mirrors ``authz_mixin._check_authorization``
-    # so users approved via ``hermes pairing approve`` can interact with
+    # so users approved via ``renco pairing approve`` can interact with
     # component buttons even without DISCORD_ALLOWED_USERS set.
     if uid:
         try:
@@ -9056,7 +9056,7 @@ def _define_discord_view_classes() -> None:
                     pass
 
     class UpdatePromptView(discord.ui.View):
-        """Interactive Yes/No buttons for ``hermes update`` prompts.
+        """Interactive Yes/No buttons for ``renco update`` prompts.
 
         Clicking a button writes the answer to ``.update_response`` so the
         detached update process can pick it up.  Only authorized users can
@@ -9110,8 +9110,8 @@ def _define_discord_view_classes() -> None:
 
             # Write response file
             try:
-                from hermes_constants import get_hermes_home
-                home = get_hermes_home()
+                from renco_constants import get_renco_home
+                home = get_renco_home()
                 response_path = home / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
                 tmp.write_text(answer, encoding="utf-8")
@@ -9294,7 +9294,7 @@ def _define_discord_view_classes() -> None:
 
         async def _expensive_warning_for(self, model_id: str):
             try:
-                from hermes_cli.model_selection_guards import combined_selection_warning
+                from renco_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a
                 # cache miss — keep it off the event loop.
@@ -9434,7 +9434,7 @@ def _define_discord_view_classes() -> None:
             self._build_provider_select()
 
             try:
-                from hermes_cli.providers import get_label
+                from renco_cli.providers import get_label
                 provider_label = get_label(self.current_provider)
             except Exception:
                 provider_label = self.current_provider
@@ -9812,7 +9812,7 @@ if DISCORD_AVAILABLE:
 
 # ── Standalone (out-of-process) sender ────────────────────────────────────────
 # Used by ``tools/send_message_tool._send_via_adapter`` when the gateway runner
-# is not in this process (e.g. ``hermes cron`` running standalone) and no live
+# is not in this process (e.g. ``renco cron`` running standalone) and no live
 # DiscordAdapter instance is available.  Implements the same forum/thread/
 # multipart logic the live adapter would use, via Discord's REST API directly.
 #
@@ -10232,8 +10232,8 @@ def interactive_setup() -> None:
     the plugin's import surface stays small, prompts for the bot token,
     captures an allowlist, and offers to set a home channel.
     """
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.cli_output import (
+    from renco_cli.config import get_env_value, remove_env_value, save_env_value
+    from renco_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_header,
@@ -10267,7 +10267,7 @@ def interactive_setup() -> None:
     print_info("  - Server Members Intent (required if you use usernames or role allowlists)")
     print_info("Save Changes in the Developer Portal before starting the gateway.")
     print_info(
-        "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord"
+        "Docs: https://renco-agent.nousresearch.com/docs/user-guide/messaging/discord"
     )
     token = prompt("Discord bot token", password=True)
     if not token:
@@ -10298,7 +10298,7 @@ def interactive_setup() -> None:
         )
 
     print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("📬 Home Channel: where Renco delivers cron job results,")
     print_info("   cross-platform messages, and notifications.")
     print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
     print_info("   (requires Developer Mode in Discord settings)")
@@ -10479,12 +10479,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         (
             "websocket_liveness_interval_seconds",
             "liveness_interval_seconds",
-            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+            "RENCO_DISCORD_LIVENESS_INTERVAL_SECONDS",
         ),
         (
             "websocket_liveness_failure_threshold",
             "liveness_failure_threshold",
-            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+            "RENCO_DISCORD_LIVENESS_FAILURE_THRESHOLD",
         ),
         ("websocket_heartbeat_ack_max_age_seconds", None, None),
         ("websocket_max_latency_seconds", None, None),
@@ -10503,13 +10503,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 def _is_connected(config) -> bool:
     """Discord is considered connected when DISCORD_BOT_TOKEN is set.
 
-    Looks up via ``hermes_cli.gateway.get_env_value`` at call time (not via
+    Looks up via ``renco_cli.gateway.get_env_value`` at call time (not via
     the plugin's own bound import) so tests that patch ``gateway_mod.get_env_value``
     — including ``test_setup_openclaw_migration`` — can suppress ambient
     ``DISCORD_BOT_TOKEN`` env vars. Matches what the legacy
     ``_PLATFORMS["discord"]`` dispatch did before this migration.
     """
-    import hermes_cli.gateway as gateway_mod
+    import renco_cli.gateway as gateway_mod
     return bool((gateway_mod.get_env_value("DISCORD_BOT_TOKEN") or "").strip())
 
 
@@ -10519,7 +10519,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Renco plugin system."""
     ctx.register_platform(
         name="discord",
         label="Discord",
@@ -10528,9 +10528,9 @@ def register(ctx) -> None:
         ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
-        install_hint="Run `hermes setup` to install Discord support.",
+        install_hint="Run `renco setup` to install Discord support.",
         # Interactive setup wizard — replaces the central
-        # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
+        # renco_cli/setup.py::_setup_discord function.  Same shape as Teams.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,

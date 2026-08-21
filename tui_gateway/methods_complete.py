@@ -20,7 +20,7 @@ def _(rid, params: dict) -> dict:
 
     _paste_counter += 1
     line_count = text.count("\n") + 1
-    paste_dir = _hermes_home / "pastes"
+    paste_dir = _renco_home / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
 
     from datetime import datetime
@@ -53,11 +53,11 @@ def _(rid, params: dict) -> dict:
         another agent profile; completing profile names alongside path refs
         makes that discoverable. Bare-word matches only — never for
         `@kind:` directive queries. The primary profile is also offered
-        under the 'hermes' alias when no real profile claims that name.
+        under the 'renco' alias when no real profile claims that name.
         """
         out: list[dict] = []
         try:
-            from hermes_cli.profiles import list_profiles
+            from renco_cli.profiles import list_profiles
 
             seen: set[str] = set()
             for p in list_profiles():
@@ -74,11 +74,11 @@ def _(rid, params: dict) -> dict:
                             "meta": desc or "agent profile",
                         }
                     )
-            if "hermes".startswith(prefix.lower()) and "hermes" not in seen:
+            if "renco".startswith(prefix.lower()) and "renco" not in seen:
                 out.append(
                     {
-                        "text": "@hermes",
-                        "display": "@hermes",
+                        "text": "@renco",
+                        "display": "@renco",
                         "meta": "agent profile (primary)",
                     }
                 )
@@ -334,7 +334,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"items": []})
 
     try:
-        from hermes_cli.commands import SlashCommandCompleter
+        from renco_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
@@ -469,7 +469,7 @@ def _(rid, params: dict) -> dict:
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.inventory import build_model_options_payload
+        from renco_cli.inventory import build_model_options_payload
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
@@ -501,9 +501,9 @@ def _(rid, params: dict) -> dict:
     model.options entries) on success.
     """
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.config import is_managed
-        from hermes_cli.inventory import build_models_payload
+        from renco_cli.auth import PROVIDER_REGISTRY
+        from renco_cli.config import is_managed
+        from renco_cli.inventory import build_models_payload
 
         slug = (params.get("slug") or "").strip()
         api_key = (params.get("api_key") or "").strip()
@@ -521,16 +521,16 @@ def _(rid, params: dict) -> dict:
                 rid,
                 4003,
                 f"{pconfig.name} uses {pconfig.auth_type} auth — "
-                f"run `hermes model` to configure",
+                f"run `renco model` to configure",
             )
         if not pconfig.api_key_env_vars:
             return _err(rid, 4004, f"no env var defined for {pconfig.name}")
 
-        # Save the key to ~/.hermes/.env via the unified credential lifecycle
+        # Save the key to ~/.renco/.env via the unified credential lifecycle
         # so any stale config.yaml mirror of the previous key (model.api_key,
         # custom_providers[*].api_key) is rotated in the same action (#62269).
         env_var = pconfig.api_key_env_vars[0]
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+        from renco_cli.credential_lifecycle import save_provider_env_credential
 
         save_provider_env_credential(env_var, api_key)
         # Also set in current process so the refreshed inventory sees it.
@@ -579,8 +579,8 @@ def _(rid, params: dict) -> dict:
     Returns success status and the provider's slug.
     """
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
-        from hermes_cli.credential_lifecycle import remove_provider_env_credential
+        from renco_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+        from renco_cli.credential_lifecycle import remove_provider_env_credential
 
         slug = (params.get("slug") or "").strip()
         if not slug:

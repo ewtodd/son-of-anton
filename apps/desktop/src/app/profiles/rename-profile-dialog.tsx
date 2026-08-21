@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldHint } from '@/components/ui/field'
 import { SanitizedInput } from '@/components/ui/sanitized-input'
-import { renameProfile } from '@/hermes'
+import { renameProfile } from '@/renco'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
@@ -83,7 +83,7 @@ export function RenameProfileDialog({
     try {
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
-      // old-name backend whose ensure_hermes_home() recreates the directory
+      // old-name backend whose ensure_renco_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
       if (!isDefault) {
         retireLocalProfileGateways(currentName)

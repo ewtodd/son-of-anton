@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
-// Regression suite for the infinite-fork loop (hermes-agent#88200 follow-up):
+// Regression suite for the infinite-fork loop (renco-agent#88200 follow-up):
 // the core UNIQUE title index means at most one session per profile db holds
 // the "Bot Chat" title. When a fork squats it, every later mint's title is
 // silently dropped, the LLM titler renames the untitled row, and the next

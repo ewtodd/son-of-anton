@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import type { HermesConnection } from '@/global'
+import type { RencoConnection } from '@/global'
 import { readKey } from '@/lib/storage'
 
 import { $pinnedSessionIds, $sidebarSessionOrderIds, $sidebarSessionOrderManual, pinSession } from './layout'
@@ -17,19 +17,19 @@ const localConn = {
   baseUrl: 'http://127.0.0.1:8000',
   mode: 'local',
   profile: 'default'
-} as unknown as HermesConnection
+} as unknown as RencoConnection
 
 const remoteA = {
   baseUrl: 'https://vps-a.example:8443',
   mode: 'remote',
   profile: 'default'
-} as unknown as HermesConnection
+} as unknown as RencoConnection
 
 const remoteB = {
   baseUrl: 'https://vps-b.example:8443',
   mode: 'remote',
   profile: 'default'
-} as unknown as HermesConnection
+} as unknown as RencoConnection
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -85,11 +85,11 @@ describe('connection-scoped sidebar lists (#77318)', () => {
     pinSession('a-1')
 
     // The bare key still belongs to the local connection.
-    expect(readKey('hermes.desktop.pinnedSessions')).toBe(JSON.stringify(['local-1']))
+    expect(readKey('renco.desktop.pinnedSessions')).toBe(JSON.stringify(['local-1']))
 
     // The remote pin landed under its own scope, not the shared key.
     const scoped = readKey(
-      `hermes.desktop.pinnedSessions.remote.${encodeURIComponent('https://vps-a.example:8443')}.default`
+      `renco.desktop.pinnedSessions.remote.${encodeURIComponent('https://vps-a.example:8443')}.default`
     )
 
     expect(scoped).toBe(JSON.stringify(['a-1']))

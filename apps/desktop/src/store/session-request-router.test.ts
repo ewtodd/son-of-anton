@@ -16,8 +16,8 @@ const secondaryGateways: Array<{
   request: ReturnType<typeof vi.fn>
 }> = []
 
-vi.mock('@/hermes', () => ({
-  HermesGateway: class {
+vi.mock('@/renco', () => ({
+  RencoGateway: class {
     connectionState = 'closed'
     connect = vi.fn(async () => {
       this.connectionState = 'open'
@@ -56,7 +56,7 @@ const {
 const { requestForSessionProfile, sessionRpcNeedsProfileRoute } = await import('./session-request-router')
 
 function installDesktop(): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+  ;(window as unknown as { rencoDesktop: unknown }).rencoDesktop = {
     getConnection: vi.fn(async (profile: null | string) =>
       profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
     ),
@@ -80,7 +80,7 @@ beforeEach(() => {
 afterEach(() => {
   closeSecondaryGateways()
   vi.clearAllMocks()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rencoDesktop?: unknown }).rencoDesktop
 })
 
 describe('$activeGatewayRoute (registry-owned active profile)', () => {
