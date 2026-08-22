@@ -199,7 +199,7 @@ def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
     if not (_is_full_sha(current_rev) and _is_full_sha(target_rev)):
         return None
     url = (
-        "https://api.github.com/repos/nousresearch/son-of-anton/"
+        "https://api.github.com/repos/ewtodd/son-of-anton/"
         f"compare/{current_rev}...{target_rev}"
     )
     try:
