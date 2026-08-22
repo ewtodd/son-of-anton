@@ -787,7 +787,7 @@ DEFAULT_CONFIG = {
                                       # the global threshold (e.g. 0.50) for those Codex
                                       # sessions. Only this exact route is affected —
                                       # gpt-5.4 / 5.5 / 5.6 on OpenAI's direct API,
-                                      # OpenRouter, and Copilot keep the global threshold
+                                      # OpenAI-compatible providers keep the global threshold
                                       # regardless.
         "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5/5.6
                                       # autoraise banner. Set False to keep the
@@ -855,33 +855,12 @@ DEFAULT_CONFIG = {
                                       # Example: 1800 = compact after 30 min idle.
     },
 
-    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+    # Anthropic prompt caching (Claude via native Anthropic API).
     # cache_ttl: "5m" or "1h" (Anthropic-supported tiers). Other non-falsy
     # values are silently ignored. Falsy values (false, null, "off",
     # "disabled", "no", "none") disable prompt caching entirely.
     "prompt_caching": {
         "cache_ttl": "5m",
-    },
-
-    # OpenRouter-specific settings.
-    # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
-    #   When enabled, identical requests return cached responses for free (zero billing).
-    #   This is separate from Anthropic prompt caching and works alongside it.
-    #   See: https://openrouter.ai/docs/guides/features/response-caching
-    # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
-    #   Default 300 (5 minutes). Only used when response_cache is enabled.
-    # min_coding_score: knob for the openrouter/pareto-code router (0.0-1.0).
-    #   Only applied when model.model is "openrouter/pareto-code". Higher
-    #   values route to stronger (more expensive) coders; lower values open
-    #   up cheaper, faster options. Default 0.65 lands on the mid-tier
-    #   coder on the current Pareto frontier. Empty string = let OpenRouter
-    #   pick the strongest available coder (router's documented default
-    #   when the plugins block is omitted).
-    #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {
-        "response_cache": True,
-        "response_cache_ttl": 300,
-        "min_coding_score": 0.65,
     },
 
     # AWS Bedrock provider configuration.
@@ -908,28 +887,20 @@ DEFAULT_CONFIG = {
     # Format: provider is the provider name, model is the model slug.
     # "auto" for provider = auto-detect best available provider.
     # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
-    # the configured provider is unavailable.
+    # Side tasks fall back to a lightweight model when the configured
+    # provider is unavailable.
     #
     # extra_body: forwarded verbatim as request body fields on every aux call
     # for that task. Use this to set provider-specific knobs (independent of
-    # main-agent settings). On OpenRouter you can set provider routing prefs
-    # and the Pareto Code coding-score floor here. Example:
+    # main-agent settings).
     #
     #   auxiliary:
     #     compression:
-    #       provider: openrouter
-    #       model: openrouter/pareto-code
-    #       extra_body:
-    #         provider:           # OpenRouter provider routing
-    #           order: [anthropic, google]
-    #           sort: throughput  # or price | latency
-    #         plugins:            # OpenRouter Pareto Code router
-    #           - id: pareto-router
-    #             min_coding_score: 0.5
+    #       provider: deepseek
+    #       model: deepseek-v4
     #
-    # Each aux task is independent — main-agent provider_routing and
-    # openrouter.min_coding_score do NOT propagate to aux calls by design.
+    # Each aux task is independent — main-agent provider routing does NOT
+    # propagate to aux calls by design.
     "auxiliary": {
         # Same-provider retries for a transient transport blip (connection
         # reset / timeout / 5xx / 408) on ANY auxiliary call before falling
@@ -938,19 +909,13 @@ DEFAULT_CONFIG = {
         # not a meaningful recovery, so an unretried blip silently loses the
         # call.
         "transient_retries": 2,
-        # Restrict the auxiliary auto-chain's OpenRouter fallback to free
-        # (:free) SKUs. When true, the OpenRouter step is skipped entirely
+        # Restrict the auxiliary auto-chain's aggregator fallback to free
+        # (:free) SKUs. When true, the aggregator step is skipped entirely
         # unless the resolved fallback model ends in ":free" — a PAID lane
         # is never engaged for background auxiliary traffic (compression,
-        # title generation, session search, vision, web extract) even when
-        # OPENROUTER_API_KEY is present. Default false keeps the historical
-        # paid fallback for users who want it.
+        # title generation, session search, vision, web extract).
         "free_only": False,
-        # Override the auxiliary auto-chain's OpenRouter fallback model
-        # (default: google/gemini-3.6-flash, a PAID model). Set e.g.
-        # "nvidia/nemotron-3-ultra-550b-a55b:free" together with
-        # free_only: true to keep auxiliary traffic free-only. A one-time
-        # WARNING is logged whenever a non-":free" model is engaged.
+        # Override the auxiliary auto-chain's aggregator fallback model.
         "openrouter_model": "",
         # Endpoints that reject NON-streaming chat requests outright (e.g.
         # Tencent Copilot returns HTTP 400 "Non-stream chat request is
@@ -960,7 +925,7 @@ DEFAULT_CONFIG = {
         # copilot.tencent.com is always treated as stream-only.
         "stream_only_base_urls": [],
         "vision": {
-            "provider": "auto",    # auto | openrouter | nous | codex | custom
+            "provider": "auto",    # auto | deepseek | openai-api | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
@@ -1066,7 +1031,7 @@ DEFAULT_CONFIG = {
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat
         # model; override via `son-of-anton model` → auxiliary → Curator to route
-        # to a cheaper aux model (e.g. openrouter google/gemini-3-flash-preview).
+        # to a cheaper aux model (e.g. deepseek-v4).
         "curator": {
             "provider": "auto",
             "model": "",
@@ -1080,7 +1045,7 @@ DEFAULT_CONFIG = {
         # monitor catalog automation (cron/scripts/classify_items.py). Scores
         # candidate items 0-10 against the user's criteria so only above-
         # threshold items get delivered. "auto" = main chat model; override to
-        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
+        # a cheap fast model (e.g. deepseek-v4, or a local
         # haiku) since per-item scoring is high-volume and a small model is fine.
         "monitor": {
             "provider": "auto",
@@ -1095,7 +1060,7 @@ DEFAULT_CONFIG = {
         # whether to save a memory / patch a skill. "auto" (default) = run on
         # the main chat model, replaying the full conversation, which is already
         # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
-        # Set provider/model to a cheaper model (e.g. openrouter
+        # Set provider/model to a cheaper model (e.g. deepseek, or a
         # google/gemini-3-flash-preview) to run the review there for ~3-5x lower
         # cost. A different model can't reuse the main prompt cache anyway, so
         # the fork automatically replays a compact digest instead of the full
@@ -1214,7 +1179,7 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
-        # Nous credits status-bar notices (usage bands, grant-spent, depleted /
+        # Credits status-bar notices (usage bands, depleted /
         # restored).  When false, no credits notices are emitted — balance data
         # is still captured and /usage keeps working.  Off switch for sub +
         # top-up users who find the gauge noisy.
@@ -1411,10 +1376,10 @@ DEFAULT_CONFIG = {
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # configured providers (deepseek, openai-api, custom) are supported.
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "provider": "",    # e.g. "deepseek" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
@@ -1966,7 +1931,7 @@ DEFAULT_CONFIG = {
         # provider == "chronos". All non-secret (URLs + the JWT audience): the
         # agent holds NO external-scheduler credentials. For hosted agents, NAS
         # sets these at provision time. The outbound provision call reuses the
-        # agent's existing Nous Portal token — there is no token key here.
+        # agent's existing token — there is no token key here.
         "chronos": {
             # NAS / portal base URL the agent calls to arm/cancel one-shots
             # and that mints the inbound fire JWT (used as the expected issuer).
@@ -2106,12 +2071,10 @@ DEFAULT_CONFIG = {
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
-    # curated model lists for OpenRouter and Nous Portal from this URL,
-    # falling back to the in-repo snapshot on network failure.  Lets us
-    # update model picker lists without shipping a son-of-anton release.
-    # The default URL is served by the docs site GitHub Pages deploy.
+    # Remote curated model list, falling back to the in-repo snapshot on
+    # network failure. Disabled by default in the fork (no hosted catalog).
     "model_catalog": {
-        "enabled": True,
+        "enabled": False,
         "url": "https://son-of-anton.nousresearch.com/docs/api/model-catalog.json",
         # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
         # next /model or `son-of-anton model` invocation; network failures
@@ -2121,7 +2084,7 @@ DEFAULT_CONFIG = {
         # to self-host their own curation list using the same schema.
         # Example:
         #   providers:
-        #     openrouter:
+        #     deepseek:
         #       url: https://example.com/my-curation.json
         "providers": {},
     },
@@ -2134,7 +2097,7 @@ DEFAULT_CONFIG = {
     #
     # Semantics:
     #   1. Explicit (model_overrides.<provider>.<model_id>): wins over
-    #      models.dev, OpenRouter, and hardcoded defaults for the fields
+    #      models.dev and hardcoded defaults for the fields
     #      it sets. NOTE: an explicit model.context_length (global) and a
     #      custom_providers per-model context_length are user settings at
     #      other layers and are consulted in the resolution chain order
@@ -2770,8 +2733,8 @@ DEFAULT_CONFIG = {
         # tests that need to reach a loopback upstream).
         "upstream_deny_cidrs": None,
         # Extra allowed upstream hosts beyond the bundled defaults (which
-        # cover OpenRouter, OpenAI, Anthropic, Google, xAI, Mistral, Groq,
-        # Together, DeepSeek, Nous).  Wildcards (`*.foo.com`) are supported.
+        # cover OpenAI, DeepSeek, and self-hosted endpoints).
+        # Wildcards (`*.foo.com`) are supported.
         "extra_allowed_hosts": [],
     },
 
@@ -2799,762 +2762,258 @@ DEFAULT_CONFIG = {
 }
 
 # Optional environment variables that enhance functionality
+# Optional environment variables that enhance functionality
+# (fork surface: deepseek/openai inference, web tools, memory providers,
+#  discord+slack messaging, skills hub, observability)
 OPTIONAL_ENV_VARS = {
-    # ── Provider (handled in provider selection, not shown in checklists) ──
-    "OPENROUTER_API_KEY": {
-        "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
-        "prompt": "OpenRouter API key",
-        "url": "https://openrouter.ai/keys",
-        "password": True,
-        "tools": ["vision_analyze"],
-        "category": "provider",
-        "advanced": True,
-    },
-    "GOOGLE_API_KEY": {
-        "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
-        "prompt": "Google AI Studio API key",
-        "url": "https://aistudio.google.com/app/apikey",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GEMINI_API_KEY": {
-        "description": "Google AI Studio API key (alias for GOOGLE_API_KEY)",
-        "prompt": "Gemini API key",
-        "url": "https://aistudio.google.com/app/apikey",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GEMINI_BASE_URL": {
-        "description": "Google AI Studio base URL override",
-        "prompt": "Gemini base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "VERTEX_CREDENTIALS_PATH": {
-        "description": "Path to a Google Cloud service account JSON for Vertex AI (Gemini). "
-                       "Vertex uses OAuth2, not a static API key — this points at the "
-                       "credentials Son of Anton mints short-lived tokens from. Falls back to "
-                       "GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
-                       "application-default login). Set project/region under vertex: in config.yaml.",
-        "prompt": "Vertex service account JSON path (leave empty to use ADC / GOOGLE_APPLICATION_CREDENTIALS)",
-        "url": "https://cloud.google.com/iam/docs/keys-create-delete",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "NVIDIA_API_KEY": {
-        "description": "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
-        "prompt": "NVIDIA NIM API key",
-        "url": "https://build.nvidia.com/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "NVIDIA_BASE_URL": {
-        "description": "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
-        "prompt": "NVIDIA NIM base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "LM_API_KEY": {
-        "description": "LM Studio bearer token for auth-enabled local servers",
-        "prompt": "LM Studio API key / bearer token",
-        "url": None,
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "LM_BASE_URL": {
-        "description": "LM Studio base URL override",
-        "prompt": "LM Studio base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GLM_API_KEY": {
-        "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
-        "prompt": "Z.AI / GLM API key",
-        "url": "https://z.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ZAI_API_KEY": {
-        "description": "Z.AI API key (alias for GLM_API_KEY)",
-        "prompt": "Z.AI API key",
-        "url": "https://z.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "Z_AI_API_KEY": {
-        "description": "Z.AI API key (alias for GLM_API_KEY)",
-        "prompt": "Z.AI API key",
-        "url": "https://z.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GLM_BASE_URL": {
-        "description": "Z.AI / GLM base URL override",
-        "prompt": "Z.AI / GLM base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "KIMI_API_KEY": {
-        "description": "Kimi / Moonshot API key",
-        "prompt": "Kimi API key",
-        "url": "https://platform.moonshot.cn/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "KIMI_BASE_URL": {
-        "description": "Kimi / Moonshot base URL override",
-        "prompt": "Kimi base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "KIMI_CN_API_KEY": {
-        "description": "Kimi / Moonshot China API key",
-        "prompt": "Kimi (China) API key",
-        "url": "https://platform.moonshot.cn/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "STEPFUN_API_KEY": {
-        "description": "StepFun Step Plan API key",
-        "prompt": "StepFun Step Plan API key",
-        "url": "https://platform.stepfun.com/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "STEPFUN_BASE_URL": {
-        "description": "StepFun Step Plan base URL override",
-        "prompt": "StepFun Step Plan base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ARCEEAI_API_KEY": {
-        "description": "Arcee AI API key",
-        "prompt": "Arcee AI API key",
-        "url": "https://chat.arcee.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ARCEE_BASE_URL": {
-        "description": "Arcee AI base URL override",
-        "prompt": "Arcee base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GMI_API_KEY": {
-        "description": "GMI Cloud API key",
-        "prompt": "GMI Cloud API key",
-        "url": "https://www.gmicloud.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GMI_BASE_URL": {
-        "description": "GMI Cloud base URL override",
-        "prompt": "GMI Cloud base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ACTUAL_API_KEY": {
-        "description": "Actual Computer inference key (ac_...)",
-        "prompt": "Actual Computer inference key",
-        "url": "https://actual.inc/user/keys",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ACTUAL_BASE_URL": {
-        "description": "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline daemon)",
-        "prompt": "Actual Computer base URL (leave empty for hosted relay)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "FIREWORKS_API_KEY": {
-        "description": "Fireworks AI API key",
-        "prompt": "Fireworks AI API key",
-        "url": "https://app.fireworks.ai/settings/users/api-keys",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_API_KEY": {
-        "description": "MiniMax API key (international)",
-        "prompt": "MiniMax API key",
-        "url": "https://www.minimax.io/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_BASE_URL": {
-        "description": "MiniMax base URL override",
-        "prompt": "MiniMax base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_CN_API_KEY": {
-        "description": "MiniMax API key (China endpoint)",
-        "prompt": "MiniMax (China) API key",
-        "url": "https://www.minimaxi.com/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_CN_BASE_URL": {
-        "description": "MiniMax (China) base URL override",
-        "prompt": "MiniMax (China) base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
     "DEEPSEEK_API_KEY": {
-        "description": "DeepSeek API key for direct DeepSeek access",
-        "prompt": "DeepSeek API Key",
-        "url": "https://platform.deepseek.com/api_keys",
+        "description": 'DeepSeek API key for direct DeepSeek access',
+        "prompt": 'DeepSeek API Key',
+        "url": 'https://platform.deepseek.com/api_keys',
         "password": True,
-        "category": "provider",
+        "category": 'provider',
     },
     "DEEPSEEK_BASE_URL": {
-        "description": "Custom DeepSeek API base URL (advanced)",
-        "prompt": "DeepSeek Base URL",
-        "url": "",
+        "description": 'Custom DeepSeek API base URL (advanced)',
+        "prompt": 'DeepSeek Base URL',
+        "url": '',
         "password": False,
-        "category": "provider",
+        "category": 'provider',
     },
-    "DASHSCOPE_API_KEY": {
-        "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
-        "prompt": "DashScope API Key",
-        "url": "https://modelstudio.console.alibabacloud.com/",
-        "password": True,
-        "category": "provider",
-    },
-    "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
-        "prompt": "DashScope Base URL",
-        "url": "",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "SON_OF_ANTON_QWEN_BASE_URL": {
-        "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
-        "prompt": "Qwen Portal base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_ZEN_API_KEY": {
-        "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
-        "prompt": "OpenCode Zen API key",
-        "url": "https://opencode.ai/auth",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "COMMANDCODE_API_KEY": {
-        "description": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
-        "prompt": "CommandCode API key",
-        "url": "https://commandcode.ai/studio/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_ZEN_BASE_URL": {
-        "description": "OpenCode Zen base URL override",
-        "prompt": "OpenCode Zen base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_GO_API_KEY": {
-        "description": "OpenCode Go API key ($10/month subscription for open models)",
-        "prompt": "OpenCode Go API key",
-        "url": "https://opencode.ai/auth",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_GO_BASE_URL": {
-        "description": "OpenCode Go base URL override",
-        "prompt": "OpenCode Go base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HF_TOKEN": {
-        "description": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
-        "prompt": "Hugging Face Token",
-        "url": "https://huggingface.co/settings/tokens",
-        "password": True,
-        "category": "provider",
-    },
-    "HF_BASE_URL": {
-        "description": "Hugging Face Inference Providers base URL override",
-        "prompt": "HF base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OLLAMA_API_KEY": {
-        "description": "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
-        "prompt": "Ollama Cloud API key",
-        "url": "https://ollama.com/settings",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OLLAMA_BASE_URL": {
-        "description": "Ollama Cloud base URL override (default: https://ollama.com/v1)",
-        "prompt": "Ollama base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
-        "prompt": "Xiaomi MiMo API Key",
-        "url": "https://platform.xiaomimimo.com",
-        "password": True,
-        "category": "provider",
-    },
-    "XIAOMI_BASE_URL": {
-        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
-        "prompt": "Xiaomi base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "UPSTAGE_API_KEY": {
-        "description": "Upstage API key for Solar LLM models",
-        "prompt": "Upstage API Key",
-        "url": "https://console.upstage.ai/api-keys",
-        "password": True,
-        "category": "provider",
-    },
-    "UPSTAGE_BASE_URL": {
-        "description": "Upstage base URL override (default: https://api.upstage.ai/v1)",
-        "prompt": "Upstage base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "AWS_REGION": {
-        "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "prompt": "AWS Region",
-        "url": "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "AWS_PROFILE": {
-        "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "prompt": "AWS Profile",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "AZURE_FOUNDRY_API_KEY": {
-        "description": "Azure Foundry API key for custom Azure endpoints",
-        "prompt": "Azure Foundry API Key",
-        "url": "https://ai.azure.com/",
-        "password": True,
-        "category": "provider",
-    },
-    "AZURE_FOUNDRY_BASE_URL": {
-        "description": "Azure Foundry base URL (set via 'son-of-anton model' for endpoint-specific config)",
-        "prompt": "Azure Foundry base URL",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    # ── Tool API keys ──
     "EXA_API_KEY": {
-        "description": "Exa API key for AI-native web search and contents",
-        "prompt": "Exa API key",
-        "url": "https://exa.ai/",
-        "tools": ["web_search", "web_extract"],
+        "description": 'Exa API key for AI-native web search and contents',
+        "prompt": 'Exa API key',
+        "url": 'https://exa.ai/',
+        "tools": ['web_search', 'web_extract'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "PARALLEL_API_KEY": {
-        "description": "Parallel API key for AI-native web search and extract",
-        "prompt": "Parallel API key",
-        "url": "https://parallel.ai/",
-        "tools": ["web_search", "web_extract"],
+        "description": 'Parallel API key for AI-native web search and extract',
+        "prompt": 'Parallel API key',
+        "url": 'https://parallel.ai/',
+        "tools": ['web_search', 'web_extract'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "FIRECRAWL_API_KEY": {
-        "description": "Firecrawl API key for web search and scraping",
-        "prompt": "Firecrawl API key",
-        "url": "https://firecrawl.dev/",
-        "tools": ["web_search", "web_extract"],
+        "description": 'Firecrawl API key for web search and scraping',
+        "prompt": 'Firecrawl API key',
+        "url": 'https://firecrawl.dev/',
+        "tools": ['web_search', 'web_extract'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "FIRECRAWL_API_URL": {
-        "description": "Firecrawl API URL for self-hosted instances (optional)",
-        "prompt": "Firecrawl API URL (leave empty for cloud)",
+        "description": 'Firecrawl API URL for self-hosted instances (optional)',
+        "prompt": 'Firecrawl API URL (leave empty for cloud)',
         "url": None,
         "password": False,
-        "category": "tool",
+        "category": 'tool',
         "advanced": True,
     },
     "FIRECRAWL_GATEWAY_URL": {
-        "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
-        "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
+        "description": 'Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)',
+        "prompt": 'Firecrawl gateway URL (leave empty to derive from domain)',
         "url": None,
         "password": False,
-        "category": "tool",
+        "category": 'tool',
         "advanced": True,
-    },
-    "TOOL_GATEWAY_DOMAIN": {
-        "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
-        "prompt": "Tool-gateway domain suffix",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_SCHEME": {
-        "description": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)",
-        "prompt": "Tool-gateway URL scheme",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_USER_TOKEN": {
-        "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Son of Anton auth store)",
-        "prompt": "Tool-gateway user token",
-        "url": None,
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search and extract (optional — keyless works without it)",
-        "prompt": "Tavily API key",
-        "url": "https://app.tavily.com/home",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "KEENABLE_API_KEY": {
-        "description": "Keenable API key for fast independent-index web search and page fetch (optional — keyless free tier works without it)",
-        "prompt": "Keenable API key",
-        "url": "https://keenable.ai",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "SEARXNG_URL": {
-        "description": "URL of your SearXNG instance for free self-hosted web search",
-        "prompt": "SearXNG URL (e.g. http://localhost:8080)",
-        "url": "https://searxng.github.io/searxng/",
-        "tools": ["web_search"],
-        "password": False,
-        "category": "tool",
-    },
-    "BRAVE_SEARCH_API_KEY": {
-        "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
-        "prompt": "Brave Search subscription token",
-        "url": "https://brave.com/search/api/",
-        "tools": ["web_search"],
-        "password": True,
-        "category": "tool",
     },
     "TAVILY_API_KEY": {
         "description": "Picovoice access key for the Porcupine 'Hey Son of Anton' wake word engine (optional; openWakeWord is the free default)",
-        "prompt": "Picovoice access key",
-        "url": "https://console.picovoice.ai/",
+        "prompt": 'Picovoice access key',
+        "url": 'https://console.picovoice.ai/',
         "password": True,
-        "category": "tool",
+        "category": 'tool',
+    },
+    "SEARXNG_URL": {
+        "description": 'URL of your SearXNG instance for free self-hosted web search',
+        "prompt": 'SearXNG URL (e.g. http://localhost:8080)',
+        "url": 'https://searxng.github.io/searxng/',
+        "tools": ['web_search'],
+        "password": False,
+        "category": 'tool',
+    },
+    "BRAVE_SEARCH_API_KEY": {
+        "description": 'Brave Search API subscription token (free tier: 2,000 queries/mo)',
+        "prompt": 'Brave Search subscription token',
+        "url": 'https://brave.com/search/api/',
+        "tools": ['web_search'],
+        "password": True,
+        "category": 'tool',
     },
     "GITHUB_TOKEN": {
-        "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
-        "prompt": "GitHub Token",
-        "url": "https://github.com/settings/tokens",
+        "description": 'GitHub token for Skills Hub (higher API rate limits, skill publish)',
+        "prompt": 'GitHub Token',
+        "url": 'https://github.com/settings/tokens',
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
-
-    # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
-    # These use category="skill" (distinct from "tool") so the sandbox
-    # env blocklist in tools/environments/local.py does NOT rewrite them —
-    # skills legitimately need these passed through to curl via
-    # tools/env_passthrough.py when the user's skill calls out.
-    "NOTION_API_KEY": {
-        "description": "Notion integration token (used by the `notion` skill)",
-        "prompt": "Notion API key",
-        "url": "https://www.notion.so/my-integrations",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "LINEAR_API_KEY": {
-        "description": "Linear personal API key (used by the `linear` skill)",
-        "prompt": "Linear API key",
-        "url": "https://linear.app/settings/account/security",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "AIRTABLE_API_KEY": {
-        "description": "Airtable personal access token (used by the `airtable` skill)",
-        "prompt": "Airtable API key",
-        "url": "https://airtable.com/create/tokens",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "TENOR_API_KEY": {
-        "description": "Tenor API key for GIF search (used by the `gif-search` skill)",
-        "prompt": "Tenor API key",
-        "url": "https://developers.google.com/tenor/guides/quickstart",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-
-    # ── Honcho ──
     "HONCHO_API_KEY": {
-        "description": "Honcho API key for AI-native persistent memory",
-        "prompt": "Honcho API key",
-        "url": "https://app.honcho.dev",
-        "tools": ["honcho_context"],
+        "description": 'Honcho API key for AI-native persistent memory',
+        "prompt": 'Honcho API key',
+        "url": 'https://app.honcho.dev',
+        "tools": ['honcho_context'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "HONCHO_BASE_URL": {
-        "description": "Base URL for self-hosted Honcho instances (no API key needed)",
-        "prompt": "Honcho base URL (e.g. http://localhost:8000)",
-        "category": "tool",
+        "description": 'Base URL for self-hosted Honcho instances (no API key needed)',
+        "prompt": 'Honcho base URL (e.g. http://localhost:8000)',
+        "category": 'tool',
     },
-
-    # ── Hindsight ──
     "HINDSIGHT_API_KEY": {
-        "description": "Hindsight API key for graph-aware persistent memory",
-        "prompt": "Hindsight API key",
-        "url": "https://hindsight.vectorize.io",
-        "tools": ["hindsight_recall"],
+        "description": 'Hindsight API key for graph-aware persistent memory',
+        "prompt": 'Hindsight API key',
+        "url": 'https://hindsight.vectorize.io',
+        "tools": ['hindsight_recall'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "HINDSIGHT_API_URL": {
-        "description": "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
-        "prompt": "Hindsight API URL",
-        "category": "tool",
+        "description": 'Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)',
+        "prompt": 'Hindsight API URL',
+        "category": 'tool',
         "advanced": True,
     },
-
-    # ── Supermemory ──
     "SUPERMEMORY_API_KEY": {
-        "description": "Supermemory API key for conversation-scoped persistent memory",
-        "prompt": "Supermemory API key",
-        "url": "https://supermemory.ai",
-        "tools": ["supermemory_search"],
+        "description": 'Supermemory API key for conversation-scoped persistent memory',
+        "prompt": 'Supermemory API key',
+        "url": 'https://supermemory.ai',
+        "tools": ['supermemory_search'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
-
-    # ── Mem0 ──
     "MEM0_API_KEY": {
-        "description": "Mem0 Platform API key for semantic persistent memory",
-        "prompt": "Mem0 API key",
-        "url": "https://app.mem0.ai",
-        "tools": ["mem0_search"],
+        "description": 'Mem0 Platform API key for semantic persistent memory',
+        "prompt": 'Mem0 API key',
+        "url": 'https://app.mem0.ai',
+        "tools": ['mem0_search'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
-
-    # ── RetainDB ──
     "RETAINDB_API_KEY": {
-        "description": "RetainDB API key for persistent memory",
-        "prompt": "RetainDB API key",
-        "url": "https://retaindb.com",
-        "tools": ["retaindb_search"],
+        "description": 'RetainDB API key for persistent memory',
+        "prompt": 'RetainDB API key',
+        "url": 'https://retaindb.com',
+        "tools": ['retaindb_search'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "RETAINDB_BASE_URL": {
-        "description": "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
-        "prompt": "RetainDB base URL",
-        "category": "tool",
+        "description": 'Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)',
+        "prompt": 'RetainDB base URL',
+        "category": 'tool',
         "advanced": True,
     },
-
-    # ── ByteRover ──
     "BRV_API_KEY": {
-        "description": "ByteRover API key (optional, for cloud sync — local-first by default)",
-        "prompt": "ByteRover API key",
-        "url": "https://app.byterover.dev",
-        "tools": ["brv_query"],
+        "description": 'ByteRover API key (optional, for cloud sync — local-first by default)',
+        "prompt": 'ByteRover API key',
+        "url": 'https://app.byterover.dev',
+        "tools": ['brv_query'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
-
-    # ── OpenViking ──
     "OPENVIKING_API_KEY": {
-        "description": "OpenViking API key (leave blank for local dev mode)",
-        "prompt": "OpenViking API key",
-        "tools": ["viking_search"],
+        "description": 'OpenViking API key (leave blank for local dev mode)',
+        "prompt": 'OpenViking API key',
+        "tools": ['viking_search'],
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "OPENVIKING_ENDPOINT": {
-        "description": "OpenViking server URL (default: http://127.0.0.1:1933)",
-        "prompt": "OpenViking endpoint",
-        "category": "tool",
+        "description": 'OpenViking server URL (default: http://127.0.0.1:1933)',
+        "prompt": 'OpenViking endpoint',
+        "category": 'tool',
         "advanced": True,
     },
-
-    # ── Langfuse observability ──
     "SON_OF_ANTON_LANGFUSE_PUBLIC_KEY": {
-        "description": "Langfuse project public key (pk-lf-...)",
-        "prompt": "Langfuse public key",
-        "url": "https://cloud.langfuse.com",
+        "description": 'Langfuse project public key (pk-lf-...)',
+        "prompt": 'Langfuse public key',
+        "url": 'https://cloud.langfuse.com',
         "password": False,
-        "category": "tool",
+        "category": 'tool',
     },
     "SON_OF_ANTON_LANGFUSE_SECRET_KEY": {
-        "description": "Langfuse project secret key (sk-lf-...)",
-        "prompt": "Langfuse secret key",
-        "url": "https://cloud.langfuse.com",
+        "description": 'Langfuse project secret key (sk-lf-...)',
+        "prompt": 'Langfuse secret key',
+        "url": 'https://cloud.langfuse.com',
         "password": True,
-        "category": "tool",
+        "category": 'tool',
     },
     "SON_OF_ANTON_LANGFUSE_BASE_URL": {
-        "description": "Langfuse server URL (default: https://cloud.langfuse.com)",
-        "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
+        "description": 'Langfuse server URL (default: https://cloud.langfuse.com)',
+        "prompt": 'Langfuse server URL (leave empty for cloud.langfuse.com)',
         "url": None,
         "password": False,
-        "category": "tool",
+        "category": 'tool',
         "advanced": True,
     },
-
-    # ── Messaging platforms ──
     "DISCORD_BOT_TOKEN": {
-        "description": "Discord bot token from Developer Portal",
-        "prompt": "Discord bot token",
-        "url": "https://discord.com/developers/applications",
+        "description": 'Discord bot token from Developer Portal',
+        "prompt": 'Discord bot token',
+        "url": 'https://discord.com/developers/applications',
         "password": True,
-        "category": "messaging",
+        "category": 'messaging',
     },
     "DISCORD_ALLOWED_USERS": {
-        "description": "Comma-separated Discord user IDs allowed to use the bot",
-        "prompt": "Allowed Discord user IDs (comma-separated)",
+        "description": 'Comma-separated Discord user IDs allowed to use the bot',
+        "prompt": 'Allowed Discord user IDs (comma-separated)',
         "url": None,
         "password": False,
-        "category": "messaging",
+        "category": 'messaging',
     },
     "DISCORD_REPLY_TO_MODE": {
         "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
-        "prompt": "Discord reply mode (off/first/all)",
+        "prompt": 'Discord reply mode (off/first/all)',
         "url": None,
         "password": False,
-        "category": "messaging",
+        "category": 'messaging',
     },
     "SLACK_BOT_TOKEN": {
-        "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
-                       "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
-                       "im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, files:write",
-        "prompt": "Slack Bot Token (xoxb-...)",
-        "help": "In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.",
-        "url": "https://api.slack.com/apps",
+        "description": 'Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. Required scopes: chat:write, app_mentions:read, channels:history, groups:history, im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, files:write',
+        "prompt": 'Slack Bot Token (xoxb-...)',
+        "help": 'In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.',
+        "url": 'https://api.slack.com/apps',
         "password": True,
-        "category": "messaging",
+        "category": 'messaging',
     },
     "SLACK_APP_TOKEN": {
-        "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → "
-                       "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
-                       "message.channels, message.groups, message.mpim, app_mention",
-        "prompt": "Slack App Token (xapp-...)",
-        "help": "In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.",
-        "url": "https://api.slack.com/apps",
+        "description": 'Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → App-Level Tokens. Also ensure Event Subscriptions include: message.im, message.channels, message.groups, message.mpim, app_mention',
+        "prompt": 'Slack App Token (xapp-...)',
+        "help": 'In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.',
+        "url": 'https://api.slack.com/apps',
         "password": True,
-        "category": "messaging",
+        "category": 'messaging',
     },
     "SLACK_ALLOWED_USERS": {
-        "description": "Comma-separated Slack member IDs allowed to use Son of Anton, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.",
-        "prompt": "Allowed Slack member IDs",
-        "help": "In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.",
-        "url": "https://api.slack.com/apps",
+        "description": 'Comma-separated Slack member IDs allowed to use Son of Anton, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.',
+        "prompt": 'Allowed Slack member IDs',
+        "help": 'In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.',
+        "url": 'https://api.slack.com/apps',
         "password": False,
-        "category": "messaging",
+        "category": 'messaging',
     },
-
-    # ── Agent settings ──
-    # NOTE: MESSAGING_CWD was removed here — use terminal.cwd in config.yaml
-    # instead.  The gateway reads TERMINAL_CWD (bridged from terminal.cwd).
     "SUDO_PASSWORD": {
-        "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
-        "prompt": "Sudo password",
+        "description": 'Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting',
+        "prompt": 'Sudo password',
         "url": None,
         "password": True,
-        "category": "setting",
+        "category": 'setting',
     },
-    # SON_OF_ANTON_TOOL_PROGRESS_MODE is deprecated — tool progress is configured via
-    # display.tool_progress in config.yaml (off|new|all|verbose|log). The
-    # gateway still falls back to SON_OF_ANTON_TOOL_PROGRESS_MODE for backward
-    # compatibility, so it lives in _EXTRA_ENV_KEYS (known to reload and
-    # compatibility paths) but is intentionally NOT listed here:
-    # OPTIONAL_ENV_VARS feeds user-facing surfaces (keys page, setup
-    # checklists) and deprecated knobs shouldn't be offered there. The boolean
-    # SON_OF_ANTON_TOOL_PROGRESS is fully unsupported since the v12 config support
-    # floor retired its only consumer (the v3→4 migration).
     "SON_OF_ANTON_PREFILL_MESSAGES_FILE": {
-        "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
-        "prompt": "Prefill messages file path",
+        "description": 'Path to JSON file with ephemeral prefill messages for few-shot priming',
+        "prompt": 'Prefill messages file path',
         "url": None,
         "password": False,
-        "category": "setting",
+        "category": 'setting',
     },
     "SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT": {
-        "description": "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
-        "prompt": "Ephemeral system prompt",
+        "description": 'Ephemeral system prompt injected at API-call time (never persisted to sessions)',
+        "prompt": 'Ephemeral system prompt',
         "url": None,
         "password": False,
-        "category": "setting",
+        "category": 'setting',
     },
 }
