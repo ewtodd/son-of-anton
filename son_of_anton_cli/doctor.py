@@ -1395,23 +1395,12 @@ def run_doctor(args):
             provider_for_policy = runtime_provider or catalog_provider
             provider_policy_id = str(provider_for_policy or "").strip().lower()
             providers_accepting_vendor_slugs = {
-                "openrouter",
                 "auto",
-                "ai-gateway",
-                "kilocode",
-                "opencode-zen",
-                "huggingface",
                 "lmstudio",
-                "nous",
-                "nvidia",
                 # Fireworks' native model IDs are slash-form
                 # (accounts/fireworks/models/... and .../routers/...), so a "/"
                 # is expected, not an aggregator vendor prefix.
                 "fireworks",
-                # DeepInfra is an aggregator-style gateway: its catalog
-                # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
-                # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
-                "deepinfra",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
@@ -1426,37 +1415,29 @@ def run_doctor(args):
             ):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
-                    "(vendor-prefixed slugs belong to aggregators like openrouter)",
+                    "(vendor-prefixed slugs belong to aggregators, e.g. a custom proxy)",
                 )
                 issues.append(
                     f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
-                    "Either set model.provider to 'openrouter', or drop the vendor prefix."
+                    "Either set model.provider to an aggregator (custom proxy), or drop the vendor prefix."
                 )
 
             # Check credentials for the configured provider.
             # Limit to API-key providers in PROVIDER_REGISTRY — other provider
-            # types (OAuth, SDK, anthropic/custom/auto) have their own env-var
-            # checks elsewhere in doctor, and get_auth_status() returns a bare
+            # types (OAuth, SDK, custom/auto) have their own env-var checks
+            # elsewhere in doctor, and get_auth_status() returns a bare
             # {logged_in: False} for anything it doesn't explicitly dispatch,
             # which would produce false positives.
             if runtime_provider and runtime_provider not in ("auto", "custom"):
                 try:
-                    if runtime_provider == "openrouter":
-                        from son_of_anton_cli.config import get_env_value
+                    from son_of_anton_cli.auth import PROVIDER_REGISTRY, get_auth_status
 
+                    pconfig = PROVIDER_REGISTRY.get(runtime_provider)
+                    configured = True
+                    if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
+                        status = get_auth_status(runtime_provider) or {}
                         configured = bool(
-                            str(get_env_value("OPENROUTER_API_KEY") or "").strip()
-                            or str(get_env_value("OPENAI_API_KEY") or "").strip()
-                        )
-                    else:
-                        from son_of_anton_cli.auth import PROVIDER_REGISTRY, get_auth_status
-
-                        pconfig = PROVIDER_REGISTRY.get(runtime_provider)
-                        configured = True
-                        if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
-                            status = get_auth_status(runtime_provider) or {}
-                            configured = bool(
-                                status.get("configured")
+                            status.get("configured")
                                 or status.get("logged_in")
                                 or status.get("api_key")
                             )

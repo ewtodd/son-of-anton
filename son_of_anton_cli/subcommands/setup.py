@@ -19,14 +19,13 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         help="Interactive setup wizard",
         description="Configure Son of Anton Agent with an interactive wizard. "
         "Run a specific section: "
-        "son-of-anton setup model|tts|terminal|gateway|tools|telemetry|agent",
+        "son-of-anton setup model|terminal|gateway|tools|telemetry|agent",
     )
     setup_parser.add_argument(
         "section",
         nargs="?",
         choices=[
             "model",
-            "tts",
             "terminal",
             "gateway",
             "tools",
@@ -56,12 +55,5 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         action="store_true",
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
-    )
-    setup_parser.add_argument(
-        "--portal",
-        action="store_true",
-        help="One-shot Nous Portal setup: log in via OAuth, pick a Nous "
-        "model, set Nous as the inference provider, and opt into the Tool "
-        "Gateway. Skips the rest of the wizard.",
     )
     setup_parser.set_defaults(func=cmd_setup)

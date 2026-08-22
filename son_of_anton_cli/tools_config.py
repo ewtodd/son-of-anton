@@ -268,22 +268,10 @@ TOOL_CATEGORIES = {
         # plugins.web.<vendor>.provider via _plugin_web_search_providers()
         # in _visible_providers(). Only non-provider UX setup-flow rows
         # for the firecrawl backend are listed here:
-        #   - "Nous Subscription" — managed Firecrawl billed via Nous
-        #     subscription (requires_nous_auth + override_env_vars).
         #   - "Firecrawl Self-Hosted" — points firecrawl at a private
         #     Docker instance via FIRECRAWL_API_URL only.
         # See PR #25182 for the migration rationale.
         "providers": [
-            {
-                "name": "Nous Subscription",
-                "badge": "subscription",
-                "tag": "Managed Firecrawl billed to your subscription",
-                "web_backend": "firecrawl",
-                "env_vars": [],
-                "requires_nous_auth": True,
-                "managed_nous_feature": "web",
-                "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"],
-            },
             {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
@@ -328,12 +316,12 @@ TOOL_CATEGORIES = {
 # `vision` is listed here only so it registers as a *configurable* toolset
 # (the value gates the reconfigure menu + the "[no API key]" suffix). Its
 # actual setup runs through `_configure_vision_backend()` — a full
-# provider+model picker like `son-of-anton model` — NOT this single-key prompt, so
-# users are never forced onto OpenRouter. `_toolset_has_keys("vision")`
-# resolves via `resolve_vision_provider_client()`, so the tuple below is never
-# prompted or read for vision; it's purely a presence marker.
+# provider+model picker like `son-of-anton model` — NOT this single-key prompt.
+# `_toolset_has_keys("vision")` resolves via
+# `resolve_vision_provider_client()`, so the tuple below is never prompted or
+# read for vision; it's purely a presence marker.
 TOOLSET_ENV_REQUIREMENTS = {
-    "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "vision":     [("OPENAI_API_KEY",   "https://platform.openai.com/api-keys")],
 }
 
 
@@ -1317,23 +1305,12 @@ def _visible_providers(
     force_fresh: bool = False,
     features: Optional[NousSubscriptionFeatures] = None,
 ) -> list[dict]:
-    """Return provider entries visible for the current auth/config state.
-
-    Nous-managed Tool Gateway rows (``managed_nous_feature``) are always
-    shown — even to logged-out / unentitled users — so the picker advertises
-    that the capability exists.  Selecting one drives an inline Nous Portal
-    login + entitlement check (see ``_configure_provider``); the row only
-    *activates* the gateway once paid access is confirmed.
-    """
+    """Return provider entries visible for the current auth/config state."""
     if features is None:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
-    acct = features.account_info
     visible = []
     for provider in cat.get("providers", []):
-        # Nous-managed Tool Gateway rows stay visible regardless of auth —
-        # selecting one drives an inline Portal login. A `requires_nous_auth`
-        # row that is NOT a managed gateway feature (pure pre-auth UX) is
-        # still hidden until the user is logged in.
+        # Pure pre-auth UX rows are hidden until the user is logged in.
         if (
             provider.get("requires_nous_auth")
             and not provider.get("managed_nous_feature")
@@ -1344,9 +1321,9 @@ def _visible_providers(
 
     # Inject plugin-registered web search backends. After PR #25182, this
     # is the SOLE source of provider rows for the Web Search & Extract
-    # category — the per-provider hardcoded entries were deleted. The two
-    # remaining hardcoded rows ("Nous Subscription", "Firecrawl
-    # Self-Hosted") are non-provider UX setup-flow rows for firecrawl.
+    # category — the per-provider hardcoded entries were deleted. The one
+    # remaining hardcoded row ("Firecrawl Self-Hosted") is a non-provider UX
+    # setup-flow row for firecrawl.
     if cat.get("name") == "Web Search & Extract":
         visible.extend(_plugin_web_search_providers())
 
@@ -1360,15 +1337,7 @@ def _hidden_nous_gateway_message(
     *,
     force_fresh: bool = False,
 ) -> str:
-    """Deprecated: Nous Tool Gateway rows are no longer hidden.
-
-    Previously this returned a "log in / upgrade" banner shown above a
-    category when its Nous-managed rows were filtered out for unentitled
-    users. Those rows are now always listed (see ``_visible_providers``), and
-    the login + entitlement guidance happens inline when the user selects one
-    (``ensure_nous_portal_access``). Kept as a no-op so call sites stay simple;
-    always returns an empty string.
-    """
+    """Deprecated no-op kept so call sites stay simple; always returns ""."""
     return ""
 
 

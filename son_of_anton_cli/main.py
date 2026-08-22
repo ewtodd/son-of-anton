@@ -771,29 +771,12 @@ from datetime import datetime
 from son_of_anton_cli import __version__, __release_date__
 
 # Provider model-selection wizard flows extracted to son_of_anton_cli/model_setup_flows.py
-# (god-file decomposition Phase 2). Re-imported here so select_provider_and_model and
-# existing test monkeypatches (son_of_anton_cli.main._model_flow_*) keep resolving unchanged.
+# (god-file decomposition Phase 2). Re-imported here so select_provider_and_model
+# keeps a single dispatch site.
 from son_of_anton_cli.model_setup_flows import (
-    _prompt_auth_credentials_choice,
-    _model_flow_openrouter,
-    _model_flow_nous,
-    _model_flow_openai_codex,
-    _model_flow_xai_oauth,
-    _model_flow_qwen_oauth,
-    _model_flow_minimax_oauth,
     _model_flow_custom,
-    _model_flow_azure_foundry,
     _model_flow_named_custom,
-    _model_flow_copilot,
-    _model_flow_copilot_acp,
-    _model_flow_kimi,
-    _model_flow_stepfun,
-    _model_flow_bedrock_api_key,
-    _model_flow_bedrock,
-    _model_flow_vertex,
     _model_flow_api_key_provider,
-    _model_flow_anthropic,
-    _model_flow_ai_gateway,
 )
 logger = logging.getLogger(__name__)
 
@@ -1016,7 +999,7 @@ def _has_any_provider_configured() -> bool:
     # while the PROVIDER_REGISTRY sweep below spawns subprocesses (gh) and can
     # take 15-20s — long enough that desktop setup.status calls time out.
 
-    # Check for Nous Portal OAuth credentials
+    # Check for stored OAuth credentials
     auth_file = get_son_of_anton_home() / "auth.json"
     if auth_file.exists():
         try:
@@ -3474,9 +3457,6 @@ def select_provider_and_model(args=None):
             active = None  # no provider yet; default to first in list
 
     # Detect custom endpoint
-    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
-        active = "custom"
-
     from son_of_anton_cli.models import (
         CANONICAL_PROVIDERS,
         _PROVIDER_LABELS,
@@ -3619,25 +3599,7 @@ def select_provider_and_model(args=None):
         return
 
     # Step 2: Provider-specific setup + model selection
-    if selected_provider == "openrouter":
-        _model_flow_openrouter(config, current_model)
-    elif selected_provider == "ai-gateway":
-        _model_flow_ai_gateway(config, current_model)
-    elif selected_provider == "nous":
-        _model_flow_nous(config, current_model, args=args)
-    elif selected_provider == "openai-codex":
-        _model_flow_openai_codex(config, current_model)
-    elif selected_provider == "xai-oauth":
-        _model_flow_xai_oauth(config, current_model, args=args)
-    elif selected_provider == "qwen-oauth":
-        _model_flow_qwen_oauth(config, current_model)
-    elif selected_provider == "minimax-oauth":
-        _model_flow_minimax_oauth(config, current_model, args=args)
-    elif selected_provider == "copilot-acp":
-        _model_flow_copilot_acp(config, current_model)
-    elif selected_provider == "copilot":
-        _model_flow_copilot(config, current_model)
-    elif selected_provider == "custom":
+    if selected_provider == "custom":
         _model_flow_custom(config)
     elif (
         selected_provider.startswith("custom:")
@@ -3653,41 +3615,9 @@ def select_provider_and_model(args=None):
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
-    elif selected_provider == "anthropic":
-        _model_flow_anthropic(config, current_model)
-    elif selected_provider == "kimi-coding":
-        _model_flow_kimi(config, current_model)
-    elif selected_provider == "stepfun":
-        _model_flow_stepfun(config, current_model)
-    elif selected_provider == "bedrock":
-        _model_flow_bedrock(config, current_model)
-    elif selected_provider == "vertex":
-        _model_flow_vertex(config, current_model)
-    elif selected_provider == "azure-foundry":
-        _model_flow_azure_foundry(config, current_model)
-    elif selected_provider in {
-        "openai-api",
-        "gemini",
-        "deepseek",
-        "xai",
-        "zai",
-        "kimi-coding-cn",
-        "minimax",
-        "minimax-cn",
-        "kilocode",
-        "opencode-zen",
-        "opencode-go",
-        "opencode-free",
-        "alibaba",
-        "huggingface",
-        "xiaomi",
-        "arcee",
-        "gmi",
-        "nvidia",
-        "ollama-cloud",
-        "tencent-tokenhub",
-        "lmstudio",
-    } or _is_profile_api_key_provider(selected_provider):
+    elif selected_provider in {"openai-api", "deepseek"} or _is_profile_api_key_provider(
+        selected_provider
+    ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -3947,10 +3877,9 @@ def _aux_config_menu() -> None:
         print("  Auxiliary models — side-task routing")
         print()
         print("  Side tasks (vision, compression, web extraction, etc.) default")
-        print('  to your main chat model.  "auto" means "use my main model" —')
-        print("  Son of Anton only falls back to a lightweight backend (OpenRouter,")
-        print("  Nous Portal) if the main model is unavailable.  Override a")
-        print("  task below if you want it pinned to a specific provider/model.")
+        print('  to your main chat model.  "auto" means "use my main model".')
+        print("  Override a task below if you want it pinned to a specific")
+        print("  provider/model.")
         print()
 
         # Build the task menu with current settings inline
@@ -5119,7 +5048,7 @@ def cmd_sync(args):
                 file=sys.stderr,
             )
         if not status.get("logged_in"):
-            print("\nNot logged into Nous Portal — sync is inert.", file=sys.stderr)
+            print("\nNot logged in — sync is inert.", file=sys.stderr)
         elif not status.get("nous_admin"):
             print(
                 "\nSync is not enabled for your account yet.",
@@ -8171,13 +8100,7 @@ def _build_provider_choices() -> list[str]:
         return ["auto"] + [p.slug for p in _cp]
     except Exception:
         # Fallback: static list guarantees the CLI always works
-        return [
-            "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
-            "anthropic", "gemini", "vertex", "xai", "bedrock", "azure-foundry",
-            "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
-            "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
-            "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
-        ]
+        return ["auto", "deepseek", "openai-api", "custom"]
 
 
 # Top-level subcommands that argparse knows about WITHOUT running plugin
@@ -9008,8 +8931,7 @@ def main():
         description=(
             "Manage the fallback provider chain.  Fallback providers are tried "
             "in order when the primary model fails with rate-limit, overload, or "
-            "connection errors.  See: "
-            "https://son-of-anton.nousresearch.com/docs/user-guide/features/fallback-providers"
+            "connection errors."
         ),
     )
     fallback_subparsers = fallback_parser.add_subparsers(dest="fallback_command")
@@ -9043,8 +8965,7 @@ def main():
             "Attended reclaim for the .worktrees/ directory son-of-anton -w sessions "
             "accumulate. Never deletes uncommitted tracked changes, unique "
             "unpushed commits, or in-use trees; untracked-only scratch is "
-            "archived to ~/.son-of-anton/archive/worktree-prune/ before removal. See: "
-            "https://son-of-anton.nousresearch.com/docs/user-guide/cli#worktree-cleanup"
+            "archived to ~/.son-of-anton/archive/worktree-prune/ before removal."
         ),
     )
     worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_action")
@@ -9093,8 +9014,7 @@ def main():
         description=(
             "Pull API keys from an external secret manager at process startup "
             "instead of storing them in ~/.son-of-anton/.env.  Supports Bitwarden "
-            "Secrets Manager and 1Password.  See: "
-            "https://son-of-anton.nousresearch.com/docs/user-guide/secrets/"
+            "Secrets Manager and 1Password."
         ),
     )
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
@@ -9144,8 +9064,7 @@ def main():
         description=(
             "Manage iron-proxy, the optional TLS-intercepting egress firewall "
             "that swaps proxy tokens for real API credentials before outbound "
-            "requests leave a sandbox.  Disabled by default.  See: "
-            "https://son-of-anton.nousresearch.com/docs/user-guide/egress/iron-proxy"
+            "requests leave a sandbox.  Disabled by default."
         ),
     )
 
@@ -9267,8 +9186,6 @@ def main():
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
     build_sync_parser(subparsers, cmd_sync=cmd_sync)
 
-    # =========================================================================
-    # portal command — Nous Portal status + Tool Gateway routing
     # =========================================================================
     # project command — named, multi-folder workspaces
     # =========================================================================
@@ -9574,7 +9491,7 @@ def main():
         p.add_argument(
             "--provider",
             help="Only match sessions billed through this provider "
-            "(e.g. openrouter, anthropic, nous)",
+            "(e.g. deepseek, openai-api, custom)",
         )
         p.add_argument(
             "--user", help="Only match sessions from this user ID"

@@ -6,7 +6,7 @@ Modular wizard with independently-runnable sections:
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
   4. Messaging Platforms — connect Discord, Slack, Signal, etc.
-  5. Tools — configure TTS, web search, image generation, etc.
+  5. Tools — configure web search, vision, skills, etc.
 
 Config files are stored in ~/.son-of-anton/ for easy access.
 """
@@ -21,14 +21,9 @@ import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from son_of_anton_cli.nous_subscription import get_nous_subscription_features
-from tools.tool_backend_helpers import managed_nous_tools_enabled
-
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-
-_DOCS_BASE = "https://son-of-anton.nousresearch.com/docs"
 
 
 def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -193,7 +188,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     print_info("  son-of-anton config set model.base_url http://localhost:8080/v1")
     print_info("  son-of-anton config set model.default your-model-name")
     print()
-    print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
+    print_info("Or set OPENAI_API_KEY / DEEPSEEK_API_KEY in your environment.")
     print_info("Run 'son-of-anton setup' in an interactive terminal to use the full wizard.")
     print()
 
@@ -411,16 +406,14 @@ def _print_setup_summary(config: dict, son_of_anton_home):
     if not _provider_ready:
         print()
         print_warning("No inference provider is configured — Son of Anton cannot chat yet.")
-        print_info("  Finish this one step with either of:")
-        print_info("    son-of-anton model            (pick any provider/model)")
-        print_info("    son-of-anton setup --portal   (Nous Portal OAuth, no API key)")
+        print_info("  Finish this one step:")
+        print_info("    son-of-anton model            (pick a provider/model)")
 
     # Tool availability summary
     print()
     print_header("Tool Availability Summary")
 
     tool_status = []
-    subscription_features = get_nous_subscription_features(config)
 
     # Vision — use the same runtime resolver as the actual vision tools
     try:
@@ -436,180 +429,33 @@ def _print_setup_summary(config: dict, son_of_anton_home):
         tool_status.append(("Vision (image analysis)", False, "run 'son-of-anton setup' to configure"))
 
 
-    # Web tools (Exa, Parallel, Firecrawl, or Tavily)
-    if subscription_features.web.managed_by_nous:
-        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
-    elif subscription_features.web.available:
-        label = "Web Search & Extract"
-        if subscription_features.web.current_provider:
-            label = f"Web Search & Extract ({subscription_features.web.current_provider})"
-        tool_status.append((label, True, None))
+    # Web tools (Exa, Parallel, Firecrawl, Tavily, or SearXNG)
+    web_label = "Web Search & Extract"
+    _web_key = next(
+        (
+            get_env_value(key)
+            for key in (
+                "EXA_API_KEY",
+                "PARALLEL_API_KEY",
+                "FIRECRAWL_API_KEY",
+                "FIRECRAWL_API_URL",
+                "TAVILY_API_KEY",
+                "SEARXNG_URL",
+            )
+            if get_env_value(key)
+        ),
+        None,
+    )
+    if _web_key:
+        tool_status.append((web_label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, or SEARXNG_URL"))
-
-    # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
-    browser_provider = subscription_features.browser.current_provider
-    if subscription_features.browser.managed_by_nous:
-        tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
-    elif subscription_features.browser.available:
-        label = "Browser Automation"
-        if browser_provider:
-            label = f"Browser Automation ({browser_provider})"
-        tool_status.append((label, True, None))
-    else:
-        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
-        if browser_provider == "Browserbase":
-            missing_browser_hint = (
-                "npm install -g agent-browser and set "
-                "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
-            )
-        elif browser_provider == "Browser Use":
-            missing_browser_hint = (
-                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
-            )
-        elif browser_provider == "Camofox":
-            missing_browser_hint = "CAMOFOX_URL"
-        elif browser_provider == "Local browser":
-            missing_browser_hint = (
-                "npm install -g agent-browser && agent-browser install --with-deps"
-            )
         tool_status.append(
-            ("Browser Automation", False, missing_browser_hint)
-        )
-
-    # Image generation — FAL (direct or via Nous), or any plugin-registered
-    # provider (OpenAI, etc.)
-    if subscription_features.image_gen.managed_by_nous:
-        tool_status.append(("Image Generation (Nous subscription)", True, None))
-    elif subscription_features.image_gen.available:
-        tool_status.append(("Image Generation", True, None))
-    else:
-        # Fall back to probing plugin-registered providers so OpenAI-only
-        # setups don't show as "missing FAL_KEY".
-        _img_backend = None
-        try:
-            from agent.image_gen_registry import list_providers
-            from son_of_anton_cli.plugins import _ensure_plugins_discovered
-
-            _ensure_plugins_discovered()
-            for _p in list_providers():
-                if _p.name == "fal":
-                    continue
-                try:
-                    if _p.is_available():
-                        _img_backend = _p.display_name
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        if _img_backend:
-            tool_status.append((f"Image Generation ({_img_backend})", True, None))
-        else:
-            tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
-
-    # Video generation — opt-in via `son-of-anton tools` → Video Generation.
-    # Only show the row when a plugin reports available so we don't badger
-    # users who don't care about video gen with a "missing" status line.
-    if subscription_features.video_gen.managed_by_nous:
-        tool_status.append(("Video Generation (FAL via Nous subscription)", True, None))
-    else:
-        try:
-            from agent.video_gen_registry import list_providers as _list_video_providers
-            from son_of_anton_cli.plugins import _ensure_plugins_discovered as _ensure_plugins
-            _ensure_plugins()
-            _video_backend = None
-            for _vp in _list_video_providers():
-                try:
-                    if _vp.is_available():
-                        _video_backend = _vp.display_name
-                        break
-                except Exception:
-                    continue
-        except Exception:
-            _video_backend = None
-        if _video_backend:
-            tool_status.append((f"Video Generation ({_video_backend})", True, None))
-
-    # TTS — show configured provider
-    tts_provider = cfg_get(config, "tts", "provider", default="edge")
-    if subscription_features.tts.managed_by_nous:
-        tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
-    elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
-        tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
-    elif tts_provider == "openai" and (
-        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
-    ):
-        tool_status.append(("Text-to-Speech (OpenAI)", True, None))
-    elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
-        tool_status.append(("Text-to-Speech (MiniMax)", True, None))
-    elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
-        tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
-    elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
-        tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
-    elif tts_provider == "neutts":
-        try:
-            neutts_ok = importlib.util.find_spec("neutts") is not None
-        except Exception:
-            neutts_ok = False
-        if neutts_ok:
-            tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
-        else:
-            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'son-of-anton setup tts'"))
-    elif tts_provider == "kittentts":
-        try:
-            kittentts_ok = importlib.util.find_spec("kittentts") is not None
-        except Exception:
-            kittentts_ok = False
-        if kittentts_ok:
-            tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
-        else:
-            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'son-of-anton setup tts'"))
-    else:
-        tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
-
-    # STT — show configured provider
-    stt_provider = cfg_get(config, "stt", "provider", default="local") or "local"
-    _stt_feature = subscription_features.features.get("stt")
-    if _stt_feature is not None and _stt_feature.managed_by_nous:
-        tool_status.append(("Speech-to-Text (OpenAI via Nous subscription)", True, None))
-    elif stt_provider == "openai" and (
-        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
-    ):
-        tool_status.append(("Speech-to-Text (OpenAI)", True, None))
-    elif stt_provider == "groq" and get_env_value("GROQ_API_KEY"):
-        tool_status.append(("Speech-to-Text (Groq Whisper)", True, None))
-    elif stt_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
-        tool_status.append(("Speech-to-Text (ElevenLabs Scribe)", True, None))
-    elif stt_provider == "xai":
-        tool_status.append(("Speech-to-Text (xAI)", True, None))
-    elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):
-        tool_status.append(("Speech-to-Text (DeepInfra)", True, None))
-    else:
-        try:
-            fw_ok = importlib.util.find_spec("faster_whisper") is not None
-        except Exception:
-            fw_ok = False
-        if fw_ok:
-            tool_status.append(("Speech-to-Text (Local Whisper)", True, None))
-        else:
-            tool_status.append(
-                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'son-of-anton tools' → Speech-to-Text")
+            (
+                web_label,
+                False,
+                "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, or SEARXNG_URL",
             )
-
-    if subscription_features.modal.managed_by_nous:
-        tool_status.append(("Modal Execution (Nous subscription)", True, None))
-    elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
-        tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
-
-    # Spotify (OAuth via son-of-anton auth spotify — check auth.json, not env vars)
-    try:
-        from son_of_anton_cli.auth import get_provider_auth_state
-        _spotify_state = get_provider_auth_state("spotify") or {}
-        if _spotify_state.get("access_token") or _spotify_state.get("refresh_token"):
-            tool_status.append(("Spotify (PKCE OAuth)", True, None))
-    except Exception:
-        pass
+        )
 
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
@@ -739,7 +585,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
     print_header("Inference Provider")
     print_info("Choose how to connect to your main chat model.")
-    print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
     print()
 
     # Delegate to the shared son-of-anton model flow — handles provider picker,
@@ -765,408 +610,14 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     config.clear()
     config.update(_refreshed)
 
-    # Credential rotation, vision-backend selection, and TTS provider are no
-    # longer prompted here. They have safe defaults (rotation off, vision
-    # auto-detected from the main provider, TTS = Edge) and are configurable
-    # on demand via `son-of-anton auth add`, `son-of-anton setup` vision, and
-    # `son-of-anton setup tts`. This keeps both quick and full setup thin.
+    # Credential rotation and vision-backend selection are no longer prompted
+    # here. They have safe defaults (rotation off, vision auto-detected from
+    # the main provider) and are configurable on demand via
+    # `son-of-anton auth add` and `son-of-anton setup`. This keeps both quick
+    # and full setup thin.
 
 
-    # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
-
-
-# =============================================================================
-# Section 1b: TTS Provider Configuration
-# =============================================================================
-
-
-def _check_espeak_ng() -> bool:
-    """Check if espeak-ng is installed."""
-    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
-
-
-def _install_neutts_deps() -> bool:
-    """Install NeuTTS dependencies with user approval. Returns True on success."""
-    import subprocess
-    import sys
-
-    # Check espeak-ng
-    if not _check_espeak_ng():
-        print()
-        print_warning("NeuTTS requires espeak-ng for phonemization.")
-        if sys.platform == "darwin":
-            print_info("Install with: brew install espeak-ng")
-        elif sys.platform == "win32":
-            print_info("Install with: choco install espeak-ng")
-        else:
-            print_info("Install with: sudo apt install espeak-ng")
-        print()
-        if prompt_yes_no("Install espeak-ng now?", True):
-            try:
-                if sys.platform == "darwin":
-                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
-                elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
-                else:
-                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
-                print_success("espeak-ng installed")
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                print_warning(f"Could not install espeak-ng automatically: {e}")
-                print_info("Please install it manually and re-run setup.")
-                return False
-        else:
-            print_warning("espeak-ng is required for NeuTTS. Install it manually before using NeuTTS.")
-
-    # Install neutts Python package
-    print()
-    print_info("Installing neutts Python package...")
-    print_info("This will also download the TTS model (~300MB) on first use.")
-    print()
-
-    # Route through the canonical uv → pip → ensurepip ladder so pip-less
-    # venvs (Ubuntu 25.10 `python -m venv`, `uv venv`) work out of the box.
-    from son_of_anton_cli.tools_config import _pip_install
-
-    try:
-        result = _pip_install(["-U", "neutts[all]", "--quiet"], timeout=300)
-    except Exception as e:
-        print_error(f"Failed to install neutts: {e}")
-        print_info("Try manually: uv pip install -U 'neutts[all]'")
-        return False
-    if result.returncode == 0:
-        print_success("neutts installed successfully")
-        return True
-    err = (result.stderr or "").strip()
-    print_error(f"Failed to install neutts: {err[:300] if err else 'install failed'}")
-    print_info("Try manually: uv pip install -U 'neutts[all]'")
-    return False
-
-
-def _install_kittentts_deps() -> bool:
-    """Install KittenTTS dependencies with user approval. Returns True on success."""
-
-    wheel_url = (
-        "https://github.com/KittenML/KittenTTS/releases/download/"
-        "0.8.1/kittentts-0.8.1-py3-none-any.whl"
-    )
-    print()
-    print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
-    print()
-
-    from son_of_anton_cli.tools_config import _pip_install
-
-    try:
-        result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
-    except Exception as e:
-        print_error(f"Failed to install kittentts: {e}")
-        print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
-        return False
-    if result.returncode == 0:
-        print_success("kittentts installed successfully")
-        return True
-    err = (result.stderr or "").strip()
-    print_error(f"Failed to install kittentts: {err[:300] if err else 'install failed'}")
-    print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
-    return False
-
-
-def _xai_oauth_logged_in_for_setup() -> bool:
-    """True iff xAI Grok OAuth credentials are already stored locally.
-
-    Lets TTS / STT setup skip the API-key prompt for users who logged in
-    through ``son-of-anton model`` -> xAI Grok OAuth (SuperGrok / Premium+).
-    """
-    try:
-        from son_of_anton_cli.auth import get_xai_oauth_auth_status
-
-        return bool(get_xai_oauth_auth_status().get("logged_in"))
-    except Exception:
-        return False
-
-
-def _run_xai_oauth_login_from_setup() -> bool:
-    """Run the xAI Grok OAuth device-code login from inside the setup wizard.
-
-    Saves OAuth tokens only. Does **not** switch the active inference
-    provider or rewrite ``model.provider`` — callers (TTS setup, tools
-    config) only need credentials for side tools.
-
-    Returns True on success, False on any failure (the caller falls back
-    to whatever the user picked next, e.g. Edge TTS).
-    """
-    try:
-        from son_of_anton_cli.auth import (
-            _is_remote_session,
-            _save_xai_oauth_tokens,
-            _xai_oauth_device_code_login,
-            unsuppress_credential_source,
-        )
-    except Exception as exc:
-        print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
-        return False
-
-    open_browser = not _is_remote_session()
-    print()
-    print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
-    try:
-        creds = _xai_oauth_device_code_login(open_browser=open_browser)
-        _save_xai_oauth_tokens(
-            creds["tokens"],
-            discovery=creds.get("discovery"),
-            redirect_uri=creds.get("redirect_uri", ""),
-            last_refresh=creds.get("last_refresh"),
-            auth_mode="oauth_device_code",
-            set_active=False,
-        )
-        # Mirror model/dashboard re-login: clear device_code suppression so
-        # the pool can seed from the singleton after a prior `auth remove`.
-        unsuppress_credential_source("xai-oauth", "device_code")
-        return True
-    except Exception as exc:
-        print_warning(f"xAI Grok OAuth login failed: {exc}")
-        return False
-
-
-def _setup_tts_provider(config: dict):
-    """Interactive TTS provider selection with install flow for NeuTTS."""
-    tts_config = config.get("tts", {})
-    current_provider = tts_config.get("provider", "edge")
-    subscription_features = get_nous_subscription_features(config)
-
-    provider_labels = {
-        "edge": "Edge TTS",
-        "elevenlabs": "ElevenLabs",
-        "openai": "OpenAI TTS",
-        "xai": "xAI TTS",
-        "minimax": "MiniMax TTS",
-        "mistral": "Mistral Voxtral TTS",
-        "gemini": "Google Gemini TTS",
-        "neutts": "NeuTTS",
-        "kittentts": "KittenTTS",
-    }
-    current_label = provider_labels.get(current_provider, current_provider)
-
-    print()
-    print_header("Text-to-Speech Provider (optional)")
-    print_info(f"Current: {current_label}")
-    print()
-
-    choices = []
-    providers = []
-    if managed_nous_tools_enabled() and subscription_features.nous_auth_present:
-        choices.append("Nous Subscription (managed OpenAI TTS, billed to your subscription)")
-        providers.append("nous-openai")
-    choices.extend(
-        [
-            "Edge TTS (free, cloud-based, no setup needed)",
-            "ElevenLabs (premium quality, needs API key)",
-            "OpenAI TTS (good quality, needs API key)",
-            "xAI TTS (Grok voices — OAuth login or API key)",
-            "MiniMax TTS (high quality with voice cloning, needs API key)",
-            "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
-            "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
-            "NeuTTS (local on-device, free, ~300MB model download)",
-            "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
-        ]
-    )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
-    choices.append(f"Keep current ({current_label})")
-    keep_current_idx = len(choices) - 1
-    idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
-
-    if idx == keep_current_idx:
-        return
-
-    selected = providers[idx]
-    selected_via_nous = selected == "nous-openai"
-    if selected == "nous-openai":
-        selected = "openai"
-        print_info("OpenAI TTS will use the managed Nous gateway and bill to your subscription.")
-        if get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY"):
-            print_warning(
-                "Direct OpenAI credentials are still configured and may take precedence until removed from ~/.son-of-anton/.env."
-            )
-
-    if selected == "neutts":
-        # Check if already installed
-        try:
-            already_installed = importlib.util.find_spec("neutts") is not None
-        except Exception:
-            already_installed = False
-
-        if already_installed:
-            print_success("NeuTTS is already installed")
-        else:
-            print()
-            print_info("NeuTTS requires:")
-            print_info("  • Python package: neutts (~50MB install + ~300MB model on first use)")
-            print_info("  • System package: espeak-ng (phonemizer)")
-            print()
-            if prompt_yes_no("Install NeuTTS dependencies now?", True):
-                if not _install_neutts_deps():
-                    print_warning("NeuTTS installation incomplete. Falling back to Edge TTS.")
-                    selected = "edge"
-            else:
-                print_info("Skipping install. Set tts.provider to 'neutts' after installing manually.")
-                selected = "edge"
-
-    elif selected == "elevenlabs":
-        existing = get_env_value("ELEVENLABS_API_KEY")
-        if not existing:
-            print()
-            api_key = prompt("ElevenLabs API key", password=True)
-            if api_key:
-                save_env_value("ELEVENLABS_API_KEY", api_key)
-                print_success("ElevenLabs API key saved")
-            else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
-                selected = "edge"
-
-    elif selected == "openai" and not selected_via_nous:
-        existing = get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
-        if not existing:
-            print()
-            api_key = prompt("OpenAI API key for TTS", password=True)
-            if api_key:
-                save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
-                print_success("OpenAI TTS API key saved")
-            else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
-                selected = "edge"
-
-    elif selected == "xai":
-        # Resolution order: existing OAuth tokens (free for SuperGrok subscribers
-        # via the Son of Anton auth store) > existing XAI_API_KEY > prompt the user.
-        # When neither is configured, offer both options instead of forcing the
-        # API-key path — xAI TTS works fine with OAuth bearer tokens too.
-        oauth_logged_in = _xai_oauth_logged_in_for_setup()
-        existing_api_key = get_env_value("XAI_API_KEY")
-
-        if oauth_logged_in:
-            print_success(
-                "xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) "
-                "credentials"
-            )
-        elif existing_api_key:
-            print_success("xAI TTS will use your existing XAI_API_KEY")
-        else:
-            print()
-            choice_idx = prompt_choice(
-                "How do you want xAI TTS to authenticate?",
-                choices=[
-                    "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
-                    "Paste an xAI API key (console.x.ai)",
-                    "Skip → fallback to Edge TTS",
-                ],
-                default=0,
-            )
-            if choice_idx == 0:
-                if _run_xai_oauth_login_from_setup():
-                    print_success(
-                        "Logged in — xAI TTS will use these OAuth credentials"
-                    )
-                else:
-                    print_warning(
-                        "xAI Grok OAuth login did not complete. "
-                        "Falling back to Edge TTS."
-                    )
-                    selected = "edge"
-            elif choice_idx == 1:
-                api_key = prompt("xAI API key for TTS", password=True)
-                if api_key:
-                    save_env_value("XAI_API_KEY", api_key)
-                    print_success("xAI TTS API key saved")
-                else:
-                    from son_of_anton_constants import display_son_of_anton_home as _dhh
-                    print_warning(
-                        "No xAI API key provided for TTS. Configure XAI_API_KEY "
-                        f"via son-of-anton setup model or {_dhh()}/.env to use xAI TTS. "
-                        "Falling back to Edge TTS."
-                    )
-                    selected = "edge"
-            else:
-                print_warning("xAI TTS skipped. Falling back to Edge TTS.")
-                selected = "edge"
-
-        if selected == "xai":
-            print()
-            voice_id = prompt("xAI voice_id (Enter for 'eve', or paste a custom voice ID)")
-            if voice_id and voice_id.strip():
-                config.setdefault("tts", {}).setdefault("xai", {})["voice_id"] = voice_id.strip()
-                print_success(f"xAI voice_id set to: {voice_id.strip()}")
-
-
-    elif selected == "minimax":
-        existing = get_env_value("MINIMAX_API_KEY")
-        if not existing:
-            print()
-            api_key = prompt("MiniMax API key for TTS", password=True)
-            if api_key:
-                save_env_value("MINIMAX_API_KEY", api_key)
-                print_success("MiniMax TTS API key saved")
-            else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
-                selected = "edge"
-
-    elif selected == "mistral":
-        existing = get_env_value("MISTRAL_API_KEY")
-        if not existing:
-            print()
-            api_key = prompt("Mistral API key for TTS", password=True)
-            if api_key:
-                save_env_value("MISTRAL_API_KEY", api_key)
-                print_success("Mistral TTS API key saved")
-            else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
-                selected = "edge"
-
-    elif selected == "gemini":
-        existing = get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
-        if not existing:
-            print()
-            print_info("Get a free API key at https://aistudio.google.com/app/apikey")
-            api_key = prompt("Gemini API key for TTS", password=True)
-            if api_key:
-                save_env_value("GEMINI_API_KEY", api_key)
-                print_success("Gemini TTS API key saved")
-            else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
-                selected = "edge"
-
-    elif selected == "kittentts":
-        # Check if already installed
-        try:
-            already_installed = importlib.util.find_spec("kittentts") is not None
-        except Exception:
-            already_installed = False
-
-        if already_installed:
-            print_success("KittenTTS is already installed")
-        else:
-            print()
-            print_info("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).")
-            print_info("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
-            print()
-            if prompt_yes_no("Install KittenTTS now?", True):
-                if not _install_kittentts_deps():
-                    print_warning("KittenTTS installation incomplete. Falling back to Edge TTS.")
-                    selected = "edge"
-            else:
-                print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
-                selected = "edge"
-
-    # Save the selection
-    if "tts" not in config:
-        config["tts"] = {}
-    config["tts"]["provider"] = selected
-    save_config(config)
-    print_success(f"TTS provider set to: {provider_labels.get(selected, selected)}")
-
-
-def setup_tts(config: dict):
-    """Standalone TTS setup (for 'son-of-anton setup tts')."""
-    _setup_tts_provider(config)
 
 
 # =============================================================================
@@ -1179,7 +630,6 @@ def setup_terminal_backend(config: dict):
     print_header("Terminal Backend")
     print_info("Choose where Son of Anton runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
-    print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration#terminal-backend-configuration")
     print()
 
     current_backend = cfg_get(config, "terminal", "backend", default="local")
@@ -1310,7 +760,6 @@ def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
 
     print_header("Agent Settings")
-    print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
     print()
 
     # ── Max Iterations ──
@@ -1675,17 +1124,14 @@ def setup_telemetry(config: dict):
 # Post-Migration Section Skip Logic
 # =============================================================================
 
-
 def _model_section_has_credentials(config: dict) -> bool:
     """Return True when any known inference provider has usable credentials.
 
     Sources of truth:
       * ``PROVIDER_REGISTRY`` in ``son_of_anton_cli.auth`` — lists every supported
         provider along with its ``api_key_env_vars``.
-      * ``active_provider`` in the auth store — covers OAuth device-code /
-        external-OAuth providers (Nous, Codex, Qwen, Gemini CLI, ...).
-      * The legacy OpenRouter aggregator env vars, which route generic
-        ``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY`` values through OpenRouter.
+      * ``active_provider`` in the auth store — covers non-api-key auth flows.
+      * ``OPENAI_API_KEY`` — the generic OpenAI-compatible fallback.
     """
     try:
         from son_of_anton_cli.auth import get_active_provider
@@ -1701,10 +1147,6 @@ def _model_section_has_credentials(config: dict) -> bool:
 
     def _has_key(pconfig) -> bool:
         for env_var in pconfig.api_key_env_vars:
-            # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by
-            # the user — mirrors is_provider_explicitly_configured in auth.py.
-            if env_var == "CLAUDE_CODE_OAUTH_TOKEN":
-                continue
             if get_env_value(env_var):
                 return True
         return False
@@ -1718,21 +1160,12 @@ def _model_section_has_credentials(config: dict) -> bool:
         if provider_id in PROVIDER_REGISTRY:
             if _has_key(PROVIDER_REGISTRY[provider_id]):
                 return True
-        if provider_id == "openrouter":
-            for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
-                if get_env_value(env_var):
-                    return True
 
-    # OpenRouter aggregator fallback (no provider declared in config).
-    for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
-        if get_env_value(env_var):
-            return True
+    # Generic OpenAI-compatible fallback (no provider declared in config).
+    if get_env_value("OPENAI_API_KEY"):
+        return True
 
     for pid, pconfig in PROVIDER_REGISTRY.items():
-        # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are
-        # commonly set for git tooling.  Mirrors resolve_provider in auth.py.
-        if pid == "copilot":
-            continue
         if _has_key(pconfig):
             return True
     return False
@@ -2073,106 +1506,18 @@ def _offer_openclaw_migration(son_of_anton_home: Path) -> bool:
 
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
-    ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
-
-
-def _run_portal_one_shot(config: dict) -> None:
-    """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
-
-    Wired into ``son-of-anton setup --portal`` and ``son-of-anton portal``. This is the
-    Nous-Portal slice of the first-time quick setup, collapsed into a single
-    shareable command so a brand-new user goes from zero to a fully working
-    Son of Anton session — model selected, provider set, and web/image/tts/browser
-    tools routed via their Portal sub — without being told to run
-    ``son-of-anton setup`` and hunt for the quick-setup option.
-
-    The login + model selection + provider switch + Tool Gateway opt-in are all
-    delegated to ``_model_flow_nous`` — the exact same flow quick setup uses
-    (``_run_first_time_quick_setup``) and the same one ``son-of-anton model`` runs
-    when you pick Nous. Routing through it (instead of hand-rolling the auth +
-    provider write here) means ``son-of-anton portal`` always offers a model picker,
-    and there is a single source of truth for the Nous onboarding steps.
-    """
-    from son_of_anton_cli.config import load_config
-
-    print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(color("│     ⚛ Son of Anton Setup — Nous Portal (one-shot)             │", Colors.MAGENTA))
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
-    print()
-    print_info("  One subscription, 300+ models, plus the Tool Gateway:")
-    print_info("    web search, image generation, TTS, browser automation")
-    print_info("    — all routed through your Nous Portal sub.")
-    print()
-    print_info("  Sign up: https://portal.nousresearch.com/manage-subscription")
-    print()
-
-    # _model_flow_nous handles BOTH the logged-out path (device-code OAuth,
-    # which selects a model internally) and the already-logged-in path (curated
-    # Nous model picker), then offers the Tool Gateway opt-in and sets
-    # provider=nous via the login/model save. This is the same routine quick
-    # setup calls, so `son-of-anton portal` == quick setup's Nous step.
-    try:
-        from son_of_anton_cli.main import _model_flow_nous
-
-        _model_flow_nous(config)
-    except (KeyboardInterrupt, EOFError, SystemExit):
-        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the
-        # logged-out path inside _model_flow_nous catches it, but the
-        # expired-session re-login path only catches Exception, so a
-        # SystemExit there would otherwise escape and kill the whole CLI.
-        # Treat all of these as a graceful cancel/abort for the portal flow.
-        print()
-        print_info("  Setup cancelled.")
-        print_info("  You can retry later with `son-of-anton portal`.")
-        return
-    except Exception as exc:
-        logger.debug("_model_flow_nous error during `son-of-anton portal`: %s", exc)
-        print()
-        print_error(f"  Nous Portal setup encountered an error: {exc}")
-        print_info("  You can retry later with `son-of-anton portal`.")
-        return
-
-    # Re-sync the in-memory config from disk — _model_flow_nous (and the
-    # underlying login/model save) write via their own load/save cycle, so any
-    # later save_config(config) by a caller must not clobber those values.
-    try:
-        _refreshed = load_config()
-        if isinstance(_refreshed, dict):
-            config.clear()
-            config.update(_refreshed)
-    except Exception:
-        pass
-
-    print()
-    print_success("Portal setup complete.")
-    print_info("  Run `son-of-anton portal info` to inspect routing.")
-    print_info("  Run `son-of-anton` to start chatting.")
-
-
 def run_setup_wizard(args):
     """Run the interactive setup wizard.
 
     Supports full, quick, and section-specific setup:
       son-of-anton setup           — full or quick (auto-detected)
       son-of-anton setup model     — just model/provider
-      son-of-anton setup tts       — just text-to-speech
       son-of-anton setup terminal  — just terminal backend
       son-of-anton setup gateway   — just messaging platforms
       son-of-anton setup tools     — just tool configuration
@@ -2222,11 +1567,6 @@ def run_setup_wizard(args):
         )
         return
 
-    # --portal: one-shot Nous Portal setup. Skips the rest of the wizard.
-    if bool(getattr(args, "portal", False)):
-        _run_portal_one_shot(config)
-        return
-
     # Check if a specific section was requested
     section = getattr(args, "section", None)
     if section:
@@ -2261,7 +1601,7 @@ def run_setup_wizard(args):
 
     active_provider = get_active_provider()
     is_existing = (
-        bool(get_env_value("OPENROUTER_API_KEY"))
+        bool(get_env_value("OPENAI_API_KEY"))
         or bool(get_env_value("OPENAI_BASE_URL"))
         or active_provider is not None
     )
@@ -2342,7 +1682,7 @@ def run_setup_wizard(args):
         setup_mode = prompt_choice(
             "How would you like to set up Son of Anton?",
             [
-                "Quick Setup (Nous Portal) — free OAuth login, no API keys, model + tools (recommended)",
+                "Quick Setup — model + provider, terminal & messaging (recommended)",
                 "Full setup — configure every provider, tool & option yourself (bring your own keys)",
                 "Blank Slate — everything off except the bare minimum; opt in to each capability",
             ],
@@ -2408,40 +1748,37 @@ def run_setup_wizard(args):
 
 
 def _run_first_time_quick_setup(config: dict, son_of_anton_home, is_existing: bool):
-    """Streamlined first-time setup via Nous Portal: OAuth, model, terminal & messaging.
+    """Streamlined first-time setup: model/provider, terminal & messaging.
 
-    Routes straight to the Nous Portal provider — runs the device-code OAuth
-    login, picks a Nous model, then configures the terminal backend and (optionally)
-    a messaging platform. Applies sensible defaults for everything else (agent
-    settings, tools); the user can customize later via ``son-of-anton setup <section>``
-    or switch providers with ``son-of-anton model``.
+    Runs the standard provider + model selection (custom endpoint or API-key
+    provider), then configures the terminal backend and (optionally) a
+    messaging platform. Applies sensible defaults for everything else (agent
+    settings, tools); the user can customize later via ``son-of-anton setup
+    <section>`` or switch providers with ``son-of-anton model``.
     """
     from son_of_anton_cli.config import load_config
 
-    # Step 1: Nous Portal — OAuth login + model selection.
-    # _model_flow_nous() handles both the logged-out path (device-code OAuth,
-    # which selects a model internally) and the already-logged-in path (curated
-    # Nous model picker). Provider is set to "nous" by the login/model save.
+    # Step 1: Model & Provider — the standard selection flow.
     print()
-    print_header("Nous Portal")
-    print_info("One subscription, 300+ models, plus the Tool Gateway:")
-    print_info("  web search, image generation, TTS, browser automation.")
-    print_info("Sign up: https://portal.nousresearch.com/manage-subscription")
+    print_header("Inference Provider")
+    print_info("Choose how to connect to your main chat model.")
+    print_info("  DeepSeek / OpenAI API keys, or a custom endpoint (llama-swap, ollama, ...).")
     print()
     try:
-        from son_of_anton_cli.main import _model_flow_nous
-        _model_flow_nous(config)
+        from son_of_anton_cli.main import select_provider_and_model
+
+        select_provider_and_model()
     except (KeyboardInterrupt, EOFError):
         print()
-        print_info("Nous Portal setup cancelled.")
+        print_info("Provider setup cancelled.")
     except Exception as exc:
-        logger.debug("_model_flow_nous error during quick setup: %s", exc)
-        print_warning(f"Nous Portal setup encountered an error: {exc}")
+        logger.debug("select_provider_and_model error during quick setup: %s", exc)
+        print_warning(f"Provider setup encountered an error: {exc}")
         print_info("You can try again later with: son-of-anton model")
 
-    # Re-sync the wizard's config dict from disk — _model_flow_nous (and the
-    # underlying login/model save) write via their own load/save cycle, and the
-    # wizard's later save_config(config) must not clobber those values (#4172).
+    # Re-sync the wizard's config dict from disk — the provider flow writes
+    # via its own load/save cycle, and the wizard's later save_config(config)
+    # must not clobber those values (#4172).
     _refreshed = load_config()
     config.clear()
     config.update(_refreshed)

@@ -16,14 +16,7 @@ from son_of_anton_cli.auth import AuthError, resolve_provider
 from son_of_anton_cli.colors import Colors, color
 from son_of_anton_cli.config import get_env_path, get_env_value, get_son_of_anton_home, load_config
 from son_of_anton_cli.models import provider_label
-from son_of_anton_cli.nous_account import (
-    format_nous_portal_entitlement_message,
-    get_nous_portal_account_info,
-)
-from son_of_anton_cli.nous_subscription import get_nous_subscription_features
 from son_of_anton_cli.runtime_provider import resolve_requested_provider
-from son_of_anton_constants import OPENROUTER_MODELS_URL
-from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -168,25 +161,10 @@ def show_status(args):
 
     # Values may be a single env var name (str) or a tuple of alternates (first found wins).
     keys: dict[str, str | tuple[str, ...]] = {
-        "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
-        "Anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
-        "Google / Gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         "DeepSeek": "DEEPSEEK_API_KEY",
-        "xAI / Grok": "XAI_API_KEY",
-        "NVIDIA NIM": "NVIDIA_API_KEY",
-        "Z.AI / GLM": "GLM_API_KEY",
-        "Kimi": "KIMI_API_KEY",
-        "StepFun Step Plan": "STEPFUN_API_KEY",
-        "MiniMax": "MINIMAX_API_KEY",
-        "MiniMax-CN": "MINIMAX_CN_API_KEY",
-        "DeepInfra": "DEEPINFRA_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
-        "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
-        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
-        "FAL": "FAL_KEY",
-        "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
 
@@ -201,240 +179,11 @@ def show_status(args):
         return get_env_value(env_ref) or ""
 
     for name, env_ref in keys.items():
-        # Anthropic already has a dedicated lookup below; keep that as the
-        # single source of truth (it also resolves OAuth tokens), skip here
-        # so we don't print two "Anthropic" rows.
-        if name == "Anthropic":
-            continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
         display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
-    from son_of_anton_cli.auth import get_anthropic_key
-    anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value)
-    print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
-
-    # =========================================================================
-    # Auth Providers (OAuth)
-    # =========================================================================
-    print()
-    print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
-
-    try:
-        from son_of_anton_cli.auth import (
-            get_nous_auth_status_local,
-            get_codex_auth_status,
-            get_qwen_auth_status,
-            get_minimax_oauth_auth_status,
-        )
-        # Read-only display: use the refresh-free snapshot so `son-of-anton status`
-        # never performs an OAuth refresh or burns a single-use refresh token.
-        nous_status = get_nous_auth_status_local()
-        codex_status = get_codex_auth_status()
-        qwen_status = get_qwen_auth_status()
-        minimax_status = get_minimax_oauth_auth_status()
-    except Exception:
-        nous_status = {}
-        codex_status = {}
-        qwen_status = {}
-        minimax_status = {}
-
-    nous_account_info = None
-    if (
-        nous_status.get("logged_in")
-        or nous_status.get("access_token")
-        or nous_status.get("portal_base_url")
-        or nous_status.get("inference_credential_present")
-        or nous_status.get("error_code")
-    ):
-        try:
-            nous_account_info = get_nous_portal_account_info()
-        except Exception:
-            nous_account_info = None
-
-    nous_logged_in = bool(
-        nous_status.get("logged_in")
-        or (nous_account_info and nous_account_info.logged_in)
-    )
-    nous_inference_present = bool(
-        nous_status.get("inference_credential_present")
-        or (nous_account_info and nous_account_info.inference_credential_present)
-    )
-    nous_error = nous_status.get("error")
-    if nous_logged_in:
-        nous_label = "logged in"
-    elif nous_inference_present:
-        nous_label = "not logged in (Nous inference key configured)"
-    else:
-        nous_label = "not logged in (run: son-of-anton portal)"
-    print(
-        f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{nous_label}"
-    )
-    portal_url = nous_status.get("portal_base_url") or "(unknown)"
-    inference_url = (
-        nous_status.get("inference_base_url")
-        or (nous_account_info.inference_base_url if nous_account_info else None)
-    )
-    access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
-    key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
-    refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
-    if nous_logged_in or portal_url != "(unknown)" or nous_error:
-        print(f"    Portal URL: {portal_url}")
-    if nous_inference_present and inference_url:
-        print(f"    Inference:  {inference_url}")
-    if nous_logged_in or nous_status.get("access_expires_at"):
-        print(f"    Access exp: {access_exp}")
-    if nous_logged_in or nous_inference_present or nous_status.get("agent_key_expires_at"):
-        print(f"    Key exp:    {key_exp}")
-    if nous_logged_in or nous_status.get("has_refresh_token"):
-        print(f"    Refresh:    {refresh_label}")
-    if nous_error:
-        print(f"    Error:      {nous_error}")
-
-    codex_logged_in = bool(codex_status.get("logged_in"))
-    print(
-        f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
-        f"{'logged in' if codex_logged_in else 'not logged in (run: son-of-anton model)'}"
-    )
-    codex_auth_file = codex_status.get("auth_store")
-    if codex_auth_file:
-        print(f"    Auth file:  {codex_auth_file}")
-    codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))
-    if codex_status.get("last_refresh"):
-        print(f"    Refreshed:  {codex_last_refresh}")
-    if codex_status.get("error") and not codex_logged_in:
-        print(f"    Error:      {codex_status.get('error')}")
-
-    qwen_logged_in = bool(qwen_status.get("logged_in"))
-    print(
-        f"  {'Qwen OAuth':<12}  {check_mark(qwen_logged_in)} "
-        f"{'logged in' if qwen_logged_in else 'not logged in (run: qwen auth qwen-oauth)'}"
-    )
-    qwen_auth_file = qwen_status.get("auth_file")
-    if qwen_auth_file:
-        print(f"    Auth file:  {qwen_auth_file}")
-    qwen_exp = qwen_status.get("expires_at_ms")
-    if qwen_exp:
-        from datetime import datetime, timezone
-        print(f"    Access exp: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
-    if qwen_status.get("error") and not qwen_logged_in:
-        print(f"    Error:      {qwen_status.get('error')}")
-
-    minimax_logged_in = bool(minimax_status.get("logged_in"))
-    print(
-        f"  {'MiniMax OAuth':<12}  {check_mark(minimax_logged_in)} "
-        f"{'logged in' if minimax_logged_in else 'not logged in (run: son-of-anton auth add minimax-oauth)'}"
-    )
-    minimax_region = minimax_status.get("region")
-    if minimax_logged_in and minimax_region:
-        print(f"    Region:     {minimax_region}")
-    minimax_exp = minimax_status.get("expires_at")
-    if minimax_exp:
-        print(f"    Access exp: {minimax_exp}")
-    if minimax_status.get("error") and not minimax_logged_in:
-        print(f"    Error:      {minimax_status.get('error')}")
-
-    # xAI OAuth — separate try/except so an import failure here cannot
-    # disrupt the already-printed Nous/Codex/Qwen/MiniMax rows above.
-    try:
-        from son_of_anton_cli.auth import get_xai_oauth_auth_status
-        xai_oauth_status = get_xai_oauth_auth_status() or {}
-    except Exception:
-        xai_oauth_status = {}
-
-    xai_oauth_logged_in = bool(xai_oauth_status.get("logged_in"))
-    print(
-        f"  {'xAI OAuth':<12}  {check_mark(xai_oauth_logged_in)} "
-        f"{'logged in' if xai_oauth_logged_in else 'not logged in (run: son-of-anton auth add xai-oauth)'}"
-    )
-    xai_auth_file = xai_oauth_status.get("auth_store")
-    if xai_auth_file:
-        print(f"    Auth file:  {xai_auth_file}")
-    if xai_oauth_status.get("last_refresh"):
-        print(f"    Refreshed:  {_format_iso_timestamp(xai_oauth_status.get('last_refresh'))}")
-    if xai_oauth_status.get("error") and not xai_oauth_logged_in:
-        print(f"    Error:      {xai_oauth_status.get('error')}")
-
-    # =========================================================================
-    # Nous Subscription Features
-    # =========================================================================
-    if managed_nous_tools_enabled():
-        features = get_nous_subscription_features(config)
-        print()
-        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
-        if not features.nous_auth_present:
-            print("  Nous Portal   ✗ not logged in")
-        else:
-            print("  Nous Portal   ✓ managed tools available")
-        for feature in features.items():
-            if feature.managed_by_nous:
-                state = "active via Nous subscription"
-            elif feature.active:
-                current = feature.current_provider or "configured provider"
-                state = f"active via {current}"
-            elif feature.included_by_default and features.nous_auth_present:
-                state = "included by subscription, not currently selected"
-            elif feature.key == "modal" and features.nous_auth_present:
-                state = "available via subscription (optional)"
-            else:
-                state = "not configured"
-            print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
-    elif nous_logged_in or nous_inference_present:
-        # Nous OAuth without entitlement, or an opaque inference key without
-        # Portal account information, cannot enable the Tool Gateway.
-        print()
-        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
-        message = format_nous_portal_entitlement_message(
-            nous_account_info,
-            capability="managed web, image, TTS, STT, browser, and Modal tools",
-        )
-        if message:
-            for line in message.splitlines():
-                print(f"  {line}")
-
-    # =========================================================================
-    # API-Key Providers
-    # =========================================================================
-    print()
-    print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
-
-    apikey_providers = {
-        "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
-        "Kimi / Moonshot":  ("KIMI_API_KEY",),
-        "StepFun Step Plan": ("STEPFUN_API_KEY",),
-        "MiniMax":          ("MINIMAX_API_KEY",),
-        "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
-        "DeepInfra":        ("DEEPINFRA_API_KEY",),
-    }
-    for pname, env_vars in apikey_providers.items():
-        key_val = ""
-        for ev in env_vars:
-            key_val = get_env_value(ev) or ""
-            if key_val:
-                break
-        configured = bool(key_val)
-        label = "configured" if configured else "not configured (run: son-of-anton model)"
-        print(f"  {pname:<16} {check_mark(configured)} {label}")
-
-    # LM Studio reachability — only probe when it's the active provider so
-    # users with foreign configs don't see noise. Auth rejection vs. silent
-    # empty list is the most common LM Studio support case.
-    if _effective_provider_label() == "LM Studio":
-        from son_of_anton_cli.models import probe_lmstudio_models
-        model_cfg = config.get("model")
-        base = (model_cfg.get("base_url") if isinstance(model_cfg, dict) else None) or get_env_value("LM_BASE_URL") or "http://127.0.0.1:1234/v1"
-        try:
-            models = probe_lmstudio_models(api_key=get_env_value("LM_API_KEY") or "", base_url=base, timeout=1.5)
-            if models is None:
-                ok, msg = False, f"unreachable at {base}"
-            else:
-                ok, msg = True, f"reachable ({len(models)} model(s)) at {base}"
-        except AuthError:
-            ok, msg = False, "auth rejected — set LM_API_KEY"
-        print(f"  {'LM Studio':<16} {check_mark(ok)} {msg}")
 
     # =========================================================================
     # Terminal Configuration
@@ -647,22 +396,7 @@ def show_status(args):
     if deep:
         print()
         print(color("◆ Deep Checks", Colors.CYAN, Colors.BOLD))
-        
-        # Check OpenRouter connectivity
-        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-        if openrouter_key:
-            try:
-                import httpx
-                response = httpx.get(
-                    OPENROUTER_MODELS_URL,
-                    headers={"Authorization": f"Bearer {openrouter_key}"},
-                    timeout=10
-                )
-                ok = response.status_code == 200
-                print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
-            except Exception as e:
-                print(f"  OpenRouter:   {check_mark(False)} error: {e}")
-        
+
         # Check gateway port
         try:
             import socket

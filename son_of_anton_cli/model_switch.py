@@ -1209,10 +1209,10 @@ def _resolve_alias_fallback(
 ) -> Optional[tuple[str, str, str]]:
     """Try to resolve an alias on the user's authenticated providers.
 
-    Falls back to ``("openrouter", "nous")`` only when no authenticated
+    Falls back to the fork's provider set only when no authenticated
     providers are supplied (backwards compat for non-interactive callers).
     """
-    providers = authenticated_providers or ("openrouter", "nous")
+    providers = authenticated_providers or ("deepseek", "openai-api")
     for provider in providers:
         # AmbiguousAliasError propagates: the alias exists on this provider,
         # the user just has to choose — trying the next provider instead
@@ -2561,8 +2561,8 @@ def list_authenticated_providers(
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
-    Uses the curated model lists from son_of_anton_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
+    Uses the curated model lists from son_of_anton_cli/models.py
+    (_PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
     agentic models that work well as agent backends.
 
     Returns a list of dicts, each with:
@@ -2575,10 +2575,6 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
-    ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
-    account-sensitive flows. UI picker opens should leave it false so they do
-    not block on fresh Portal/account checks every time.
-
     ``refresh`` busts the per-provider model-id disk cache
     (``provider_models_cache.json``) up front so every row re-fetches its
     live catalog. Use for an explicit user-triggered "refresh models" action
@@ -2603,9 +2599,9 @@ def list_authenticated_providers(
     )
     from son_of_anton_cli.auth import PROVIDER_REGISTRY
     from son_of_anton_cli.models import (
-        OPENROUTER_MODELS, _PROVIDER_MODELS,
+        _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
-        clear_provider_models_cache, get_curated_nous_model_ids,
+        clear_provider_models_cache,
     )
 
     # Explicit refresh: drop every provider's cached model-id list so the
@@ -2707,45 +2703,6 @@ def list_authenticated_providers(
 
     # Build curated model lists keyed by son-of-anton provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" pulls from the remote model-catalog manifest published at
-    # https://son-of-anton.nousresearch.com/docs/api/model-catalog.json so
-    # newly added Portal models surface in the /model picker without
-    # requiring a Son of Anton release. Falls back to the in-repo
-    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
-    curated["nous"] = get_curated_nous_model_ids()
-    # Ollama Cloud uses dynamic discovery (no static curated list)
-    if "ollama-cloud" not in curated:
-        from son_of_anton_cli.models import fetch_ollama_cloud_models
-        curated["ollama-cloud"] = fetch_ollama_cloud_models()
-    # LM Studio has no static catalog — probe its native /api/v1/models
-    # endpoint live so the picker reflects whatever the user has loaded.
-    # Base URL precedence: LM_BASE_URL env var > active config's base_url
-    # (when current provider is lmstudio) > 127.0.0.1 default.
-    # On auth rejection or unreachable server, fall back to the caller-supplied
-    # current model so the picker still shows something when offline / mis-keyed.
-    if "lmstudio" not in curated and (
-        os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or current_provider.strip().lower() == "lmstudio"
-    ):
-        from son_of_anton_cli.models import fetch_lmstudio_models
-        from son_of_anton_cli.auth import AuthError
-        is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
-        lm_base = (
-            os.environ.get("LM_BASE_URL")
-            or (current_base_url if is_current_lmstudio and current_base_url else None)
-            or "http://127.0.0.1:1234/v1"
-        )
-        try:
-            live = fetch_lmstudio_models(
-                api_key=os.environ.get("LM_API_KEY", ""),
-                base_url=lm_base,
-                timeout=1.5, # Smaller timeout for picker
-            )
-        except AuthError:
-            live = []
-        if not live and is_current_lmstudio and current_model:
-            live = [current_model]
-        curated["lmstudio"] = live
 
     # --- Parallel cache prefetch ---------------------------------------------
     # The serial loops below (sections 1, 2, 2b) each call
@@ -3892,23 +3849,15 @@ def list_picker_providers(
 
     Post-processes the base list so the ``/model`` picker (Discord
     inline keyboards) only surfaces models that are actually callable in the
-    current install:
-
-    - OpenRouter's model list is replaced with the output of
-      :func:`son_of_anton_cli.models.fetch_openrouter_models`, which filters the
-      curated ``OPENROUTER_MODELS`` snapshot against the live OpenRouter
-      catalog.  IDs the live catalog no longer carries drop out, so the
-      picker never offers a model the user can't call.
-    - Provider rows whose model list ends up empty are dropped, except
-      custom endpoints (``is_user_defined=True`` with an ``api_url``) where
-      the user may supply their own model set through config.
+    current install: provider rows whose model list ends up empty are
+    dropped, except custom endpoints (``is_user_defined=True`` with an
+    ``api_url``) where the user may supply their own model set through
+    config.
 
     All other providers and metadata fields are passed through unchanged.
     The typed ``/model <name>`` path is unaffected -- only the interactive
     picker payload is narrowed.
     """
-    from son_of_anton_cli.models import fetch_openrouter_models
-
     providers = list_authenticated_providers(
         current_provider=current_provider,
         current_base_url=current_base_url,
@@ -3923,16 +3872,6 @@ def list_picker_providers(
     filtered: List[dict] = []
     for p in providers:
         slug = str(p.get("slug", "")).lower()
-        if slug == "openrouter":
-            try:
-                live = fetch_openrouter_models()
-                live_ids = [mid for mid, _ in live]
-            except Exception:
-                live_ids = list(p.get("models", []))
-            p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
-            p["total_models"] = len(live_ids)
-
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if not has_models and not is_custom_endpoint:

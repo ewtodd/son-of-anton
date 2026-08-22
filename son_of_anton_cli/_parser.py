@@ -135,7 +135,7 @@ def build_top_level_parser():
         "--model",
         default=None,
         help=(
-            "Model override for this invocation (e.g. anthropic/claude-sonnet-4.6). "
+            "Model override for this invocation (e.g. deepseek-v4). "
             "Applies to -z/--oneshot and --tui. Also settable via SON_OF_ANTON_INFERENCE_MODEL env var."
         ),
     )
@@ -144,7 +144,7 @@ def build_top_level_parser():
         "--provider",
         default=None,
         help=(
-            "Provider override for this invocation (e.g. openrouter, anthropic). "
+            "Provider override for this invocation (e.g. deepseek, custom). "
             "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
             "under model.provider — use `son-of-anton setup` or edit the file to change it."
         ),
@@ -332,7 +332,7 @@ def build_top_level_parser():
         chat_parser,
         "-m", "--model",
         default=argparse.SUPPRESS,
-        help="Model to use (e.g., anthropic/claude-sonnet-4)",
+        help="Model to use (e.g., deepseek-v4)",
     )
     chat_parser.add_argument(
         "-t", "--toolsets",
