@@ -17,128 +17,10 @@ _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
-def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
-    """Return True when the user is entitled to the Nous Tool Gateway.
-
-    Entitlement is paid Nous Portal service access OR a live free tool pool
-    (``tool_gateway_entitled``). Per-category coverage (the pool funds image but
-    not video, etc.) is narrowed by callers via ``tool_gateway_entitled_for``;
-    this coarse gate only answers "is any managed tool usable at all".
-
-    Tool Gateway availability fails closed on unknown/error entitlement.  We
-    intentionally catch all exceptions and return False — never block startup.
-    ``force_fresh=True`` is for interactive configuration flows that should
-    reflect a just-purchased subscription, credits, or pool grant immediately.
-    """
-    try:
-        from son_of_anton_cli.nous_account import get_nous_portal_account_info
-
-        if force_fresh:
-            account_info = get_nous_portal_account_info(force_fresh=True)
-        else:
-            account_info = get_nous_portal_account_info()
-        if not account_info.logged_in:
-            return False
-        return account_info.tool_gateway_entitled
-    except Exception:
-        return False
-
-
-def nous_tool_gateway_unavailable_message(
-    capability: str = "the Nous Tool Gateway",
-    *,
-    force_fresh: bool = False,
-) -> str:
-    """Return account-aware guidance for an unavailable Nous Tool Gateway path."""
-    try:
-        from son_of_anton_cli.nous_account import (
-            format_nous_portal_entitlement_message,
-            get_nous_portal_account_info,
-        )
-
-        account_info = get_nous_portal_account_info(force_fresh=force_fresh)
-        message = format_nous_portal_entitlement_message(
-            account_info,
-            capability=capability,
-        )
-        if message:
-            return message
-    except Exception:
-        pass
-    return (
-        f"{capability} is unavailable. Run `son-of-anton model` to refresh your "
-        "Nous Portal login and billing status."
-    )
-
-
 def normalize_browser_cloud_provider(value: object | None) -> str:
     """Return a normalized browser provider key."""
     provider = str(value or _DEFAULT_BROWSER_PROVIDER).strip().lower()
     return provider or _DEFAULT_BROWSER_PROVIDER
-
-
-def coerce_modal_mode(value: object | None) -> str:
-    """Return the requested modal mode when valid, else the default."""
-    mode = str(value or _DEFAULT_MODAL_MODE).strip().lower()
-    if mode in _VALID_MODAL_MODES:
-        return mode
-    return _DEFAULT_MODAL_MODE
-
-
-def normalize_modal_mode(value: object | None) -> str:
-    """Return a normalized modal execution mode."""
-    return coerce_modal_mode(value)
-
-
-def has_direct_modal_credentials() -> bool:
-    """Return True when direct Modal credentials/config are available."""
-    try:
-        modal_file_exists = (Path.home() / ".modal.toml").exists()
-    except (PermissionError, OSError):
-        modal_file_exists = False
-    return bool(
-        (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
-        or modal_file_exists
-    )
-
-
-def resolve_modal_backend_state(
-    modal_mode: object | None,
-    *,
-    has_direct: bool,
-    managed_ready: bool,
-    managed_enabled: bool | None = None,
-) -> Dict[str, Any]:
-    """Resolve direct vs managed Modal backend selection.
-
-    Semantics:
-    - ``direct`` means direct-only
-    - ``managed`` means managed-only
-    - ``auto`` prefers managed when available, then falls back to direct
-    """
-    requested_mode = coerce_modal_mode(modal_mode)
-    normalized_mode = normalize_modal_mode(modal_mode)
-    if managed_enabled is None:
-        managed_enabled = managed_nous_tools_enabled()
-    managed_mode_blocked = (
-        requested_mode == "managed" and not managed_enabled
-    )
-
-    if normalized_mode == "managed":
-        selected_backend = "managed" if managed_enabled and managed_ready else None
-    elif normalized_mode == "direct":
-        selected_backend = "direct" if has_direct else None
-    else:
-        selected_backend = "managed" if managed_enabled and managed_ready else "direct" if has_direct else None
-
-    return {
-        "requested_mode": requested_mode,
-        "mode": normalized_mode,
-        "has_direct": has_direct,
-        "managed_ready": managed_ready,
-        "managed_mode_blocked": managed_mode_blocked,
-        "selected_backend": selected_backend,
-    }
 
 
 def _scoped_credential(name: str) -> str:
@@ -290,14 +172,6 @@ def prefers_gateway(config_section: str) -> bool:
     return False
 
 
-# The provider value the managed "Nous Subscription" picker rows write for
-# every category (image_gen.provider: nous, web.backend: nous,
-# browser.cloud_provider: nous, ...). Runtime dispatch is a plain switch on
-# the stored string: "nous" → managed gateway client; any vendor name → that
-# vendor direct with the user's own credentials; no key ever written →
-# legacy credential autodetect.
-NOUS_MANAGED_PROVIDER = "nous"
-
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {
     "web": ("search_backend", "extract_backend"),
@@ -329,9 +203,7 @@ def read_selection(section: str) -> str | None:
 
     Legacy interpretation (read-time only — nothing is migrated on disk):
     older picker versions wrote ``<section>.use_gateway`` beside the name
-    key. ``use_gateway: true`` was only ever written by the managed "Nous
-    Subscription" row, so it maps to ``"nous"`` regardless of the name key;
-    ``use_gateway: false`` beside a name key maps to that name.
+    key. ``use_gateway: false`` beside a name key maps to that name.
     """
     try:
         from son_of_anton_cli.config import read_raw_config_readonly
@@ -355,11 +227,6 @@ def read_selection(section: str) -> str | None:
         name = _str_or_none(key)
         if name:
             break
-
-    # Legacy shim: a truthy use_gateway means the managed row was picked
-    # (it was the only writer of use_gateway: true).
-    if "use_gateway" in raw and is_truthy_value(raw.get("use_gateway"), default=False):
-        return NOUS_MANAGED_PROVIDER
 
     # NOTE on the legacy DEFAULT_CONFIG ``stt.provider: local`` seed: it never
     # reached the raw config.yaml (``save_config`` strips schema defaults),

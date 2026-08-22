@@ -542,32 +542,6 @@ def _ra():
     return run_agent
 
 
-def _nous_entitlement_message(capability: str) -> str:
-    try:
-        from son_of_anton_cli.nous_account import (
-            format_nous_portal_entitlement_message,
-            get_nous_portal_account_info,
-        )
-
-        account_info = get_nous_portal_account_info(force_fresh=True)
-        message = format_nous_portal_entitlement_message(
-            account_info,
-            capability=capability,
-        )
-        return message or ""
-    except Exception:
-        return ""
-
-
-def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
-    message = _nous_entitlement_message(capability)
-    if not message:
-        return False
-    for line in message.splitlines():
-        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
-    return True
-
-
 def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
     """System prompt as actually sent to the provider, for observability hooks.
 
@@ -586,16 +560,6 @@ def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
     return system_prompt
 
 
-def _is_nous_inference_route(provider: str, base_url: str) -> bool:
-    provider = (provider or "").strip().lower()
-    if provider == "nous":
-        return True
-    base = str(base_url or "")
-    return (
-        base_url_host_matches(base, "inference-api.nousresearch.com")
-    )
-
-
 def _billing_or_entitlement_message(
     *,
     capability: str,
@@ -604,9 +568,6 @@ def _billing_or_entitlement_message(
     model: str,
     unverified: bool = False,
 ) -> str:
-    if _is_nous_inference_route(provider, base_url):
-        return _nous_entitlement_message(capability)
-
     provider_label = (provider or "").strip() or "the selected provider"
     model_label = (model or "").strip() or "the selected model"
 
@@ -785,21 +746,6 @@ def _print_billing_or_entitlement_guidance(
     for line in message.splitlines():
         agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
     return True
-
-
-def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
-    """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
-    try:
-        from son_of_anton_cli.nous_account import get_nous_portal_account_info
-
-        account_info = get_nous_portal_account_info(force_fresh=True)
-        if account_info.paid_service_access is not True:
-            return False
-        return agent._try_refresh_nous_client_credentials(
-            force=True,
-        )
-    except Exception:
-        return False
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -995,18 +941,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
 
-    # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
-    # desktop build seeds at session OPEN (see seed_credits_at_session_start in
-    # tui_gateway), so this call is usually a no-op there (idempotent: skips when
-    # _credits_state already exists). For the plain CLI / any path that didn't seed
-    # at build, it primes credits state from /api/oauth/account (or a fixture) on the
-    # first turn so depletion / usage-band warnings fire. Fail-open inside the helper.
-    try:
-        from agent.credits_tracker import seed_credits_at_session_start
 
-        seed_credits_at_session_start(agent)
-    except Exception:
-        logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
 
     # Persist the system prompt snapshot in SQLite.  Failure here used
     # to log at DEBUG, which silently broke prefix-cache reuse on the
@@ -4685,23 +4620,6 @@ def run_conversation(
                     reason=classified.reason.value,
                 )
 
-                if (
-                    classified.reason == FailoverReason.billing
-                    and _is_nous_inference_route(
-                        getattr(agent, "provider", "") or "",
-                        getattr(agent, "base_url", "") or "",
-                    )
-                    and not _retry.nous_paid_entitlement_refresh_attempted
-                ):
-                    _retry.nous_paid_entitlement_refresh_attempted = True
-                    if _try_refresh_nous_paid_entitlement_credentials(agent):
-                        agent._vprint(
-                            f"{agent.log_prefix}🔐 Nous paid access verified — "
-                            "refreshed runtime credentials and retrying request...",
-                            force=True,
-                        )
-                        continue
-
                 recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
                     has_retried_429=_retry.has_retried_429,
@@ -4816,38 +4734,6 @@ def run_conversation(
                     if agent._try_refresh_vertex_client_credentials():
                         agent._buffer_vprint("🔐 Vertex AI token refreshed after 401. Retrying request...")
                         continue
-                if (
-                    agent.api_mode in ("chat_completions", "anthropic_messages")
-                    and agent.provider == "nous"
-                    and status_code == 401
-                    and not _retry.nous_auth_retry_attempted
-                ):
-                    _retry.nous_auth_retry_attempted = True
-                    if agent._try_refresh_nous_client_credentials(force=True):
-                        print(f"{agent.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
-                        continue
-                    # Credential refresh didn't help — show diagnostic info.
-                    # Most common causes: Portal OAuth expired/revoked,
-                    # account out of credits, or agent key blocked.
-                    from son_of_anton_constants import display_son_of_anton_home as _dhh_fn
-                    _dhh = _dhh_fn()
-                    _body_text = ""
-                    try:
-                        _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
-                        if _body is not None:
-                            _body_text = str(_body)[:200]
-                    except Exception:
-                        pass
-                    print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
-                    if _body_text:
-                        print(f"{agent.log_prefix}   Response: {_body_text}")
-                    if not _print_nous_entitlement_guidance(agent, "Nous model access"):
-                        print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
-                    print(f"{agent.log_prefix}   Troubleshooting:")
-                    print(f"{agent.log_prefix}     • Re-authenticate: son-of-anton auth add nous")
-                    print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
-                    print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
-                    print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
                 if (
                     _is_copilot_provider(agent)
                     and status_code == 401
@@ -6080,11 +5966,6 @@ def run_conversation(
                             base_url=str(_base),
                             model=_model,
                             unverified=classified.billing_unverified,
-                        ):
-                            pass
-                        elif _provider == "nous" and _print_nous_entitlement_guidance(
-                            agent,
-                            "Nous model access",
                         ):
                             pass
                         elif _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:

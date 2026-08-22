@@ -168,7 +168,6 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_skills_system_prompt,
     build_context_files_prompt,
     build_environment_hints,
-    build_nous_subscription_prompt,
     load_soul_md,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
@@ -4110,167 +4109,1543 @@ class AIAgent:
     def _capture_anthropic_response_headers(self, http_response: Any) -> None:
         """Capture out-of-band state from Anthropic Messages response headers.
 
-        The Anthropic SDK's aggregated ``Message`` drops HTTP headers. Portal
-        (and other providers) put rate-limit and credits state there — the same
-        families the OpenAI-wire streaming path captures via
-        ``stream.response``. Fail-open: each capture swallows its own errors.
+        The Anthropic SDK's aggregated ``Message`` drops HTTP headers. Some
+        providers put rate-limit state there — the same family the OpenAI-wire
+        streaming path captures via ``stream.response``. Fail-open: each
+        capture swallows its own errors.
         """
         self._capture_rate_limits(http_response)
-        self._capture_credits(http_response)
 
-    def _capture_credits(self, http_response: Any) -> None:
-        """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.
+    def _check_openrouter_cache_status(self, http_response: Any) -> None:
+        """Read X-OpenRouter-Cache-Status from response headers and log it.
 
-        Fail-open throughout — header issues never break the agent loop. The PARSE is
-        swallowed (any error → treated as a miss → keep last-known). The notice
-        EVALUATION/EMIT is a SEPARATE block that WARNS on failure (R1-M2): a bug in the
-        depletion-notice path must not vanish silently under the parse swallow.
+        Increments ``_or_cache_hits`` on HIT so callers can report savings.
         """
-        # Dev test fixture (SON_OF_ANTON_DEV_CREDITS_FIXTURE): inject a chosen notice state
-        # each turn for repeatable testing, bypassing real headers. Throwaway scaffolding.
-        try:
-            from agent.credits_tracker import dev_fixture_credits_state
-            _fixture = dev_fixture_credits_state()
-        except Exception:
-            _fixture = None
-        if _fixture is not None:
-            self._credits_state = _fixture
-            if self._credits_session_start_micros is None:
-                self._credits_session_start_micros = _fixture.remaining_micros
-            _latch = getattr(self, "_credits_latch", None)
-            if isinstance(_latch, dict):
-                # Only seen_below_90 — never seen_grant_unspent (priming it would
-                # fire grant_spent on a fixture's first observation, the exact
-                # every-session nag the gate exists to prevent).
-                _latch["seen_below_90"] = True  # let warn90 fire without a real crossing
-            _used = _fixture.used_fraction
-            logger.info(
-                "credits ▸ [FIXTURE] remaining=%d (%s) · paid=%s · denom=%s · used=%s "
-                "(real headers bypassed — `echo clear` / unset SON_OF_ANTON_DEV_CREDITS_FIXTURE to restore)",
-                _fixture.remaining_micros,
-                _fixture.remaining_usd or "?",
-                _fixture.paid_access,
-                _fixture.denominator_kind,
-                ("%.0f%%" % (_used * 100)) if _used is not None else "n/a",
-            )
-            self._emit_credits_notices()
-            return
         if http_response is None:
             return
         headers = getattr(http_response, "headers", None)
         if not headers:
             return
-        _dev = is_truthy_value(os.environ.get("SON_OF_ANTON_DEV_CREDITS"))
-
-        # ── Parse (fail-open → miss; never overwrite good state with None) ──
         try:
-            from agent.credits_tracker import parse_credits_headers
-            state = parse_credits_headers(headers, provider=self.provider)
+            status = headers.get("x-openrouter-cache-status")
+            if not status:
+                return
+            if status.upper() == "HIT":
+                self._or_cache_hits += 1
+                logger.info("OpenRouter response cache HIT (total: %d)", self._or_cache_hits)
+            else:
+                logger.debug("OpenRouter response cache %s", status.upper())
         except Exception:
-            return  # parse error → treat as a miss, keep last-known
-        if state is None:
-            if _dev:
-                logger.info(
-                    "credits ▸ response had no valid x-nous-credits-* headers "
-                    "(miss — producer off / non-Nous path / >TTL stale)"
+            pass  # Never let header parsing break the agent loop
+
+    def get_activity_summary(self) -> dict:
+        """Return a snapshot of the agent's current activity for diagnostics.
+
+        Exposes the shared activity observation contract
+        (``last_activity_at`` / ``last_activity_description`` /
+        ``last_activity_provenance``) plus short aliases
+        (``last_activity_ts`` / ``last_activity_desc`` / …) for existing
+        gateway and delegate readers.
+        """
+        from agent.session_activity import (
+            ActivityProvenance,
+            build_activity_snapshot,
+        )
+
+        provenance = getattr(self, "_last_activity_provenance", None)
+        if provenance is None:
+            provenance = ActivityProvenance.UNKNOWN
+        return build_activity_snapshot(
+            last_activity_at=getattr(self, "_last_activity_ts", None),
+            last_activity_description=getattr(self, "_last_activity_desc", None) or "",
+            last_activity_provenance=provenance,
+            extra={
+            "current_tool": self._current_tool,
+            "api_call_count": self._api_call_count,
+            "max_iterations": self.max_iterations,
+            "budget_used": self.iteration_budget.used,
+            "budget_max": self.iteration_budget.max_total,
+            },
+        )
+
+    def shutdown_memory_provider(self, messages: list = None) -> None:
+        """Shut down the memory provider and context engine at session end.
+
+        Idempotent: gateway cleanup and AIAgent.close() may share this
+        ownership boundary.
+        """
+        if getattr(self, "_memory_provider_shutdown", False):
+            return
+        self._memory_provider_shutdown = True
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception as e:
+                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            try:
+                self._memory_manager.shutdown_all()
+            except Exception:
+                pass
+        # Notify context engine of session end (flush DAG, close DBs, etc.)
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
                 )
-            return
+            except Exception:
+                pass
 
-        # retain-last-known: only overwrite on a fresh valid parse
-        self._credits_state = state
-        # Latch session-start remaining the first time we ever see a header
-        if self._credits_session_start_micros is None:
-            self._credits_session_start_micros = state.remaining_micros
-        if _dev:
-            # SON_OF_ANTON_DEV_CREDITS: stream each capture to agent.log — watch live with
-            # `son-of-anton logs -f` (grep 'credits ▸'). Dev-only; silent for normal users.
-            spent = self.get_credits_spent_micros()
-            used = state.used_fraction
-            logger.info(
-                "credits ▸ remaining=%d (%s) · paid=%s · denom=%s · used=%s "
-                "· Δspent=%s · age=%s%s",
-                state.remaining_micros,
-                state.remaining_usd or "?",
-                state.paid_access,
-                state.denominator_kind,
-                ("%.0f%%" % (used * 100)) if used is not None else "n/a",
-                ("%.1f¢" % (spent / 10000)) if spent is not None else "n/a",
-                ("%.0fs" % state.age_seconds) if state.age_seconds != float("inf") else "n/a",
-                (" · disabled=%s" % state.disabled_reason) if state.disabled_reason else "",
-            )
+    def commit_memory_session(self, messages: list = None) -> None:
+        """Trigger end-of-session extraction without tearing providers down.
+        Called when session_id rotates (e.g. /new, context compression);
+        providers keep their state and continue running under the old
+        session_id — they just flush pending extraction now."""
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+        # Notify context engine of session end too — same lifecycle moment as
+        # the memory manager's on_session_end. Without this, engines that
+        # accumulate per-session state (DAGs, summaries) leak that state from
+        # the rotated-out session into whatever comes next under the same
+        # compressor instance. Mirrors the call in shutdown_memory_provider().
+        # See issue #22394.
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
+            except Exception:
+                pass
 
-        # Threshold notices — shared with the cold-start seed (see _emit_credits_notices).
-        self._emit_credits_notices()
+    def _sync_external_memory_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        interrupted: bool,
+        messages: list | None = None,
+    ) -> None:
+        """Mirror a completed turn into external memory providers.
 
-    def _emit_credits_notices(self) -> None:
-        """Run the threshold policy on the current credits state and emit notices.
+        Called at the end of ``run_conversation`` with the cleaned user
+        message (``original_user_message``) and the finalised assistant
+        response.  The external memory backend gets both ``sync_all`` (to
+        persist the exchange) and ``queue_prefetch_all`` (to start
+        warming context for the next turn) in one shot.
 
-        Shared by the warm path (_capture_credits) and the L3 cold-start seed, so a
-        session that opens already depleted warns immediately — not only after the first
-        inference header. Runs only when a notice consumer is bound (messaging binds none
-        → state still cached for /usage, no policy). WARNS on failure rather than
-        swallowing (R1-M2): a depletion-path bug must not vanish silently. Emits clears
-        FIRST, then shows (so depleted lands last in a latest-wins slot).
+        Uses ``original_user_message`` rather than ``user_message``
+        because the latter may carry injected skill content that bloats
+        or breaks provider queries.
+
+        Interrupted turns are skipped entirely (#15218).  A partial
+        assistant output, an aborted tool chain, or a mid-stream reset
+        is not durable conversational truth — mirroring it into an
+        external memory backend pollutes future recall with state the
+        user never saw completed.  The prefetch is gated on the same
+        flag: the user's next message is almost certainly a retry of
+        the same intent, and a prefetch keyed on the interrupted turn
+        would fire against stale context.
+
+        Normal completed turns still sync as before.  The whole body is
+        wrapped in ``try/except Exception`` because external memory
+        providers are strictly best-effort — a misconfigured or offline
+        backend must not block the user from seeing their response.
         """
-        if getattr(self, "notice_callback", None) is None and getattr(self, "notice_clear_callback", None) is None:
+        if interrupted:
             return
-        if not self._credits_notices_enabled():
+        if not (self._memory_manager and final_response and original_user_message):
             return
-        state = getattr(self, "_credits_state", None)
-        if state is None:
+        # Multimodal turns carry content as a list of typed parts; providers
+        # expect plain strings, so flatten to text first (newline-joined for
+        # memory, vs the default space-join used for log/trajectory previews).
+        user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
+        response_text = _summarize_user_message_for_log(final_response, sep="\n")
+        if not (user_text and response_text):
             return
         try:
-            from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model, new_credits_latch
-            latch = getattr(self, "_credits_latch", None)
-            if latch is None:
-                latch = self._credits_latch = new_credits_latch()
-            # Free-model gate: a depleted account on a free model can still
-            # inference, so the depleted error banner is suppressed. Local-data
-            # only (":free" suffix + pricing-cache peek) — never a network call.
-            model_is_free = is_free_tier_model(
-                getattr(self, "model", "") or "",
-                getattr(self, "base_url", "") or "",
+            sync_kwargs = {"session_id": self.session_id or ""}
+            if messages is not None:
+                sync_kwargs["messages"] = messages
+            self._memory_manager.sync_all(
+                user_text,
+                response_text,
+                **sync_kwargs,
             )
-            to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
-            for key in to_clear:        # clears FIRST …
-                self._emit_notice_clear(key)
-            for notice in to_show:      # … then shows (depleted lands last in a latest-wins slot)
-                self._emit_notice(notice)
+            # Sibling of the build_turn_context() prefetch gate: warming the
+            # next turn's recall with a trivial prompt ("hi", "thanks") keys
+            # provider searches on zero-signal text — skip it. The sync above
+            # still runs so the turn itself is persisted.
+            if not is_trivial_prompt(user_text):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
-            logger.warning("credits notice evaluation/emit failed", exc_info=True)
+            pass
 
-    def _credits_notices_enabled(self) -> bool:
-        """Whether credits notices are enabled (config display.credits_notices).
+    def release_clients(self) -> None:
+        """Release LLM client resources WITHOUT tearing down session tool state.
 
-        Read once per agent and cached — the policy runs after every API
-        response, and the setting governs UI noise, not correctness, so a
-        config flip applying on the next session is fine.  Fail-open True
-        (preserve current behaviour) on any config error.
+        Used by the gateway when evicting this agent from _agent_cache for
+        memory-management reasons (LRU cap or idle TTL) — the session may
+        resume at any time with a freshly-built AIAgent that reuses the
+        same task_id / session_id, so we must NOT kill:
+          - process_registry entries for task_id (user's bg shells)
+          - terminal sandbox for task_id (cwd, env, shell state)
+          - memory provider (has its own lifecycle; keeps running)
+
+        We DO close:
+          - OpenAI/httpx client pool (big chunk of held memory + sockets;
+            the rebuilt agent gets a fresh client anyway)
+          - Active child subagents (per-turn artefacts; safe to drop)
+
+        Safe to call multiple times.  Distinct from close() — which is the
+        hard teardown for actual session boundaries (/new, /reset, session
+        expiry).
         """
-        cached = getattr(self, "_credits_notices_enabled_cache", None)
-        if cached is not None:
-            return cached
-        enabled = True
+        # Close active child agents (per-turn; no cross-turn persistence).
         try:
-            from son_of_anton_cli.config import load_config as _load_config
-            _cfg = _load_config() or {}
-            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
-            if isinstance(_display, dict) and "credits_notices" in _display:
-                enabled = bool(_display.get("credits_notices"))
+            with self._active_children_lock:
+                children = list(self._active_children)
+                self._active_children.clear()
+            for child in children:
+                try:
+                    child.release_clients()
+                except Exception:
+                    # Fall back to full close on children; they're per-turn.
+                    try:
+                        child.close()
+                    except Exception:
+                        pass
         except Exception:
-            enabled = True
-        self._credits_notices_enabled_cache = enabled
-        return enabled
+            pass
 
-    def get_credits_state(self):
-        """Return the last captured CreditsState, or None."""
-        return self._credits_state
+        # Retire the OpenAI/httpx client to release sockets immediately.
+        # #70773: eviction runs on the gateway's memory-manager thread — a
+        # cross-thread hard close of the shared client can release TLS FDs
+        # under a still-unwinding worker (FD-recycle → SQLite corruption).
+        # Retirement shuts the pooled sockets down (the memory/socket win we
+        # want here) and lets GC release the FDs once no thread holds them.
+        try:
+            client = getattr(self, "client", None)
+            if client is not None:
+                self._retire_shared_openai_client(client, reason="cache_evict")
+                self.client = None
+        except Exception:
+            pass
 
-    def get_credits_spent_micros(self):
-        """Session-cumulative micros spent = first_seen_remaining - current_remaining. None if no data."""
-        if self._credits_session_start_micros is None or self._credits_state is None:
+        # Also drop the cached per-request wire client (reused across
+        # sequential LLM calls) — same socket/memory rationale as above.
+        try:
+            self._close_cached_request_openai_client(reason="cache_evict")
+        except Exception:
+            pass
+        try:
+            self._close_cached_request_anthropic_client(reason="cache_evict")
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Release all resources held by this agent instance.
+
+        Cleans up subprocess resources that would otherwise become orphans:
+        - Background processes tracked in ProcessRegistry
+        - Terminal sandbox environments
+        - Active child agents (subagent delegation)
+        - OpenAI/httpx client connections
+
+        Safe to call multiple times (idempotent).  Each cleanup step is
+        independently guarded so a failure in one does not prevent the rest.
+        """
+        # AIAgent.close() is the hard owner boundary. Gateway cleanup may
+        # call shutdown_memory_provider() first; its idempotence prevents
+        # duplicate extraction while direct callers cannot skip provider close.
+        try:
+            session_messages = getattr(self, "_session_messages", None)
+            self.shutdown_memory_provider(
+                session_messages if isinstance(session_messages, list) else None
+            )
+        except Exception:
+            pass
+
+        task_id = getattr(self, "session_id", None) or ""
+
+        # 1. Kill background processes for this task
+        try:
+            from tools.process_registry import process_registry
+            process_registry.kill_all(task_id=task_id)
+        except Exception:
+            pass
+
+        # 2. Clean terminal sandbox environments
+        try:
+            cleanup_vm(task_id)
+        except Exception:
+            pass
+
+        # 3. Close active child agents
+        try:
+            with self._active_children_lock:
+                children = list(self._active_children)
+                self._active_children.clear()
+            for child in children:
+                try:
+                    child.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 4. Close the OpenAI/httpx client
+        try:
+            client = getattr(self, "client", None)
+            if client is not None:
+                self._close_openai_client(client, reason="agent_close", shared=True)
+                self.client = None
+        except Exception:
+            pass
+
+        # 4b. Close the cached per-request wire client (reused across
+        # sequential LLM calls; see _create_request_openai_client).
+        try:
+            self._close_cached_request_openai_client(reason="agent_close")
+        except Exception:
+            pass
+        try:
+            self._close_cached_request_anthropic_client(reason="agent_close")
+        except Exception:
+            pass
+
+        # 4c. Close the Codex app-server session. The runtime already drops
+        # it on turn crash / retirement (agent/codex_runtime.py), but hard
+        # teardown had no owner — a /new, /reset, or session expiry left the
+        # app-server child process running until interpreter exit. Clear the
+        # attribute BEFORE close() so a concurrent reader can't grab a
+        # half-closed session, and so a raising close() can't strand a stale
+        # reference behind.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                self._codex_session = None
+                codex_session.close()
+        except Exception:
+            pass
+
+        # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # soft-eviction clear — close() is the hard teardown for true session
+        # boundaries (/new, /reset, session expiry), so the message list won't
+        # be reused.  Drops the reference proactively rather than waiting for
+        # the agent object itself to be collected, which matters when a caller
+        # still holds the closed agent (e.g. a draining background task).
+        try:
+            self._session_messages = []
+        except Exception:
+            pass
+
+        # The references above are now gone; on Linux/glibc, return their free
+        # heap pages immediately instead of retaining the process RSS high-water
+        # mark until exit.  This helper is a safe no-op on other allocators.
+        try:
+            from son_of_anton_cli.mem_trim import trim_memory
+            trim_memory(force=True, reason="agent close")
+        except Exception:
+            pass
+
+        # 8. Finalize the owned SQLite session row unless this agent is only a
+        # temporary helper that deliberately handed session ownership forward
+        # (manual compression helpers that rotate to a continuation session_id,
+        # or background-review forks that share the live parent's session_id and
+        # must leave it open). end_session() is first-reason-wins and no-ops on
+        # an already-ended row, so this never clobbers a 'compression' /
+        # 'cron_complete' / 'cli_close' reason set by an earlier terminal path.
+        session_db = getattr(self, "_session_db", None)
+        try:
+            if getattr(self, "_end_session_on_close", True):
+                session_id = getattr(self, "session_id", None)
+                if session_db and session_id:
+                    session_db.end_session(session_id, "agent_close")
+        except Exception:
+            pass
+
+        # 9. Close the SQLite handle itself, but ONLY when this agent owns it.
+        # end_session() above finalizes the session ROW; it does not release the
+        # connection. For the shared launch handle that is correct — it outlives
+        # every agent — so _owns_session_db defaults False and this is a no-op.
+        # A DEDICATED handle (the gateway's per-profile state.db opens, and the
+        # lazy self-open in _get_session_db_for_recall) has no other owner: left
+        # unclosed it keeps its db/-wal/-shm fds and its background token-writer
+        # thread, and once that writer has started the instance pins ITSELF via
+        # atexit.register(_drain_token_queue_at_exit) — which only close()
+        # unregisters — so it survives for the life of the process.
+        # Cleared first so the documented idempotency of close() holds.
+        try:
+            if getattr(self, "_owns_session_db", False) and session_db is not None:
+                self._owns_session_db = False
+                session_db.close()
+        except Exception:
+            pass
+
+    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
+        """
+        Recover todo state from conversation history.
+        
+        The gateway creates a fresh AIAgent per message, so the in-memory
+        TodoStore is empty. We scan the history for the most recent todo
+        tool response and replay it to reconstruct the state.
+
+        Hydration is restricted to tool results that are paired with an
+        earlier assistant ``todo`` tool call. The gateway/API server accepts
+        caller-supplied ``conversation_history``, so a forged bare
+        ``role: tool`` message carrying a ``todos`` array must not be able to
+        seed the store without a matching canonical tool call
+        (GHSA-5g4g-6jrg-mw3g).
+        """
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
+        # Walk history backwards to find the most recent todo tool response
+        last_todo_response = None
+        for idx in range(len(history) - 1, -1, -1):
+            msg = history[idx]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            # Only accept tool results paired with a prior assistant todo call.
+            if not self._tool_response_matches_todo_call(history, idx):
+                continue
+            if len(content) > MAX_TODO_RESULT_CHARS:
+                logger.warning(
+                    "Skipping oversized todo tool response during hydration: "
+                    "session=%s chars=%d",
+                    self.session_id or "none",
+                    len(content),
+                )
+                continue
+            # Quick check: todo responses contain "todos" key
+            if '"todos"' not in content:
+                continue
+            try:
+                data = json.loads(content)
+                if "todos" in data and isinstance(data["todos"], list):
+                    last_todo_response = data["todos"]
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        if last_todo_response:
+            # Replay the items into the store (replace mode)
+            self._todo_store.write(last_todo_response, merge=False)
+            if not self.quiet_mode:
+                self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        _set_interrupt(False)
+
+    @classmethod
+    def _tool_response_matches_todo_call(
+        cls,
+        history: List[Dict[str, Any]],
+        tool_index: int,
+    ) -> bool:
+        """Return True when a tool result belongs to a prior assistant todo call.
+
+        Scans backwards from the tool result to the nearest assistant message
+        and confirms it issued a ``todo`` tool call whose id matches this
+        result's ``tool_call_id``. A ``user``/``system`` boundary (or a missing
+        id) means the result is unpaired and must not hydrate the store.
+        """
+        if tool_index < 0 or tool_index >= len(history):
+            return False
+        tool_msg = history[tool_index]
+        tool_call_id = tool_msg.get("tool_call_id")
+        if not tool_call_id:
+            return False
+
+        for prior_idx in range(tool_index - 1, -1, -1):
+            prior = history[prior_idx]
+            role = prior.get("role")
+            if role == "assistant":
+                return cls._assistant_has_todo_tool_call(prior, tool_call_id)
+            if role in {"user", "system"}:
+                return False
+        return False
+
+    @classmethod
+    def _assistant_has_todo_tool_call(
+        cls,
+        assistant_msg: Dict[str, Any],
+        tool_call_id: str,
+    ) -> bool:
+        """True when the assistant message issued a ``todo`` call with this id."""
+        tool_calls = assistant_msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return False
+
+        for tool_call in tool_calls:
+            if cls._get_tool_call_id_static(tool_call) != tool_call_id:
+                continue
+            if cls._get_tool_call_name_static(tool_call) == "todo":
+                return True
+        return False
+
+    @property
+    def is_interrupted(self) -> bool:
+        """Check if an interrupt has been requested."""
+        return self._interrupt_requested
+
+
+
+
+
+
+
+
+
+
+    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
+        """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
+        from agent.system_prompt import build_system_prompt_parts
+        return build_system_prompt_parts(self, system_message=system_message)
+
+    def _build_system_prompt(self, system_message: str = None) -> str:
+        """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
+        from agent.system_prompt import build_system_prompt
+        return build_system_prompt(self, system_message=system_message)
+
+    @staticmethod
+    def _get_tool_call_id_static(tc) -> str:
+        """Extract call ID from a tool_call entry (dict or object).
+
+        Forwarder — policy owner is
+        ``agent.message_sanitization.coalesce_tool_call_id`` (audit F4).
+        """
+        return _sanitize_coalesce_tool_call_id(tc)
+
+    @staticmethod
+    def _get_tool_call_name_static(tc) -> str:
+        """Extract function name from a tool_call entry (dict or object).
+
+        Gemini's OpenAI-compatibility endpoint requires every `role: tool`
+        message to carry the matching function name. OpenAI/Anthropic/ollama
+        tolerate its absence, so the field is best-effort: callers fall back
+        to "" and the message still works elsewhere.
+        """
+        if isinstance(tc, dict):
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                return fn.get("name", "") or ""
+            return ""
+        fn = getattr(tc, "function", None)
+        return getattr(fn, "name", "") or ""
+
+    _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+    @staticmethod
+    def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Forwarder — see ``agent.agent_runtime_helpers.sanitize_api_messages``."""
+        from agent.agent_runtime_helpers import sanitize_api_messages
+        return sanitize_api_messages(messages)
+
+    @staticmethod
+    def _is_thinking_only_assistant(
+        msg: Dict[str, Any],
+        *,
+        drop_codex_reasoning_items: bool = True,
+    ) -> bool:
+        """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
+
+        "Thinking-only" means the model emitted reasoning (``reasoning`` or
+        ``reasoning_content``) but no visible text and no tool_calls. When sent
+        back to providers that convert reasoning into thinking blocks (native
+        Anthropic, OpenRouter Anthropic, third-party Anthropic-compatible
+        gateways), the resulting message has only thinking blocks — which
+        Anthropic rejects with HTTP 400 "The final block in an assistant
+        message cannot be `thinking`."
+
+        Symmetric with Claude Code's ``filterOrphanedThinkingOnlyMessages``
+        (src/utils/messages.ts). We drop the whole turn from the API copy
+        rather than fabricating stub text — the message log (UI transcript)
+        keeps the reasoning block; only the wire copy is cleaned.
+        """
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            return False
+        if msg.get("tool_calls"):
+            return False
+        # Prefill stubs are thinking-only by construction; check before content
+        # inspection since repair_empty_non_final_messages may have healed content.
+        if msg.get("_thinking_prefill"):
+            return True
+        # Does it have any actual output?
+        content = msg.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                return False
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    if block:  # non-empty non-dict string etc.
+                        return False
+                    continue
+                btype = block.get("type")
+                if btype in {"thinking", "redacted_thinking"}:
+                    continue
+                if btype == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        return False
+                    continue
+                # tool_use, image, document, etc. — real payload
+                return False
+        elif content is not None and content != "":
+            return False
+        # A native compaction checkpoint makes a carrier never thinking-only,
+        # regardless of api_mode or which reasoning field is populated. The
+        # checkpoint is the server-side stand-in for already-pruned history
+        # and exists in exactly one place; the codex_responses adapter also
+        # surfaces commentary text via msg["reasoning"], so the string branch
+        # below would otherwise drop a carrier before the sidecar is ever
+        # inspected. Checked here — above every reasoning branch — so no
+        # carrier shape can fall into a drop path (#82108 review finding).
+        from agent.native_compaction import has_compaction_checkpoint
+
+        if has_compaction_checkpoint(msg.get("codex_reasoning_items")):
+            return False
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return True
+        # reasoning_details list form
+        rd = msg.get("reasoning_details")
+        if isinstance(rd, list) and rd:
+            return True
+        # Codex Responses stores encrypted reasoning state under a separate
+        # assistant-message key. Treat only real reasoning items as
+        # thinking-only; empty/junk lists should fall through to the generic
+        # empty-turn handling instead of being dropped here.
+        codex_items = msg.get("codex_reasoning_items")
+        if drop_codex_reasoning_items and isinstance(codex_items, list):
+            return any(
+                isinstance(item, dict) and item.get("type") == "reasoning"
+                for item in codex_items
+            )
+        return False
+
+    @staticmethod
+    def _drop_thinking_only_and_merge_users(
+        messages: List[Dict[str, Any]],
+        *,
+        drop_codex_reasoning_items: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
+        from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
+        return drop_thinking_only_and_merge_users(
+            messages,
+            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        )
+
+    @staticmethod
+    def _cap_delegate_task_calls(tool_calls: list) -> list:
+        """Truncate excess delegate_task calls to max_concurrent_children.
+
+        The delegate_tool caps the task list inside a single call, but the
+        model can emit multiple separate delegate_task tool_calls in one
+        turn.  This truncates the excess, preserving all non-delegate calls.
+
+        Returns the original list if no truncation was needed.
+        """
+        from tools.delegate_tool import _get_max_concurrent_children
+        max_children = _get_max_concurrent_children()
+        delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
+        if delegate_count <= max_children:
+            return tool_calls
+        kept_delegates = 0
+        truncated = []
+        for tc in tool_calls:
+            if tc.function.name == "delegate_task":
+                if kept_delegates < max_children:
+                    truncated.append(tc)
+                    kept_delegates += 1
+            else:
+                truncated.append(tc)
+        logger.warning(
+            "Truncated %d excess delegate_task call(s) to enforce "
+            "max_concurrent_children=%d limit",
+            delegate_count - max_children, max_children,
+        )
+        return truncated
+
+    @staticmethod
+    def _deduplicate_tool_calls(tool_calls: list) -> list:
+        """Remove duplicate (tool_name, arguments) pairs within a single turn.
+
+        Valid JSON arguments are canonicalized so equivalent objects do not
+        evade deduplication merely because their keys or whitespace differ.
+        Malformed arguments retain their raw representation rather than being
+        repaired here. Only the first occurrence of each unique pair is kept.
+        Returns the original list if no duplicates were found.
+        """
+        seen: set = set()
+        unique: list = []
+        for tc in tool_calls:
+            arguments = tc.function.arguments
+            try:
+                arguments = json.dumps(
+                    json.loads(arguments), separators=(",", ":"), sort_keys=True
+                )
+            except (TypeError, ValueError):
+                pass
+            key = (tc.function.name, arguments)
+            if key not in seen:
+                seen.add(key)
+                unique.append(tc)
+            else:
+                logger.warning("Removed duplicate tool call: %s", tc.function.name)
+        return unique if len(unique) < len(tool_calls) else tool_calls
+
+    @staticmethod
+    def _uniquify_tool_call_ids(tool_calls: list) -> list:
+        """Ensure every tool call in a single assistant turn has a distinct id.
+
+        Forwarder — policy owner is
+        ``agent.message_sanitization.uniquify_tool_call_ids`` (audit F4).
+        First occurrence keeps its id; later collisions get a deterministic
+        ``<id>_d<n>`` suffix (never uuid4 — prompt-cache prefix stability).
+        Mutates entries in place and returns the same list.
+        """
+        return _sanitize_uniquify_tool_call_ids(tool_calls)
+
+    def _repair_tool_call(self, tool_name: str) -> str | None:
+        """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
+        from agent.agent_runtime_helpers import repair_tool_call
+        return repair_tool_call(self, tool_name)
+
+    def _invalidate_system_prompt(self):
+        """Forwarder — see ``agent.system_prompt.invalidate_system_prompt``."""
+        from agent.system_prompt import invalidate_system_prompt
+        invalidate_system_prompt(self)
+
+    @staticmethod
+    def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
+        """Generate a deterministic call_id from tool call content.
+
+        Used as a fallback when the API doesn't provide a call_id.
+        Deterministic IDs prevent cache invalidation — random UUIDs would
+        make every API call's prefix unique, breaking OpenAI's prompt cache.
+        """
+        return _codex_deterministic_call_id(fn_name, arguments, index)
+
+    @staticmethod
+    def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
+        """Split a stored tool id into (call_id, response_item_id)."""
+        return _codex_split_responses_tool_id(raw_id)
+
+    def _derive_responses_function_call_id(
+        self,
+        call_id: str,
+        response_item_id: Optional[str] = None,
+    ) -> str:
+        """Build a valid Responses `function_call.id` (must start with `fc_`)."""
+        return _codex_derive_responses_function_call_id(call_id, response_item_id)
+
+    def _thread_identity(self) -> str:
+        thread = threading.current_thread()
+        return f"{thread.name}:{thread.ident}"
+
+    def _client_log_context(self) -> str:
+        provider = getattr(self, "provider", "unknown")
+        base_url = getattr(self, "base_url", "unknown")
+        model = getattr(self, "model", "unknown")
+        return (
+            f"thread={self._thread_identity()} provider={provider} "
+            f"base_url={base_url} model={model}"
+        )
+
+    def _openai_client_lock(self) -> threading.RLock:
+        lock = getattr(self, "_client_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._client_lock = lock
+        return lock
+
+    @staticmethod
+    def _is_openai_client_closed(client: Any) -> bool:
+        """Check if an OpenAI client is closed.
+
+        Handles both property and method forms of is_closed:
+        - httpx.Client.is_closed is a bool property
+        - openai.OpenAI.is_closed is a method returning bool
+
+        Prior bug: getattr(client, "is_closed", False) returned the bound method,
+        which is always truthy, causing unnecessary client recreation on every call.
+        """
+        from unittest.mock import Mock
+
+        if isinstance(client, Mock):
+            return False
+
+        is_closed_attr = getattr(client, "is_closed", None)
+        if is_closed_attr is not None:
+            # Handle method (openai SDK) vs property (httpx)
+            if callable(is_closed_attr):
+                if is_closed_attr():
+                    return True
+            elif bool(is_closed_attr):
+                return True
+
+        http_client = getattr(client, "_client", None)
+        if http_client is not None:
+            return bool(getattr(http_client, "is_closed", False))
+        return False
+
+    @staticmethod
+    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+        """Build an httpx.Client with proactive idle-connection reaping.
+
+        Previously this method injected a custom ``httpx.HTTPTransport``
+        with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
+        prevent CLOSE-WAIT accumulation on long-lived connections (#10324).
+
+        That approach broke streaming for providers behind reverse proxies
+        (OpenResty, Cloudflare, etc.) because the custom socket options
+        conflict with the proxy's chunked-transfer handling (#54049,
+        #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
+        and SSE encoding.
+
+        The fix moves connection lifecycle management from the socket layer
+        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
+        close idle pooled connections *before* a reverse proxy's typical
+        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
+        without modifying socket options.  The default httpx transport
+        preserves OS TCP defaults (including ``TCP_NODELAY``).
+
+        ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
+        ``SON_OF_ANTON_CA_BUNDLE`` settings.  It is passed on the client AND on
+        the plain no-proxy mounts (a mounted transport owns the SSL context
+        for its scheme).
+        """
+        try:
+            import httpx as _httpx
+
+            # Explicitly read proxy settings so requests route through
+            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
+            _proxy = _get_proxy_for_base_url(base_url)
+
+            # Proactive pool reaping: close idle connections at 20 s,
+            # before reverse proxies (30–60 s typical) send FIN and
+            # cause CLOSE-WAIT accumulation.
+            _limits = _httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=20.0,
+            )
+
+            # Timeouts: generous read=None for SSE streaming endpoints.
+            _timeout = _httpx.Timeout(
+                connect=15.0,
+                read=None,
+                write=15.0,
+                pool=10.0,
+            )
+
+            # When _proxy is None (NO_PROXY bypass or no proxy configured),
+            # mount plain transports to prevent httpx from reading env proxy
+            # vars and creating an HTTPProxy mount that would bypass our
+            # NO_PROXY resolution.
+            _mounts = {}
+            if _proxy is None:
+                _mounts = {
+                    "http://": _httpx.HTTPTransport(verify=verify),
+                    "https://": _httpx.HTTPTransport(verify=verify),
+                }
+            return _httpx.Client(
+                limits=_limits,
+                timeout=_timeout,
+                proxy=_proxy,
+                mounts=_mounts or None,
+                verify=verify,
+            )
+        except Exception:
             return None
-        return self._credits_session_start_micros - self._credits_state.remaining_micros
+
+    def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+        """Forwarder — see ``agent.agent_runtime_helpers.create_openai_client``."""
+        from agent.agent_runtime_helpers import create_openai_client
+        return create_openai_client(self, client_kwargs, reason=reason, shared=shared)
+
+    @staticmethod
+    def _force_close_tcp_sockets(client: Any) -> int:
+        """Forwarder — see ``agent.agent_runtime_helpers.force_close_tcp_sockets``."""
+        from agent.agent_runtime_helpers import force_close_tcp_sockets
+        return force_close_tcp_sockets(client)
+
+    def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
+        if client is None:
+            return
+        # Force-close TCP sockets first to prevent CLOSE-WAIT accumulation,
+        # then do the graceful SDK-level close.
+        force_closed = self._force_close_tcp_sockets(client)
+        try:
+            client.close()
+            logger.info(
+                "OpenAI client closed (%s, shared=%s, tcp_force_closed=%d) %s",
+                reason,
+                shared,
+                force_closed,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "OpenAI client close failed (%s, shared=%s) %s error=%s",
+                reason,
+                shared,
+                self._client_log_context(),
+                exc,
+            )
+
+    def _retire_shared_openai_client(self, client: Any, *, reason: str) -> None:
+        """Ownership-safe retirement of a replaced shared OpenAI client.
+
+        #70773 / #67142 / #29507: ``client.close()`` releases the pool's raw
+        FDs from the *calling* thread. The shared primary client has no single
+        owning thread — worker threads from stale-killed attempts may still be
+        unwinding their SSL BIOs, and the codex-direct paths stream on
+        the shared client itself. If we release an FD while another thread's
+        SSL layer still caches the raw integer fd, the kernel can recycle it
+        into an unrelated ``open()`` (e.g. ``state.db``) and the unwinding
+        TLS flush then writes an application-data record into that file — the
+        SQLite-header corruption documented in #29507/#70773.
+
+        Only an owner may release FDs, and a replaced shared client has none.
+        So nobody calls ``close()``: we ``shutdown()`` the pooled sockets
+        (FD-safe from any thread; unblocks in-flight readers with EOF/EPIPE)
+        and defer the actual FD release to garbage collection. Refcounting
+        guarantees the underlying sockets are only collected once every
+        thread that borrowed the client has unwound — GC *is* the ownership
+        handshake. In the common case (no borrower) the refcount hits zero on
+        this line and the FDs are released immediately anyway.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "Shared OpenAI client retired (%s, tcp_shutdown=%d, "
+                "fd_release=deferred_to_gc) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Shared OpenAI client retire failed (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
+    def _build_primary_client_for_active_provider(self, *, reason: str) -> Any:
+        """Build the shared client shape required by the active provider."""
+        return self._create_openai_client(
+            self._client_kwargs,
+            reason=reason,
+            shared=True,
+        )
+
+    def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        with self._openai_client_lock():
+            old_client = getattr(self, "client", None)
+            try:
+                new_client = self._build_primary_client_for_active_provider(
+                    reason=reason,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to rebuild shared primary client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                return False
+            self.client = new_client
+        # #70773: never hard-close the replaced shared client from here — the
+        # caller may not be the thread whose request is still unwinding on the
+        # old pool (credential rotation and dead-connection cleanup run on the
+        # turn thread while stale-killed workers unwind; the codex-direct path
+        # streams on the shared client itself). Retire it instead: sockets are
+        # shut down (FD-safe), FD release deferred to GC.
+        self._retire_shared_openai_client(old_client, reason=f"replace:{reason}")
+        return True
+
+    def _ensure_primary_openai_client(self, *, reason: str) -> Any:
+        with self._openai_client_lock():
+            client = getattr(self, "client", None)
+            if client is not None and not self._is_openai_client_closed(client):
+                return client
+            old_client = client
+            try:
+                new_client = self._create_openai_client(
+                    self._client_kwargs, reason=reason, shared=True
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to recreate closed OpenAI client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                raise RuntimeError("Failed to recreate closed OpenAI client") from exc
+            self.client = new_client
+
+        logger.warning(
+            "Detected closed shared OpenAI client; recreated before use (%s) %s",
+            reason,
+            self._client_log_context(),
+        )
+        self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
+        return new_client
+
+    def _cleanup_dead_connections(self) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.cleanup_dead_connections``."""
+        from agent.agent_runtime_helpers import cleanup_dead_connections
+        return cleanup_dead_connections(self)
+
+    @staticmethod
+    def _api_kwargs_have_image_parts(api_kwargs: dict) -> bool:
+        """Return True when the outbound request still contains native image parts."""
+        if not isinstance(api_kwargs, dict):
+            return False
+        candidates = []
+        messages = api_kwargs.get("messages")
+        if isinstance(messages, list):
+            candidates.extend(messages)
+        # Responses API payloads use `input`; after conversion, image parts can
+        # still be present there instead of in `messages`.
+        response_input = api_kwargs.get("input")
+        if isinstance(response_input, list):
+            candidates.extend(response_input)
+
+        def _contains_image(value: Any) -> bool:
+            if isinstance(value, dict):
+                ptype = value.get("type")
+                if ptype in {"image_url", "input_image"}:
+                    return True
+                return any(_contains_image(v) for v in value.values())
+            if isinstance(value, list):
+                return any(_contains_image(v) for v in value)
+            return False
+
+        return any(_contains_image(item) for item in candidates)
+
+    def _copilot_headers_for_request(self, *, is_vision: bool) -> dict:
+        from son_of_anton_cli.copilot_auth import copilot_request_headers
+
+        return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
+
+    # Close reasons the request workers' own ``finally`` unwind reports for
+    # a request that produced a response — the only closes that both come
+    # from the thread that owns the pool's FDs AND attest a healthy pool.
+    # Only these may keep the wire client for the next call, and poisoning
+    # still wins: a cross-thread abort (#29507) marks the slot so even a
+    # worker-finally close discards it. Every other reason (error cleanups,
+    # stale/interrupt kills, retry cleanups) gets a real close, so a retry
+    # after a request error always builds a fresh pool.
+    _REQUEST_CLIENT_REUSE_REASONS = frozenset({
+        "request_complete",
+        "stream_request_complete",
+    })
+
+    def _request_client_cache_ref(self) -> dict:
+        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
+        cache = getattr(self, "_request_client_cache", None)
+        if cache is None:
+            cache = {"client": None, "kwargs": None, "poisoned": False, "in_use": False}
+            self._request_client_cache = cache
+        return cache
+
+    def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
+        from unittest.mock import Mock
+
+        primary_client = self._ensure_primary_openai_client(reason=reason)
+        if isinstance(primary_client, Mock):
+            return primary_client
+        with self._openai_client_lock():
+            request_kwargs = dict(self._client_kwargs)
+        # Per-request OpenAI-wire clients (used by both the non-streaming
+        # chat-completions path and the streaming chat-completions path
+        # in `_interruptible_api_call`) should not run the SDK's built-in
+        # retry loop: the agent's outer loop owns retries with credential
+        # rotation, provider fallback, and backoff that the SDK can't
+        # see. Leaving SDK retries on (default 2) compounds with our outer
+        # retries and lets a single hung provider request stretch to ~3x
+        # the per-call timeout before our stale detector reports it.
+        # Shared/primary clients and Anthropic / Bedrock paths are
+        # unaffected (they don't go through here).
+        request_kwargs["max_retries"] = 0
+        if (
+            base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
+            and self._api_kwargs_have_image_parts(api_kwargs or {})
+        ):
+            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
+        # Reuse the cached wire client while the effective kwargs are
+        # unchanged: constructing openai.OpenAI + its httpx pool costs
+        # ~19-35ms per LLM call (fresh TCP+TLS handshake), ~5x per turn.
+        # The cache is a single checked-out slot: `in_use` prevents two
+        # concurrent calls from sharing one pool's close/abort lifecycle
+        # (a second concurrent call gets a fresh untracked client with
+        # the old build-per-request behavior).
+        stale = None
+        with self._openai_client_lock():
+            cache = self._request_client_cache_ref()
+            cached = cache["client"]
+            if cached is not None and not cache["in_use"]:
+                if (
+                    not cache["poisoned"]
+                    and cache["kwargs"] == request_kwargs
+                    and not self._is_openai_client_closed(cached)
+                ):
+                    cache["in_use"] = True
+                    return cached
+                # kwargs changed (credential rotation, provider failover),
+                # poisoned by a cross-thread abort (#29507), or externally
+                # closed — never reuse; discard and rebuild below.
+                stale = cached
+                cache["client"] = None
+                cache["kwargs"] = None
+                cache["poisoned"] = False
+        if stale is not None:
+            # Safe to close from this thread: in_use was False, so no
+            # worker thread owns the pool's FDs (#29507 concerns clients
+            # with an in-flight request on another thread).
+            self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
+        client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
+        with self._openai_client_lock():
+            cache = self._request_client_cache_ref()
+            if cache["client"] is None:
+                cache["client"] = client
+                # Snapshot nested dicts (default_headers): rotation sites
+                # assign fresh inner dicts today, but an aliased inner
+                # object would compare equal even after in-place mutation.
+                cache["kwargs"] = {
+                    k: dict(v) if isinstance(v, dict) else v
+                    for k, v in request_kwargs.items()
+                }
+                cache["poisoned"] = False
+                cache["in_use"] = True
+            # else: a concurrent call holds the slot — hand this client
+            # out untracked; _close_request_openai_client fully closes
+            # untracked clients, preserving the per-request lifecycle.
+        return client
+
+    def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
+        with self._openai_client_lock():
+            cache = self._request_client_cache_ref()
+            if cache["client"] is client:
+                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
+                    # Clean finish on the owning thread — keep the wire client
+                    # (and its warm httpx pool) for the next sequential call.
+                    cache["in_use"] = False
+                    return
+                # Failure / kill / abort outcome: drop the slot and fall
+                # through to a real close. This runs on the owning worker
+                # thread, which is where the FD release belongs (#29507).
+                cache["client"] = None
+                cache["kwargs"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
+        self._close_openai_client(client, reason=reason, shared=False)
+
+    def _close_cached_request_openai_client(self, *, reason: str) -> None:
+        """Teardown hook: really close the cached per-request wire client."""
+        with self._openai_client_lock():
+            cache = getattr(self, "_request_client_cache", None)
+            client = cache["client"] if cache else None
+            in_use = bool(cache["in_use"]) if cache else False
+            if cache is not None:
+                cache["client"] = None
+                cache["kwargs"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
+        if client is None:
+            return
+        if in_use:
+            # A worker thread has this client checked out for an in-flight
+            # request (workers can outlive turns — see interruptible_api_call).
+            # client.close() here would release its FDs from a stranger thread,
+            # the #29507 race teardown must not reintroduce. Abort the sockets
+            # instead; the slot is already cleared, so the worker's own finally
+            # sees an untracked client and does the real close on its thread.
+            self._abort_request_openai_client(client, reason=f"{reason}_in_flight")
+            return
+        self._close_openai_client(client, reason=reason, shared=False)
+
+    def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort: shut sockets down without releasing FDs.
+
+        Companion to :meth:`_close_request_openai_client` for stranger-thread
+        callers (interrupt-check loop, stale-call detector). Calling
+        ``client.close()`` from a thread that does not own the active httpx
+        connection raced the still-live SSL BIO and corrupted unrelated file
+        descriptors when the kernel recycled the just-freed TCP FD (#29507).
+
+        Here we only ``shutdown(SHUT_RDWR)`` the pool's sockets. That unblocks
+        the owning worker thread's pending ``recv``/``send`` with an EOF or
+        ``EPIPE`` so it can unwind and close ``client`` from its own context
+        — which is where the FD release belongs.
+        """
+        if client is None:
+            return
+        # A pool whose sockets were shut down from a stranger thread must
+        # never be reused: poison the cache slot so the owner-thread close
+        # discards it and the next create builds a fresh client.
+        with self._openai_client_lock():
+            cache = self._request_client_cache_ref()
+            if cache["client"] is client:
+                cache["poisoned"] = True
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            # tcp_force_closed=0 means the stranger-thread abort found no
+            # sockets to shut down — the worker stays blocked in recv and the
+            # provider keeps the slot (#72975). Surface that as WARNING so it
+            # cannot be mistaken for a successful abort in the logs.
+            _log = logger.warning if shutdown_count == 0 else logger.info
+            _log(
+                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s%s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+                (
+                    " — no sockets found; in-flight request may keep running "
+                    "until the provider finishes"
+                    if shutdown_count == 0
+                    else ""
+                ),
+            )
+        except Exception as exc:
+            logger.debug(
+                "OpenAI client abort failed (%s, shared=False) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
+    def _request_anthropic_client_cache_ref(self) -> dict:
+        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
+        cache = getattr(self, "_request_anthropic_client_cache", None)
+        if cache is None:
+            cache = {"client": None, "key": None, "poisoned": False, "in_use": False}
+            self._request_anthropic_client_cache = cache
+        return cache
+
+    def _request_anthropic_client_key(self) -> tuple:
+        """Cache key covering everything that forces a fresh client: credential
+        rotation, base URL / region changes, timeout changes (model switch),
+        and the 1M-context beta flag."""
+        if getattr(self, "provider", None) == "bedrock":
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            return ("bedrock", region)
+        return (
+            "direct",
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            get_provider_request_timeout(self.provider, self.model),
+            bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+        )
+
+    def _create_request_anthropic_client(self, *, reason: str) -> Any:
+        """Build (or reuse) a request-local Anthropic client for one in-flight call.
+
+        The shared ``_anthropic_client`` stays the long-lived primary, but the
+        stale/interrupt watchdog runs on the poll thread and must never call
+        ``close()`` on the client whose TLS socket a worker thread is still
+        reading: releasing that FD from a stranger thread lets the kernel
+        recycle it under a still-live SSL BIO, which then writes a TLS record
+        into an unrelated SQLite header (#29507 / #67142). A per-request client
+        lets the stranger thread ``shutdown()`` the socket while the owning
+        worker performs the SDK-level close from its own context — the same
+        ownership contract the OpenAI-wire path already uses.
+
+        Also mirrors the OpenAI-wire path's single-slot cache
+        (``_create_request_openai_client``): building ``anthropic.Anthropic``
+        means a fresh httpx pool and TCP+TLS handshake per call, so the client
+        is kept warm across sequential calls whose cache key (credentials,
+        base URL/region, timeout, 1M-beta flag) hasn't changed. ``in_use``
+        keeps a second concurrent call from sharing one pool's close/abort
+        lifecycle — it gets a fresh untracked client instead.
+
+        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
+        1M-beta drop) but returns a fresh/cached client instead of swapping
+        the shared one.
+        """
+        if self.api_mode == "anthropic_messages":
+            self._try_refresh_anthropic_client_credentials()
+        key = self._request_anthropic_client_key()
+
+        stale = None
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            cached = cache["client"]
+            if cached is not None and not cache["in_use"]:
+                if (
+                    not cache["poisoned"]
+                    and cache["key"] == key
+                    and not self._is_openai_client_closed(cached)
+                ):
+                    cache["in_use"] = True
+                    return cached
+                # Key changed (credential rotation, base URL/region, timeout,
+                # 1M-beta flip), poisoned by a cross-thread abort, or
+                # externally closed — never reuse; discard and rebuild below.
+                stale = cached
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+        if stale is not None:
+            # Safe to close from this thread: in_use was False, so no worker
+            # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
+            self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
+
+        if key[0] == "bedrock":
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            client = build_anthropic_bedrock_client(key[1])
+        else:
+            from agent.anthropic_adapter import build_anthropic_client
+            client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=key[4],
+            )
+        logger.debug(
+            "Anthropic request client created (%s, shared=False) provider=%s model=%s",
+            reason,
+            getattr(self, "provider", None),
+            getattr(self, "model", None),
+        )
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is None:
+                cache["client"] = client
+                cache["key"] = key
+                cache["poisoned"] = False
+                cache["in_use"] = True
+            # else: a concurrent call holds the slot — hand this client out
+            # untracked; _close_request_anthropic_client fully closes
+            # untracked clients, preserving the per-request lifecycle.
+        return client
+
+    def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
+        """Owner-thread close of a request-local Anthropic client.
+
+        On a clean finish (``reason`` in ``_REQUEST_CLIENT_REUSE_REASONS``)
+        the pool is kept warm in the cache slot for the next sequential call,
+        mirroring ``_close_request_openai_client``. Any other outcome
+        (error / kill / abort / stale-slot eviction) force-closes the pool's
+        TCP sockets first (CLOSE-WAIT hygiene, parity with
+        ``_close_openai_client``), then does the graceful SDK close. Safe
+        because the caller owns the connection.
+        """
+        if client is None:
+            return
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is client:
+                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
+                    cache["in_use"] = False
+                    return
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
+        try:
+            self._force_close_tcp_sockets(client)
+            client.close()
+            logger.info(
+                "Anthropic client closed (%s, shared=False) provider=%s model=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client close failed (%s, shared=False) provider=%s model=%s error=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+                exc,
+            )
+
+    def _close_cached_request_anthropic_client(self, *, reason: str) -> None:
+        """Teardown hook: really close the cached per-request Anthropic client."""
+        with self._openai_client_lock():
+            cache = getattr(self, "_request_anthropic_client_cache", None)
+            client = cache["client"] if cache else None
+            in_use = bool(cache["in_use"]) if cache else False
+            if cache is not None:
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
+        if client is None:
+            return
+        if in_use:
+            # A worker thread has this client checked out for an in-flight
+            # request — same #29507 reasoning as the OpenAI teardown hook.
+            self._abort_request_anthropic_client(client, reason=f"{reason}_in_flight")
+            return
+        try:
+            self._force_close_tcp_sockets(client)
+            client.close()
+        except Exception:
+            pass
+
+    def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort for request-local Anthropic clients.
+
+        Stranger threads (the interrupt-check / stale-stream detector loop)
+        must not call the SDK ``close()`` — that races the owning worker's live
+        SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
+        #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
+        unblocks and releases the FD from its own thread.
+        """
+        if client is None:
+            return
+        # A pool whose sockets were shut down from a stranger thread must
+        # never be reused: poison the cache slot so the owner-thread close
+        # discards it and the next create builds a fresh client.
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is client:
+                cache["poisoned"] = True
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            # Same visibility contract as the OpenAI abort path (#72975):
+            # zero sockets shut down means the abort did not unblock the
+            # worker — log WARNING, not a success-shaped INFO.
+            _log = logger.warning if shutdown_count == 0 else logger.info
+            _log(
+                "Anthropic client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) provider=%s model=%s%s",
+                reason,
+                shutdown_count,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+                (
+                    " — no sockets found; in-flight request may keep running "
+                    "until the provider finishes"
+                    if shutdown_count == 0
+                    else ""
+                ),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+                exc,
+            )
+
+    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
+        """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
+        from agent.codex_runtime import run_codex_stream
+        return run_codex_stream(self, api_kwargs, client, on_first_delta)
+
+    def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
+        """Forwarder — see ``agent.codex_runtime.run_codex_create_stream_fallback``."""
+        from agent.codex_runtime import run_codex_create_stream_fallback
+        return run_codex_create_stream_fallback(self, api_kwargs, client)
+
+    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
+        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
+            return False
+
+        # Guard against silent account swap.
+        #
+        # When an agent is using a non-singleton credential — e.g. a manual
+        # pool entry (``son-of-anton auth add xai-oauth``) whose tokens belong to
+        # a different account than the device_code singleton, or an agent
+        # constructed with an explicit ``api_key=`` arg — force-refreshing
+        # the singleton here and adopting its tokens silently re-routes the
+        # rest of the conversation onto the singleton's account.  The
+        # credential pool's reactive recovery (``_recover_with_credential_pool``)
+        # is the right channel for that case; this path is the
+        # singleton-only fallback used when the pool can't recover, and
+        # MUST only fire when the agent really is on singleton tokens.
+        try:
+            if self.provider == "openai-codex":
+                from son_of_anton_cli.auth import resolve_codex_runtime_credentials
+
+                singleton_now = resolve_codex_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
+            else:
+                from son_of_anton_cli.auth import resolve_xai_oauth_runtime_credentials
+
+                singleton_now = resolve_xai_oauth_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
+        except Exception as exc:
+            logger.debug("%s singleton read failed: %s", self.provider, exc)
+            return False
+
+        singleton_key = str(singleton_now.get("api_key") or "").strip()
+        active_key = str(self.api_key or "").strip()
+        if singleton_key and active_key and singleton_key != active_key:
+            logger.debug(
+                "%s singleton tokens differ from the active api_key; "
+                "skipping singleton force-refresh to avoid silent account swap. "
+                "Reactive credential rotation should go through the pool.",
+                self.provider,
+            )
+            return False
+
+        try:
+            if self.provider == "openai-codex":
+                from son_of_anton_cli.auth import resolve_codex_runtime_credentials
+
+                old_key = str(self.api_key or "").strip()
+                creds = resolve_codex_runtime_credentials(force_refresh=force)
+            else:
+                from son_of_anton_cli.auth import resolve_xai_oauth_runtime_credentials
+
+                old_key = str(self.api_key or "").strip()
+                creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
+        except Exception as exc:
+            logger.debug("%s credential refresh failed: %s", self.provider, exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        # Defect 2 fix: return False when no NEW token was actually minted.
+        # resolve_codex_runtime_credentials returns the same stale token
+        # when the underlying refresh fails (failure is debug-only).
+        # Comparing the access token (api_key) before/after detects this.
+        new_key = api_key.strip()
+        if old_key and new_key == old_key:
+            logger.debug(
+                "%s credential refresh returned the same token; "
+                "refresh likely failed silently",
+                self.provider,
+            )
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+
+        if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
+            return False
+
+        return True
 
     def _check_openrouter_cache_status(self, http_response: Any) -> None:
         """Read X-OpenRouter-Cache-Status from response headers and log it.
@@ -6465,9 +7840,9 @@ class AIAgent:
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
-            # Rate-limit + credits state live in response headers, which the
-            # parsed Message drops. No-ops on providers that don't send the
-            # matching header families (x-ratelimit-* / x-nous-credits-*).
+            # Rate-limit state lives in response headers, which the parsed
+            # Message drops. No-ops on providers that don't send the matching
+            # header family (x-ratelimit-*).
             on_response=self._capture_anthropic_response_headers,
         )
 

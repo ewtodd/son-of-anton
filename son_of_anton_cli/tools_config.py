@@ -24,14 +24,6 @@ from son_of_anton_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from son_of_anton_cli.colors import Colors, color
-from son_of_anton_cli.nous_subscription import (
-    MANAGED_FEATURE_COVERAGE_CATEGORY,
-    NousSubscriptionFeatures,
-    apply_nous_managed_defaults,
-    get_nous_subscription_features,
-)
-from son_of_anton_cli.nous_account import format_nous_portal_entitlement_message
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -1005,9 +997,13 @@ def _toolset_has_keys(
     config: dict = None,
     *,
     force_fresh: bool = False,
-    features: Optional[NousSubscriptionFeatures] = None,
+    features: Optional[dict] = None,
 ) -> bool:
-    """Check if a toolset's required API keys are configured."""
+    """Check if a toolset's required API keys are configured.
+
+    ``features`` is accepted for caller compatibility and ignored — the
+    fork has no managed-subscription rows to count as configured.
+    """
     if config is None:
         config = load_config()
 
@@ -1019,15 +1015,6 @@ def _toolset_has_keys(
             return client is not None
         except Exception:
             return False
-
-    if ts_key == "web":
-        if features is None:
-            features = get_nous_subscription_features(
-                config, force_fresh=force_fresh
-            )
-        feature = features.features.get(ts_key)
-        if feature and (feature.available or feature.managed_by_nous):
-            return True
 
     # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
@@ -1303,21 +1290,14 @@ def _visible_providers(
     config: dict,
     *,
     force_fresh: bool = False,
-    features: Optional[NousSubscriptionFeatures] = None,
+    features: Optional[dict] = None,
 ) -> list[dict]:
-    """Return provider entries visible for the current auth/config state."""
-    if features is None:
-        features = get_nous_subscription_features(config, force_fresh=force_fresh)
-    visible = []
-    for provider in cat.get("providers", []):
-        # Pure pre-auth UX rows are hidden until the user is logged in.
-        if (
-            provider.get("requires_nous_auth")
-            and not provider.get("managed_nous_feature")
-            and not features.nous_auth_present
-        ):
-            continue
-        visible.append(provider)
+    """Return provider entries visible for the current auth/config state.
+
+    ``features`` is accepted for caller compatibility and ignored — the
+    fork has no managed-subscription rows to filter.
+    """
+    visible = list(cat.get("providers", []))
 
     # Inject plugin-registered web search backends. After PR #25182, this
     # is the SOLE source of provider rows for the Web Search & Extract
@@ -1328,17 +1308,6 @@ def _visible_providers(
         visible.extend(_plugin_web_search_providers())
 
     return visible
-
-
-def _hidden_nous_gateway_message(
-    cat: dict,
-    config: dict,
-    capability: str,
-    *,
-    force_fresh: bool = False,
-) -> str:
-    """Deprecated no-op kept so call sites stay simple; always returns ""."""
-    return ""
 
 
 _POST_SETUP_INSTALLED: dict = {
@@ -1440,43 +1409,18 @@ def provider_readiness_status(
 
     Keyless ≠ usable: this is the server-side truth the GUI "Ready" pill
     renders from (the old client-side heuristic showed Ready for every
-    zero-env-var row, including logged-out Nous Subscription rows).
+    zero-env-var row).
 
-    ``features`` (a ``NousSubscriptionFeatures``) can be passed to avoid
-    re-fetching portal state per row. ``is_active`` is the completed-setup
-    fallback signal for post_setup hooks with no registered installed-check
-    (selecting a row runs its hook, so the active row has been set up).
+    ``features`` is accepted for caller compatibility and ignored.
+    ``is_active`` is the completed-setup fallback signal for post_setup
+    hooks with no registered installed-check (selecting a row runs its
+    hook, so the active row has been set up).
     """
     env_vars = provider.get("env_vars", [])
     if env_vars:
         if all(get_env_value(e["key"]) for e in env_vars):
             return "ready"
         return "needs_keys"
-
-    managed_feature = provider.get("managed_nous_feature")
-    if provider.get("requires_nous_auth") or managed_feature:
-        if features is None:
-            features = get_nous_subscription_features(config)
-        if not features.nous_auth_present:
-            return "needs_auth"
-        if managed_feature:
-            # Same per-category entitlement gate the CLI applies at selection
-            # time (free tool-pool users get image gen but not video gen).
-            acct = features.account_info
-            category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
-            entitled = bool(
-                acct
-                and acct.logged_in
-                and (
-                    acct.tool_gateway_entitled_for(category)
-                    if category
-                    else acct.tool_gateway_entitled
-                )
-            )
-            if not entitled:
-                return "needs_auth"
-        # Signed in and entitled — fall through: a managed row may still
-        # carry a local install hook.
 
     post_setup = provider.get("post_setup")
     if post_setup:
@@ -1534,12 +1478,6 @@ def _configure_tool_category(
     icon = cat.get("icon", "")
     name = cat["name"]
     providers = _visible_providers(cat, config, force_fresh=force_fresh)
-    hidden_nous_message = _hidden_nous_gateway_message(
-        cat,
-        config,
-        f"the Nous Subscription provider for {name}",
-        force_fresh=force_fresh,
-    )
 
     # Check Python version requirement
     if cat.get("requires_python"):
@@ -1560,9 +1498,6 @@ def _configure_tool_category(
         # For single-provider tools, show a note if available
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
-        if hidden_nous_message:
-            for line in hidden_nous_message.splitlines():
-                _print_warning(f"  {line}")
         _configure_provider(provider, config, force_fresh=force_fresh)
     else:
         # Multiple providers - let user choose
@@ -1572,25 +1507,9 @@ def _configure_tool_category(
         print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
-        if hidden_nous_message:
-            for line in hidden_nous_message.splitlines():
-                _print_warning(f"  {line}")
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
-        # When the user is logged into Nous, surface a marker on providers
-        # whose access is included in their subscription so it's visually
-        # obvious which options cost extra vs. cost nothing on top of Nous.
-        try:
-            _nous_logged_in = bool(
-                get_nous_subscription_features(
-                    config,
-                    force_fresh=force_fresh,
-                ).nous_auth_present
-            )
-        except Exception:
-            _nous_logged_in = False
-
         provider_choices = []
         for p in providers:
             badge = f" [{p['badge']}]" if p.get("badge") else ""
@@ -1604,18 +1523,7 @@ def _configure_tool_category(
                     configured = ""
                 else:
                     configured = " [configured]"
-            # Mark Nous-managed entries. Logged-in paid subscribers get the
-            # "included" star; everyone else gets a "via Nous Portal" hint so
-            # it's clear selecting the row triggers a Portal login. The rows
-            # are always shown now (see _visible_providers) — selecting one
-            # drives an inline login + entitlement check.
-            sub_marker = ""
-            if p.get("managed_nous_feature"):
-                if _nous_logged_in:
-                    sub_marker = "  ★ Included with your Nous subscription"
-                else:
-                    sub_marker = "  ★ via Nous Portal (login on select)"
-            provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
+            provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
         # Add skip option
         provider_choices.append("Skip — keep defaults / configure later")
@@ -1682,21 +1590,6 @@ def _is_provider_active(
     force_fresh: bool = False,
 ) -> bool:
     """Check if a provider entry matches the currently active config."""
-    managed_feature = provider.get("managed_nous_feature")
-    if managed_feature:
-        features = get_nous_subscription_features(config, force_fresh=force_fresh)
-        feature = features.features.get(managed_feature)
-        if feature is None:
-            return False
-        if provider.get("web_backend"):
-            current = cfg_get(config, "web", "backend")
-            return (
-                feature.managed_by_nous
-                and current in {provider["web_backend"], NOUS_MANAGED_PROVIDER}
-                and _web_tier_matches(provider, config)
-            )
-        return feature.managed_by_nous
-
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
         if current != provider["web_backend"]:
@@ -1741,9 +1634,7 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         if not isinstance(section, dict):
             section = {}
             config[section_key] = section
-        section[name_key] = (
-            NOUS_MANAGED_PROVIDER if managed_feature else vendor_value
-        )
+        section[name_key] = vendor_value
         section.pop("use_gateway", None)
 
     # Set web search backend in config if applicable
@@ -1765,7 +1656,6 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
     if managed_feature and managed_feature != "web":
         section = config.setdefault(managed_feature, {})
         if isinstance(section, dict):
-            section["provider"] = NOUS_MANAGED_PROVIDER
             section.pop("use_gateway", None)
     elif not managed_feature:
         # User picked a non-gateway provider — clear any stale legacy
@@ -1814,45 +1704,6 @@ def _configure_provider(
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
-    # Nous-managed Tool Gateway backends are always listed (see
-    # _visible_providers), but only *activate* once the user has paid Nous
-    # Portal access. Selecting one runs an inline Portal login when needed —
-    # auth + entitlement only, no inference-provider switch and no bulk
-    # "enable all tools" prompt (that lives in `son-of-anton model`).
-    if managed_feature:
-        from son_of_anton_cli.nous_subscription import (
-            MANAGED_FEATURE_COVERAGE_CATEGORY,
-            ensure_nous_portal_access,
-        )
-
-        if not ensure_nous_portal_access(
-            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
-            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature),
-        ):
-            _print_warning(
-                "  Not enabled — Nous Portal access is required for this backend."
-            )
-            return
-
-    # Pure pre-auth UX rows (requires_nous_auth without a managed gateway
-    # feature) keep the old gate. Managed rows are handled by the inline
-    # login above, so don't double-check them here.
-    if provider.get("requires_nous_auth") and not managed_feature:
-        features = get_nous_subscription_features(config, force_fresh=force_fresh)
-        entitled = bool(
-            features.account_info and features.account_info.paid_service_access is True
-        )
-        if not features.nous_auth_present or not entitled:
-            message = format_nous_portal_entitlement_message(
-                features.account_info,
-                capability=f"{provider.get('name', 'Nous Subscription')}",
-            )
-            _print_warning(
-                f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}"
-            )
-            return
-
-
     # Persist the provider/backend config keys + use_gateway flags. Shared
     # with the GUI provider-select endpoint via apply_provider_selection so
     # there is a single source of truth for these writes.
@@ -1871,33 +1722,6 @@ def _configure_provider(
 
     # Prompt for each required env var
     all_configured = True
-    # If this BYOK provider lives in a category that ALSO has a
-    # Nous-managed sibling, show a single dim hint so users know
-    # they can avoid the key entirely via a Portal subscription.
-    # Suppressed when the user is already authed to Nous.
-    _show_portal_hint = False
-    if env_vars and not managed_feature and not provider.get("requires_nous_auth"):
-        try:
-            _has_managed_sibling = False
-            for _cat_key, _cat in TOOL_CATEGORIES.items():
-                _providers = _cat.get("providers", [])
-                if provider in _providers and any(
-                    sib.get("managed_nous_feature") for sib in _providers
-                ):
-                    _has_managed_sibling = True
-                    break
-            if _has_managed_sibling:
-                _features = get_nous_subscription_features(
-                    config,
-                    force_fresh=force_fresh,
-                )
-                _show_portal_hint = not _features.nous_auth_present
-        except Exception:
-            _show_portal_hint = False
-
-    if _show_portal_hint:
-        _print_info("  Available through Nous Portal subscription.")
-
     for var in env_vars:
         existing = get_env_value(var["key"])
         if existing:
@@ -2203,12 +2027,6 @@ def _configure_tool_category_for_reconfig(
     icon = cat.get("icon", "")
     name = cat["name"]
     providers = _visible_providers(cat, config, force_fresh=force_fresh)
-    hidden_nous_message = _hidden_nous_gateway_message(
-        cat,
-        config,
-        f"the Nous Subscription provider for {name}",
-        force_fresh=force_fresh,
-    )
 
     if len(providers) == 1:
         provider = providers[0]
@@ -2221,9 +2039,6 @@ def _configure_tool_category_for_reconfig(
     else:
         print()
         print(color(f"  --- {icon} {name} - Choose a provider ---", Colors.CYAN))
-        if hidden_nous_message:
-            for line in hidden_nous_message.splitlines():
-                _print_warning(f"  {line}")
         print()
 
         provider_choices = []
@@ -2263,52 +2078,14 @@ def _reconfigure_provider(
 ):
     """Reconfigure a provider - update API keys."""
     env_vars = provider.get("env_vars", [])
-    managed_feature = provider.get("managed_nous_feature")
-
-    # Same inline Nous Portal login + entitlement gate as _configure_provider:
-    # managed Tool Gateway backends only activate with paid Portal access.
-    if managed_feature:
-        from son_of_anton_cli.nous_subscription import (
-            MANAGED_FEATURE_COVERAGE_CATEGORY,
-            ensure_nous_portal_access,
-        )
-
-        if not ensure_nous_portal_access(
-            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
-            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature),
-        ):
-            _print_warning(
-                "  Not enabled — Nous Portal access is required for this backend."
-            )
-            return
-
-    # Pure pre-auth UX rows keep the old gate; managed rows already handled
-    # by the inline login above.
-    if provider.get("requires_nous_auth") and not managed_feature:
-        features = get_nous_subscription_features(config, force_fresh=force_fresh)
-        entitled = bool(
-            features.account_info and features.account_info.paid_service_access is True
-        )
-        if not features.nous_auth_present or not entitled:
-            message = format_nous_portal_entitlement_message(
-                features.account_info,
-                capability=f"{provider.get('name', 'Nous Subscription')}",
-            )
-            _print_warning(
-                f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}"
-            )
-            return
 
     # Selection model (mirrors _write_provider_config): every row writes ONE
-    # provider string per category — "nous" for managed rows, the vendor name
-    # for BYOK rows — and drops any legacy use_gateway key so the read-time
-    # shim (use_gateway: true ⇒ nous) cannot override the fresh pick.
+    # provider string per category — the vendor name for BYOK rows — and
+    # drops any legacy use_gateway key.
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = (
-            NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
-        )
+        web_cfg["backend"] = provider["web_backend"]
         web_cfg.pop("use_gateway", None)
         if provider.get("web_tier"):
             tiers = web_cfg.setdefault("provider_tier", {})

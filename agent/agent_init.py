@@ -992,13 +992,6 @@ def init_agent(
     agent._rate_limit_state: Optional["RateLimitState"] = None
 
     # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
-    # x-nous-credits-* response headers after each API call.  Session-start
-    # remaining is latched the first time a header is ever seen so we can
-    # report cumulative micros spent.  Surfaced behind SON_OF_ANTON_DEV_CREDITS.
-    agent._credits_state = None
-    agent._credits_session_start_micros = None
-    # Threshold-notice latch (L4): active sticky-notice keys + the crossing gates.
-    from agent.credits_tracker import new_credits_latch
 
     agent._credits_latch = new_credits_latch()
 

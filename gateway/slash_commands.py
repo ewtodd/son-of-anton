@@ -29,7 +29,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
@@ -4823,40 +4822,6 @@ class GatewaySlashCommandsMixin:
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
 
-    async def _handle_topup_command(self, event: MessageEvent) -> str:
-        """Handle /topup -- show the Nous balance and hand off to the portal.
-
-        Renders the balance block + identity line + a tappable portal URL that
-        opens the billing page. Remote spending is managed on the portal: this
-        messaging command does NOT charge, confirm, or track payment here —
-        everything happens in the browser and the next /topup shows the new balance. The
-        tappable URL is the affordance and works on every platform (button-capable
-        or plain text). Fetched off the event loop; fail-open.
-        """
-        from agent.account_usage import build_credits_view
-
-        try:
-            view = await asyncio.to_thread(build_credits_view, markdown=True)
-        except Exception:
-            view = None
-
-        if view is None or not view.logged_in:
-            return t("gateway.credits.not_logged_in")
-
-        lines: list[str] = ["💳 **Nous balance**"]
-        for line in view.balance_lines:
-            if line.lstrip().startswith("📈"):
-                continue  # drop the helper's header; we print our own
-            lines.append(line)
-        if view.identity_line:
-            lines.append("")
-            lines.append(view.identity_line)
-        if view.topup_url:
-            lines.append("")
-            lines.append(f"Manage billing on the portal: {view.topup_url}")
-            lines.append("Top up and manage billing in the browser — your balance updates here after.")
-        return "\n".join(lines)
-
     def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
         """Render the /context per-category block (plain text, no grid).
 
@@ -4990,53 +4955,6 @@ class GatewaySlashCommandsMixin:
             else:
                 provider = persisted.get("billing_provider")
                 base_url = persisted.get("billing_base_url")
-
-        if wants_reset:
-            normalized_provider = str(provider or "").strip().lower()
-            if normalized_provider != "openai-codex":
-                return t("gateway.usage.reset_wrong_provider")
-            force = "--force" in args[1:]
-            from agent.account_usage import redeem_codex_reset_credit
-
-            result = await asyncio.to_thread(
-                redeem_codex_reset_credit,
-                base_url=base_url,
-                api_key=api_key,
-                force=force,
-            )
-            return result.message
-
-        # Fetch account usage off the event loop so slow provider APIs don't
-        # block the gateway. Failures are non-fatal -- account_lines stays [].
-        account_lines: list[str] = []
-        credits_lines: list[str] = []
-        if provider:
-            try:
-                account_snapshot = await asyncio.to_thread(
-                    fetch_account_usage,
-                    provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                )
-            except Exception:
-                account_snapshot = None
-            if account_snapshot:
-                account_lines = render_account_usage_lines(account_snapshot, markdown=True)
-
-        # ── Nous credits magnitudes + monthly-grant % gauge ─────────────
-        # Shared with the CLI / TUI /usage block via nous_credits_lines(): a single
-        # auth-gate + portal-fetch + render path (which also honors the dev fixture).
-        # Run off the event loop. The helper gates on "a Nous account is logged in"
-        # — NOT the inference provider and NOT nested under `if provider:` — so a
-        # Nous-credentialled user running inference elsewhere (or with none resident)
-        # still sees their balance. NO recovery trigger: messaging binds no notice
-        # consumer, so /usage only displays. Fail-open: never break /usage.
-        try:
-            from agent.account_usage import nous_credits_lines
-
-            credits_lines = await asyncio.to_thread(nous_credits_lines, markdown=True)
-        except Exception:
-            credits_lines = []  # fail-open: never break /usage
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []

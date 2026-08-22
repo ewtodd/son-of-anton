@@ -53,7 +53,6 @@ os.environ["SON_OF_ANTON_QUIET"] = "1"  # Our own modules
 from son_of_anton_cli.fallback_config import get_fallback_chain
 from son_of_anton_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from son_of_anton_cli.cli_commands_mixin import CLICommandsMixin
-from son_of_anton_cli.cli_billing_mixin import CLIBillingMixin
 from agent.interrupt_compat import request_hard_interrupt
 
 # prompt_toolkit for fixed input area TUI
@@ -208,9 +207,6 @@ def realign_markdown_tables(*args, **kwargs):
     from agent.markdown_tables import realign_markdown_tables as _realign_markdown_tables
 
     return _realign_markdown_tables(*args, **kwargs)
-# NOTE: `from agent.account_usage import ...` is deliberately NOT at module
-# top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
-# needed when the user runs `/limits`. Lazy-imported inside the handler below.
 from son_of_anton_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -4925,7 +4921,7 @@ def _split_model_config_default(raw_default: Any) -> tuple[str, str]:
     return split_model_config_default(raw_default)
 
 
-class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     """
     Interactive CLI for the Son of Anton Agent.
     
@@ -11858,10 +11854,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
-        elif canonical == "subscription":
-            self._show_subscription()
-        elif canonical == "topup":
-            self._show_billing(cmd_original)
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -13110,51 +13102,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
 
     def _handle_usage_command(self, cmd_original: str):
-        """Dispatch `/usage [reset [--force]]`.
-
-        Bare `/usage` keeps the classic display. `/usage reset` redeems one
-        banked Codex rate-limit reset credit (guarded: refuses when limits
-        aren't exhausted unless --force).
-        """
-        parts = cmd_original.split()
-        args = [p.lower() for p in parts[1:]]
-        if args and args[0] == "reset":
-            self._usage_reset(force="--force" in args[1:])
-            return
+        """Dispatch `/usage` — session token/rate-limit display."""
+        args = [part.lower() for part in cmd_original.split()[1:]]
         if args:
-            print(f"  Unknown /usage subcommand: {' '.join(parts[1:])}. Try /usage or /usage reset [--force].")
+            print(f"  Unknown /usage subcommand: {' '.join(args)}. Try /usage.")
             return
         self._show_usage()
-
-    def _usage_reset(self, force: bool = False):
-        """`/usage reset [--force]` — redeem one banked Codex reset credit."""
-        provider = (
-            (getattr(self.agent, "provider", None) if self.agent else None)
-            or getattr(self, "provider", None)
-        )
-        normalized = str(provider or "").strip().lower()
-        if normalized != "openai-codex":
-            print("  Banked usage resets are only available on the openai-codex provider.")
-            print("  Switch with `/model` or `son-of-anton auth` first.")
-            return
-        base_url = (getattr(self.agent, "base_url", None) if self.agent else None) or getattr(self, "base_url", None)
-        api_key = (getattr(self.agent, "api_key", None) if self.agent else None) or getattr(self, "api_key", None)
-
-        from agent.account_usage import redeem_codex_reset_credit
-
-        print("  ⏳ Checking banked reset credits...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-            try:
-                result = _pool.submit(
-                    redeem_codex_reset_credit,
-                    base_url=base_url,
-                    api_key=api_key,
-                    force=force,
-                ).result(timeout=45.0)
-            except concurrent.futures.TimeoutError:
-                print("  ❌ Timed out talking to the Codex backend — try again shortly.")
-                return
-        print(f"  {result.message}")
 
     def _show_context_breakdown(self, cmd_original: str = ""):
         """`/context [all]` — visual context-window usage breakdown.
@@ -13214,20 +13167,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         which would otherwise early-return before any credits showed.
         """
         if not self.agent:
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-            else:
-                print("(._.) No active agent -- send a message first.")
+            print("(._.) No active agent -- send a message first.")
             return
 
         agent = self.agent
         calls = agent.session_api_calls
 
         if calls == 0:
-            if self._print_nous_credits_block():
-                self._print_usage_cta()
-            else:
-                print("(._.) No API calls made yet in this session.")
+            print("(._.) No API calls made yet in this session.")
             return
 
         # ── Rate limits (shown first when available) ────────────────
@@ -13272,34 +13219,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
 
-        # Account limits -- fetched off-thread with a hard timeout so slow
-        # provider APIs don't hang the prompt.
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
-        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-        # Lazy import — pulls the OpenAI SDK chain, only needed here.
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if account_lines:
-            print()
-            for line in account_lines:
-                print(line)
-
         # Nous credits magnitudes + monthly-grant gauge (agent-independent — also
         # runs at the no-agent / no-calls early-returns above). See the helper.
-        if self._print_nous_credits_block():
-            self._print_usage_cta()
-
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
@@ -15302,22 +15223,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                 # Durable, provider-agnostic billing CTA below the response. The
                 # response panel carries the full guidance; this pins the single
-                # action to take (Nous → /topup, other providers → their billing
-                # page) so it stays visible instead of scrolling away as prose.
+                # action to take (the provider's billing page) so it stays
+                # visible instead of scrolling away as prose.
                 if result and result.get("failure_reason") == "billing":
                     _bb = result.get("billing_block") or {}
                     _prov_label = _bb.get("provider_label") or "your provider"
-                    if _bb.get("is_nous"):
-                        _cta_lines = [
-                            "Run [bold]/topup to add credits, or "
-                            "[bold]/subscription to change plan.",
-                        ]
-                    else:
-                        _url = _bb.get("billing_url")
-                        _cta_lines = [
-                            f"Add credits with {_prov_label}"
-                            + (f": [bold]{_url}" if _url else ".")
-                        ]
+                    _url = _bb.get("billing_url")
+                    _cta_lines = [
+                        f"Add credits with {_prov_label}"
+                        + (f": [bold]{_url}" if _url else ".")
+                    ]
                     _cta_lines.append(
                         "Or switch providers with "
                         "[bold]/model <model> --provider <provider>."
