@@ -19,9 +19,9 @@ setup`):
   host               — Self-hosted Mem0 server URL (alt: MEM0_HOST env var).
                        When set, routes to the self-hosted HTTP backend.
   user_id            — Canonical user identifier. When set, it is applied
-                       uniformly across every gateway (CLI, Telegram, Slack,
+                       uniformly across every gateway (CLI, Discord, Slack,
                        Discord, …) so the same human gets one merged memory
-                       store. When unset, the gateway-native id (e.g. Telegram
+                       store. When unset, the gateway-native id (e.g. Discord
                        numeric id, Discord snowflake) is used instead.
   agent_id           — Agent identifier (default: son-of-anton)
 
@@ -206,7 +206,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "son-of-anton"
         self._rerank_default = False
-        self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
+        self._channel = "cli"  # gateway channel name (cli/discord/slack/...)
         self._sync_thread = None
         self._prefetch_thread = None
         self._prefetch_query = ""
@@ -343,7 +343,7 @@ class Mem0MemoryProvider(MemoryProvider):
         #   1. Operator-configured MEM0_USER_ID (env or $SON_OF_ANTON_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same
         #      human gets one merged memory store.
-        #   2. Gateway-native id from kwargs (Telegram numeric id, Discord
+        #   2. Gateway-native id from kwargs (Discord snowflake,
         #      snowflake, etc.) — preserves per-platform isolation when no
         #      override is configured.
         #   3. Hardcoded fallback _DEFAULT_USER_ID (CLI with no auth).

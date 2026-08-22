@@ -15,7 +15,7 @@ or by pointing config at a relative file/directory::
 
     display:
       status_phrases:
-        path: status_phrases/whatsapp.yaml  # relative to SON_OF_ANTON_HOME
+        path: status_phrases/signal.yaml  # relative to SON_OF_ANTON_HOME
         mode: append                        # append (default) or replace
 
 Absolute paths and ``..`` escapes are ignored on purpose so config stays

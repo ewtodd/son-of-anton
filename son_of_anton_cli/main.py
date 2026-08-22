@@ -448,7 +448,6 @@ from son_of_anton_cli.subcommands.logout import build_logout_parser
 from son_of_anton_cli.subcommands.auth import build_auth_parser
 from son_of_anton_cli.subcommands.status import build_status_parser
 from son_of_anton_cli.subcommands.pause import build_pause_parser
-from son_of_anton_cli.subcommands.webhook import build_webhook_parser
 from son_of_anton_cli.subcommands.hooks import build_hooks_parser
 from son_of_anton_cli.subcommands.doctor import build_doctor_parser
 from son_of_anton_cli.subcommands.verify import build_verify_parser
@@ -5201,13 +5200,6 @@ def cmd_sync(args):
     return 0
 
 
-def cmd_webhook(args):
-    """Webhook subscription management."""
-    from son_of_anton_cli.webhook import webhook_command
-
-    webhook_command(args)
-
-
 def cmd_slack(args):
     """Slack integration helpers.
 
@@ -5424,7 +5416,7 @@ def _record_bytecode_fingerprint() -> None:
 def _sweep_stale_bytecode_if_checkout_changed() -> None:
     """Clear ``__pycache__`` at launch when the checkout changed underneath us.
 
-    The stale-bytecode bug class (issues #6207, #60242; Dhruv's WhatsApp
+    The stale-bytecode bug class (issues #6207, #60242
     ``cannot import name 'parse_model_flags_detailed'`` report) has one
     shared shape: the checkout's ``.py`` files change (git pull inside
     ``son-of-anton update``, a manual ``git pull``, a ZIP update, a file-sync
@@ -7411,8 +7403,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         "claw",
         "plugins",
         "security",
-        "webhook",
-        "peer",
         "memory",
         "dump",
         "debug",
@@ -8206,18 +8196,18 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "profile",
+        "model", "monitoring", "pairing", "pause", "pets", "plugins", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "webhook", "worktree", "chat", "secrets", "security",
-        "verify",
+        "worktree", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
         "help",
+        "verify",
     }
 )
 
@@ -8310,11 +8300,12 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
 
     Bundled platform plugins are cheap-registered as *deferred* entries to
     avoid importing every gateway SDK during normal startup. A platform that
-    registers a top-level ``son-of-anton <name>`` command (e.g. Photon ->
-    ``ctx.register_cli_command(name="photon", ...)``) only runs that side
+    registers a top-level ``son-of-anton <name>`` command
+    (``ctx.register_cli_command(name=..., ...)``) only runs that side
     effect when its module is imported. On the unknown-top-level-command slow
     path, ``discover_plugins()`` records the deferred loader but does not
-    import it, so the CLI registration never happens and ``son-of-anton photon``
+    import it, so the CLI registration never happens and the CLI command is
+    unavailable.
     fails with argparse ``invalid choice`` (issue #54678).
 
     Resolving only the platform whose name matches the first positional token
@@ -9277,18 +9268,6 @@ def main():
     build_sync_parser(subparsers, cmd_sync=cmd_sync)
 
     # =========================================================================
-    # webhook command  (parser built in son_of_anton_cli/subcommands/webhook.py)
-    # =========================================================================
-    build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
-
-    # =========================================================================
-    # peer command — bot-to-bot DMs across machines (peer Son of Anton gateways)
-    # =========================================================================
-    from son_of_anton_cli.subcommands.peer import build_peer_parser
-
-    build_peer_parser(subparsers)
-
-    # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing
     # =========================================================================
     # project command — named, multi-folder workspaces
@@ -9555,7 +9534,7 @@ def main():
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument(
-        "--source", help="Filter by source (cli, telegram, discord, etc.)"
+        "--source", help="Filter by source (cli, discord, slack, etc.)"
     )
     sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
@@ -10020,7 +9999,7 @@ def main():
         help="Interactive session picker — browse, search, and resume sessions",
     )
     sessions_browse.add_argument(
-        "--source", help="Filter by source (cli, telegram, discord, etc.)"
+        "--source", help="Filter by source (cli, discord, slack, etc.)"
     )
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"

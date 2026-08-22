@@ -12,7 +12,7 @@ recovers automatically with no manual cleanup.
 Scope is deliberately narrow.  Only *whole-chat* deaths are recorded — the
 ``forbidden`` and chat-level ``not_found`` (``chat not found``) error kinds.
 Thread/topic-level ``not_found`` is NOT recorded here: the adapters already
-self-heal that by retrying without ``reply_to`` (see the Telegram adapter's
+self-heal that by retrying without ``reply_to`` (see the platform adapter's
 reply-target-deleted path), and a deleted topic does not mean the parent chat is
 dead.
 

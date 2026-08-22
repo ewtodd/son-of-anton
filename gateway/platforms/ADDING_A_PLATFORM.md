@@ -42,34 +42,28 @@ status display, gateway setup, and more.
   wizard surfaces proper descriptions, prompts, password flags, and URLs.
 
 **Subclassing for platform-specific UX.** When a platform has a hard
-time-window constraint that the base adapter can't anticipate (LINE's
-60s single-use reply token, WhatsApp's 24h session window, etc.), an
+time-window constraint that the base adapter can't anticipate (a 60s
+single-use reply token, a 24h session window, etc.), an
 adapter can override `_keep_typing` to layer a mid-flight bubble at a
 threshold without expanding the kwarg surface. Always
 `await super()._keep_typing(...)` so the typing heartbeat keeps running,
-and tear down your side task in `finally`. See `plugins/platforms/line/`
-for the full pattern (Template Buttons postback at 45s, `RequestCache`
-state machine, `interrupt_session_activity` override for `/stop`
-orphans) and the developer-guide page for the prose walkthrough.
+and tear down your side task in `finally`. See the developer-guide page
+for the prose walkthrough.
 
 **Sibling adapters that share behavior.** When a single platform has
 two transport modes the user picks between — unofficial vs official
 APIs, polling vs websocket, library A vs library B — the right
-structure is two adapters that share a behavior mixin. WhatsApp does
-this: `gateway/platforms/whatsapp.py` (Baileys bridge) and
-`gateway/platforms/whatsapp_cloud.py` (Meta Cloud API) both inherit
-from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
-The mixin owns gating, allow-lists, mention parsing, broadcast
-filters, and the WhatsApp-flavored markdown conversion — everything
-that's platform-protocol-agnostic. Each adapter owns its transport.
+structure is two adapters that share a behavior mixin. The mixin owns
+gating, allow-lists, mention parsing, broadcast filters, and
+platform-flavored markdown conversion — everything that's
+platform-protocol-agnostic. Each adapter owns its transport.
 Both register distinct `Platform.*` enum values so the gateway can run
-both simultaneously against different phone numbers. The mixin must
-come **first** in the bases list — `class WhatsAppAdapter(Mixin,
-BasePlatformAdapter)` — so the mixin's `format_message` overrides
-`BasePlatformAdapter`'s generic default.
+both simultaneously. The mixin must come **first** in the bases list —
+`class YourAdapter(Mixin, BasePlatformAdapter)` — so the mixin's
+`format_message` overrides `BasePlatformAdapter`'s generic default.
 
-See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
-`plugins/platforms/google_chat/` for complete working examples, and
+See `plugins/platforms/discord/` and `plugins/platforms/slack/` for
+complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full
 plugin guide with code examples and hook documentation.
 
@@ -119,10 +113,10 @@ If your platform supports interactive button/menu messages, implement these for 
 | `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
 | `send_exec_approval(chat_id, command, session_key, description, ...)` | Render dangerous-command approval as Approve/Deny buttons. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
 | `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
-| `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram and Discord. |
-| `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
+| `send_model_picker(...)` | Interactive `/model` picker. Used by Discord. |
+| `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Discord (select menu). Platforms without it fall back to the text status card automatically. |
 
-See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+See `plugins/platforms/discord/` and `plugins/platforms/slack/` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 
@@ -168,7 +162,7 @@ if your_token:
 ```
 
 Update `get_connected_platforms()` if your platform doesn't use token/api_key
-(e.g., WhatsApp uses `enabled` flag, Signal uses `extra` dict).
+(e.g., Signal uses `extra` dict).
 
 ---
 
@@ -307,7 +301,7 @@ If your platform can't enumerate chats (most can't), add it to the
 session-based discovery list:
 
 ```python
-for plat_name in ("telegram", "whatsapp", "signal", "your_platform"):
+for plat_name in ("discord", "slack", "signal", "your_platform"):
 ```
 
 ---
@@ -398,7 +392,7 @@ After implementing everything, verify with:
 python -m pytest tests/ -q
 
 # Grep for your platform name to find any missed integration points
-grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/ son_of_anton_cli/ toolsets.py \
+grep -r "discord\|slack\|signal" gateway/ tools/ agent/ cron/ son_of_anton_cli/ toolsets.py \
   --include="*.py" -l | sort -u
 # Check each file in the output — if it mentions other platforms but not yours, you missed it
 ```

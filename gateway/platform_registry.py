@@ -14,18 +14,18 @@ Usage (plugin side):
     from gateway.platform_registry import platform_registry, PlatformEntry
 
     platform_registry.register(PlatformEntry(
-        name="irc",
-        label="IRC",
-        adapter_factory=lambda cfg: IRCAdapter(cfg),
+        name="example_plugin",
+        label="Example Plugin",
+        adapter_factory=lambda cfg: ExampleAdapter(cfg),
         check_fn=check_requirements,
         validate_config=lambda cfg: bool(cfg.extra.get("server")),
-        required_env=["IRC_SERVER"],
-        install_hint="pip install irc",
+        required_env=["EXAMPLE_SERVER"],
+        install_hint="pip install example-plugin",
     ))
 
 Usage (gateway side):
 
-    adapter = platform_registry.create_adapter("irc", platform_config)
+    adapter = platform_registry.create_adapter("example_plugin", platform_config)
 """
 
 import logging
@@ -63,10 +63,10 @@ def _caller_plugin_scope() -> Optional[str]:
 class PlatformEntry:
     """Metadata and factory for a single platform adapter."""
 
-    # Identifier used in config.yaml (e.g. "irc", "viber").
+    # Identifier used in config.yaml (e.g. "discord", "slack").
     name: str
 
-    # Human-readable label (e.g. "IRC", "Viber").
+    # Human-readable label (e.g. "Discord", "Slack").
     label: str
 
     # Factory callable: receives a PlatformConfig, returns an adapter instance.
@@ -99,7 +99,7 @@ class PlatformEntry:
     # (desktop boot-loop at 94%, see gateway/config.py enablement comments);
     # when the PASSIVE probe was registered instead, ``create_adapter()``
     # returned None before ``connect()`` could lazy-install, so the deps
-    # never installed at all (Teams deadlock).  Splitting the two roles makes
+    # never installed at all.  Splitting the two roles makes
     # both call sites correct by construction.
     ensure_deps_fn: Optional[Callable[[], bool]] = None
 
@@ -129,9 +129,9 @@ class PlatformEntry:
     plugin_name: str = ""
 
     # ── Auth env var names (for _is_user_authorized integration) ──
-    # E.g. "IRC_ALLOWED_USERS" — checked for comma-separated user IDs.
+    # E.g. "DISCORD_ALLOWED_USERS" — checked for comma-separated user IDs.
     allowed_users_env: str = ""
-    # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
+    # E.g. "DISCORD_ALLOW_ALL_USERS" — if truthy, all users authorized.
     allow_all_env: str = ""
 
     # ── Message limits ──
@@ -151,7 +151,7 @@ class PlatformEntry:
     allow_update_command: bool = True
 
     # ── LLM guidance ──
-    # Platform hint injected into the system prompt (e.g. "You are on IRC.
+    # Platform hint injected into the system prompt.
     # Do not use markdown.").  Empty string = no hint.
     platform_hint: str = ""
 
@@ -181,7 +181,7 @@ class PlatformEntry:
     apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
 
     # Optional: home-channel env var name for cron/notification delivery
-    # (e.g. ``"IRC_HOME_CHANNEL"``).  When set, ``cron.scheduler`` treats this
+    # (e.g. ``"DISCORD_HOME_CHANNEL"``).  When set, ``cron.scheduler`` treats this
     # platform as a valid ``deliver=<name>`` target and reads the env var to
     # resolve the default chat/room ID.  Empty = no cron home-channel support.
     cron_deliver_env_var: str = ""
@@ -247,7 +247,7 @@ class PlatformRegistry:
         # owning plugin module (which calls register() and populates _entries).
         #
         # Why this exists: platform adapter modules import heavy, platform-
-        # specific SDKs at module level (lark_oapi, microsoft_teams, discord.py,
+        # specific SDKs at module level (discord.py,
         # slack_bolt, ...). Eagerly loading all ~20 bundled platform plugins at
         # plugin-discovery time added several seconds to *every* `son-of-anton`
         # invocation -- including plain `son-of-anton chat`, which never touches any
@@ -601,7 +601,7 @@ class PlatformRegistry:
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered --
         # the loader will materialize it on first real use.  This keeps cheap
-        # membership checks (toolset resolution, webhook deliver-target checks)
+        # membership checks (toolset resolution, delivery-target checks)
         # from triggering a heavy import.
         with self._lock:
             scope = self.current_scope_key()
@@ -641,7 +641,7 @@ class PlatformRegistry:
             # This is the ONE place the active installer runs in the adapter
             # path: the platform is enabled+configured and the gateway is
             # about to connect it, so an install is what the user wants
-            # (#79812 — Teams' installer previously lived behind this very
+            # (#79812 — a platform's installer previously lived behind this very
             # gate inside connect(), which could never be reached).
             logger.info(
                 "Platform '%s' dependencies missing — attempting install...",

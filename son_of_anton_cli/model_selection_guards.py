@@ -1,7 +1,7 @@
 """Unified selection-time guard registry for model switching surfaces.
 
 Son of Anton has multiple model-selection surfaces (CLI picker, TUI, dashboard,
-gateway ``/model``, Telegram/Discord pickers, TUI-gateway RPC). Each of them
+gateway ``/model``, Discord pickers, TUI-gateway RPC). Each of them
 previously imported ``model_cost_guard.expensive_model_warning`` directly, so
 every new guard class (e.g. the data-training-tier guard) had to be wired into
 every surface by hand — and inevitably missed some.

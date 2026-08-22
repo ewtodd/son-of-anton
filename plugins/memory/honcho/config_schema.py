@@ -143,7 +143,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="Runtime peer prefix",
             kind=KIND_TEXT,
             description="Prefix applied to unknown gateway runtime user IDs.",
-            placeholder="e.g. telegram_",
+            placeholder="e.g. discord_",
             group="Identity",
         ),
         ProviderField(
@@ -151,7 +151,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="User peer aliases",
             kind=KIND_JSON,
             description="Map gateway runtime user IDs to stable Honcho peers.",
-            placeholder='{"telegram_123": "eri"}',
+            placeholder='{"discord_123": "eri"}',
             group="Identity",
         ),
         # — Session —

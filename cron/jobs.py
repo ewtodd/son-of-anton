@@ -1843,7 +1843,7 @@ def create_job(
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
-        deliver: Where to deliver output ("origin", "local", "telegram", etc.)
+        deliver: Where to deliver output ("origin", "local", "discord", etc.)
         origin: Source info where job was created (for "origin" delivery)
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
@@ -2426,8 +2426,8 @@ def clear_drift_alerted(job_id: str) -> None:
 def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     """Durably record that a scheduled fire could not be handed to the runner.
 
-    Written by the dashboard fire webhook when the loopback forward to the
-    gateway api_server fails (gateway unreachable / listener not bound) —
+    Written by the dashboard fire transport when the loopback forward to the
+    gateway fails (gateway unreachable / listener not bound) —
     the shape behind "job runs manually but never auto-fires". Without this
     stamp the miss is invisible outside gui.log: no execution row is created
     (the claim never happens) and ``last_status``/``last_error`` only cover

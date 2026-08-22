@@ -51,17 +51,6 @@ _SON_OF_ANTON_CORE_TOOLS = [
     "cronjob",
 ]
 
-# Webhook events may originate from untrusted third-party content (for example,
-# public PR titles/comments). Keep the default webhook toolset intentionally
-# constrained to avoid local file/system execution by prompt injection.
-_SON_OF_ANTON_WEBHOOK_SAFE_TOOLS = [
-    "web_search",
-    "web_extract",
-    "vision_analyze",
-    "clarify",
-]
-
-
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {

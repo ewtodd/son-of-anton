@@ -139,8 +139,7 @@ class PlatformActions:
     ) -> Dict[str, Any]:
         """Add/set an emoji reaction on a platform message.
 
-        Telegram note: the Bot API *sets* the bot's reaction (replacing a
-        previous one) rather than stacking, per ``set_message_reaction``.
+        The Discord path uses the standard emoji reaction API.
         """
         adapter, error = self._gate(
             platform, chat_id=chat_id, message_id=message_id, emoji=emoji
@@ -149,14 +148,7 @@ class PlatformActions:
             self._audit("add_reaction", platform, error or _err("gateway_unavailable"))
             return error or _err("gateway_unavailable")
         try:
-            if getattr(adapter.platform, "value", None) == "telegram":
-                done = await adapter._set_reaction(chat_id, message_id, emoji)
-                result = (
-                    _ok(action="add_reaction")
-                    if done
-                    else _err("action_failed", "telegram set_message_reaction failed")
-                )
-            elif getattr(adapter.platform, "value", None) == "discord":
+            if getattr(adapter.platform, "value", None) == "discord":
                 result = await self._discord_add_reaction(
                     adapter, chat_id, message_id, emoji
                 )
@@ -175,8 +167,7 @@ class PlatformActions:
     ) -> Dict[str, Any]:
         """Rename a thread / forum topic.
 
-        Discord ignores ``chat_id`` (thread ids are globally addressable);
-        Telegram requires it (``edit_forum_topic`` is chat-scoped).
+        Discord ignores ``chat_id`` (thread ids are globally addressable).
         """
         adapter, error = self._gate(
             platform, chat_id=chat_id, thread_id=thread_id, title=title
@@ -185,10 +176,7 @@ class PlatformActions:
             self._audit("set_thread_title", platform, error or _err("gateway_unavailable"))
             return error or _err("gateway_unavailable")
         try:
-            if getattr(adapter.platform, "value", None) == "telegram":
-                await adapter.rename_dm_topic(chat_id, int(thread_id), title)
-                result = _ok(action="set_thread_title")
-            elif getattr(adapter.platform, "value", None) == "discord":
+            if getattr(adapter.platform, "value", None) == "discord":
                 done = await adapter.rename_thread(thread_id, title)
                 result = (
                     _ok(action="set_thread_title")

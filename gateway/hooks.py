@@ -19,10 +19,10 @@ Events:
 Errors in hooks are caught and logged but never block the main pipeline.
 
 Context dict passed to ``agent:start`` / ``agent:end`` handlers:
-  platform     -- source platform name (e.g. "telegram", "matrix", "slack")
+  platform     -- source platform name (e.g. "discord", "slack")
   user_id      -- platform user id of the sender
   chat_id      -- platform chat id (group/DM identifier)
-  thread_id    -- Telegram forum-topic id / thread root id (string; empty
+  thread_id    -- forum-topic id / thread root id (string; empty
                   when not in a thread / topic)
   chat_type    -- "dm" | "group" | "forum" (empty if unknown)
   session_id   -- Son of Anton session id
@@ -33,7 +33,7 @@ Context dict passed to ``agent:start`` / ``agent:end`` handlers:
   model        -- model name that handled the turn
   provider     -- provider that handled the turn
 
-Handlers posting a follow-up into the same Telegram forum-topic should
+Handlers posting a follow-up into the same forum-topic should
 include ``message_thread_id=int(thread_id)`` when ``chat_type == "forum"``
 and ``thread_id`` is non-empty.
 """
@@ -58,7 +58,7 @@ class HookRegistry:
     Usage:
         registry = HookRegistry()
         registry.discover_and_load()
-        await registry.emit("agent:start", {"platform": "telegram", ...})
+        await registry.emit("agent:start", {"platform": "discord", ...})
     """
 
     def __init__(self):
@@ -122,7 +122,7 @@ class HookRegistry:
                 # dataclasses / typing introspection can resolve forward
                 # references (triggered by `from __future__ import annotations`
                 # in the handler). Without this, a handler that declares a
-                # Pydantic BaseModel for webhook/event payloads fails at first
+                # Pydantic BaseModel for event payloads fails at first
                 # dispatch with "TypeAdapter ... is not fully defined".
                 module_name = f"son_of_anton_hook_{hook_name}"
                 spec = importlib.util.spec_from_file_location(

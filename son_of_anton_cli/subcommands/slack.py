@@ -27,7 +27,7 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         description=(
             "Generate a Slack app manifest that registers every gateway "
             "command in COMMAND_REGISTRY as a first-class Slack slash "
-            "command (matching Discord and Telegram parity). Paste the "
+            "command (matching Discord parity). Paste the "
             "output into Slack app config → Features → App Manifest → "
             "Edit, then Save. Reinstall the app if Slack prompts for it."
         ),

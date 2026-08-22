@@ -5,7 +5,7 @@ Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
   2. Terminal Backend — where your agent runs commands
   3. Agent Settings — iterations, compression, session reset
-  4. Messaging Platforms — connect Telegram, Discord, etc.
+  4. Messaging Platforms — connect Discord, Slack, Signal, etc.
   5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.son-of-anton/ for easy access.
@@ -607,10 +607,6 @@ def _print_setup_summary(config: dict, son_of_anton_home):
             tool_status.append(("Modal Execution", False, "run 'son-of-anton setup terminal'"))
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
-
-    # Home Assistant
-    if get_env_value("HASS_TOKEN"):
-        tool_status.append(("Smart Home (Home Assistant)", True, None))
 
     # Spotify (OAuth via son-of-anton auth spotify — check auth.json, not env vars)
     try:
@@ -1766,7 +1762,7 @@ def setup_agent_settings(config: dict):
     # ── Session Reset Policy ──
     print_header("Session Reset Policy")
     print_info(
-        "Messaging sessions (Telegram, Discord, etc.) accumulate context over time."
+        "Messaging sessions (Discord, Slack, etc.) accumulate context over time."
     )
     print_info(
         "Each message adds to the conversation history, which means growing API costs."
@@ -1865,292 +1861,9 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
-_TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
-
-
-def _is_valid_telegram_bot_token(token: str) -> bool:
-    return bool(_TELEGRAM_BOT_TOKEN_RE.match(token))
-
-
-def _setup_telegram_auto_result():
-    """Attempt automatic Telegram bot creation via managed QR onboarding."""
-    try:
-        from son_of_anton_cli.telegram_managed_bot import auto_setup_telegram_bot_result
-    except ImportError:
-        return None
-
-    profile_name: str | None = None
-    try:
-        profile_name = _profile_name_from_son_of_anton_home(Path(get_son_of_anton_home()))
-    except Exception:
-        pass
-
-    return auto_setup_telegram_bot_result(profile_name=profile_name)
-
-
-def _profile_name_from_son_of_anton_home(son_of_anton_home) -> str | None:
-    """Return the active profile name when SON_OF_ANTON_HOME is a profile dir."""
-    if son_of_anton_home.parent.name == "profiles":
-        return son_of_anton_home.name
-    return None
-
-
-def _setup_telegram_auto() -> str | None:
-    """Attempt automatic Telegram bot creation and return only the token."""
-    result = _setup_telegram_auto_result()
-    return result.token if result else None
-
-
-def _prompt_telegram_bot_token() -> str | None:
-    print_info("Create a bot via @BotFather on Telegram")
-    while True:
-        token = prompt("Telegram bot token", password=True)
-        if not token:
-            return None
-        if not _is_valid_telegram_bot_token(token):
-            print_error(
-                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
-                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
-            )
-            continue
-        return token
-
-
-def _setup_telegram():
-    """Configure Telegram bot credentials and allowlist."""
-    print_header("Telegram")
-    existing = get_env_value("TELEGRAM_BOT_TOKEN")
-    if existing:
-        print_info("Telegram: already configured")
-        if not prompt_yes_no("Reconfigure Telegram?", False):
-            # Check missing allowlist on existing config
-            if not get_env_value("TELEGRAM_ALLOWED_USERS"):
-                print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
-                if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find your Telegram user ID: message @userinfobot")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
-                    if allowed_users:
-                        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                        print_success("Telegram allowlist configured")
-            return
-
-    print_info("How would you like to create your Telegram bot?")
-    print()
-    print_info("  [1] Automatic (recommended)")
-    print_info("      Scan a QR code → confirm in Telegram → done.")
-    print_info("      No token copy-paste needed.")
-    print()
-    print_info("  [2] Manual")
-    print_info("      Create a bot via @BotFather yourself and paste the token.")
-    print()
-
-    choice = prompt("Choice [1/2]", default="1")
-    token = None
-    setup_result = None
-
-    if choice.strip() == "1":
-        setup_result = _setup_telegram_auto_result()
-        if setup_result:
-            token = setup_result.token
-            if not _is_valid_telegram_bot_token(token):
-                print_error("Automatic setup returned an invalid Telegram bot token.")
-                token = None
-                setup_result = None
-        else:
-            token = None
-        if not token:
-            print()
-            print_info("Falling back to manual setup...")
-            print()
-
-    if not token:
-        token = _prompt_telegram_bot_token()
-    if not token:
-        return
-
-    save_env_value("TELEGRAM_BOT_TOKEN", token)
-    print_success("Telegram token saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find your Telegram user ID:")
-    print_info("   1. Message @userinfobot on Telegram")
-    print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
-    print()
-
-    detected_user_id = getattr(setup_result, "owner_user_id", None)
-    if detected_user_id:
-        detected_id = str(detected_user_id)
-        print_success(f"Detected your Telegram user ID: {detected_id}")
-        if prompt_yes_no("Allow this Telegram account to use the bot?", True):
-            extra = prompt("Additional allowed user IDs (comma-separated, optional)")
-            ids = [detected_id]
-            for uid in extra.replace(" ", "").split(","):
-                if uid and uid not in ids:
-                    ids.append(uid)
-            allowed_users = ",".join(ids)
-        else:
-            allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
-            )
-    else:
-        allowed_users = prompt(
-            "Allowed user IDs (comma-separated, leave empty for open access)"
-        )
-
-    if allowed_users:
-        allowed_users = allowed_users.replace(" ", "")
-        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users)
-        print_success("Telegram allowlist configured - only listed users can use the bot")
-    else:
-        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
-
-    print()
-    print_info("📬 Home Channel: where Son of Anton delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   For Telegram DMs, this is your user ID (same as above).")
-
-    first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
-    if first_user_id:
-        if prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
-            save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
-            print_success(f"Telegram home channel set to {first_user_id}")
-        else:
-            home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
-            if home_channel:
-                save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
-    else:
-        print_info("   You can also set this later by typing /set-home in your Telegram chat.")
-        home_channel = prompt("Home channel ID (leave empty to set later)")
-        if home_channel:
-            save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
-
-
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack
 # plugin: plugins/platforms/slack/adapter.py::interactive_setup (registered
 # via setup_fn and dispatched through the plugin path). #41112 / #3823.
-
-
-# _setup_matrix moved to plugins/platforms/matrix/adapter.py::interactive_setup
-# (registered via setup_fn, dispatched through the plugin path). #41112.
-
-
-def _setup_bluebubbles():
-    """Configure BlueBubbles iMessage gateway."""
-    print_header("BlueBubbles (iMessage)")
-    existing = get_env_value("BLUEBUBBLES_SERVER_URL")
-    if existing:
-        print_info("BlueBubbles: already configured")
-        if not prompt_yes_no("Reconfigure BlueBubbles?", False):
-            return
-
-    print_info("Connects Son of Anton to iMessage via BlueBubbles — a free, open-source")
-    print_info("macOS server that bridges iMessage to any device.")
-    print_info("   Requires a Mac running BlueBubbles Server v1.0.0+")
-    print_info("   Download: https://bluebubbles.app/")
-    print()
-    print_info("In BlueBubbles Server → Settings → API, note your Server URL and Password.")
-    print()
-
-    server_url = prompt("BlueBubbles server URL (e.g. http://192.168.1.10:1234)")
-    if not server_url:
-        print_warning("Server URL is required — skipping BlueBubbles setup")
-        return
-    save_env_value("BLUEBUBBLES_SERVER_URL", server_url.rstrip("/"))
-
-    password = prompt("BlueBubbles server password", password=True)
-    if not password:
-        print_warning("Password is required — skipping BlueBubbles setup")
-        return
-    save_env_value("BLUEBUBBLES_PASSWORD", password)
-    print_success("BlueBubbles credentials saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can message your bot")
-    print_info("   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)")
-    print()
-    allowed_users = prompt("Allowed iMessage addresses (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("BlueBubbles allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
-
-    print()
-    print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")
-    print_info("   You can also set this later with /set-home in your iMessage chat.")
-    home_channel = prompt("Home channel address (leave empty to set later)")
-    if home_channel:
-        save_env_value("BLUEBUBBLES_HOME_CHANNEL", home_channel)
-
-    print()
-    print_info("Advanced settings (defaults are fine for most setups):")
-    if prompt_yes_no("Configure webhook listener settings?", False):
-        webhook_port = prompt("Webhook listener port (default: 8645)")
-        if webhook_port:
-            try:
-                save_env_value("BLUEBUBBLES_WEBHOOK_PORT", str(int(webhook_port)))
-                print_success(f"Webhook port set to {webhook_port}")
-            except ValueError:
-                print_warning("Invalid port number, using default 8645")
-
-    print()
-    print_info("Requires the BlueBubbles Private API helper for typing indicators,")
-    print_info("read receipts, and tapback reactions. Basic messaging works without it.")
-    print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
-
-
-def _setup_qqbot():
-    """Configure QQ Bot (Official API v2) via gateway setup."""
-    from son_of_anton_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
-    _gateway_setup_qqbot()
-
-
-def _setup_webhooks():
-    """Configure webhook integration."""
-    print_header("Webhooks")
-    existing = get_env_value("WEBHOOK_ENABLED")
-    if existing:
-        print_info("Webhooks: already configured")
-        if not prompt_yes_no("Reconfigure webhooks?", False):
-            return
-
-    print()
-    print_warning("⚠  Webhook and SMS platforms require exposing gateway ports to the")
-    print_warning("   internet. For security, run the gateway in a sandboxed environment")
-    print_warning("   (Docker, VM, etc.) to limit blast radius from prompt injection.")
-    print()
-    print_info("   Full guide: https://son-of-anton.nousresearch.com/docs/user-guide/messaging/webhooks/")
-    print()
-
-    port = prompt("Webhook port (default 8644)")
-    if port:
-        try:
-            save_env_value("WEBHOOK_PORT", str(int(port)))
-            print_success(f"Webhook port set to {port}")
-        except ValueError:
-            print_warning("Invalid port number, using default 8644")
-
-    secret = prompt("Global HMAC secret (shared across all routes)", password=True)
-    if secret:
-        save_env_value("WEBHOOK_SECRET", secret)
-        print_success("Webhook secret saved")
-    else:
-        print_warning("No secret set — you must configure per-route secrets in config.yaml")
-
-    save_env_value("WEBHOOK_ENABLED", "true")
-    print()
-    print_success("Webhooks enabled! Next steps:")
-    from son_of_anton_constants import display_son_of_anton_home as _dhh
-    print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
-    print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
-    print_info("      http://your-server:8644/webhooks/<route-name>")
-    print()
-    print_info("   Route configuration guide:")
-    print_info("   https://son-of-anton.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
-    print()
-    print_info("   Open config in your editor:  son-of-anton config edit")
-    print_info("   Open config in your editor:  son-of-anton config edit")
 
 
 def setup_gateway(config: dict):
@@ -2183,7 +1896,7 @@ def setup_gateway(config: dict):
 
     # ── Gateway Service Setup ──
     # Count any platform (built-in or plugin) the user configured during this
-    # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
+    # setup pass — reuses ``_platform_status`` so plugin platforms
     # are picked up without another hard-coded env-var list.
     def _is_progress(status: str) -> bool:
         s = status.lower()
@@ -2203,22 +1916,12 @@ def setup_gateway(config: dict):
 
         # Check if any home channels are missing
         missing_home = []
-        if get_env_value("TELEGRAM_BOT_TOKEN") and not get_env_value(
-            "TELEGRAM_HOME_CHANNEL"
-        ):
-            missing_home.append("Telegram")
         if get_env_value("DISCORD_BOT_TOKEN") and not get_env_value(
             "DISCORD_HOME_CHANNEL"
         ):
             missing_home.append("Discord")
         if get_env_value("SLACK_BOT_TOKEN") and not get_env_value("SLACK_HOME_CHANNEL"):
             missing_home.append("Slack")
-        if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
-            missing_home.append("BlueBubbles")
-        if get_env_value("QQ_APP_ID") and not (
-            get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
-        ):
-            missing_home.append("QQBot")
 
         if missing_home:
             print()
@@ -2446,8 +2149,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
     elif section_key == "gateway":
         from son_of_anton_cli.gateway import _all_platforms, _platform_status
         # Count any non-empty status other than the "not configured" sentinel —
-        # platforms like WhatsApp ("enabled, not paired"), Matrix ("configured
-        # + E2EE"), and Signal ("partially configured") all indicate the user
+        # platforms like Signal ("partially configured") indicate the user
         # has already started setup and we shouldn't force the section to rerun.
         configured = [
             _gateway_platform_short_label(plat["label"])
@@ -2536,10 +2238,8 @@ def _load_openclaw_migration_module():
 # Instruction/context files (.md) can contain incompatible setup procedures.
 _HIGH_IMPACT_KIND_KEYWORDS = {
     "gateway": "⚠ Gateway/messaging — this will configure Son of Anton to use your OpenClaw messaging channels",
-    "telegram": "⚠ Telegram — this will point Son of Anton at your OpenClaw Telegram bot",
     "slack": "⚠ Slack — this will point Son of Anton at your OpenClaw Slack workspace",
     "discord": "⚠ Discord — this will point Son of Anton at your OpenClaw Discord bot",
-    "whatsapp": "⚠ WhatsApp — this will point Son of Anton at your OpenClaw WhatsApp connection",
     "config": "⚠ Config values — OpenClaw settings may not map 1:1 to Son of Anton equivalents",
     "soul": "⚠ Instruction file — may contain OpenClaw-specific setup/restart procedures",
     "memory": "⚠ Memory/context file — may reference OpenClaw-specific infrastructure",
@@ -3134,7 +2834,7 @@ def _run_first_time_quick_setup(config: dict, son_of_anton_home, is_existing: bo
     # Step 4: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
-        "Connect a messaging platform? (Telegram, Discord, etc.)",
+        "Connect a messaging platform? (Discord, Slack, Signal, etc.)",
         [
             "Set up messaging now (recommended)",
             "Skip — set up later with 'son-of-anton setup gateway'",
@@ -3157,7 +2857,7 @@ def _run_first_time_quick_setup(config: dict, son_of_anton_home, is_existing: bo
     print()
     print_info("  Configure all settings:    son-of-anton setup")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  son-of-anton setup gateway")
+        print_info("  Connect Discord/Slack:  son-of-anton setup gateway")
     print()
 
     _print_setup_summary(config, son_of_anton_home)
@@ -3383,7 +3083,7 @@ def _blank_slate_walkthrough(config: dict, son_of_anton_home):
 
     # ── Optional messaging gateway ──
     print()
-    if prompt_yes_no("Connect a messaging platform (Telegram, Discord, …)?", default=False):
+    if prompt_yes_no("Connect a messaging platform (Discord, Slack, …)?", default=False):
         setup_gateway(config)
 
     save_config(config)
@@ -3500,12 +3200,12 @@ def _run_quick_setup(config: dict, son_of_anton_home):
         platforms = {}
         for var in missing_messaging:
             name = var["name"]
-            if "TELEGRAM" in name:
-                plat = "Telegram"
-            elif "DISCORD" in name:
+            if "DISCORD" in name:
                 plat = "Discord"
             elif "SLACK" in name:
                 plat = "Slack"
+            elif "SIGNAL" in name:
+                plat = "Signal"
             else:
                 continue
             if plat not in platforms:
@@ -3514,9 +3214,9 @@ def _run_quick_setup(config: dict, son_of_anton_home):
 
         platform_labels = [
             {
-                "Telegram": "📱 Telegram",
                 "Discord": "💬 Discord",
                 "Slack": "💼 Slack",
+                "Signal": "📡 Signal",
             }.get(p, p)
             for p in platform_order
         ]
@@ -3529,7 +3229,7 @@ def _run_quick_setup(config: dict, son_of_anton_home):
         for idx in selected_indices:
             plat = platform_order[idx]
             vars_list = platforms[plat]
-            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
+            emoji = {"Discord": "💬", "Slack": "💼", "Signal": "📡"}.get(plat, "")
             print()
             print(color(f"  ─── {emoji} {plat} ───", Colors.CYAN))
             print()

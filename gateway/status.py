@@ -510,7 +510,7 @@ def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
     ``gateway restart`` is normally a management command, not the gateway
     runtime. On hosts without a service manager, though, the manual restart
     fallback executes ``run_gateway()`` in that same process, so its argv stays
-    as ``gateway restart`` while it owns the webhook port and writes runtime
+    as ``gateway restart`` while it owns a listener port and writes runtime
     state. Keep the public ``looks_like_gateway_command_line()`` strict, and
     use this broader matcher only when validating Son of Anton-owned runtime records
     or no-supervisor cleanup scans.
@@ -1488,7 +1488,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     """Acquire a machine-local lock keyed by scope + identity.
 
     Used to prevent multiple local gateways from using the same external identity
-    at once (e.g. the same Telegram bot token across different SON_OF_ANTON_HOME dirs).
+    at once (e.g. the same bot token across different SON_OF_ANTON_HOME dirs).
     """
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1500,7 +1500,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         "updated_at": _utc_now_iso(),
     }
     # Human-readable profile label for cross-profile conflict diagnostics
-    # (OOF-3): "Telegram bot token already in use (PID 559)" gives an
+    # (OOF-3): "bot token already in use (PID 559)" gives an
     # operator no way to tell WHICH profile owns the credential.  Stamped
     # only on scoped-lock records (they're machine-global; PID/runtime
     # status files are per-home and don't need it).  Omitted when no label
@@ -1647,7 +1647,7 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         return
     # Same PID as the live process means we own the lock. Do not require
     # start_time equality: on-disk null vs a live fingerprint (macOS/psutil
-    # timing) would otherwise leave the lock stuck across Discord/Telegram
+    # timing) would otherwise leave the lock stuck across Discord
     # reconnects (#81468). start_time only guards PID reuse for *other* PIDs.
     try:
         lock_path.unlink(missing_ok=True)

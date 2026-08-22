@@ -413,10 +413,10 @@ def _collect_operator_aliases(existing: dict, peer_target: str) -> dict:
     print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
     print("  Leave blank to skip a platform.  Existing aliases are preserved.")
     for platform_label, alias_hint in (
-        ("Telegram UID", "e.g. 7654321"),
+        ("Discord UID", "e.g. 123456"),
         ("Discord snowflake", "e.g. 491827364"),
         ("Slack user ID", "e.g. U04ABCDEF"),
-        ("Matrix MXID", "e.g. @you:matrix.org"),
+        ("Signal number", "e.g. +15551234567"),
     ):
         entered = _prompt(f"  {platform_label} ({alias_hint})", default="").strip()
         if entered:
@@ -771,7 +771,7 @@ def cmd_setup(args) -> None:
         son_of_anton_host["workspace"] = new_workspace
 
     # --- 3b. Gateway identity mapping ---
-    # These keys only affect the Son of Anton GATEWAY (Telegram/Discord/Slack/...),
+    # These keys only affect the Son of Anton GATEWAY (Discord/Slack/Signal/...),
     # the one entrypoint that supplies a runtime user ID.  CLI/TUI/desktop/ACP
     # sessions have no runtime ID and fall through to peerName, so the step is
     # moot off-gateway — gate it behind detection.
@@ -798,7 +798,7 @@ def cmd_setup(args) -> None:
     if gw_platforms is None:
         print("\n  Gateway identity mapping routes platform users to memory peers.")
         run_mapping = _prompt(
-            "Running the Son of Anton gateway (Telegram/Discord/etc.)? (y/N)",
+            "Running the Son of Anton gateway (Discord/Slack/etc.)? (y/N)",
             default="n",
         ).strip().lower() in {"y", "yes"}
     elif not gw_platforms:
@@ -872,7 +872,7 @@ def cmd_setup(args) -> None:
                 son_of_anton_host["userPeerAliases"] = prior_aliases
             _apply_runtime_prefix(
                 son_of_anton_host, current_prefix, prefix_from_root,
-                "Runtime peer prefix (e.g. 'telegram_', blank for none)",
+                "Runtime peer prefix (e.g. 'discord_', blank for none)",
             )
             print("  Each gateway user → own peer.")
             _echo_identity_mapping(son_of_anton_host)
@@ -885,7 +885,7 @@ def cmd_setup(args) -> None:
                 son_of_anton_host["userPeerAliases"] = merged
             _apply_runtime_prefix(
                 son_of_anton_host, current_prefix, prefix_from_root,
-                "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
+                "Runtime peer prefix for unknown users (e.g. 'discord_', blank for none)",
             )
             print(f"  Your runtime IDs → '{peer_target}', others → own peer.")
             _echo_identity_mapping(son_of_anton_host)

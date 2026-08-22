@@ -20,26 +20,9 @@ class PlatformInfo(NamedTuple):
 # Ordered so that TUI menus are deterministic.
 PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("cli",            PlatformInfo(label="🖥️  CLI",            default_toolset="son-of-anton-cli")),
-    ("telegram",       PlatformInfo(label="📱 Telegram",        default_toolset="son-of-anton-telegram")),
     ("discord",        PlatformInfo(label="💬 Discord",         default_toolset="son-of-anton-discord")),
     ("slack",          PlatformInfo(label="💼 Slack",           default_toolset="son-of-anton-slack")),
-    ("whatsapp",       PlatformInfo(label="📱 WhatsApp",        default_toolset="son-of-anton-whatsapp")),
-    ("whatsapp_cloud", PlatformInfo(label="📱 WhatsApp Business (Cloud)", default_toolset="son-of-anton-whatsapp")),
     ("signal",         PlatformInfo(label="📡 Signal",          default_toolset="son-of-anton-signal")),
-    ("bluebubbles",    PlatformInfo(label="💙 BlueBubbles",     default_toolset="son-of-anton-bluebubbles")),
-    ("email",          PlatformInfo(label="📧 Email",           default_toolset="son-of-anton-email")),
-    ("homeassistant",  PlatformInfo(label="🏠 Home Assistant",  default_toolset="son-of-anton-homeassistant")),
-    ("mattermost",     PlatformInfo(label="💬 Mattermost",      default_toolset="son-of-anton-mattermost")),
-    ("matrix",         PlatformInfo(label="💬 Matrix",          default_toolset="son-of-anton-matrix")),
-    ("dingtalk",       PlatformInfo(label="💬 DingTalk",        default_toolset="son-of-anton-dingtalk")),
-    ("feishu",         PlatformInfo(label="🪽 Feishu",          default_toolset="son-of-anton-feishu")),
-    ("wecom",          PlatformInfo(label="💬 WeCom",           default_toolset="son-of-anton-wecom")),
-    ("wecom_callback", PlatformInfo(label="💬 WeCom Callback",  default_toolset="son-of-anton-wecom-callback")),
-    ("weixin",         PlatformInfo(label="💬 Weixin",          default_toolset="son-of-anton-weixin")),
-    ("qqbot",          PlatformInfo(label="💬 QQBot",           default_toolset="son-of-anton-qqbot")),
-    ("yuanbao",        PlatformInfo(label="🤖 Yuanbao",         default_toolset="son-of-anton-yuanbao")),
-    ("webhook",        PlatformInfo(label="🔗 Webhook",         default_toolset="son-of-anton-webhook")),
-    ("api_server",     PlatformInfo(label="🌐 API Server",      default_toolset="son-of-anton-api-server")),
     ("cron",           PlatformInfo(label="⏰ Cron",            default_toolset="son-of-anton-cron")),
 ])
 

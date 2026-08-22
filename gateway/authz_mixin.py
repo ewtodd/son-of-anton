@@ -22,10 +22,6 @@ from typing import Optional
 
 from gateway.config import Platform
 from gateway.session import SessionSource
-from gateway.whatsapp_identity import (
-    expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
-    normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
-)
 
 
 def _auth_env(name: str, default: str = "") -> str:
@@ -51,7 +47,7 @@ def _platform_gate_env(name: str, default: str = "") -> str:
     the scope returns ``default`` instead of falling through to
     ``os.environ``. Under multiplex the process env may hold ANOTHER
     profile's first-writer-bridged value (the YAML→env bridges in the
-    Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins),
+    Discord/Slack adapters' ``_apply_yaml_config`` are first-writer-wins),
     so falling through would leak profile A's allowlist into profile B
     (issue #72348). Single-profile deployments — no scope installed, or
     multiplex off — behave exactly like the legacy ``os.getenv`` read.
@@ -224,7 +220,7 @@ class GatewayAuthorizationMixin:
         """Whether the adapter for *platform* gates access at intake itself.
 
         Mirrors ``BasePlatformAdapter.enforces_own_access_policy``. Adapters
-        such as WeCom, Weixin, Yuanbao, QQBot, and WhatsApp evaluate their
+        Some adapters evaluate their
         documented ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
         message is dispatched to the gateway. The flag alone is NOT "already
         authorized": these adapters default to ``open``, which forwards every
@@ -324,7 +320,7 @@ class GatewayAuthorizationMixin:
     ) -> bool:
         """Whether a per-group sender allowlist gated this group message.
 
-        WeCom supports ``groups.<group_id>.allow_from`` on top of the top-level
+        Some platforms support ``groups.<group_id>.allow_from`` on top of the top-level
         ``group_policy``. A group may be open at the chat level while still
         restricting which senders inside that group can invoke Son of Anton. If such a
         message reached the gateway, the adapter already checked that sender
@@ -394,19 +390,12 @@ class GatewayAuthorizationMixin:
         
         Checks in order:
         1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        2. Environment variable allowlists (DISCORD_ALLOWED_USERS, etc.)
         3. DM pairing approved list
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
         """
         from gateway.run import logger
-        # Home Assistant events are system-generated (state changes), not
-        # user-initiated messages.  The HASS_TOKEN already authenticates the
-        # connection, so HA events are always authorized.
-        # Webhook events are authenticated via HMAC signature validation in
-        # the adapter itself — no user allowlist applies.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
-            return True
 
         adapter_profile = self._adapter_profile_for_source(source)
 
@@ -448,50 +437,6 @@ class GatewayAuthorizationMixin:
 
         user_id = source.user_id
 
-        # Telegram (and similar) authorize entire group/forum/channel chats
-        # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
-        # That allowlist is chat-scoped, so it must work even when
-        # source.user_id is None — Telegram emits anonymous-admin posts,
-        # sender_chat traffic, and channel broadcasts with no `from_user`,
-        # and an operator who explicitly listed the chat expects those to
-        # be honored. Run this check before the no-user-id guard below so
-        # documented behavior matches reality
-        # (website/docs/reference/environment-variables.md,
-        # website/docs/user-guide/messaging/telegram.md).
-        if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
-            chat_allowlist_env = {
-                Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
-                Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
-            }.get(source.platform, "")
-            if chat_allowlist_env:
-                raw_chat_allowlist = _platform_gate_env(chat_allowlist_env)
-                if raw_chat_allowlist:
-                    allowed_group_ids = {
-                        cid.strip()
-                        for cid in raw_chat_allowlist.split(",")
-                        if cid.strip()
-                    }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
-                        return True
-
-            # Fallback: also check adapter-level config (config.yaml)
-            # for platforms.<platform>.extra.group_allowed_chats.
-            # The Telegram observe-unmentioned mode strips user_id from
-            # triggered group messages (_apply_telegram_group_observe_attribution),
-            # so the env-var-only check above misses config.yaml-configured
-            # allowlists.  Read the live adapter's config.extra as a fallback.
-            try:
-                adapter = self._adapter_for_source(source)
-                if adapter is not None:
-                    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
-                    adapter_group_allowed = extra.get("group_allowed_chats")
-                    if adapter_group_allowed:
-                        allowed = _coerce_allow_set(adapter_group_allowed)
-                        if "*" in allowed or source.chat_id in allowed:
-                            return True
-            except Exception:
-                pass
-
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver
         # bot/automation traffic with no user_id at all -- e.g. Slack Workflow
@@ -500,8 +445,6 @@ class GatewayAuthorizationMixin:
         # the chat-scoped allowlist above runs early).
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
-            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-            Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
             Platform.SLACK: "SLACK_ALLOW_BOTS",
         }
         if getattr(source, "is_bot", False):
@@ -513,51 +456,16 @@ class GatewayAuthorizationMixin:
             return False
 
         platform_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
-            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
-            Platform.SMS: "SMS_ALLOWED_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
-            Platform.WECOM: "WECOM_ALLOWED_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
-            Platform.QQBOT: "QQ_ALLOWED_USERS",
-            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
-        platform_group_user_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
-        }
-        platform_group_chat_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
-            Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
-        }
+        platform_group_user_env_map = {}
+        platform_group_chat_env_map = {}
         platform_allow_all_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
-            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
-            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
-            Platform.SMS: "SMS_ALLOW_ALL_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
-            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
-            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
-            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
-            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
-            Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
 
         # Plugin platforms: check the registry for auth env var names
@@ -665,7 +573,7 @@ class GatewayAuthorizationMixin:
                 if effective_policy == "allowlist":
                     # Trust allowlist intake only when the live adapter still
                     # allowlists this sender. Pairing revoke can clear
-                    # WHATSAPP_ALLOWED_USERS while a construction-time
+                    # an allowlist env while a construction-time
                     # ``_allow_from`` snapshot would otherwise keep authorizing
                     # until restart; re-check when the adapter exposes a DM
                     # allowlist helper. Adapters without that helper keep the
@@ -684,7 +592,7 @@ class GatewayAuthorizationMixin:
                         if callable(dm_check):
                             return bool(dm_check(user_id))
                     return True
-            # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
+            # Some adapters gate access via config.extra.allow_from /
             # group_allow_from at intake but do not override enforces_own_access_policy.
             # Check their allowlist here so config.yaml-configured allow_from works
             # without requiring a separate {PLATFORM}_ALLOWED_USERS env var.
@@ -702,9 +610,8 @@ class GatewayAuthorizationMixin:
             # No allowlists configured -- check global allow-all flag
             return _auth_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
-        # Telegram can optionally authorize group traffic by chat ID.
-        # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
-        # the sender user ID for group/forum messages.
+        # Chat-scoped allowlists (group_chat_allowlist) gate group/forum
+        # traffic by chat ID when a platform declares one.
         if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
             allowed_group_ids = {
                 chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
@@ -712,40 +619,7 @@ class GatewayAuthorizationMixin:
             if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                 return True
 
-        # Backward-compat shim for #15027: prior to PR #17686,
-        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
-        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
-        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
-        # as chat IDs and warn once. The correct var is now
-        # TELEGRAM_GROUP_ALLOWED_CHATS.
-        if (
-            source.platform == Platform.TELEGRAM
-            and group_user_allowlist
-            and source.chat_type in {"group", "forum"}
-            and source.chat_id
-        ):
-            legacy_chat_ids = {
-                v.strip()
-                for v in group_user_allowlist.split(",")
-                if v.strip().startswith("-")
-            }
-            if legacy_chat_ids:
-                if not getattr(self, "_warned_telegram_group_users_legacy", False):
-                    logger.warning(
-                        "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
-                        "(%s). Treating them as chat IDs for backward compatibility. "
-                        "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
-                        "is now for sender user IDs.",
-                        ",".join(sorted(legacy_chat_ids)),
-                    )
-                    self._warned_telegram_group_users_legacy = True
-                if source.chat_id in legacy_chat_ids:
-                    return True
-
-        # Check if user is in any allowlist. In group/forum chats,
-        # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
-        # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
-        # allowlist and still works everywhere for backward compatibility.
+        # Check if user is in any allowlist.
         allowed_ids = set()
         if platform_allowlist:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
@@ -763,35 +637,6 @@ class GatewayAuthorizationMixin:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
-        # WhatsApp (Baileys + Cloud): resolve phone↔LID / JID aliases so
-        # device-suffix and bare-phone allowlist entries match the same principal.
-        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
-            normalized_allowed_ids = set()
-            for allowed_id in allowed_ids:
-                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
-            if normalized_allowed_ids:
-                allowed_ids = normalized_allowed_ids
-
-            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
-            normalized_user_id = _normalize_whatsapp_identifier(user_id)
-            if normalized_user_id:
-                check_ids.add(normalized_user_id)
-
-        # SimpleX: SIMPLEX_ALLOWED_USERS accepts either the numeric contactId
-        # or the contact's display name. The adapter sets user_id=contactId for
-        # stability across renames, but the SimpleX UI never surfaces the
-        # numeric id — operators only see display names, so that's what they
-        # naturally put in the env var. Match both so the allowlist works
-        # regardless of which form was chosen.
-        # Plugin platform: compare by value since Platform.SIMPLEX is not a
-        # hardcoded enum member (it's a dynamic plugin platform).
-        if (
-            source.platform is not None
-            and source.platform.value == "simplex"
-            and source.user_name
-        ):
-            check_ids.add(source.user_name)
-
         return bool(check_ids & allowed_ids)
 
     def _get_unauthorized_dm_behavior(
@@ -804,19 +649,16 @@ class GatewayAuthorizationMixin:
 
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
-        2. Email defaults to ``"ignore"`` unless explicitly opted into
-           pairing. Inboxes may contain arbitrary unread human messages, so
-           replying with pairing codes is not a safe platform default.
-        3. Explicit global ``unauthorized_dm_behavior`` in config — wins for
+        2. Explicit global ``unauthorized_dm_behavior`` in config — wins for
            chat-shaped platforms when no per-platform override is set.
-        4. When an adapter-level DM policy opts into pairing or silent drop, honor it.
-        5. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+        3. When an adapter-level DM policy opts into pairing or silent drop, honor it.
+        4. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
            and a potential info-leak. (#9337)
-        6. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        5. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
 
@@ -827,25 +669,17 @@ class GatewayAuthorizationMixin:
                 # Operator explicitly configured behavior for this platform — respect it.
                 return config.get_unauthorized_dm_behavior(platform)
 
-        # Email is inbox-shaped, not chat-shaped: an agent mailbox may contain
-        # unrelated unread human email. Require an explicit per-platform
-        # ``unauthorized_dm_behavior: pair`` opt-in before replying to unknown
-        # senders with pairing codes. Keep this before the global fallback to
-        # match GatewayConfig.get_unauthorized_dm_behavior().
-        if platform == Platform.EMAIL:
-            return "ignore"
-
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):
             if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
                 return config.unauthorized_dm_behavior
 
-        # Config-driven dm_policy (WeCom / Weixin / Yuanbao / QQBot). An
-        # allowlist or disabled DM policy means the operator restricted access,
-        # so unauthorized DMs should be dropped silently rather than answered
-        # with a pairing code. An explicit pairing policy opts back into codes.
-        # Prefer the profile-scoped live adapter's resolved policy in multiplex
-        # mode; fall back to the default profile's config.extra.
+        # Config-driven dm_policy. An allowlist or disabled DM policy means the
+        # operator restricted access, so unauthorized DMs should be dropped
+        # silently rather than answered with a pairing code. An explicit
+        # pairing policy opts back into codes. Prefer the profile-scoped live
+        # adapter's resolved policy in multiplex mode; fall back to the default
+        # profile's config.extra.
         if platform:
             dm_policy = self._adapter_dm_policy(platform, profile=profile)
             if not dm_policy and config and hasattr(config, "platforms"):
@@ -863,31 +697,11 @@ class GatewayAuthorizationMixin:
         # unauthorized messages instead of sending pairing codes.
         if platform:
             platform_env_map = {
-                Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
                 Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
-                Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-                Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
                 Platform.SLACK:    "SLACK_ALLOWED_USERS",
                 Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
-                Platform.EMAIL:    "EMAIL_ALLOWED_USERS",
-                Platform.SMS:      "SMS_ALLOWED_USERS",
-                Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-                Platform.MATRIX:   "MATRIX_ALLOWED_USERS",
-                Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-                Platform.FEISHU:   "FEISHU_ALLOWED_USERS",
-                Platform.WECOM:    "WECOM_ALLOWED_USERS",
-                Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
-                Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
-                Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
-                Platform.QQBOT:    "QQ_ALLOWED_USERS",
             }
-            platform_group_env_map = {
-                Platform.TELEGRAM: (
-                    "TELEGRAM_GROUP_ALLOWED_USERS",
-                    "TELEGRAM_GROUP_ALLOWED_CHATS",
-                ),
-                Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
-            }
+            platform_group_env_map = {}
             if _platform_gate_env(platform_env_map.get(platform, "")).strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):

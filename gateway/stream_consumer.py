@@ -8,7 +8,7 @@ GatewayStreamConsumer:
      a single message on the target platform
 
 Design: Uses the edit transport (send initial message, then editMessageText).
-This is universally supported across Telegram, Discord, and Slack.
+This is universally supported across Discord, Slack, and Signal.
 
 Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 """
@@ -148,16 +148,16 @@ class StreamConsumerConfig:
     # behavior).  The gateway enables this selectively per-platform.
     fresh_final_after_seconds: float = 0.0
     # Streaming transport selection:
-    #   "auto"  — prefer native draft streaming (e.g. Telegram sendMessageDraft)
-    #             when the adapter + chat supports it; fall back to edit.
+    #   "auto"  — prefer native draft streaming when the adapter + chat
+    #             supports it; fall back to edit.
     #   "draft" — explicitly request native draft streaming; fall back to
     #             edit when unsupported.
-    #   "edit"  — progressive editMessageText (legacy/default behavior).
+    #   "edit"  — progressive message edits (legacy/default behavior).
     #   "off"   — handled by the gateway before the consumer is even built.
     transport: str = "edit"
     # Hint for the consumer about the originating chat type (e.g. "dm",
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
-    # which is platform-specific (Telegram drafts are DM-only).
+    # which is platform-specific (draft streaming may be DM-only).
     chat_type: str = ""
 
 
@@ -192,9 +192,10 @@ class GatewayStreamConsumer:
         "</THINKING>", "</thinking>", "</thought>",
     )
 
-    # Class-wide monotonic counter for native-streaming draft ids.  Telegram
-    # animates a draft when the same draft_id is reused across consecutive
-    # calls in the same chat, so we need a fresh non-zero id per response.
+    # Class-wide monotonic counter for native-streaming draft ids.  Some
+    # platforms animate a draft when the same draft_id is reused across
+    # consecutive calls in the same chat, so we need a fresh non-zero id
+    # per response.
     #
     # Seeded from a RANDOM process nonce, not zero and not the clock (PR
     # 85796 review, B3 + r2 follow-up): draft_id is the wire identity for
@@ -235,7 +236,7 @@ class GatewayStreamConsumer:
         self._on_new_message = on_new_message
         # Fired once when the stream transitions into its finalization path.
         # Gateway callers use this to pause typing refreshes before a slow
-        # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
+        # final rich-text edit (MarkdownV2 finalize, etc.).
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
@@ -272,10 +273,10 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         self._fallback_prefix = ""
         # True when fallback is sending only the missing tail after a partial
-        # Telegram overflow delivery.  In that case the already-visible prefix
+        # overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
         self._fallback_preserve_partial_messages = False
-        # Keep fallback recovery responsive. Telegram's adapter already bounds
+        # Keep fallback recovery responsive. The adapter already bounds
         # edit retries at five seconds; a final-delivery fallback must not hold
         # the stream task through a longer flood cooldown before retrying.
         self._max_fallback_flood_retry_seconds = 5.0
@@ -298,7 +299,7 @@ class GatewayStreamConsumer:
         # When a payload was recorded (via ``_stream_ledger`` /
         # ``_record_turn_final_payload``), ``delivered_final_matches`` can still
         # reconcile.  Payload-less split delivery must NOT inherit legacy trust
-        # (#78541) — that combination was swallowing complete Telegram group
+        # (#78541) — that combination was swallowing complete group
         # replies after an early/partial multi-message delivery.
         self._turn_split_delivery = False
         self._delivered_commentary_texts: list[str] = []
@@ -310,7 +311,7 @@ class GatewayStreamConsumer:
         # can't recognize an already-delivered response. (#65919 review)
         self._delivered_segment_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
-        # explicit finalize call (e.g. DingTalk AI Cards) force us to make
+        # explicit finalize call (e.g. rich AI-card surfaces) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
         # Use ``is True`` (not ``bool(...)``) so MagicMock attribute access
         # in tests doesn't incorrectly enable this path.
@@ -368,11 +369,11 @@ class GatewayStreamConsumer:
     ) -> dict | None:
         """Return per-send metadata for stream-created messages.
 
-        Mattermost treats notify-worthy sends as user-visible final content
+        Some platforms treat notify-worthy sends as user-visible final content
         when deciding whether a broken thread root may fall back flat.  Preview
         and progress sends keep their original metadata and remain thread-strict.
 
-        ``expect_edits`` preserves the upstream Telegram streaming contract:
+        ``expect_edits`` preserves the upstream draft-streaming contract:
         preview messages that may be edited later must stay on the editable
         legacy send path, while fresh/fallback final sends can still use richer
         final-message delivery.
@@ -652,7 +653,7 @@ class GatewayStreamConsumer:
             # ONE stream per turn: tool progress lives in the native task
             # card, and the connector's suffix-delta logic appends each new
             # segment cleanly (prefix mismatch → whole-segment append).
-            # Telegram-shaped drafts (clear + separate final) keep the bump.
+            # Draft-and-final adapters (clear + separate final) keep the bump.
             if not self._stream_is_message():
                 type(self)._draft_id_counter += 1
                 self._draft_id = type(self)._draft_id_counter
@@ -842,11 +843,11 @@ class GatewayStreamConsumer:
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting.
-        # Use the adapter's length function (e.g. utf16_len for Telegram) so
+        # Use the adapter's length function (e.g. utf16_len) so
         # overflow detection matches what the platform actually enforces.
         # Both resolve PER-CHAT (max_message_length_for_chat): a relay adapter
         # fronting N platforms has different caps per chat (Discord 2000 vs
-        # Telegram 4096); native adapters return their scalar unchanged.
+        # platform caps); native adapters return their scalar unchanged.
         # Gate on isinstance(BasePlatformAdapter) so test MagicMocks (whose
         # auto-attributes return mock objects, not callables) fall back to len.
         _len_fn: "Callable[[str], int]" = (
@@ -854,7 +855,7 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
-        # Rich-capable adapters (Telegram rich messages) raise this above the
+        # Rich-capable adapters raise this above the
         # legacy per-message limit so a reply that fits one rich send/draft
         # isn't fragmented at 4096 while streaming.  See _raw_message_limit.
         _raw_limit = self._raw_message_limit()
@@ -1151,7 +1152,7 @@ class GatewayStreamConsumer:
                             split_at = _cp_budget
                         chunk = self._accumulated[:split_at]
                         # finalize=True so the adapter applies platform-specific
-                        # rich-text markup (e.g. Telegram MarkdownV2). This
+                        # rich-text markup (e.g. MarkdownV2). This
                         # sealed chunk will never be edited again — _message_id
                         # is reset to None right below — so it must receive its
                         # final formatting pass now, or early split messages
@@ -1182,7 +1183,7 @@ class GatewayStreamConsumer:
                         display_text += self.cfg.cursor
 
                     # Segment break: finalize the current message so platforms
-                    # that need explicit closure (e.g. DingTalk AI Cards) don't
+                    # that need explicit closure (e.g. rich AI-card surfaces) don't
                     # leave the previous segment stuck in a loading state when
                     # the next segment (tool progress, next chunk) creates a
                     # new message below it.  got_done has its own finalize
@@ -1235,7 +1236,7 @@ class GatewayStreamConsumer:
                             # adapter's explicit finalize hook immediately
                             # afterward would edit that already-final message
                             # a second time.  This is especially harmful for
-                            # Telegram, where a successful sendRichMessage was
+                            # platforms where a successful sendRichMessage was
                             # being followed by editMessageText and could fall
                             # back to the legacy table-to-bullets formatter.
                             #
@@ -1308,7 +1309,7 @@ class GatewayStreamConsumer:
                 # creates a fresh message below any tool-progress messages.
                 #
                 # Exception: when _message_id is "__no_edit__" the platform
-                # never returned a real message ID (e.g. Signal, webhook with
+                # never returned a real message ID (e.g. Signal
                 # github_comment delivery).  Resetting to None would re-enter
                 # the "first send" path on every tool boundary and post one
                 # platform message per tool call — that is what caused 155
@@ -1362,7 +1363,7 @@ class GatewayStreamConsumer:
 
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation.  finalize=True so
-            # REQUIRES_EDIT_FINALIZE platforms (Telegram) apply final
+            # REQUIRES_EDIT_FINALIZE platforms apply final
             # formatting — a plain edit here would leave the entire reply
             # rendered as a raw streaming preview while the success flags
             # below suppress the gateway's formatted re-send.
@@ -1574,7 +1575,7 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         if not continuation.strip():
             # Some platforms treat a successful streaming preview as durable
-            # delivery. Telegram clients can instead lose or retain only part
+            # delivery. Some clients can instead lose or retain only part
             # of that preview after a failed final edit, so opt-in adapters
             # commit the completed answer with a fresh final send.
             if (
@@ -1593,7 +1594,7 @@ class GatewayStreamConsumer:
                 self._fallback_prefix = ""
                 self._fallback_preserve_partial_messages = False
                 if delivery == "ambiguous":
-                    # A timeout may mean Telegram accepted the send but the
+                    # A timeout may mean the platform accepted the send but the
                     # client never received the response. Preserve duplicate
                     # suppression for that one uncertain outcome.
                     self._final_content_delivered = True
@@ -1758,7 +1759,7 @@ class GatewayStreamConsumer:
         self._fallback_preserve_partial_messages = False
 
     async def _send_empty_fallback_final(self, final_text: str) -> str:
-        """Commit a completed answer after Telegram finalization fails.
+        """Commit a completed answer after finalization fails.
 
         Returns ``delivered`` on confirmed success, ``failed`` when the
         gateway can safely retry, and ``ambiguous`` when a timeout may have
@@ -1884,8 +1885,8 @@ class GatewayStreamConsumer:
 
         Adapter eligibility is checked via
         :meth:`BasePlatformAdapter.supports_draft_streaming`, which considers
-        the chat type (e.g. Telegram drafts are DM-only) and platform-version
-        gates (e.g. python-telegram-bot 22.6+).
+        the chat type (e.g. draft streaming may be DM-only) and platform-version
+        gates (e.g. newer platform SDKs).
         """
         transport = (self.cfg.transport or "edit").lower()
         if transport == "edit":
@@ -2129,9 +2130,9 @@ class GatewayStreamConsumer:
 
         Resolved PER-CHAT via ``max_message_length_for_chat`` — a relay adapter
         fronting N platforms has a different cap per chat (Discord 2000 vs
-        Telegram 4096 vs Slack 39000); native adapters return their scalar
+        Different platforms have different caps); native adapters return their scalar
         ``MAX_MESSAGE_LENGTH`` unchanged. Adapters with a richer send/draft
-        path (e.g. Telegram rich messages) can raise this above the base via
+        path (rich messages) can raise this above the base via
         ``streaming_overflow_limit`` so a reply that fits one rich message isn't
         fragmented at the legacy edit limit.  Falls back to
         ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
@@ -2175,7 +2176,7 @@ class GatewayStreamConsumer:
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Return True when the adapter would rather finalize a streamed reply
         by sending a fresh message and deleting the preview than by editing the
-        preview in place — e.g. Telegram, whose ``sendRichMessage`` send path
+        preview in place — platforms whose ``sendRichMessage`` send path
         currently renders richer markdown than Son of Anton' MarkdownV2 edit path.
 
         Returns False when there is no real preview to replace (no message id,
@@ -2352,7 +2353,7 @@ class GatewayStreamConsumer:
         _pre_fence_text = text
         # Ensure code fences are balanced before send/edit.  Model output
         # truncated mid-code-block (e.g. finish_reason="length") leaves an
-        # orphaned ``` which, on Discord/Slack/Matrix, causes the entire
+        # orphaned ``` which, on Discord/Slack, causes the entire
         # remaining output to render as a single code block.  This covers
         # the streaming edit path (G2) and first-send path alike.
         text = ensure_closed_code_fences(text)
@@ -2372,7 +2373,7 @@ class GatewayStreamConsumer:
         # before switching to tool calls; the resulting "X ▉" message risks
         # leaving the cursor permanently visible if the follow-up edit (to
         # strip the cursor on segment break) is rate-limited by the platform.
-        # This was reported on Telegram, Matrix, and other clients where the
+        # This was reported on some clients where the
         # ▉ block character renders as a visible white box ("tofu").
         # Existing messages (edits) are unaffected — only first sends gated.
         _MIN_NEW_MSG_CHARS = 4
@@ -2458,15 +2459,15 @@ class GatewayStreamConsumer:
                     # legacy edit-in-place path stays the default.
                     #
                     # Adapters can also opt in regardless of the time threshold
-                    # via prefers_fresh_final_streaming (e.g. Telegram, whose
-                    # send path renders richer markdown than its edit path):
+                    # via prefers_fresh_final_streaming (e.g. platforms whose
+                    # send path renders richer markdown than their edit path):
                     # finalizing through edit would visibly downgrade a rich
                     # preview, so re-deliver as a fresh message + delete the
                     # preview instead.
                     #
                     # When the adapter exposes prefers_fresh_final_streaming
                     # and explicitly returns False, the time-based threshold
-                    # must NOT override that decision.  On Telegram the
+                    # must NOT override that decision.  On some platforms the
                     # fresh-final path sends a Rich Message (sendRichMessage)
                     # that overlaps with the legacy MarkdownV2 preview already
                     # visible from streaming — both remain on screen because
@@ -2556,7 +2557,7 @@ class GatewayStreamConsumer:
                             # screen).  Mark the content delivered so the
                             # gateway suppresses its normal full final send;
                             # otherwise users see the same long answer twice
-                            # when Telegram/Discord rate-limit this cosmetic
+                            # when Discord rate-limits this cosmetic
                             # final edit (#36965, #25349).
                             self._final_content_delivered = True
                             # ``text`` is already cleaned/fence-closed here and
@@ -2569,7 +2570,7 @@ class GatewayStreamConsumer:
                             self._record_turn_final_payload(text)
                         raw_response = getattr(result, "raw_response", None)
                         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
-                            # Telegram edited/sent one or more overflow chunks,
+                            # the platform edited/sent one or more overflow chunks,
                             # but not the complete response.  Preserve the
                             # visible prefix so the got_done fallback sends the
                             # missing tail instead of marking a clipped topic
@@ -2650,7 +2651,7 @@ class GatewayStreamConsumer:
                         self._already_sent = True
                         # Best-effort: strip the cursor from the last visible
                         # message so the user doesn't see a stuck ▉. A
-                        # turn-final Telegram flood skips this cosmetic edit:
+                        # turn-final flood skips this cosmetic edit:
                         # another edit would consume the same flood budget and
                         # delay the fallback send that carries the answer.
                         if not immediate_final_fallback:

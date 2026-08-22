@@ -166,13 +166,13 @@ For every key, resolution order is: **host block > root > env var > default**.
 
 ### Identity Mapping (Gateway Multi-User)
 
-In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a platform-native runtime ID (Telegram UID, Discord snowflake, Slack user). These three keys control how those runtime IDs map to Honcho peers. The resolver is config-driven and deterministic — no automatic merging or runtime inference.
+In gateway deployments (Discord, Slack, Signal, etc.) each user arrives with a platform-native runtime ID (Discord snowflake, Slack user, Signal account). These three keys control how those runtime IDs map to Honcho peers. The resolver is config-driven and deterministic — no automatic merging or runtime inference.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `pinUserPeer` | bool | `false` | When `true`, every gateway runtime user collapses to `peerName`. Single-operator deployments where you want all your platforms (and any other users) to share one peer |
 | `userPeerAliases` | object | `{}` | Map of runtime IDs to peer IDs (`{"7654321": "alice"}`). Many-to-one is the intended pattern — alias all your runtime IDs to one peer name. One-to-many is not supported; one runtime ID resolves to exactly one peer |
-| `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"telegram_"` → `telegram_7654321`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
+| `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"discord_"` → `discord_7654321`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
 
 > **Deprecated:** `pinPeerName` is a legacy alias for `pinUserPeer`, still read for back-compat (`pinUserPeer` wins where both are set). `son-of-anton honcho setup` migrates it onto `pinUserPeer` on touch and never writes it.
 
@@ -181,7 +181,7 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 ```
 1. pinUserPeer / pinPeerName=true → return peerName (ignore runtime ID)
 2. userPeerAliases[runtime_id]   → return aliased peer
-3. userPeerAliases[runtime_id_alt] → check alt-ID too (Telegram UID + username, etc.)
+3. userPeerAliases[runtime_id_alt] → check alt-ID too (Discord snowflake + username, etc.)
 4. runtimePeerPrefix + runtime_id → namespaced peer, with sha256 collision escalation
 5. raw sanitized runtime_id      → fallback peer
 6. peerName                      → no runtime ID at all (CLI/TUI)
@@ -194,7 +194,7 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 
 **Setup — gateway identity tree.** `son-of-anton honcho setup` only asks about identity mapping when it detects a connected gateway platform (it inspects the gateway config; off-gateway the step is skipped because these keys do nothing without a runtime user ID). When it runs, it asks *who talks to this gateway?* and derives the keys:
 
-- **just me** → `pinUserPeer: true`. Every non-agent gateway user collapses to `peerName`; the pin overrides all aliases, so pick this only when no user-side identity needs its own peer. Personal use where you connect Son of Anton to your own Telegram/Discord/etc. If separate agents reach the gateway and each needs a distinct peer, do **not** pin — leave `pinUserPeer: false` and map them via `userPeerAliases` (the `[e]` editor).
+- **just me** → `pinUserPeer: true`. Every non-agent gateway user collapses to `peerName`; the pin overrides all aliases, so pick this only when no user-side identity needs its own peer. Personal use where you connect Son of Anton to your own Discord/Slack/etc. If separate agents reach the gateway and each needs a distinct peer, do **not** pin — leave `pinUserPeer: false` and map them via `userPeerAliases` (the `[e]` editor).
 - **me + other people, pooled** → `pinUserPeer: false` + `userPeerAliases` mapping your runtime IDs to `peerName`. You stay on the shared history; everyone else gets their own peer.
 - **me + other people / only other people** → `pinUserPeer: false`, optional `runtimePeerPrefix`. Each runtime user → own peer. For bots serving many humans.
 
@@ -233,7 +233,7 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 |----------|--------|---------------------|
 | 1 | Manual map (`sessions` config) | `"myproject-main"` |
 | 2 | `/title` command (mid-session rename) | `"refactor-auth"` |
-| 3 | Gateway session key (Telegram, Discord, etc.) | `"agent-main-telegram-dm-8439114563"` |
+| 3 | Gateway session key (Discord, Slack, etc.) | `"agent-main-discord-dm-8439114563"` |
 | 4 | `per-session` strategy | Son of Anton session ID (`20260415_a3f2b1`) |
 | 5 | `per-repo` strategy | Git root directory name (`son-of-anton`) |
 | 6 | `per-directory` strategy | Current directory basename (`src`) |

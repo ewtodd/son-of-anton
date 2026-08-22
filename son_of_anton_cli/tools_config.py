@@ -131,7 +131,7 @@ def gui_toolset_label(label: str) -> str:
 # Toolsets that are OFF by default for new installs.
 # They're still in _SON_OF_ANTON_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"discord", "discord_admin", "video", "a2a"}
+_DEFAULT_OFF_TOOLSETS = {"discord", "discord_admin", "video"}
 
 
 # Config-only capabilities: they appear in `son-of-anton tools` for provider/API-key
@@ -543,16 +543,10 @@ def run_post_setup_command(args) -> int:
 def _get_enabled_platforms() -> List[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
     enabled = ["cli"]
-    if get_env_value("TELEGRAM_BOT_TOKEN"):
-        enabled.append("telegram")
     if get_env_value("DISCORD_BOT_TOKEN"):
         enabled.append("discord")
     if get_env_value("SLACK_BOT_TOKEN"):
         enabled.append("slack")
-    if get_env_value("WHATSAPP_ENABLED"):
-        enabled.append("whatsapp")
-    if get_env_value("QQ_APP_ID"):
-        enabled.append("qqbot")
     return enabled
 
 
@@ -682,7 +676,7 @@ def _get_platform_tools(
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
     # Plugin-provided toolsets are first-class on a platform-toolsets list —
-    # explicit config like ``[son-of-anton-cli, a2a]`` must survive filtering just
+    # explicit config like ``[son-of-anton-cli, video]`` must survive filtering just
     # like a built-in configurable toolset would. See issue #81163.
     explicit_known_keys = configurable_keys | plugin_ts_keys
 
@@ -768,8 +762,8 @@ def _get_platform_tools(
         )
         enabled_toolsets -= default_off
 
-    # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
-    # feishu_drive).  These are part of the platform's default composite but
+    # Recover non-configurable platform toolsets (e.g. discord).  These are
+    # part of the platform's default composite but
     # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
     # checklist or in a user-saved config.  Must run in BOTH branches —
     # otherwise saving via `son-of-anton tools` (which flips has_explicit_config
@@ -930,7 +924,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
 
     # Drop platform-scoped toolsets that don't apply here.  Prevents the
     # "Configure all platforms" checklist (or a hand-edited config.yaml)
-    # from turning on, say, the `discord` toolset for Telegram.
+    # from turning on, say, the `discord` toolset for another platform.
     enabled_toolset_keys = {
         ts for ts in enabled_toolset_keys
         if _toolset_allowed_for_platform(ts, platform)
@@ -941,7 +935,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     plugin_keys = _get_plugin_toolset_keys()
     configurable_keys |= plugin_keys
 
-    # Also exclude platform default toolsets (son-of-anton-cli, son-of-anton-telegram, etc.)
+    # Also exclude platform default toolsets (son-of-anton-cli, etc.)
     # These are "super" toolsets that resolve to ALL tools, so preserving them
     # would silently override the user's unchecked selections on the next read.
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}

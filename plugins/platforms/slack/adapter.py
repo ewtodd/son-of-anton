@@ -804,7 +804,7 @@ def _slack_dedup_ttl_seconds() -> float:
 # backend (OpenAI Whisper / gpt-4o-transcribe) will accept for that container.
 # OpenAI sniffs the container from the FILENAME extension, so a wrong extension
 # (e.g. caching MP4 bytes as ``.ogg``) makes transcription fail outright.
-# Mirrors the proven map in gateway/platforms/bluebubbles.py.
+# Mirrors the proven map in the other adapters.
 _SLACK_AUDIO_MIME_TO_EXT = {
     "audio/ogg": ".ogg",
     "audio/opus": ".ogg",
@@ -850,7 +850,7 @@ _SLACK_EXT_TO_AUDIO_MIME = {
 def _resolve_slack_audio_ext(file_obj: Dict[str, Any], mimetype: str) -> str:
     """Pick the cache extension that matches an inbound Slack audio file's bytes.
 
-    Resolution order (mirrors the video branch + bluebubbles.py):
+    Resolution order (mirrors the video branch):
 
     1. The real extension from the uploaded filename, when it's a format a
        Whisper-family STT backend accepts (so ``audio_message.mp4`` →
@@ -2098,7 +2098,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
-            # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
+            # slash, matching Discord's model (e.g. /btw, /stop,
             # /model work directly without /son-of-anton prefix). A single regex
             # matcher dispatches all of them to one handler so we don't need
             # N identical @app.command() decorators.
@@ -2938,7 +2938,7 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a status message, or edit the previous one with the same key.
 
-        Issue #30045 (Telegram) extended to Slack: progress/status callbacks
+        Issue #30045 extended to Slack: progress/status callbacks
         (context-pressure, compression retries, model fallback, lifecycle)
         used to append a fresh bubble on every call, spamming threads during
         long retry loops. The first call posts and the message ts is
@@ -3115,7 +3115,7 @@ class SlackAdapter(BasePlatformAdapter):
     # Slack's Agents & AI Apps feature ships a native streaming surface: the
     # bot starts a stream (which renders a live "typing into the message"
     # bubble), appends markdown deltas, and stops the stream to finalize.
-    # Unlike Telegram drafts (ephemeral, replaced by a real sendMessage at the
+    # Unlike draft-style streams (ephemeral, replaced by a real send at the
     # end), a Slack stream IS the final message — so ``send()`` intercepts the
     # turn-final delivery for a chat with an active stream and seals it via
     # chat.stopStream instead of posting a duplicate.
@@ -5290,7 +5290,7 @@ class SlackAdapter(BasePlatformAdapter):
         reactions as real responses.
 
         The synthesized text follows the cross-platform convention already
-        used by the Feishu and Photon adapters — ``reaction:added:<emoji>`` /
+        used by some other adapters — ``reaction:added:<emoji>`` /
         ``reaction:removed:<emoji>`` — with common Slack reaction names
         translated to unicode emoji (👍, 👎, ✅, …) so agents and skills see
         the same shape on every platform. Because the synthesized event is
@@ -5369,7 +5369,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Look up the reacted-to message so we can route the synthesized
         # event into the right thread and verify the target belongs to this
-        # bot (matching the Feishu adapter's target-sender check). If the
+        # bot (matching the target-sender check). If the
         # lookup fails, fall back to treating the reacted-to message as the
         # thread parent — that's correct for top-level messages and
         # degrades gracefully for in-thread reactions where we lose the
@@ -5385,7 +5385,7 @@ class SlackAdapter(BasePlatformAdapter):
                     first = messages[0]
                     thread_ts = first.get("thread_ts") or first.get("ts") or msg_ts
                     # Verify the reacted-to message was sent by this bot
-                    # (matching the Feishu adapter's target-sender check).
+                    # (matching the target-sender check).
                     # ``item_user`` on the event is the author of the
                     # reacted-to message; if absent, fall back to the
                     # fetched message's ``user`` field. Operators that
@@ -5431,7 +5431,7 @@ class SlackAdapter(BasePlatformAdapter):
             "thread_ts": thread_ts,
             # A reaction on the bot's own message (or an operator-allowlisted
             # trigger emoji) is definitionally addressed to the bot — skip
-            # the mention requirement the way Feishu/Photon reaction routing
+            # the mention requirement the way some reaction routing
             # does. User authorization and allowed_channels still apply.
             "_son_of_anton_force_process": True,
             # Surfaced for any downstream code that wants to know this was a
@@ -6764,7 +6764,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         # Extract reply context if this message is a thread reply.
-        # Mirrors the Telegram/Discord implementations so that gateway.run
+        # Mirrors the Discord implementation so that gateway.run
         # can inject a `[Replying to: "..."]` prefix when the parent is not
         # already in the session history. Uses the thread-context cache when
         # available to avoid redundant conversations.replies calls.
@@ -7595,7 +7595,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         # Look up the canonical choice text from the registered entry (mirrors
-        # the Telegram adapter); fall back to a positional label on a race with
+        # the other adapters); fall back to a positional label on a race with
         # timeout / session reset.
         resolved_text: Optional[str] = None
         try:
@@ -8152,7 +8152,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         Every gateway command in COMMAND_REGISTRY is registered as a native
         Slack slash (``/btw``, ``/stop``, ``/model``, etc.), matching the
-        Discord and Telegram model. The slash name itself is the command;
+        Discord model. The slash name itself is the command;
         any text after it is the argument list.
 
         The legacy ``/son-of-anton <subcommand> [args]`` form is preserved for
@@ -8753,7 +8753,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _slack_require_mention(self) -> bool:
         """Return whether channel messages require an explicit bot mention.
 
-        Uses explicit-false parsing (like Discord/Matrix) rather than
+        Uses explicit-false parsing rather than
         truthy parsing, since the safe default is True (gating on).
         Unrecognised or empty values keep gating enabled.
         """
@@ -8932,8 +8932,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile optional regex wake-word patterns for channel triggers.
 
-        Parity with the other adapters (Telegram, DingTalk, Mattermost,
-        WhatsApp, BlueBubbles, Photon): when ``require_mention`` is on, a
+        Parity with the other adapters: when ``require_mention`` is on, a
         channel message matching one of these patterns triggers the bot even
         without a literal ``<@BOTUID>`` mention. Reads ``slack.mention_patterns``
         (a list or single string) or ``SLACK_MENTION_PATTERNS`` (a JSON list, or

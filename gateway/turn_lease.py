@@ -5,7 +5,7 @@ Why this exists (#64934): the gateway's busy guards are keyed by ROUTING KEY
 the durable transcript is owned by SESSION_ID — and ``switch_session()`` makes
 the key→id mapping many-to-one (``/resume`` of a named session from a second
 chat/topic, CLI-continuity rebinding, async-delegation completion pinning,
-Telegram topic-binding tip-walks). Two routing keys mapped to one session_id
+topic-binding tip-walks). Two routing keys mapped to one session_id
 run concurrent turns on two different agent objects, so no per-key guard ever
 sees the collision. The two turns then interleave their flushes on one
 transcript: rows persist in completion order instead of arrival order, the

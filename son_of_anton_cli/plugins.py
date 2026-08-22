@@ -357,12 +357,11 @@ VALID_HOOKS: Set[str] = {
     #
     #   gateway_platform_event: inbound platform event as a normalized envelope.
     #       Kwargs: platform, event_type, payload (event_type-specific dict).
-    #       Fired today: Telegram "reaction" + "message_edited"; Discord
-    #       "message_edited", "message_deleted", "thread_created",
-    #       "thread_renamed". Each event type carries its own event-local
-    #       additive payload contract (see hooks.md). Other event types and
-    #       hook names land here only together with real fire-sites and
-    #       payload contracts; no inert VALID_HOOKS surface is registered
+    #       Fired today: Discord "message_edited", "message_deleted",
+    #       "thread_created", "thread_renamed". Each event type carries its own
+    #       event-local additive payload contract (see hooks.md). Other event
+    #       types and hook names land here only together with real fire-sites
+    #       and payload contracts; no inert VALID_HOOKS surface is registered
     #       ahead of implementation.
     "gateway_platform_event",
     # Slash-command dispatch observer (#64204, observer-first per #64182
@@ -1055,8 +1054,8 @@ class PluginManifest:
     #              Selection via ``<category>.provider`` config key; the
     #              category's own discovery system handles loading and the
     #              general scanner skips these.
-    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
-    #              platform plugins auto-load so every shipped platform is
+    # ``platform``: gateway messaging platform adapter. Bundled platform
+    #              plugins auto-load so every shipped platform is
     #              available out of the box; user-installed platform plugins
     #              in ~/.son-of-anton/plugins/ still gated by ``plugins.enabled``
     #              (untrusted code).
@@ -2808,12 +2807,12 @@ class PluginContext:
         Example::
 
             ctx.register_platform(
-                name="irc",
-                label="IRC",
-                adapter_factory=lambda cfg: IRCAdapter(cfg),
+                name="example",
+                label="Example",
+                adapter_factory=lambda cfg: ExampleAdapter(cfg),
                 check_fn=lambda: True,
                 emoji="💬",
-                setup_fn=irc_interactive_setup,
+                setup_fn=example_interactive_setup,
             )
         """
         from gateway.platform_registry import platform_registry, PlatformEntry
@@ -3982,12 +3981,12 @@ class PluginManager:
                 self._load_plugin(manifest)
                 continue
 
-            # Bundled platform plugins (gateway adapters: telegram, discord,
-            # feishu, teams, ...) are registered LAZILY. Their modules import
-            # heavy, platform-specific SDKs at module level (lark_oapi,
-            # microsoft_teams, discord.py, slack_bolt, ...), so eagerly loading
-            # all ~20 of them added several seconds to every `son-of-anton`
-            # invocation — including plain `son-of-anton chat`, which never touches a
+            # Bundled platform plugins (gateway adapters: discord, slack,
+            # signal, ...) are registered LAZILY. Their modules import
+            # heavy, platform-specific SDKs at module level (discord.py,
+            # slack_bolt, ...), so eagerly loading all of them added several
+            # seconds to every `son-of-anton` invocation — including plain
+            # `son-of-anton chat`, which never touches a
             # gateway platform. Instead we register a cheap deferred loader in
             # the platform_registry keyed on the platform name; the real module
             # is imported only when the gateway / cron / setup / send_message
@@ -4448,7 +4447,7 @@ class PluginManager:
     # -----------------------------------------------------------------------
 
     def _platform_name_from_manifest(self, manifest: PluginManifest) -> str:
-        """Derive the gateway platform name (e.g. ``feishu``) for a platform plugin.
+        """Derive the gateway platform name for a platform plugin.
 
         The platform name registered via ``register_platform(name=...)`` lives
         inside the adapter module (which we are explicitly trying NOT to import
@@ -4574,7 +4573,7 @@ class PluginManager:
         does not import the adapter, so the SDK stays unloaded and startup
         stays cheap. A plugin taking this path must therefore keep its package
         ``__init__`` import-light and pull the adapter in from inside
-        ``register()`` (as ``plugins/platforms/a2a`` does).
+        ``register()`` (as the bundled discord/slack platform plugins do).
 
         Opting in is explicit: the manifest must declare ``provides_tools``
         (the field the plugin list and web server already read to name a

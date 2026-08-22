@@ -571,7 +571,7 @@ def _(rid, params: dict) -> dict:
             # minus platform-restricted ones that don't apply here — with
             # enablement resolved the way the runtime actually resolves it.
             # The raw registry (get_all_toolsets) leaks internal platform
-            # composites (son-of-anton-discord, feishu_drive, ...) and reports
+            # composites (son-of-anton-discord, ...) and reports
             # everything "enabled" whenever the profile has no pin, which a
             # capabilities UI then faithfully mis-renders (tester report).
             from son_of_anton_cli.tools_config import (
@@ -607,13 +607,11 @@ def _(rid, params: dict) -> dict:
                     if pinned_set is not None
                     else ts_name in platform_enabled
                 )
-                # Default-off integrations (a2a, yuanbao, spotify, ...) are
+                # Default-off integrations (spotify, ...) are
                 # opt-ins; when the profile hasn't opted in they're noise in
                 # a per-profile editor — `son-of-anton tools` / Settings is where
                 # you turn them on globally first. Enabled ones still show.
-                # yuanbao rides the same rule: a region-specific integration
-                # that isn't in _DEFAULT_OFF_TOOLSETS but is equally opt-in.
-                if (ts_name in _DEFAULT_OFF_TOOLSETS or ts_name == "yuanbao") and not enabled:
+                if ts_name in _DEFAULT_OFF_TOOLSETS and not enabled:
                     continue
                 try:
                     tool_count = len(set(resolve_toolset(ts_name)))

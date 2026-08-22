@@ -15,13 +15,12 @@ Lives here rather than in ``web_server`` so the CLI wizard can share it without
 importing the dashboard's FastAPI surface.
 """
 
-# Suffix match, so plugin adapters nobody enumerated (IRC, SimpleX, LINE, ntfy)
-# get the same treatment without a code change here.
+# Suffix match, so plugin adapters nobody enumerated get the same treatment
+# without a code change here.
 #
 #   *_HOME_CHANNEL*        the bot offers /sethome on the first chat
 #   *_ALLOW_ALL_USERS      defaults off; enabling it is a security decision
 #   *_REPLY_TO_MODE        cosmetic threading preference
-#   *_REPLY_MODE           same, Mattermost's spelling
 #   *_REQUIRE_MENTION      behavior toggle with a sane default
 #   *_AUTO_THREAD          same
 #   *_FREE_RESPONSE_*      per-channel tuning, done once the bot is in a server

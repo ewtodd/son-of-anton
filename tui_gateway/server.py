@@ -676,13 +676,13 @@ def _transfer_active_session_slot(
 
 # Session sources the TUI/desktop backend must never end in state.db: the
 # messaging gateway owns those sessions' lifecycle — the TUI is only a viewer
-# (a resume of a Telegram/Discord/... session).  Ending one creates the
+# (a resume of a Discord/Slack/... session).  Ending one creates the
 # #60609 Groundhog Day routing loop (see _finalize_session).  Sources the
 # TUI backend itself creates ("tui", plus whatever a client passes as its
 # own ``source``) and the CLI's own sessions are NOT gateway-owned.
 _NON_GATEWAY_SOURCES = frozenset({
     "", "tui", "cli", "webui", "cron", "subagent", "test",
-    "local", "webhook", "api_server", "msgraph_webhook",
+    "local",
 })
 
 
@@ -694,8 +694,8 @@ def _is_gateway_owned_source(source: str) -> bool:
     resolves to a known gateway ``Platform`` (built-in enum member OR a
     registered platform plugin, via ``Platform._missing_``) counts, so new
     platforms are covered automatically.  Local/self-owned sources are
-    excluded explicitly — ``local``/``webhook``/``api_server`` are Platform
-    members but their sessions are not owned by a remote chat surface that
+    excluded explicitly — ``local`` is a Platform
+    member but its sessions are not owned by a remote chat surface that
     routes by session_key, so reaping them is safe and keeps /resume clean.
     """
     src = (source or "").strip().lower()
@@ -3950,7 +3950,7 @@ def _resolve_session_source(explicit: str | None) -> str:
     """Default the session DB ``source`` field from the resolved platform.
 
     A caller that explicitly passes ``source`` (e.g. a plugin session tagged
-    ``"telegram"``) keeps its value. Only an empty/None ``source`` falls back
+    ``"discord"``) keeps its value. Only an empty/None ``source`` falls back
     to the env-resolved platform — so env-driven resolution never silently
     rewrites a caller's intent.
     """

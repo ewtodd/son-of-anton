@@ -132,8 +132,8 @@ class GatewaySlashCommandsMixin:
         """Return the prefix users can always type to reach Son of Anton commands.
 
         Reads the adapter's ``typed_command_prefix`` capability flag
-        (default "/"). Slack and Matrix return "!" because typed "/"
-        commands are blocked in Slack threads / reserved by Matrix clients;
+        (default "/"). Slack returns "!" because typed "/"
+        commands are blocked in Slack threads;
         their adapters rewrite "!command" to "/command" on receive.
         Instruction text built for those platforms must show the prefix
         that actually works when typed.
@@ -166,7 +166,7 @@ class GatewaySlashCommandsMixin:
         # _cleanup_agent_resources is synchronous and can block for a long time
         # (agent.close() does subprocess teardown; shutdown_memory_provider()
         # may do network IO). This handler runs ON the event loop when a
-        # Telegram/Discord/Slack confirm-button click resolves the slash-confirm
+        # Discord/Slack confirm-button click resolves the slash-confirm
         # (see _request_slash_confirm), so an inline call wedges the whole loop
         # and the bot goes silent until restart (#35994). Offload it to a worker
         # thread (via the contextvar-preserving executor helper) with a bounded
@@ -286,11 +286,11 @@ class GatewaySlashCommandsMixin:
             session_info = ""
 
         if new_entry:
-            header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_default")
+            header = t("gateway.reset.header_default")
         else:
             # No existing session, just create one
             new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
-            header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_new")
+            header = t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
@@ -314,17 +314,6 @@ class GatewaySlashCommandsMixin:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = t("gateway.reset.title_empty_untitled")
         header = header + _title_note
-
-        # When /new runs inside a Telegram DM topic lane, rewrite the
-        # (chat_id, thread_id) → session_id binding so the next message
-        # uses the freshly-created session. Without this, the binding
-        # still points at the old session and the binding-lookup at the
-        # top of _handle_message_with_agent would switch right back.
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
-            except Exception:
-                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:
@@ -630,35 +619,12 @@ class GatewaySlashCommandsMixin:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
-        if source.platform == Platform.MATRIX:
-            adapter = self.adapters.get(Platform.MATRIX)
-            scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
-            thread = source.thread_id or "none"
-            lines.extend([
-                "",
-                t("gateway.status.matrix_scope_header"),
-                t("gateway.status.matrix_scope_room", room=source.chat_name or source.chat_id),
-                t("gateway.status.matrix_scope_room_id", room_id=source.chat_id),
-                t("gateway.status.matrix_scope_thread", thread_id=thread),
-                t("gateway.status.matrix_scope_mode", scope=scope),
-                t(
-                    "gateway.status.matrix_scope_key",
-                    session_key=self._redact_matrix_session_key(session_key),
-                ),
-            ])
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
         return "\n".join(lines)
-
-    @staticmethod
-    def _redact_matrix_session_key(session_key: str) -> str:
-        """Return a stable Matrix session-key fingerprint for shared room status."""
-        text = str(session_key or "")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-        return f"sha256:{digest}"
 
     async def _handle_context_command(self, event: MessageEvent) -> str:
         """Handle /context — the dedicated context-window view.
@@ -878,33 +844,15 @@ class GatewaySlashCommandsMixin:
             return getattr(entry, "origin", None) if entry is not None else None
 
         # Test doubles and older stores may not expose the public lookup helper.
-        # Keep the Matrix resume guard fail-closed if no origin can be resolved.
+        # Keep the resume guard fail-closed if no origin can be resolved.
         entries = getattr(self.session_store, "_entries", {}) or {}
         for entry in entries.values():
             if getattr(entry, "session_id", None) == session_id:
                 return getattr(entry, "origin", None)
         return None
 
-    @staticmethod
-    def _same_matrix_room(current: SessionSource, origin: Optional[SessionSource]) -> bool:
-        return (
-            origin is not None
-            and origin.platform == Platform.MATRIX
-            and current.platform == Platform.MATRIX
-            and origin.chat_id == current.chat_id
-            # thread_id is part of the session key (build_session_key appends it
-            # for every chat type when present), and Matrix scopes the model's
-            # turn to the current room/thread. A live session in another thread
-            # of the SAME room is a DIFFERENT session, so a caller in thread A
-            # must not resume/enumerate a target whose origin is in thread B.
-            # Non-threaded rooms have empty thread_id on both sides ("" == ""),
-            # so room-level sharing is preserved unchanged.
-            and str(getattr(current, "thread_id", "") or "")
-            == str(getattr(origin, "thread_id", "") or "")
-        )
-
     def _same_origin_chat(self, current: SessionSource, origin: Optional[SessionSource]) -> bool:
-        """Platform-agnostic counterpart to ``_same_matrix_room``.
+        """Platform-agnostic origin/chat match for /resume scoping.
 
         True when *origin* shares *current*'s platform and chat, and the same
         participant whenever the session key for this source is per-user. Group
@@ -939,7 +887,7 @@ class GatewaySlashCommandsMixin:
             # chat_id was already required equal above and, when present, IS the
             # DM session key — so an equal non-empty chat_id is sufficient.
             # build_session_key only falls back to the participant id
-            # (``user_id_alt or user_id`` — Signal/Feishu key on user_id_alt)
+            # (``user_id_alt or user_id`` — Signal keys on user_id_alt)
             # when there is NO chat_id; mirror that and fail closed on a
             # missing/different participant so two no-chat_id DM origins are
             # never conflated (was: compared user_id only and allowed when
@@ -960,7 +908,7 @@ class GatewaySlashCommandsMixin:
         if shared:
             return True
         # Per-user key: compare the participant id the key is actually built
-        # from (user_id_alt or user_id — Signal/Feishu key on user_id_alt).
+        # from (user_id_alt or user_id — Signal keys on user_id_alt).
         cur_pid = current.user_id_alt or current.user_id
         org_pid = origin.user_id_alt or origin.user_id
         if cur_pid and org_pid:
@@ -993,7 +941,7 @@ class GatewaySlashCommandsMixin:
     ) -> bool:
         """Whether *source* may resume the persisted session *target_id*.
 
-        Generalizes the Matrix-only room guard to every adapter so a caller
+        Generalizes the room guard to every adapter so a caller
         cannot bind their gateway session to another user's/room's persisted
         session id (IDOR). Uses the live origin when the target is active;
         otherwise falls back to the DB row's source + user_id (the sessions
@@ -1037,7 +985,7 @@ class GatewaySlashCommandsMixin:
         chat_type = (getattr(source, "chat_type", "") or "").lower()
         caller_is_dm = chat_type in {"dm", "direct", "private", ""}
         # build_session_key keys the participant on ``user_id_alt or user_id``
-        # (Signal/Feishu carry the canonical participant in user_id_alt), but the
+        # (Signal carries the canonical participant in user_id_alt), but the
         # sessions table only ever stored user_id — it has no user_id_alt column.
         # So when the caller carries a user_id_alt, the row CANNOT prove the
         # canonical participant that the live session key is built from: two
@@ -1137,20 +1085,11 @@ class GatewaySlashCommandsMixin:
         """Whether a titled-session listing *row* belongs to the caller's origin.
 
         Prevents cross-origin enumeration of session ids/previews via the
-        numbered /resume list. Preserves the existing Matrix room-scoping
+        numbered /resume list. Preserves origin-scoping semantics;
         semantics; scopes every other platform to the caller's own sessions
         unless an admin passes ``--all``.
         """
         sid = str(row.get("id") or "")
-        if source.platform == Platform.MATRIX:
-            # Cross-room enumeration is cross-ORIGIN data access: gate the
-            # ``--all`` short-circuit behind a real configured admin, exactly
-            # like the non-Matrix branch below. A non-admin Matrix ``--all``
-            # falls back to same-room scoping rather than exposing every Matrix
-            # titled session.
-            if allow_all and self._resume_caller_is_admin(source):
-                return True
-            return self._same_matrix_room(source, self._gateway_session_origin_for_id(sid))
         if allow_all and self._resume_caller_is_admin(source):
             return True
         return await self._resume_target_allowed(source, sid, allow_override=False)
@@ -1395,8 +1334,8 @@ class GatewaySlashCommandsMixin:
 
         Examples:
             ``/platform list``           — show connected + failed/paused platforms
-            ``/platform pause whatsapp`` — stop the reconnect watcher hammering whatsapp
-            ``/platform resume whatsapp`` — re-queue a paused platform for retry
+            ``/platform pause signal`` — stop the reconnect watcher hammering signal
+            ``/platform resume signal`` — re-queue a paused platform for retry
         """
         text = (getattr(event, "content", "") or "").strip()
         # Strip the leading "/platform" (or "/PLATFORM") token if present
@@ -1552,7 +1491,7 @@ class GatewaySlashCommandsMixin:
         # marker.  Unlike .restart_notify.json (which gets unlinked once the
         # new gateway sends the "gateway restarted" notification), this
         # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from Telegram.  Overwritten on every /restart.
+        # /restart redelivery from the platform.  Overwritten on every /restart.
         try:
             dedup_data = {
                 "platform": event.source.platform.value if event.source.platform else None,
@@ -1602,22 +1541,15 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        from gateway.run import _telegramize_command_mentions
         from son_of_anton_cli.slash_exec import CommandContext, execute_command
 
         reply = execute_command("help", CommandContext(surface="gateway"))
-        return _telegramize_command_mentions(
-            reply.text,
-            getattr(getattr(event, "source", None), "platform", None),
-        )
+        return reply.text
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
-        from gateway.run import _telegramize_command_mentions
         from son_of_anton_cli.slash_exec import CommandContext, execute_command
-        from gateway.config import Platform
 
-        # Page size is a surface parameter (Telegram messages are shorter).
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        page_size = 20
         reply = execute_command(
             "commands",
             CommandContext(
@@ -1626,16 +1558,13 @@ class GatewaySlashCommandsMixin:
                 options={"page_size": page_size},
             ),
         )
-        return _telegramize_command_mentions(
-            reply.text,
-            getattr(getattr(event, "source", None), "platform", None),
-        )
+        return reply.text
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
 
         Supports:
-          /model                              — interactive picker (Telegram/Discord) or text list
+          /model                              — interactive picker (Discord) or text list
           /model <name>                       — switch model (this session only)
           /model <name> --once                — switch for the next turn only
           /model <name> --session             — switch for this session only (explicit)
@@ -1718,10 +1647,9 @@ class GatewaySlashCommandsMixin:
 
         # Check for session override. Normalize the source the same way a normal
         # message turn does
-        # (Telegram DM topic recovery) before deriving the override key, so
+        # before deriving the override key, so
         # the override is stored under the key the next message turn reads
         # (#30479).
-        source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
         restore_snapshot = (
@@ -1733,7 +1661,7 @@ class GatewaySlashCommandsMixin:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
-        # No args: show interactive picker (Telegram/Discord) or text list
+        # No args: show interactive picker (Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
             adapter = getattr(self, "_adapter_for_source")(source)
@@ -2362,7 +2290,7 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         # Selection-guard confirmation gate (typed /model <name> path).
-        # The pickers (Telegram/Discord inline keyboards, TUI, dashboard)
+        # The pickers (Discord inline keyboards, TUI, dashboard)
         # already confirm via their own UI affordances; this covers the
         # direct text command, which previously bypassed the guard.
         # Runs the unified registry (cost + data-policy + future guards).
@@ -3498,10 +3426,7 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
-        # Normalize the source (Telegram DM topic recovery) before deriving
-        # the override key so storage matches the key the next message turn
-        # reads — same fix as /model (#30479).
-        _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        _reasoning_source = event.source
         session_key = self._session_key_for_source(_reasoning_source)
         self._show_reasoning = self._load_show_reasoning()
         # Use the session's effective model (session /model override wins over
@@ -4237,10 +4162,6 @@ class GatewaySlashCommandsMixin:
                         )
                     session_entry.session_id = new_session_id
                     await self.async_session_store._save()
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compress-command",
-                    )
                 elif _in_place:
                     # archive_and_compact() already persisted the compacted
                     # transcript inside _compress_context — nothing to do.
@@ -4330,95 +4251,6 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
-
-    async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
-        """Handle /topic for Telegram DM user-managed topic sessions."""
-        source = event.source
-        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
-            return t("gateway.topic.not_telegram_dm")
-        if not self._session_db:
-            from son_of_anton_state import format_session_db_unavailable
-            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
-
-        # Authorization: /topic activates multi-session mode and mutates
-        # SQLite side tables. Unauthorized senders (not in allowlist) must
-        # not be able to do that. Gateway routes already authorize the
-        # message before reaching here, but defense in depth.
-        auth_fn = getattr(self, "_is_user_authorized", None)
-        if callable(auth_fn):
-            try:
-                if not auth_fn(source):
-                    return t("gateway.topic.unauthorized")
-            except Exception:
-                logger.debug("Topic auth check failed", exc_info=True)
-
-        args = event.get_command_args().strip()
-
-        # /topic help — inline usage without leaving the bot.
-        if args.lower() in {"help", "?", "-h", "--help"}:
-            return self._telegram_topic_help_text()
-
-        # /topic off — clean disable path so users don't have to edit the DB.
-        if args.lower() in {"off", "disable", "stop"}:
-            return await self._disable_telegram_topic_mode_for_chat(source)
-
-        if args:
-            if not source.thread_id:
-                return t("gateway.topic.restore_needs_topic")
-            return await self._restore_telegram_topic_session(event, args)
-
-        capabilities = await self._get_telegram_topic_capabilities(source)
-        if capabilities.get("checked"):
-            if capabilities.get("has_topics_enabled") is False:
-                # Debounce the BotFather screenshot: don't re-send on every
-                # /topic while threads are still disabled.
-                if self._should_send_telegram_capability_hint(source):
-                    await self._send_telegram_topic_setup_image(source)
-                return t("gateway.topic.topics_disabled")
-            if capabilities.get("allows_users_to_create_topics") is False:
-                if self._should_send_telegram_capability_hint(source):
-                    await self._send_telegram_topic_setup_image(source)
-                return t("gateway.topic.topics_user_disallowed")
-
-        try:
-            await self._session_db.enable_telegram_topic_mode(
-                chat_id=str(source.chat_id),
-                user_id=str(source.user_id),
-                has_topics_enabled=capabilities.get("has_topics_enabled"),
-                allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"),
-            )
-        except Exception as exc:
-            logger.exception("Failed to enable Telegram topic mode")
-            return t("gateway.topic.enable_failed", error=exc)
-
-        if not source.thread_id:
-            await self._ensure_telegram_system_topic(source)
-
-        if source.thread_id:
-            try:
-                binding = await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                )
-            except Exception:
-                logger.debug("Failed to read Telegram topic binding", exc_info=True)
-                binding = None
-            if binding:
-                session_id = str(binding.get("session_id") or "")
-                title = None
-                try:
-                    title = await self._session_db.get_session_title(session_id)
-                except Exception:
-                    title = None
-                session_label = title or t("gateway.topic.untitled_session")
-                return t(
-                    "gateway.topic.bound_status",
-                    label=session_label,
-                    session_id=session_id,
-                )
-            return t("gateway.topic.thread_ready")
-
-        return await self._telegram_topic_root_status_message(source)
 
     async def _handle_save_command(self, event: MessageEvent) -> str:
         """Handle /save — export the current session and send it as a document.
@@ -4541,22 +4373,6 @@ class GatewaySlashCommandsMixin:
             # Set the title
             try:
                 if await self._session_db.set_session_title(session_id, sanitized):
-                    # Propagate the user-chosen title to the visible Telegram
-                    # forum topic name too. Auto-generated titles already rename
-                    # the topic; without this, /title only updated the DB title
-                    # and the topic kept its auto-assigned name. No-ops off
-                    # Telegram topic lanes and when auto-rename is disabled.
-                    schedule_rename = getattr(
-                        self, "_schedule_telegram_topic_title_rename", None
-                    )
-                    if callable(schedule_rename):
-                        try:
-                            await asyncio.to_thread(schedule_rename, source, session_id, sanitized)
-                        except Exception:
-                            logger.debug(
-                                "Failed to rename Telegram topic from /title",
-                                exc_info=True,
-                            )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
@@ -4576,9 +4392,7 @@ class GatewaySlashCommandsMixin:
             from son_of_anton_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = await asyncio.to_thread(
-            self._normalize_source_for_session_key, event.source
-        )
+        source = event.source
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -4618,16 +4432,10 @@ class GatewaySlashCommandsMixin:
                     if await self._resume_row_visible(source, s, allow_all)
                 ]
                 if not titled:
-                    if source.platform == Platform.MATRIX and not allow_all:
-                        return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
-                    if source.platform == Platform.MATRIX and allow_all:
-                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
-                        if origin:
-                            title = f"{title} — {origin.chat_name or origin.chat_id}"
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
@@ -4671,23 +4479,12 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
-        if source.platform == Platform.MATRIX:
-            target_origin = self._gateway_session_origin_for_id(target_id)
-            if not self._same_matrix_room(source, target_origin) and not allow_cross_room:
-                if target_origin is None:
-                    return t("gateway.resume.matrix_blocked_no_origin", name=name)
-                return t(
-                    "gateway.resume.matrix_blocked_other_room",
-                    room=target_origin.chat_name or target_origin.chat_id,
-                    name=name,
-                )
-        elif not await self._resume_target_allowed(
+        if not await self._resume_target_allowed(
             source, target_id, allow_override=(allow_all or allow_cross_room)
         ):
             # IDOR guard: a session id/title is a routing handle, not authority.
-            # Bind /resume to the caller's own platform/user/chat on every
-            # non-Matrix adapter so one user can't attach to another's
-            # persisted transcript.
+            # Bind /resume to the caller's own platform/user/chat so one user
+            # can't attach to another's persisted transcript.
             return t("gateway.resume.blocked_not_owner", name=name)
 
         # Check if already on that session
@@ -4725,13 +4522,6 @@ class GatewaySlashCommandsMixin:
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
-        if source.platform == Platform.MATRIX and allow_cross_room:
-            return t(
-                "gateway.resume.matrix_cross_room_success",
-                title=title,
-                room=source.chat_name or source.chat_id,
-                msg_part=msg_part,
-            )
         if not msg_count:
             return t("gateway.resume.resumed_no_count", title=title)
         if msg_count == 1:
@@ -4765,9 +4555,7 @@ class GatewaySlashCommandsMixin:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
             return await self._handle_resume_command(resume_event)
 
-        source = await asyncio.to_thread(
-            self._normalize_source_for_session_key, event.source
-        )
+        source = event.source
         session_key = self._session_key_for_source(source)
 
         # A cross-origin listing (`/sessions all`) is honored only for an
@@ -4967,7 +4755,7 @@ class GatewaySlashCommandsMixin:
         messaging command does NOT charge, confirm, or track payment here —
         everything happens in the browser and the next /topup shows the new balance. The
         tappable URL is the affordance and works on every platform (button-capable
-        or plain text like SMS/email). Fetched off the event loop; fail-open.
+        or plain text). Fetched off the event loop; fail-open.
         """
         from agent.account_usage import build_credits_view
 
@@ -5258,7 +5046,7 @@ class GatewaySlashCommandsMixin:
         """Handle /insights command -- show usage insights and analytics."""
         args = event.get_command_args().strip()
 
-        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+        # Normalize Unicode dashes (some clients auto-convert -- to em/en dash)
         args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
 
         days = 30
@@ -5397,7 +5185,7 @@ class GatewaySlashCommandsMixin:
             # Discord /skill autocomplete (registered once per connect);
             # without this call, new skills stay invisible in the
             # dropdown and deleted skills error out when clicked. Other
-            # adapters that don't override refresh_skill_group (Telegram's
+            # adapters that don't override refresh_skill_group
             # BotCommand menu, Slack subcommand map, etc.) are silently
             # skipped — the in-process reload above is enough for them.
             for adapter in list(self.adapters.values()):
@@ -5683,7 +5471,7 @@ class GatewaySlashCommandsMixin:
         from datetime import datetime
         from son_of_anton_cli.config import is_managed, format_managed_message
 
-        # Block non-messaging platforms (API server, webhooks, ACP)
+        # Block non-messaging platforms (ACP)
         platform = event.source.platform
         _allowed = self._UPDATE_ALLOWED_PLATFORMS
         # Plugin platforms with allow_update_command=True are also allowed

@@ -393,7 +393,7 @@ class HonchoClientConfig:
     peer_name: str | None = None
     ai_peer: str = "son-of-anton"
     # When True, ``peer_name`` wins over any gateway-supplied runtime
-    # identity (Telegram UID, Discord ID, …) when resolving the user peer.
+    # identity (Discord ID, Slack user ID, …) when resolving the user peer.
     # This keeps memory unified across platforms for single-user deployments
     # where Honcho's one peer-name is an unambiguous identity — otherwise
     # each platform would fork memory into its own peer (#14984).  Default
@@ -403,7 +403,7 @@ class HonchoClientConfig:
     # config replaces the root map as a whole so profiles can intentionally
     # own their identity mappings.
     user_peer_aliases: dict[str, str] = field(default_factory=dict)
-    # Optional prefix for unknown gateway runtime user IDs, e.g. "telegram_".
+    # Optional prefix for unknown gateway runtime user IDs, e.g. "discord_".
     runtime_peer_prefix: str = ""
     # Toggles
     enabled: bool = False
@@ -836,7 +836,7 @@ class HonchoClientConfig:
         return None
 
     # Honcho enforces a 100-char limit on session IDs. Long gateway session keys
-    # (Matrix "!room:server" + thread event IDs, Telegram supergroup reply
+    # (Discord channel + thread event IDs, Slack supergroup reply
     # chains, Slack thread IDs with long workspace prefixes) can overflow this
     # limit after sanitization; the Honcho API then rejects every call for that
     # session with "session_id too long". See issue #13868.
@@ -892,7 +892,7 @@ class HonchoClientConfig:
         if not cwd:
             cwd = os.getcwd()
 
-        # Gateway per-chat key wins everywhere — gateways (telegram/discord/…)
+        # Gateway per-chat key wins everywhere — gateways (discord/slack/…)
         # need per-chat isolation no cwd/strategy name can provide.
         if gateway_session_key:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')

@@ -28,8 +28,7 @@ class MessageDeduplicator:
     """TTL-based message deduplication cache.
 
     Replaces the identical ``_seen_messages`` / ``_is_duplicate()`` pattern
-    previously duplicated in discord, slack, dingtalk, wecom, weixin,
-    mattermost, and feishu adapters.
+    previously duplicated in the discord and slack adapters.
 
     Usage::
 
@@ -98,7 +97,7 @@ class TextBatchAggregator:
     """Aggregates rapid-fire text events into single messages.
 
     Replaces the ``_enqueue_text_event`` / ``_flush_text_batch`` pattern
-    previously duplicated in telegram, discord, matrix, wecom, and feishu.
+    previously duplicated in the discord and slack adapters.
 
     Usage::
 
@@ -194,10 +193,10 @@ _RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
 
 
 def strip_markdown(text: str) -> str:
-    """Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.).
+    """Strip markdown formatting for plain-text platforms.
 
     Replaces the identical ``_strip_markdown()`` functions previously
-    duplicated in sms.py, bluebubbles.py, and feishu.py.
+    duplicated in the plain-text adapters.
     """
     text = _RE_BOLD.sub(r"\1", text)
     text = _RE_ITALIC_STAR.sub(r"\1", text)
@@ -219,7 +218,7 @@ class ThreadParticipationTracker:
 
     Replaces the identical ``_load/_save_participated_threads`` +
     ``_mark_thread_participated`` pattern previously duplicated in
-    discord.py and matrix.py.
+    discord.py.
 
     Usage::
 
@@ -285,7 +284,7 @@ def redact_phone(phone: str) -> str:
     """Redact a phone number for logging, preserving country code and last 4.
 
     Replaces the identical ``_redact_phone()`` functions in signal.py,
-    sms.py, and bluebubbles.py.
+    the plain-text adapters.
     """
     if not phone:
         return "<none>"
@@ -295,8 +294,8 @@ def redact_phone(phone: str) -> str:
 
 
 # ─── GFM Markdown Table → Bullet Conversion ─────────────────────────────────
-# Shared by Discord and Telegram adapters.  Discord calls
-# convert_table_to_bullets() directly; Telegram imports the primitives
+# Shared by the Discord and Slack adapters.  Discord calls
+# convert_table_to_bullets() directly; Slack imports the primitives
 # but keeps its own MarkdownV2-aware renderer.
 
 
@@ -320,7 +319,7 @@ def split_markdown_table_row(line: str) -> list[str]:
     Thin delegate to the canonical implementation in
     :mod:`agent.markdown_tables` (``split_table_row``) so the three
     formerly byte-identical copies (here, ``agent/markdown_tables.py``,
-    ``weixin._split_table_row``) share one body.
+    ``discord._split_table_row``) share one body.
     """
     from agent.markdown_tables import split_table_row
 
@@ -330,7 +329,7 @@ def split_markdown_table_row(line: str) -> list[str]:
 def _render_table_block(table_block: list[str]) -> str:
     """Render a detected GFM table as bold-heading + bullet groups.
 
-    Uses the same alignment logic as Telegram's renderer: for non-row-label
+    Uses the same alignment logic as the shared renderer: for non-row-label
     tables, ``data_cells = cells`` (the full row) and the bullet whose value
     duplicates the heading is skipped.  This keeps header→value alignment
     correct.
@@ -438,12 +437,12 @@ def compile_mention_patterns(
 
     Two adapter families share this logic:
 
-    * **Config-style** (dingtalk, telegram): pass ``platform_label`` (e.g.
-      ``"dingtalk"``). ``raw`` is the value from ``config.extra`` after env
+    * **Config-style**: pass ``platform_label``. ``raw`` is the value from
+      ``config.extra`` after env
       fallback parsing; must be a list or string, anything else logs a warning
       and yields ``[]``. Non-string entries are skipped. A summary info log is
       emitted when patterns load.
-    * **Wakeword-style** (photon, bluebubbles): pass ``defaults``. ``raw`` may
+    * **Wakeword-style**: pass ``defaults``. ``raw`` may
       be None (use defaults), a string (JSON list or comma/newline separated),
       a list, or a scalar (wrapped in a list). Entries are coerced via
       ``str()``.
@@ -454,7 +453,7 @@ def compile_mention_patterns(
     log = logger_ or logger
 
     if platform_label is not None:
-        # Config-style (dingtalk/telegram) semantics.
+        # Config-style semantics.
         display = display_label or platform_label
         patterns = raw
         if patterns is None:
@@ -493,7 +492,7 @@ def compile_mention_patterns(
             )
         return compiled
 
-    # Wakeword-style (photon/bluebubbles) semantics.
+    # Wakeword-style semantics.
     if raw is None:
         patterns = list(defaults or [])
     elif isinstance(raw, str):
@@ -526,16 +525,14 @@ def compile_mention_patterns(
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for the fence-aware markdown chunkers that previously lived as
-# near-duplicates in gateway/stream_consumer.py, gateway/platforms/yuanbao.py
+# near-duplicates in gateway/stream_consumer.py
 # (MarkdownProcessor — the richest version, which this core is derived from),
-# and gateway/platforms/weixin.py.  Each caller keeps its own knobs:
+# Each caller keeps its own knobs:
 #
 #   * stream_consumer: newline-preferred splitting + close/reopen fence
 #     balancing (``prefer_paragraphs=False, balance_fences=True``)
-#   * yuanbao: atomic-block extraction + paragraph-boundary splitting, fences
+#   * Some callers: atomic-block extraction + paragraph-boundary splitting, fences
 #     kept intact as atoms (``prefer_paragraphs=True, balance_fences=False``)
-#   * weixin: keeps its own block splitter (anchored ``_FENCE_RE``, per-line
-#     rstrip semantics) but reuses ``greedy_pack_blocks`` for packing.
 #
 # The typing helpers below use ``Optional``/``Callable`` from ``typing`` to
 # match the module's existing import style.
@@ -799,7 +796,7 @@ def split_text_fence_aware(
 
     Two strategies, selected by ``prefer_paragraphs``:
 
-    ``prefer_paragraphs=True`` (yuanbao-derived, the richest):
+    ``prefer_paragraphs=True`` (the richest):
       Extract atomic blocks (code fences, tables, paragraphs), greedily merge
       them up to *limit*, split still-oversized non-atomic chunks at
       paragraph boundaries, then re-merge small neighbours.  Code blocks and
@@ -831,7 +828,7 @@ def split_text_fence_aware(
 
 
 def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
-    """Yuanbao-derived paragraph/atom chunking pipeline (see module docs)."""
+    """Paragraph/atom chunking pipeline (see module docs)."""
     _len = len_fn or len
 
     if _len(text) <= max_chars:

@@ -53,7 +53,7 @@ restart. When a drain-gated action completes *without* recreating the container
 and the writer never cancels the drain (writer crash, forgotten cleanup), the
 orphaned marker still carries the *current* epoch — so the epoch check honours
 it and the gateway bounces every inbound message forever (observed in the
-field: a cloud instance refused all Telegram turns for ~3 days). The marker's
+field: a cloud instance refused all turns for ~3 days). The marker's
 ``requested_at`` timestamp is therefore also checked: a marker older than
 :data:`DRAIN_REQUEST_MAX_AGE_SECONDS` reads as stale. Same leniency contract as
 the epoch — only a *definite* expiry (timestamp present, parseable, and too

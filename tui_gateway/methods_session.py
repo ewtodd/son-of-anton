@@ -168,7 +168,7 @@ def _(rid, params: dict) -> dict:
         try:
             # Resume picker should surface human conversation sessions from every
             # user-facing surface — CLI, TUI, all gateway platforms (including new
-            # ones not enumerated here), ACP adapter clients, webhook sessions,
+            # ones not enumerated here), ACP adapter clients,
             # custom `SON_OF_ANTON_SESSION_SOURCE` values, and older installs with
             # different source labels. We deny-list only the noisy internal
             # sources (``tool`` sub-agent runs and ``kanban`` dispatcher

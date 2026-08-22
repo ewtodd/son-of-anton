@@ -10,8 +10,8 @@ Differences from Claude Code:
     - Pure local computation from the in-memory conversation history. No
       LLM call, no auxiliary model, no prompt-cache invalidation. A
       recap should be instant and free.
-    - Works unchanged on CLI and every gateway platform (Telegram,
-      Discord, Slack, …) because both call into the same ``build_recap``
+    - Works unchanged on CLI and every gateway platform (Discord,
+      Slack, Signal, …) because both call into the same ``build_recap``
       helper. Claude Code only shows this on the CLI.
     - Tailored to son-of-anton's tool vocabulary (``terminal``, ``patch``,
       ``write_file``, ``delegate_task``, ``browser_*``, ``web_*``) — the
@@ -256,7 +256,7 @@ def build_recap(
             ``tool_calls``, …).
         session_title: optional human title (from SessionDB).
         session_id: optional session id.
-        platform: optional hint (``"cli"``, ``"telegram"``, …). Does not
+        platform: optional hint (``"cli"``, ``"discord"``, …). Does not
             change behavior today but is accepted for forward compat.
 
     The output is plain text designed to render well in both a terminal

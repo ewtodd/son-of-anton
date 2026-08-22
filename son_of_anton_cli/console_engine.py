@@ -789,13 +789,6 @@ class SonOfAntonConsoleEngine:
                 [("list",), ("approve",), ("revoke",), ("clear-pending",)],
                 {("approve",), ("revoke",), ("clear-pending",)},
             ),
-            "webhook": (
-                "son_of_anton_cli.subcommands.webhook",
-                "build_webhook_parser",
-                "cmd_webhook",
-                [("list",), ("subscribe",), ("remove",), ("test",)],
-                {("subscribe",), ("remove",)},
-            ),
             "hooks": (
                 "son_of_anton_cli.subcommands.hooks",
                 "build_hooks_parser",
@@ -1194,8 +1187,6 @@ class SonOfAntonConsoleEngine:
             "setup",
             "uninstall",
             "update",
-            "whatsapp",
-            "whatsapp-cloud",
         }
         if first in blocked_top:
             return f"`son-of-anton {first}` is not available in Son of Anton Console."
@@ -1365,7 +1356,7 @@ def _sessions_stats(_engine: SonOfAntonConsoleEngine, args: list[str]) -> str:
             f"Listable sessions: {listable}",
             f"Total messages: {messages}",
         ]
-        for source in ["cli", "tui", "telegram", "discord", "slack", "cron"]:
+        for source in ["cli", "tui", "discord", "slack", "signal", "cron"]:
             count = db.session_count(source=source)
             if count:
                 lines.append(f"  {source}: {count}")

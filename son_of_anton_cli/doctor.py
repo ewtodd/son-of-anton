@@ -255,7 +255,6 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
 def _termux_install_all_fallback_notes() -> list[str]:
     return [
         "Termux install profile: use .[termux-all] for broad compatibility (installer default on Termux).",
-        "Matrix E2EE extra is excluded on Termux (python-olm currently fails to build).",
         "Local faster-whisper extra is excluded on Termux (ctranslate2/av build path unavailable).",
         "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY).",
     ]
@@ -1219,7 +1218,6 @@ def run_doctor(args):
     
     optional_packages = [
         ("croniter", "Croniter (cron expressions)"),
-        ("telegram", "python-telegram-bot"),
         ("discord", "discord.py"),
     ]
     
@@ -2348,33 +2346,22 @@ def run_doctor(args):
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     
-    # npm audit for all Node.js packages
-    _npm_bin = _safe_which("npm")
-    if _npm_bin:
-        # Each entry: (cwd, label, extra_audit_args)
-        # PROJECT_ROOT is audited with --workspaces=false so that the apps/*
-        # glob (which pulls in Electron, node-pty, etc.) is never resolved
-        # for a routine security check. The web and ui-tui workspaces are
-        # audited separately via --workspace flags. See #38772.
-        # The WhatsApp bridge may live under a writable SON_OF_ANTON_HOME mirror
-        # instead of the (possibly read-only) install tree in Docker — resolve
-        # it through the shared helper so we audit the dir that actually holds
-        # node_modules. See #49561.
-        try:
-            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-            _whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
-        except Exception:
-            _whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
-        npm_audit_targets = [
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
-            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
-            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
-            (_whatsapp_bridge_dir, "WhatsApp bridge", []),
-        ]
+        # npm audit for all Node.js packages
+        _npm_bin = _safe_which("npm")
+        if _npm_bin:
+            # Each entry: (cwd, label, extra_audit_args)
+            # PROJECT_ROOT is audited with --workspaces=false so that the apps/*
+            # glob (which pulls in Electron, node-pty, etc.) is never resolved
+            # for a routine security check. The web and ui-tui workspaces are
+            # audited separately via --workspace flags. See #38772.
+            npm_audit_targets = [
+                (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+                (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
+                (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
+            ]
         for npm_dir, label, audit_extra in npm_audit_targets:
             # For workspace-scoped audits run from PROJECT_ROOT the
-            # node_modules check must use the workspace root; standalone dirs
-            # (whatsapp-bridge) check their own node_modules.
+            # node_modules check must use the workspace root.
             check_dir = PROJECT_ROOT if audit_extra else npm_dir
             if not (check_dir / "node_modules").exists():
                 continue

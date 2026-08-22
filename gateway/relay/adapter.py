@@ -51,7 +51,7 @@ _RESOLVED_PROMPT_MEMORY = 256
 
 
 def _utf16_len(text: str) -> int:
-    """Count UTF-16 code units (Telegram's length unit)."""
+    """Count UTF-16 code units."""
     return len(text.encode("utf-16-le")) // 2
 
 
@@ -124,19 +124,18 @@ class RelayAdapter(BasePlatformAdapter):
         # Stream-is-the-message marker (finding #4): the stream consumer
         # checks this to keep ONE draft stream per turn instead of bumping
         # draft_id at tool boundaries (which opens a new Slack message per
-        # segment on native streaming — Telegram-shaped adapters want the
+        # segment on native streaming — draft-and-final adapters want the
         # bump, we don't).
         #
         # SLACK-ONLY semantic, gated on the negotiated descriptor (review
-        # B4): the base send_draft contract is Telegram-shaped — the draft
+        # B4): the base send_draft contract is draft-and-final — the draft
         # clears and the final arrives as a separate real send. Setting
         # this unconditionally made ANY relay connector that advertises
-        # the draft op (e.g. a Telegram connector) intercept the turn-final
-        # into draft(final=true), so no real history message was ever
-        # posted. A future connector platform whose native streaming is
-        # also stream-is-the-message should advertise it explicitly
-        # (descriptor field within the contract) rather than widening this
-        # platform check by guesswork.
+        # the draft op intercept the turn-final into draft(final=true), so
+        # no real history message was ever posted. A future connector
+        # platform whose native streaming is also stream-is-the-message
+        # should advertise it explicitly (descriptor field within the
+        # contract) rather than widening this platform check by guesswork.
         self.draft_stream_is_message = (
             str(getattr(descriptor, "platform", "") or "").lower() == "slack"
         )
@@ -158,7 +157,7 @@ class RelayAdapter(BasePlatformAdapter):
         # lane's synthetic thread anchor in thread-per-message mode;
         # see _capture_scope and send_typing.
         self._last_inbound_ts_by_chat: Dict[str, str] = {}
-        # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
+        # chat_id -> the UNDERLYING platform (e.g. "discord", "slack") this
         # chat belongs to (Phase 1.5 multi-platform-per-agent). One relay adapter
         # fronts N platforms on one WS; an outbound reply must egress through the
         # platform the inbound came from. We remember it per chat_id from the
@@ -263,7 +262,7 @@ class RelayAdapter(BasePlatformAdapter):
         A multi-platform gateway fronts N platforms on ONE adapter, but the
         scalar `descriptor`/`MAX_MESSAGE_LENGTH` surface can only carry one
         platform's profile (the primary identity's). Platform caps genuinely
-        differ — Discord 2000 / Telegram 4096 / Slack 39000 — so applying the
+        differ — Discord 2000 / Slack 39000 — so applying the
         primary's cap to every chat either fragments needlessly (small primary)
         or over-sends into a platform 400 (large primary; the live bug: 2,543
         and 2,641-char sends rejected by Discord). Resolve the chat's platform
@@ -307,7 +306,7 @@ class RelayAdapter(BasePlatformAdapter):
         #
         # Per-chat resolution (review r2, finding 2): one adapter fronts N
         # platforms, and the scalar descriptor only reflects the PRIMARY
-        # identity — a Telegram primary must not starve a secondary Slack
+        # identity — one primary must not starve a secondary
         # chat of native streaming, nor vice versa. When the caller can
         # name the chat, resolve through its platform's negotiated
         # descriptor; the scalar remains the fallback (chat unknown,
@@ -327,9 +326,9 @@ class RelayAdapter(BasePlatformAdapter):
 
         The class-level ``draft_stream_is_message`` can only reflect the
         primary identity's platform. On a multi-platform relay, a Slack
-        primary must not impose seal semantics on a Telegram chat (its
+        primary must not impose seal semantics on a chat (its
         turn-final would become draft(final=true) — no history message),
-        and a Telegram primary must not deny a secondary Slack chat its
+        and one primary must not deny a secondary Slack chat its
         native streaming. Resolve through the chat's own negotiated
         descriptor. Platform-name inference is deliberate for now — a
         descriptor-level field is the eventual contract (gg follow-up)
@@ -347,7 +346,7 @@ class RelayAdapter(BasePlatformAdapter):
     # connector owns the platform API mechanics (chat.startStream et al.),
     # per-workspace feature-gate caching, and the send+edit fallback.
     #
-    # Semantic bridge: the base send_draft contract is Telegram-shaped —
+    # Semantic bridge: the base send_draft contract is draft-and-final —
     # the draft clears and the final answer arrives as a separate send().
     # Slack native streaming makes the stream THE message, sealed once.
     # The adapter tracks the open draft per chat; the turn-final send()
@@ -530,7 +529,7 @@ class RelayAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True)
         # Arm seal-interception ONLY for stream-is-the-message chats
-        # (review B4, per-chat in r2 finding 2): on a Telegram-shaped
+        # (review B4, per-chat in r2 finding 2): on a chat-shaped
         # connector the draft clears client-side and the final MUST go out
         # as a separate real send — arming here would intercept that final
         # into draft(final=true) and no history message would ever be
@@ -845,7 +844,7 @@ class RelayAdapter(BasePlatformAdapter):
         # come back through the watcher.
         #
         # Relay deliberately IGNORES the flag. The flag exists so adapters with a
-        # server-side update queue (e.g. Telegram's Bot API) preserve that queue
+        # server-side update queue preserve that queue
         # across an outage instead of dropping it (#46621). Relay has no such
         # gateway-side queue: messages buffered during a gap live in the
         # CONNECTOR's durable buffer and are replayed when the transport
@@ -1353,7 +1352,7 @@ class RelayAdapter(BasePlatformAdapter):
     async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
         """Handle a connector-forwarded passthrough request (Phase 5 §5.1).
 
-        The passthrough plane (Discord interactions, Twilio webhooks, …) answers
+        The passthrough plane (Discord interactions, …) answers
         the provider's latency-critical ACK at the connector EDGE, then forwards
         the real, ALREADY-SANITIZED request to this gateway over the outbound WS.
         The connector is the trust boundary: it verified the provider signature
@@ -1366,7 +1365,7 @@ class RelayAdapter(BasePlatformAdapter):
         normalized ``MessageEvent`` so it flows through the SAME agent path as a
         chat message (``handle_message``); the agent's reply egresses over the
         normal outbound/follow_up path. Non-JSON or non-interaction forwards are
-        logged and dropped for now (Twilio/SMS over the relay is a later unit).
+        logged and dropped for now.
 
         NEVER raises: a malformed forward must not kill the read loop.
 
@@ -2173,7 +2172,7 @@ class RelayAdapter(BasePlatformAdapter):
         base no-op ``send_typing`` — so hosted/relay chats never showed
         "is typing…" even though the wire contract (``OutboundOp "typing"``)
         and every connector-side sender (Discord ``POST /channels/{id}/typing``,
-        Telegram ``sendChatAction``, Signal ``sendTyping``, Slack assistant
+        Discord ``sendChatAction``, Signal ``sendTyping``, Slack assistant
         status) already implement it. This bridges the loop's tick onto the
         existing outbound frame.
 
@@ -2188,7 +2187,7 @@ class RelayAdapter(BasePlatformAdapter):
         Best-effort: failures are swallowed (``_keep_typing`` already treats
         send_typing errors as non-fatal, and an older connector that rejects
         the op just returns an unsuccessful result we ignore). Each call is
-        one-shot — Discord/Telegram indicators self-expire and need no cleanup;
+        one-shot — Discord indicators self-expire and need no cleanup;
         Slack Assistant status persists, so ``stop_typing`` below sends an
         explicit clear for Slack only.
         """
@@ -3171,7 +3170,7 @@ class RelayAdapter(BasePlatformAdapter):
     ) -> Optional[str]:
         """Create a thread/topic under ``parent_chat_id`` via the connector.
 
-        One `thread_create` op covers Discord (channel thread), Telegram
+        One `thread_create` op covers Discord (channel thread),
         (forum topic), and Slack (named seed root message — threads there are
         message-anchored). Op-gated on the descriptor advertising
         `thread_create`; None on any failure/unavailability so the handoff
@@ -3227,7 +3226,7 @@ class RelayAdapter(BasePlatformAdapter):
         normalization difference and silently declined every relay rename.
         ``only_if_current_name`` is the legacy string guard, kept for the
         native-marker lane and older connectors. ``parent_chat_id`` is the
-        containing chat where the caller knows it (Telegram needs it);
+        containing chat where the caller knows it;
         defaults to the thread id itself (Discord ignores chat_id).
         """
         if self._transport is None or not self.descriptor.supports_op("thread_rename"):

@@ -44,7 +44,7 @@ from gateway.relay.transport import InboundHandler
 
 logger = logging.getLogger(__name__)
 
-try:  # lazy/optional dep — mirrors gateway/platforms/feishu.py
+try:  # lazy/optional dep
     import websockets
 except ImportError:  # pragma: no cover - exercised only when the extra is absent
     websockets = None  # type: ignore[assignment]
@@ -299,7 +299,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         reply_to_message_id=raw.get("reply_to_message_id"),
         # Richer quoted-reply context (Phase 4): what the user replied TO,
         # when the connector had it in hand (Discord referenced_message,
-        # Telegram reply_to_message, WhatsApp context + text cache). Maps to
+        # reply_to_message, context + text cache). Maps to
         # the SAME MessageEvent fields native adapters populate, so run.py's
         # reply-context injection works identically over the relay.
         reply_to_text=(raw.get("reply_to") or {}).get("text"),
@@ -634,7 +634,7 @@ class WebSocketRelayTransport:
         hello'd identity; they accumulate here keyed by the descriptor's own
         ``platform`` field. Callers (RelayAdapter) use this to resolve PER-CHAT
         capabilities — e.g. Discord's 2000-char max_message_length vs
-        Telegram's 4096 — instead of applying the primary identity's scalar
+        Platform caps — instead of applying the primary identity's scalar
         descriptor to every platform this gateway fronts.
         """
         return self._descriptors_by_platform.get(platform)
@@ -1001,7 +1001,7 @@ class WebSocketRelayTransport:
             # Phase 1.5 multi-platform: one descriptor frame arrives per hello'd
             # identity. Accumulate them keyed by the descriptor's own platform so
             # the adapter can resolve PER-CHAT capabilities (e.g. Discord's 2000
-            # vs Telegram's 4096 max_message_length) instead of collapsing N
+            # vs platform max_message_length) instead of collapsing N
             # platforms onto whichever descriptor arrived last.
             if descriptor.platform:
                 self._descriptors_by_platform[descriptor.platform] = descriptor

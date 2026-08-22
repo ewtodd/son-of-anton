@@ -4,7 +4,7 @@ Shared, surface-independent executors for informational slash commands.
 ``CommandDef.execute`` (son_of_anton_cli/commands.py) names a key in
 :data:`EXECUTORS`; each surface (CLI REPL, gateway, TUI slash worker via the
 CLI) resolves that key through :func:`run_execute` and applies only its own
-decoration (Rich markup, emoji/markdown, ``_telegramize_command_mentions``)
+decoration (Rich markup, emoji/markdown)
 to the canonical :class:`CommandReply`.
 
 Invariant: an executor's output depends only on ``ctx.args`` / ``ctx.options``
@@ -183,7 +183,7 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
 def _exec_commands(ctx: CommandContext) -> CommandReply:
     """Core gateway /commands body — paginated command + skill listing.
 
-    ``ctx.options["page_size"]`` is a surface parameter (Telegram uses 15,
+    ``ctx.options["page_size"]`` is a surface parameter
     everything else 20) — for a fixed context the text is surface-invariant.
     """
     from agent.i18n import t

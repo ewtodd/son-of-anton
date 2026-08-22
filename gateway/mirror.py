@@ -123,7 +123,7 @@ def _find_session_id(
 
     Queries state.db gateway session rows (primary source since #9006);
     falls back to scanning sessions.json for pre-migration databases.
-    DM session keys don't embed the chat_id (e.g. "agent:main:telegram:dm"),
+    DM session keys don't embed the chat_id (e.g. "agent:main:discord:dm"),
     so we match on the persisted chat origin, not the key.
 
     When *user_id* is provided, prefer exact sender matches. If multiple

@@ -80,8 +80,8 @@ _SESSION_THREAD_ID: ContextVar = ContextVar("SON_OF_ANTON_SESSION_THREAD_ID", de
 _SESSION_USER_ID: ContextVar = ContextVar("SON_OF_ANTON_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_ID_ALT: ContextVar = ContextVar("SON_OF_ANTON_SESSION_USER_ID_ALT", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("SON_OF_ANTON_SESSION_USER_NAME", default=_UNSET)
-# Platform-neutral scope discriminator (Discord guild / Slack workspace /
-# Matrix server) of the originating chat. Captured at session-bind time so
+# Platform-neutral scope discriminator (Discord guild / Slack workspace)
+# of the originating chat. Captured at session-bind time so
 # async producers (delegate_task background=True, terminal watchers) can
 # persist a completion's full routing origin — on a relay-fronted deployment
 # the connector's fail-closed egress guard needs scope_id (or a user binding)
@@ -97,8 +97,7 @@ _SESSION_ID: ContextVar = ContextVar("SON_OF_ANTON_SESSION_ID", default=_UNSET)
 # consumed by whichever desktop poller wakes first.
 _SESSION_UI_SESSION_ID: ContextVar = ContextVar("SON_OF_ANTON_UI_SESSION_ID", default=_UNSET)
 # ID of the message that triggered the current turn. Used as a reply anchor
-# so background-process notifications stay inside the originating Telegram
-# private-chat topic (those lanes route only with thread id + reply anchor).
+# so background-process notifications route back to the originating chat.
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("SON_OF_ANTON_SESSION_MESSAGE_ID", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("SON_OF_ANTON_SESSION_PROFILE", default=_UNSET)
@@ -113,10 +112,10 @@ _CRON_SESSION: ContextVar = ContextVar("SON_OF_ANTON_CRON_SESSION", default=_UNS
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
 # True  — long-lived CLI sessions (in-process completion_queue drain) and the
-#         real gateway platforms (Telegram/Discord/Slack/...), which hold a
+#         real gateway platforms (Discord/Slack/Signal/...), which hold a
 #         persistent outbound channel and run the watcher/drain loops.
 # False — finite runtimes that can end before a detached completion returns:
-#         stateless API-server requests and dispatcher-spawned Kanban workers.
+#         stateless programmatic requests and dispatcher-spawned Kanban workers.
 #
 # Tools that promise async delivery (terminal notify_on_complete /
 # watch_patterns, delegate_task background=True) read this via
@@ -403,11 +402,10 @@ def get_session_env(name: str, default: str = "") -> str:
 
 
 # Surfaces that are not a human chat channel. The gateway binds a platform
-# value (``telegram``) to SON_OF_ANTON_SESSION_PLATFORM, while the CLI, TUI, and
+# value to SON_OF_ANTON_SESSION_PLATFORM, while the CLI, TUI, and
 # desktop bind SON_OF_ANTON_SESSION_SOURCE (``cli``, ``tui``, ``desktop``) and leave
-# the platform empty — so both have to be consulted. ``local``, ``api_server``,
-# ``webhook``, and ``msgraph_webhook`` are real Platform values that reach
-# SON_OF_ANTON_SESSION_PLATFORM but have no attachment channel behind them.
+# the platform empty — so both have to be consulted. ``local`` reaches
+# SON_OF_ANTON_SESSION_PLATFORM but has no attachment channel behind it.
 # Default-deny: an unrecognized identity counts as messaging so a newly added
 # chat platform is never treated as a private surface before this set is
 # updated. Mirrors LOCAL_SESSION_SOURCE_IDS in
@@ -416,17 +414,14 @@ def get_session_env(name: str, default: str = "") -> str:
 NON_MESSAGING_SESSION_SURFACES = frozenset(
     {
         "",
-        "api_server",
         "cli",
         "codex",
         "desktop",
         "gateway",
         "kanban",
         "local",
-        "msgraph_webhook",
         "tool",
         "tui",
-        "webhook",
     }
 )
 

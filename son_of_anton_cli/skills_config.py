@@ -8,7 +8,7 @@ Config stored in ~/.son-of-anton/config.yaml under:
   skills:
     disabled: [skill-a, skill-b]          # global disabled list
     platform_disabled:                    # per-platform overrides
-      telegram: [skill-c]
+      discord: [skill-c]
       cli: []
 """
 from typing import List, Optional, Set
@@ -20,7 +20,7 @@ from son_of_anton_cli.platforms import PLATFORMS as _PLATFORMS
 # Backward-compatible view: {key: label_string} so existing code that
 # iterates ``PLATFORMS.items()`` or calls ``PLATFORMS.get(key)`` keeps
 # working without changes to every call site.
-PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
+PLATFORMS = {k: info.label for k, info in _PLATFORMS.items()}
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 

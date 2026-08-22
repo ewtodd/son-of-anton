@@ -695,7 +695,7 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
     Supported placeholders (each is sanitized before substitution):
       {profile}   — active Son of Anton profile name (from agent_identity)
       {workspace} — Son of Anton workspace name (from agent_workspace)
-      {platform}  — "cli", "telegram", "discord", etc.
+      {platform}  — "cli", "discord", "slack", etc.
       {user}      — platform user id (gateway sessions)
       {session}   — current session id
 

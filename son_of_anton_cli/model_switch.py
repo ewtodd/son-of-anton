@@ -138,7 +138,7 @@ def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
 
     A mapping like ``{model_id: {context_length: N}}`` is per-model *metadata*
     written by ``_save_custom_provider`` / the ``son-of-anton model`` wizard — not a
-    catalog narrow. Treating that shape as an allowlist made Desktop/Telegram
+    catalog narrow. Treating that shape as an allowlist made Desktop/Discord
     pickers show only the saved default for local Ollama (no ``api_key``),
     while ``son-of-anton model`` still live-probed the full ``/v1/models`` list.
     Refresh could not help because the same gate skipped probing.
@@ -672,7 +672,7 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     is_session = False
     is_once = False
 
-    # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+    # Normalize Unicode dashes (some clients auto-convert -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
     raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
@@ -781,12 +781,12 @@ def resolve_persist_behavior(
 #
 # Historically each surface (cli.py, gateway/slash_commands.py,
 # tui_gateway/server.py) re-implemented flag parsing + conflict checks, and
-# each resolution surface (gateway/run.py, gateway/platforms/api_server.py)
-# re-implemented the session-override > channel/session > global precedence.
-# Commit 7dd00bb47d had to re-fix the api_server discarding session-persisted
-# models precisely because the precedence rule lived in two places.  The
-# helpers below are the ONE owner; surfaces map error codes to their own
-# user-facing copy but never re-derive the semantics.
+# each resolution surface (gateway/run.py) re-implemented the
+# session-override > channel/session > global precedence.
+# Commit 7dd00bb47d had to re-fix the session-persisted-model path precisely
+# because the precedence rule lived in two places.  The helpers below are the
+# ONE owner; surfaces map error codes to their own user-facing copy but never
+# re-derive the semantics.
 
 # Error codes emitted by parse_model_switch_args().
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
@@ -917,12 +917,11 @@ def resolve_effective_model(
     """Resolve the effective model: session override > channel > global.
 
     The single owner of the precedence rule that gateway/run.py
-    (``_resolve_model_for_channel`` / ``_apply_session_model_override``) and
-    gateway/platforms/api_server.py (``_create_agent``'s session-override /
-    session-persisted-model branches) each encoded independently — the
-    divergence commit 7dd00bb47d had to close.  A user-issued ``/model``
-    (session override) always wins over per-channel/session-persisted
-    configuration, which wins over the global default.
+    (``_resolve_model_for_channel`` / ``_apply_session_model_override``)
+    each encoded independently — the divergence commit 7dd00bb47d had to
+    close.  A user-issued ``/model`` (session override) always wins over
+    per-channel/session-persisted configuration, which wins over the global
+    default.
 
     Each argument may be a plain model string, a dict with a ``"model"``
     key (a gateway ``_session_model_overrides`` entry), or an object with a
@@ -3712,7 +3711,7 @@ def list_authenticated_providers(
             # Also probes when no api_key is set (e.g. local llama.cpp /
             # Ollama servers) — the /models endpoint often works without
             # auth.  The CLI's _model_flow_named_custom always probes, so
-            # the Telegram/Discord picker should do the same for parity.
+            # the Discord picker should do the same for parity.
             # Live-discovery policy:
             # - With an api_key, the user has explicitly opted into the
             #   endpoint and live /models is the source of truth — replace
@@ -3723,7 +3722,7 @@ def list_authenticated_providers(
             #   ollama.com). Preserve that list and skip live discovery.
             # - A dict-shaped ``models:`` is per-model metadata written by
             #   ``_save_custom_provider`` for context_length — not an
-            #   allowlist. Still probe so Desktop/Telegram match
+            #   allowlist. Still probe so Desktop/Discord match
             #   ``son-of-anton model``. Pin a dict catalog with
             #   ``discover_models: false``.
             # - The singular ``model:`` field is only the current active
@@ -3891,7 +3890,7 @@ def list_picker_providers(
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
-    Post-processes the base list so the ``/model`` picker (Telegram/Discord
+    Post-processes the base list so the ``/model`` picker (Discord
     inline keyboards) only surfaces models that are actually callable in the
     current install:
 

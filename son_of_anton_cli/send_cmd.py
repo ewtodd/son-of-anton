@@ -1,5 +1,5 @@
 """CLI subcommand: ``son-of-anton send`` — pipe text from shell scripts to any
-configured messaging platform (Telegram, Discord, Slack, Signal, SMS, etc.).
+configured messaging platform (Discord, Slack, Signal, etc.).
 
 This is a thin wrapper around ``tools.send_message_tool.send_message_tool``
 that exposes its functionality as a standalone CLI entry point so ops
@@ -12,10 +12,10 @@ Design notes:
 * No LLM, no agent loop — the subcommand just resolves arguments, reads the
   message body, calls the shared tool function, and prints/returns the
   result. It is intentionally fast, cheap, and side-effect-only.
-* For platforms that send via bot token (Telegram, Discord, Slack, Signal,
-  SMS, WhatsApp-CloudAPI, …) no running gateway is required. The tool
+* For platforms that send via bot token (Discord, Slack, Signal, …) no
+  running gateway is required. The tool
   talks directly to each platform's REST endpoint. For platforms that rely
-  on a persistent adapter connection (plugin platforms, Matrix in some
+  on a persistent adapter connection (plugin platforms)
   modes, …) a live gateway is needed; the underlying tool surfaces that
   error to the caller.
 * Exit codes follow the classic Unix convention:
@@ -65,10 +65,10 @@ def _read_message_body(
                 "message *body* (logs, reports, markdown).\n"
                 "To send an image/document/audio file as a native attachment, "
                 "reference it with MEDIA: in the message text instead:\n"
-                f'  son-of-anton send --to telegram "MEDIA:{file_path}"\n'
-                f'  son-of-anton send --to telegram "optional caption MEDIA:{file_path}"\n'
+                f'  son-of-anton send --to discord "MEDIA:{file_path}"\n'
+                f'  son-of-anton send --to discord "optional caption MEDIA:{file_path}"\n'
                 "Add [[as_document]] to deliver an image as an uncompressed file:\n"
-                f'  son-of-anton send --to telegram "[[as_document]] MEDIA:{file_path}"',
+                f'  son-of-anton send --to discord "[[as_document]] MEDIA:{file_path}"',
                 file=sys.stderr,
             )
             sys.exit(_USAGE_EXIT)
@@ -167,7 +167,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     # Merge in configured-but-undiscovered platforms so `--list` never hides
     # a working send target. The directory only contains platforms the
     # gateway has discovered channels for; a platform configured via env /
-    # config.yaml that has never run channel discovery (e.g. a fresh SimpleX
+    # config.yaml that has never run channel discovery
     # setup used only for outbound `son-of-anton send`) would otherwise be
     # invisible, leaving users guessing at platform names.
     try:
@@ -176,7 +176,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
         gw_config = load_gateway_config()
         for plat in gw_config.get_connected_platforms():
             plat_name = getattr(plat, "value", str(plat))
-            if plat_name in ("local", "api_server", "webhook"):
+            if plat_name == "local":
                 continue
             platforms.setdefault(plat_name, [])
     except Exception:
@@ -241,7 +241,7 @@ def _load_son_of_anton_env() -> None:
     1. ``load_dotenv(~/.son-of-anton/.env)`` — brings bot tokens into the env.
     2. Bridge top-level simple values from ``~/.son-of-anton/config.yaml`` into
        ``os.environ`` (without overriding existing env vars). This is where
-       ``TELEGRAM_HOME_CHANNEL`` and friends live when the user saved them
+       ``DISCORD_HOME_CHANNEL`` and friends live when the user saved them
        via ``son-of-anton config set``.
 
     See ``gateway/run.py`` for the canonical version of this bridge — we
@@ -335,7 +335,7 @@ def cmd_send(args: argparse.Namespace) -> None:
 
     # --list short-circuits everything else.
     if getattr(args, "list_targets", False):
-        # When `--list telegram` is used, argparse stores "telegram" in the
+        # When `--list discord` is used, argparse stores "discord" in the
         # `message` positional (since list_targets takes no argument).
         platform_filter = getattr(args, "message", None)
         exit_code = _list_targets(platform_filter, json_mode=getattr(args, "json", False))
@@ -346,7 +346,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         print(
             "son-of-anton send: --to PLATFORM[:channel[:thread]] is required\n"
             "Examples:\n"
-            "  son-of-anton send --to telegram \"hello\"\n"
+            "  son-of-anton send --to discord \"hello\"\n"
             "  son-of-anton send --to discord:#ops --file report.md\n"
             "  son-of-anton send --list      # list available targets",
             file=sys.stderr,
@@ -376,8 +376,8 @@ def cmd_send(args: argparse.Namespace) -> None:
     from tools.send_message_tool import send_message_tool
 
     # send_message_tool auto-loads gateway config + env and routes to the
-    # appropriate platform adapter (bot-token path for Telegram/Discord/Slack/
-    # Signal/SMS/WhatsApp; live-adapter path for plugin platforms).
+    # appropriate platform adapter (bot-token path for Discord/Slack/Signal;
+    # live-adapter path for plugin platforms).
     #
     # It expects the standard tool-call dict and returns a JSON string.
     tool_args = {
@@ -410,17 +410,17 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "is already configured for. Reuses the gateway's platform "
             "credentials (~/.son-of-anton/.env + ~/.son-of-anton/config.yaml) — no LLM, "
             "no agent loop, no running gateway required for bot-token "
-            "platforms like Telegram/Discord/Slack/Signal."
+            "platforms like Discord/Slack/Signal."
         ),
         epilog=(
             "Examples:\n"
-            "  son-of-anton send --to telegram \"deploy finished\"\n"
-            "  echo \"RAM 92%\" | son-of-anton send --to telegram:-1001234567890\n"
+            "  son-of-anton send --to discord \"deploy finished\"\n"
+            "  echo \"RAM 92%\" | son-of-anton send --to discord:999888777\n"
             "  son-of-anton send --to discord:#ops --file /tmp/report.md\n"
             "  son-of-anton send --to slack:#eng --subject \"[CI]\" --file build.log\n"
-            "  son-of-anton send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
+            "  son-of-anton send --to discord \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
             "  son-of-anton send --list                  # all platforms\n"
-            "  son-of-anton send --list telegram         # filter by platform\n"
+            "  son-of-anton send --list discord         # filter by platform\n"
             "\n"
             "Exit codes: 0 ok, 1 delivery/backend error, 2 usage error."
         ),
@@ -435,8 +435,8 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         help=(
             "Delivery target. Format: 'platform' (home channel), "
             "'platform:chat_id', 'platform:chat_id:thread_id', or "
-            "'platform:#channel-name'. Examples: telegram, "
-            "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, "
+            "'platform:#channel-name'. Examples: discord, "
+            "discord:999888777, discord:#ops, slack:C0123ABCD, "
             "signal:+15551234567."
         ),
     )
@@ -476,7 +476,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         dest="list_targets",
         action="store_true",
         default=False,
-        help="List available targets. Optional positional filter: `son-of-anton send --list telegram`.",
+        help="List available targets. Optional positional filter: `son-of-anton send --list discord`.",
     )
 
     parser.add_argument(

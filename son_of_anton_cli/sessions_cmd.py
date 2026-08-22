@@ -837,7 +837,7 @@ def cmd_sessions(args, sessions_parser=None):
         if not filters:
             print(
                 "Refusing bulk export without a filter. Pass --session-id or "
-                "at least one filter (e.g. --older-than 90, --source telegram)."
+                "at least one filter (e.g. --older-than 90, --source discord)."
             )
             db.close()
             return
@@ -1440,7 +1440,7 @@ def cmd_sessions(args, sessions_parser=None):
         msgs = db.message_count()
         print(f"Total sessions: {total}")
         print(f"Total messages: {msgs}")
-        for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
+        for src in ["cli", "discord", "slack", "signal"]:
             c = db.session_count(source=src)
             if c > 0:
                 print(f"  {src}: {c} sessions")

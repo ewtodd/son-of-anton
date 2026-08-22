@@ -1,6 +1,6 @@
 """Local index of text we've sent via ``sendRichMessage`` (Bot API 10.1).
 
-Telegram does NOT echo a rich message's content back in ``reply_to_message``
+Some platforms do NOT echo a rich message's content back in ``reply_to_message``
 when a user replies to it (verified: ``.text``/``.caption`` empty,
 ``.api_kwargs`` None). So replies to the launchd briefings / any rich send
 arrive with no quotable text and the agent is blind to what was referenced.

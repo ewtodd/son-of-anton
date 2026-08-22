@@ -901,8 +901,8 @@ def compute_toolset_availability(enabled_toolsets: List[str] = None) -> Dict[str
             if str(item.get("id", item.get("name", ""))) in _enabled_ts
         ]
     disabled_tools = set()
-    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
-    # homeassistant) — they show as unavailable at banner time because the
+    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho) —
+    # they show as unavailable at banner time because the
     # check hasn't run yet, but they aren't misconfigured.
     lazy_tools = set()
     for item in unavailable_toolsets:

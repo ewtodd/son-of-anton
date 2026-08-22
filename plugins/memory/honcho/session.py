@@ -615,7 +615,7 @@ class HonchoSessionManager:
 
         # Determine peer IDs — no lock needed (read-only, no shared state mutation).
         # Gateway sessions normally use the runtime user identity (the
-        # platform-native ID: Telegram UID, Discord snowflake, Slack user,
+        # platform-native ID: Discord snowflake, Slack user,
         # etc.) so multi-user bots scope memory per user.  Config can alias
         # known runtime IDs or prefix unknown IDs.  For a single-user
         # deployment, ``pinPeerName`` still pins all runtime identities to
@@ -1055,7 +1055,7 @@ class HonchoSessionManager:
         Used when Honcho activates mid-conversation to preserve prior context.
 
         Args:
-            session_key: The session key (e.g., "telegram:123456").
+            session_key: The session key (e.g., "discord:123456").
             messages: Local messages (dicts with role, content, timestamp).
 
         Returns:

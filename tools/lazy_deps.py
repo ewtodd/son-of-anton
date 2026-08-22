@@ -153,7 +153,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
@@ -173,34 +172,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "slack-sdk==3.43.0",
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
-    "platform.matrix": (
-        "mautrix[encryption]==0.21.1",
-        "aiosqlite==0.22.1",
-        "asyncpg==0.31.0",
-        "aiohttp-socks==0.11.0",
-        # mautrix (aiohttp>=3,<4) and aiohttp-socks (aiohttp>=3.10.0) only cap
-        # aiohttp transitively, so a vulnerable already-installed aiohttp still
-        # satisfies both — pin the patched floor here too, like platform.discord.
-        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
-    ),
-    "platform.dingtalk": (
-        "dingtalk-stream==0.24.3",
-        "alibabacloud-dingtalk==2.2.42",
-        "qrcode==7.4.2",
-    ),
-    "platform.feishu": (
-        "lark-oapi==1.6.8",
-        "qrcode==7.4.2",
-    ),
-    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
-    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
-    # adapter and ship via `platform.discord` / `platform.slack` / etc.
-    "platform.wecom_callback": ("defusedxml==0.7.1",),
-    # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
-    # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
-    # installed on demand like every other messaging platform; also exposed
-    # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+    # Signal does not need a Python SDK — it talks to a local signal-cli
+    # REST bridge over HTTP, so there is no lazy-install entry for it.
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -483,12 +456,6 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
     known-impossible installs out of both first-use lazy installation and the
     ``son-of-anton update`` lazy-refresh pass.
     """
-    if sys.platform == "win32" and feature == "platform.matrix":
-        return (
-            "unsupported on Windows: Matrix E2EE depends on python-olm, "
-            "which has no Windows wheel and requires make + libolm to build "
-            "from sdist. Run Son of Anton under WSL to use Matrix on Windows."
-        )
     return None
 
 
@@ -1046,9 +1013,8 @@ def active_features() -> list[str]:
     A feature counts as "active" if its anchor package (the first declared
     spec) is currently installed in the venv (presence check, ignoring
     version). We intentionally do NOT treat shared helper packages as proof
-    that a backend was enabled: for example ``platform.matrix`` depends on
-    generic packages like ``asyncpg``/``aiosqlite`` that can be installed for
-    unrelated reasons, while the actual Matrix adapter anchor is ``mautrix``.
+    that a backend was enabled: for example a backend may depend on
+    generic packages that can be installed for unrelated reasons.
     Features the user has never enabled stay quiet.
 
     Used by ``son-of-anton update`` to figure out which lazy backends need a

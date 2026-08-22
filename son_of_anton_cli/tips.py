@@ -72,7 +72,7 @@ TIPS = [
     "son-of-anton chat --max-turns 1000 overrides the default 500-iteration limit per turn.",
     "son-of-anton chat --checkpoints enables filesystem snapshots before every destructive file change.",
     "son-of-anton --yolo bypasses all dangerous command approval prompts for the entire session.",
-    "son-of-anton chat --source telegram tags the session for filtering in son-of-anton sessions list.",
+    "son-of-anton chat --source discord tags the session for filtering in son-of-anton sessions list.",
     "son-of-anton -p work chat runs under a specific profile without changing your default.",
 
     # --- CLI Subcommands ---
@@ -99,7 +99,7 @@ TIPS = [
     "son-of-anton update syncs new bundled skills to ALL profiles automatically.",
     "son-of-anton gateway install sets up Son of Anton as a system service (systemd/launchd).",
     "son-of-anton memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).",
-    "son-of-anton webhook subscribe creates event-driven webhook routes with HMAC validation.",
+
     "Save money: son-of-anton tools disables unused tools, son-of-anton skills config trims skills down.",
     "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
     "son-of-anton models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
@@ -139,7 +139,7 @@ TIPS = [
     "browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.",
     "browser_console can evaluate JavaScript expressions in the page context.",
     "image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.",
-    "text_to_speech converts text to audio — plays as voice bubbles on Telegram.",
+    "text_to_speech converts text to audio — plays as voice bubbles on supported platforms.",
     "send_message can reach any connected messaging platform from within a session.",
     "The todo tool helps the agent track complex multi-step tasks during a session.",
     "session_search performs full-text search across ALL past conversations.",
@@ -178,7 +178,7 @@ TIPS = [
 
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: son-of-anton cron add --skill blogwatcher \"Check for new posts\".",
-    "Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.",
+    "Cron delivery targets include discord, slack, signal, and more platforms.",
     "If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.",
     "Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.",
     "Cron jobs run in completely fresh agent sessions — prompts must be self-contained.",
@@ -188,15 +188,11 @@ TIPS = [
     "Five TTS providers available: Edge TTS (free), ElevenLabs, OpenAI, NeuTTS (free local), MiniMax.",
     "/voice on enables voice mode in the CLI. Ctrl+B toggles push-to-talk recording.",
     "Streaming TTS plays sentences as they generate — you don't wait for the full response.",
-    "Voice messages on Telegram, Discord, WhatsApp, and Slack are auto-transcribed.",
+    "Voice messages on Discord and Slack are auto-transcribed.",
 
     # --- Gateway & Messaging ---
-    "Son of Anton runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, email, and more.",
+    "Son of Anton runs on Discord, Slack, Signal, and more messaging platforms.",
     "son-of-anton gateway install sets it up as a system service that starts on boot.",
-    "DingTalk uses Stream Mode — no webhooks or public URL needed.",
-    "BlueBubbles brings iMessage to Son of Anton via a local macOS server.",
-    "Webhook routes support HMAC validation, rate limiting, and event filtering.",
-    "The API server exposes an OpenAI-compatible endpoint compatible with Open WebUI and LibreChat.",
     "Discord voice channel mode: the bot joins VC, transcribes speech, and talks back.",
     "group_sessions_per_user: true gives each person their own session in group chats.",
     "/sethome marks a chat as the home channel for cron job deliveries.",
@@ -308,7 +304,7 @@ TIPS = [
     "Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).",
     "Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.",
     "delegation.reasoning_effort independently controls thinking depth for subagents.",
-    "display.platforms in config.yaml allows per-platform display overrides: {telegram: {tool_progress: all}}.",
+    "display.platforms in config.yaml allows per-platform display overrides: {discord: {tool_progress: all}}.",
     "human_delay.mode in config simulates human typing speed — configurable min_ms/max_ms range.",
     "Config version migrations run automatically on load — new config keys appear without manual intervention.",
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
@@ -346,7 +342,7 @@ TIPS = [
     '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
     '/footer toggles the gateway footer on final replies showing model, context %, and cwd.',
     '/busy queue|steer|interrupt controls what pressing Enter does while Son of Anton is working.',
-    '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
+    '/topic in Discord DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
     '/approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.',
     '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
     '/kanban boards switch <slug> changes the active multi-project Kanban board from inside chat.',

@@ -74,7 +74,7 @@ def _hash_sender_id(value: str) -> str:
 def _hash_chat_id(value: str) -> str:
     """Hash the numeric portion of a chat ID, preserving platform prefix.
 
-    ``telegram:12345`` → ``telegram:<hash>``
+    ``discord:12345`` → ``discord:<hash>``
     ``12345``          → ``<hash>``
     """
     colon = value.find(":")
@@ -89,10 +89,6 @@ from .config import (
     GatewayConfig,
     SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
-)
-from .whatsapp_identity import (
-    canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
 from agent.turn_context import extract_api_content_sidecar
@@ -124,7 +120,7 @@ def _is_session_key_unsafe(value: object) -> bool:
     """Return True if ``value`` could be a real traversal vector in a session_key.
 
     ``session_key`` is a *logical* routing key (e.g.
-    ``agent:main:google_chat:group:spaces/<id>``) — it never touches the
+    ``agent:main:discord:group:<guild>``) — it never touches the
     filesystem, so the strict separator-rejecting guard from
     ``_is_path_unsafe`` is over-broad: it falsely rejects Google Chat
     resource names (``spaces/<id>``, ``spaces/<id>/threads/<id>``) and any
@@ -163,11 +159,11 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
-    user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
+    user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
-    is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
+    is_bot: bool = False  # True when the message author is a bot (Discord)
     # Platform-neutral SCOPE discriminator (Discord guild / Slack workspace /
-    # Matrix server). Drives server/workspace isolation + the relay δ/ε/ζ gate.
+    # server). Drives server/workspace isolation + the relay δ/ε/ζ gate.
     # Wire migration (D-Q2.5): `scope_id` is the canonical name; `guild_id` is a
     # deprecated legacy alias kept during the cross-repo dual-read/dual-write
     # overlap. Both are written by to_dict and read by from_dict (scope_id wins);
@@ -350,10 +346,7 @@ class SessionContext:
 
 
 _PII_SAFE_PLATFORMS = frozenset({
-    Platform.WHATSAPP,
     Platform.SIGNAL,
-    Platform.TELEGRAM,
-    Platform.BLUEBUBBLES,
 })
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
@@ -554,22 +547,6 @@ def build_session_context_prompt(
             f"**Channel Topic:** {_format_untrusted_prompt_value(context.source.chat_topic)}"
         )
 
-    if context.source.platform == Platform.MATRIX:
-        src = context.source
-        room_name = src.chat_name or src.chat_id
-        room_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
-        lines.append("")
-        lines.append(f"**Matrix Room:** {_format_untrusted_prompt_value(room_name)}")
-        lines.append(f"**Matrix Room ID:** {room_id}")
-        if src.thread_id:
-            thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id
-            lines.append(f"**Matrix Thread:** {thread_id}")
-        lines.append(
-            "**Matrix room boundary:** Treat this turn as scoped to the current "
-            "Matrix room/thread only. Do not assume unresolved references are "
-            "about other Matrix rooms or projects unless the user explicitly says so."
-        )
-
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same
@@ -674,27 +651,6 @@ def build_session_context_prompt(
         lines.append(
             "Voice-channel state, when relevant, appears in the current "
             "message as a `[Voice channel now: ...]` note."
-        )
-    elif context.source.platform == Platform.BLUEBUBBLES:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are responding via iMessage. "
-            "Keep responses short and conversational — think texts, not essays. "
-            "Structure longer replies as separate short thoughts, each separated "
-            "by a blank line (double newline). Each block between blank lines "
-            "will be delivered as its own iMessage bubble, so write accordingly: "
-            "one idea per bubble, 1–3 sentences each. "
-            "If the user needs a detailed answer, give the short version first "
-            "and offer to elaborate."
-        )
-    elif context.source.platform == Platform.YUANBAO:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Yuanbao. "
-            "To send a private (DM) message to a user in the current group, "
-            "use the yb_send_dm tool (look up the recipient by name or pass "
-            "their user_id). Your normal reply is delivered to the group you "
-            "are responding in."
         )
 
     # Connected platforms
@@ -1120,7 +1076,7 @@ def build_session_key(
         ``thread_sessions_per_user`` is False (default), threads are *shared* across all
         participants — user_id is NOT appended, so every user in the thread
         shares a single session.  This is the expected UX for threaded
-        conversations (Telegram forum topics, Discord threads, Slack threads).
+        conversations (Discord threads, Slack threads).
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
@@ -1134,8 +1090,6 @@ def build_session_key(
     )
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
-        if source.platform == Platform.WHATSAPP:
-            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
 
         dm_parts = [ns, platform, "dm"]
         if slack_scope_id:
@@ -1152,11 +1106,6 @@ def build_session_key(
         # single cached agent ends up serving multiple people's conversations —
         # cross-user history bleed.  participant_id keeps DMs isolated per user.
         dm_participant_id = source.user_id_alt or source.user_id
-        if dm_participant_id and source.platform == Platform.WHATSAPP:
-            dm_participant_id = (
-                canonical_whatsapp_identifier(str(dm_participant_id))
-                or dm_participant_id
-            )
         if dm_participant_id:
             dm_parts.append(str(dm_participant_id))
             if source.thread_id:
@@ -1167,11 +1116,6 @@ def build_session_key(
         return ":".join(str(part) for part in dm_parts)
 
     participant_id = source.user_id_alt or source.user_id
-    if participant_id and source.platform == Platform.WHATSAPP:
-        # Same JID/LID-flip bug as the DM case: without canonicalisation, a
-        # single group member gets two isolated per-user sessions when the
-        # bridge reshuffles alias forms.
-        participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     # Discord auto-thread continuity: a channel-initiating message carries no
     # thread_id yet, but the connector tells us the thread its reply WILL be
     # auto-threaded into (prospective_thread_id == the message id, which becomes
@@ -1583,7 +1527,7 @@ class SessionStore:
                     # a newer live child session exists for the exact same gateway
                     # peer, repoint the routing index instead of dropping it. A
                     # hard restart between compression rotation and the next clean
-                    # save otherwise leaves Telegram with no resumable mapping, so
+                    # save otherwise leaves the platform with no resumable mapping, so
                     # queued/resume-pending work disappears until the user sends a
                     # fresh message.
                     if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
@@ -3575,7 +3519,7 @@ class SessionStore:
         """Return the persisted session_id currently bound to a session key.
 
         Public, lock-held accessor for the key→session_id mapping. Callers that
-        need to resolve the session row for a source (e.g. the webhook
+        need to resolve the session row for a source (e.g. a programmatic
         delivery-close path) should use this rather than reaching into the
         private ``_entries`` dict without holding ``self._lock``. Returns None
         when the key is unknown or has no session_id yet.

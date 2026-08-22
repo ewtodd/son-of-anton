@@ -1080,7 +1080,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
-        # Text batching: merge rapid successive messages (Telegram-style)
+        # Text batching: merge rapid successive messages
         self._text_batch_delay_seconds = env_float("SON_OF_ANTON_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("SON_OF_ANTON_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
@@ -1169,7 +1169,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # cap, every subsequent progressive edit truncates to the SAME text;
         # re-sending it is a no-op that still counts against Discord's edit
         # rate limit (~1 edit per stream tick for the rest of a long reply).
-        # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
+        # Mirrors the #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
 
@@ -1670,7 +1670,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Raises ``ValueError`` when the actor or chat identity is missing so the
         post-auth boundary fails closed instead of authorizing an incomplete
-        source (mirrors the Telegram reaction extractor).
+        source (mirrors the reaction extractor).
         """
         if not user_id or not chat_id:
             raise ValueError(
@@ -3392,7 +3392,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _reply_reference_for_send(self, reply_to, channel):
         """Reply anchor for send paths, honoring reply_to_mode.
 
-        Mirrors telegram's _reply_to_message_id_for_send: raw reply_to in,
+        Mirrors the reply-anchor helper: raw reply_to in,
         platform send-time anchor out, ``off`` mode suppressed.
         """
         if not reply_to or self._reply_to_mode == "off":
@@ -3744,7 +3744,7 @@ class DiscordAdapter(BasePlatformAdapter):
         Mid-stream (``finalize=False``) we keep editing the original message
         with a truncated preview — splitting mid-stream would move the edit
         target to a continuation and the next accumulated-token tick would
-        re-split, looping forever (the Telegram #48648 lesson).  The complete
+        re-split, looping forever (the #48648 lesson).  The complete
         text is delivered when ``finalize=True`` via ``_edit_overflow_split``.
         """
         if not self._client:
@@ -3777,7 +3777,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Saturated-preview dedup: past the cap, every progressive
                 # edit truncates to the same text. Re-sending it is a visual
                 # no-op that still counts against Discord's edit rate limit —
-                # skip silently until finalize (mirrors the Telegram #58563
+                # skip silently until finalize (mirrors the #58563
                 # fix).
                 if self._last_overflow_preview.get(_preview_key) == formatted:
                     return SendResult(success=True, message_id=message_id)
@@ -5310,7 +5310,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # before the auth check, or Discord retried). Best-effort only.
             logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
 
-        # Fire-and-forget: don't block the interaction handler on Telegram I/O.
+        # Fire-and-forget: don't block the interaction handler on adapter I/O.
         try:
             asyncio.create_task(self._notify_unauthorized_slash(
                 user_name, user_id, chan_id, guild_id, command_text, reason,
@@ -5326,14 +5326,14 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> None:
         """Best-effort cross-platform alert to the gateway operator.
 
-        Tries TELEGRAM first (most operators set TELEGRAM_HOME_CHANNEL),
-        then SLACK. Silently no-ops if no other platform is configured
+        Tries SLACK first (most operators set SLACK_HOME_CHANNEL).
+        Silently no-ops if no other platform is configured
         with a home channel.
 
         A soft send failure -- adapter.send() returning a result with
         ``success=False`` rather than raising -- continues the fallback
         chain. Treating a SendResult(success=False) as delivered would
-        mean a Telegram outage that the adapter politely surfaces (e.g.
+        mean a platform outage that the adapter politely surfaces (e.g.
         rate-limit, auth failure) silently swallows the alert without
         attempting Slack. Hard exceptions still take the same path via
         the except branch below.
@@ -5341,7 +5341,7 @@ class DiscordAdapter(BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         if not runner:
             return
-        for target in (Platform.TELEGRAM, Platform.SLACK):
+        for target in (Platform.SLACK,):
             try:
                 adapter = runner.adapters.get(target)
                 if not adapter:
@@ -9715,7 +9715,7 @@ def _define_discord_view_classes() -> None:
                     pass
 
             # Resolve via the gateway clarify primitive — same mechanism as
-            # Telegram. Look up the canonical choice text from the entry so
+            # Look up the canonical choice text from the entry so
             # we round-trip the original value, not a button-label variant.
             resolved_text: Optional[str] = None
             try:
@@ -9818,7 +9818,7 @@ if DISCORD_AVAILABLE:
 #
 # This block was previously hosted in ``tools/send_message_tool.py`` as
 # ``_send_discord``.  It moved into the plugin so all Discord-specific HTTP
-# logic lives next to the adapter — same shape as Teams' ``_standalone_send``.
+# logic lives next to the adapter.
 
 # Process-local cache for Discord channel-type probes.  Avoids re-probing the
 # same channel on every send when the directory cache has no entry (e.g. fresh
@@ -10228,7 +10228,7 @@ def _clean_discord_user_ids(raw: str) -> list:
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup.
 
-    Mirrors Teams' ``interactive_setup`` shape: lazy-imports CLI helpers so
+    Mirrors the interactive_setup shape: lazy-imports CLI helpers so
     the plugin's import surface stays small, prompts for the bot token,
     captures an allowlist, and offers to set a home channel.
     """
@@ -10530,7 +10530,7 @@ def register(ctx) -> None:
         required_env=["DISCORD_BOT_TOKEN"],
         install_hint="Run `son-of-anton setup` to install Discord support.",
         # Interactive setup wizard — replaces the central
-        # son_of_anton_cli/setup.py::_setup_discord function.  Same shape as Teams.
+        # son_of_anton_cli/setup.py::_setup_discord function.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
@@ -10547,7 +10547,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="DISCORD_HOME_CHANNEL",
         # Out-of-process cron delivery via Discord REST API.  Without this
         # hook, ``deliver=discord`` cron jobs fail with "No live adapter"
-        # when cron runs separately from the gateway.  Mirrors Teams pattern.
+        # when cron runs separately from the gateway.
         standalone_sender_fn=_standalone_send,
         # Discord hard limit per message
         max_message_length=2000,

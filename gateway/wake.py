@@ -3,21 +3,19 @@
 Two delivery strategies, selected by the target adapter's
 ``supports_async_delivery`` capability flag:
 
-* Push-capable adapters (telegram, discord, plugin platforms, ...): inject a
-  synthetic ``MessageEvent(internal=True)`` through ``adapter.handle_message``
-  — the pre-existing wake path, preserved exactly.
+* Push-capable adapters (discord, slack, signal, plugin platforms, ...):
+  inject a synthetic ``MessageEvent(internal=True)`` through
+  ``adapter.handle_message`` — the pre-existing wake path, preserved exactly.
 
-* Stateless request/response adapters (the API server,
-  ``supports_async_delivery = False``): ``handle_message`` would run the wake
-  turn under a ``build_session_key()``-derived key
-  (``agent:main:api_server:group:<sid>``) that NEVER matches the raw
-  ``X-Son of Anton-Session-Id`` key real gateway/HQ turns run under
-  (``_bind_api_server_session``), so the wake lands in a parallel, invisible
-  session. Instead we self-POST ``/v1/chat/completions`` on the in-pod API
-  server with the raw session id in the ``X-Son of Anton-Session-Id`` header — the
-  exact entry point real turns use — so the wake turn resumes the REAL
-  session, with full history, and its result is visible the next time the
-  client polls/reopens the conversation.
+* Stateless request/response adapters (``supports_async_delivery = False``):
+  ``handle_message`` would run the wake turn under a
+  ``build_session_key()``-derived key that never matches the raw session id
+  real turns run under, so the wake would land in a parallel, invisible
+  session. Instead we self-POST through the adapter's own chat-completions
+  entry point with the raw session id in the session header — the exact entry
+  point real turns use — so the wake turn resumes the REAL session, with full
+  history, and its result is visible the next time the client polls/reopens
+  the conversation.
 
 Failures RAISE (after bounded retries on transient errors) so callers can
 rewind cursors / retry instead of silently losing the event.
@@ -97,13 +95,13 @@ async def deliver_wake(
 async def _self_post_chat_completion(
     adapter: Any, *, text: str, session_id: str
 ) -> None:
-    """POST the wake text to the in-pod API server as a normal session turn.
+    """POST the wake text through a stateless adapter's chat-completions
+    entry point as a normal session turn.
 
-    Uses the adapter's own bind host/port/key (``ApiServerAdapter.__init__``).
-    Session continuation via ``X-Son of Anton-Session-Id`` is 403-gated on
-    ``API_SERVER_KEY`` being configured, so a missing key is a hard error —
-    raise loudly rather than run the wake in a fresh fingerprint-derived
-    session nobody is looking at.
+    Uses the adapter's own bind host/port/key.  Session continuation via the
+    session header is gated on a configured key, so a missing key is a hard
+    error — raise loudly rather than run the wake in a fresh
+    fingerprint-derived session nobody is looking at.
     """
     import aiohttp
 
@@ -115,8 +113,8 @@ async def _self_post_chat_completion(
     api_key = str(getattr(adapter, "_api_key", "") or "")
     if not api_key:
         raise RuntimeError(
-            "wake self-post requires API_SERVER_KEY: session continuation via "
-            "X-Son of Anton-Session-Id is rejected (403) on an unauthenticated API "
+            "wake self-post requires a configured key: session continuation "
+            "via the session header is rejected (403) on an unauthenticated "
             "server, so the wake cannot reach the target session"
         )
 

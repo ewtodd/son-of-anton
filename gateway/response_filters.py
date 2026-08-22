@@ -71,7 +71,7 @@ def is_intentional_silence_response(response: Any) -> bool:
 
 
 def is_autonomous_silence_response(response: Any) -> bool:
-    """Loose silence matcher for autonomous lanes (cron, webhook).
+    """Loose silence matcher for autonomous lanes (cron).
 
     Autonomous lanes instruct the agent to emit ``[SILENT]`` when a tick
     produced nothing worth a human's attention, and models reliably bracket

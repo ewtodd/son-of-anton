@@ -14,8 +14,7 @@ and simply yields no finding):
 2. SSH daemon present with password authentication enabled.
 3. Running inside a container with no persistent volume mount over the
    SON_OF_ANTON_HOME data dir (state is ephemeral — lost on container restart).
-4. A network-accessible gateway listener (dashboard / API server) with no
-   authentication configured.
+4. A network-accessible gateway listener with no authentication configured.
 
 Cross-platform: the root and SSH checks are POSIX-only and no-op on Windows.
 Everything is best-effort and read-only.
@@ -190,37 +189,11 @@ def _container_no_volume_mount(son_of_anton_home: Optional[Path]) -> Optional[st
 def _network_listener_without_auth(config: Optional[dict]) -> list[str]:
     """Warn about network-accessible gateway listeners with no auth.
 
-    Covers the API server (no API_SERVER_KEY) and the dashboard (non-loopback
-    bind with no auth provider). Read-only against config + env; overlaps the
-    hard fail-closed guards but surfaces the posture proactively at startup.
+    The OpenAI-compatible HTTP listener was removed with the platform that
+    owned it; the dashboard keeps its own auth posture checks elsewhere.
+    This hook now always returns no findings.
     """
-    findings: list[str] = []
-    try:
-        from gateway.platforms.base import is_network_accessible
-    except Exception:
-        return findings
-
-    cfg = config or {}
-
-    # API server.
-    try:
-        plats = (cfg.get("platforms") or {})
-        api = plats.get("api_server") if isinstance(plats, dict) else None
-        if isinstance(api, dict) and api.get("enabled"):
-            extra = api.get("extra") or {}
-            host = extra.get("host") or os.environ.get("API_SERVER_HOST", "127.0.0.1")
-            key = extra.get("key") or os.environ.get("API_SERVER_KEY", "")
-            if is_network_accessible(str(host)) and not str(key).strip():
-                findings.append(
-                    f"OpenAI-compatible API server is network-accessible ({host}) "
-                    "with NO API_SERVER_KEY. It dispatches terminal-capable agent "
-                    "work — an unauthenticated network endpoint is remote code "
-                    "execution. Set a strong API_SERVER_KEY."
-                )
-    except Exception:
-        pass
-
-    return findings
+    return []
 
 
 def run_security_audit(

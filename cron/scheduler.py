@@ -430,7 +430,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     3. ``None`` on any lookup failure — AIAgent loads the full default set
        (legacy behavior before this change, preserved as the safety net).
 
-    _DEFAULT_OFF_TOOLSETS ({homeassistant, rl}) are removed by
+    _DEFAULT_OFF_TOOLSETS are removed by
     ``_get_platform_tools`` for unconfigured platforms, so fresh installs
     get cron without those toolsets by default (issue reported by Norbert —
     surprise $4.63 run).
@@ -494,40 +494,22 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao",
+    "discord", "slack", "signal",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
 _HOME_TARGET_ENV_VARS = {
-    "matrix": "MATRIX_HOME_ROOM",
-    "telegram": "TELEGRAM_HOME_CHANNEL",
     "discord": "DISCORD_HOME_CHANNEL",
     "slack": "SLACK_HOME_CHANNEL",
     "signal": "SIGNAL_HOME_CHANNEL",
-    "mattermost": "MATTERMOST_HOME_CHANNEL",
-    "sms": "SMS_HOME_CHANNEL",
-    "email": "EMAIL_HOME_ADDRESS",
-    "dingtalk": "DINGTALK_HOME_CHANNEL",
-    "feishu": "FEISHU_HOME_CHANNEL",
-    "wecom": "WECOM_HOME_CHANNEL",
-    "weixin": "WEIXIN_HOME_CHANNEL",
-    "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
-    "qqbot": "QQBOT_HOME_CHANNEL",
-    "whatsapp": "WHATSAPP_HOME_CHANNEL",
-    "whatsapp_cloud": "WHATSAPP_CLOUD_HOME_CHANNEL",
 }
 
 # Legacy env var names kept for back-compat.  Each entry is the current
 # primary env var → the previous name.  _get_home_target_chat_id falls
 # back to the legacy name if the primary is unset, so users who set the
 # old name before the rename keep working until they migrate.
-_LEGACY_HOME_TARGET_ENV_VARS = {
-    "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
-}
+_LEGACY_HOME_TARGET_ENV_VARS = {}
 
 from cron.jobs import (
     advance_next_runs,
@@ -556,7 +538,7 @@ SILENT_MARKER = "[SILENT]"
 # a marker is the entire response OR appears as its own first/last line — but
 # NOT when a token merely appears mid-sentence in a genuine report (e.g.
 # "I considered staying [SILENT] but here is the summary…" must deliver).
-# The actual matcher is shared with the webhook lane —
+# The actual matcher is shared with the programmatic lane —
 # gateway.response_filters.is_autonomous_silence_response — so the two
 # autonomous lanes cannot drift apart.
 
@@ -571,7 +553,7 @@ def _is_cron_silence_response(text: str) -> bool:
     treated as real content and delivered.
 
     Delegates to the shared autonomous-lane matcher in
-    :mod:`gateway.response_filters` (also used by the webhook adapter).
+    :mod:`gateway.response_filters`.
     """
     from gateway.response_filters import is_autonomous_silence_response
 
@@ -648,7 +630,7 @@ class _CombinedCancelEvent:
     """Duck-typed ``threading.Event`` that ORs several cancellation sources.
 
     ``run_one_job`` already derives a ``lost_ownership`` event from the
-    fire-claim heartbeat; transports (dashboard webhook drain, API server
+    fire-claim heartbeat; transports
     shutdown) contribute their own per-task event. The worker only ever
     calls ``is_set()`` / ``set()``, so a tiny wrapper beats a pump thread.
     """
@@ -1095,7 +1077,7 @@ def mark_running_jobs_interrupted(
     per-agent correlation either.
 
     ``only_owners``: optional set of ``(job_id, fire_owner)`` pairs. When
-    given (dashboard webhook drain), ONLY those exact executions are
+    given (dashboard drain), ONLY those exact executions are
     marked — unrelated runs sharing the process (e.g. the desktop ticker's
     own jobs) are left untouched. Interruption flags are recorded per
     execution token, so a later run of the same job ID never consumes a
@@ -1748,7 +1730,7 @@ def _open_continuable_cron_thread(
     """Open a dedicated thread for a continuable cron job (thread-preferred).
 
     Returns the new ``thread_id`` on success, or ``None`` when the platform has
-    no thread primitive (WhatsApp/Signal/SMS) or creation failed — the ``None``
+    no thread primitive (Signal) or creation failed — the ``None``
     return is the caller's signal to fall back to the origin-DM mirror, the same
     open-thread-or-fallback shape as ``GatewayRunner._process_handoff``. Reuses
     the shipped ``adapter.create_handoff_thread``; no new adapter surface.
@@ -1835,7 +1817,7 @@ def _seed_cron_thread_session(
                 # Discord thread destinations must key on the thread's OWN id
                 # to match how the Discord adapter keys organic in-thread
                 # messages (chat_id == thread_id). Other platforms (Slack,
-                # Telegram) use chat_id == parent_channel for thread messages,
+                # Some adapters) use chat_id == parent_channel for thread messages,
                 # so the parent chat_id is correct for them. See the matching
                 # guard in GatewayRunner._process_handoff.
                 if platform_enum == Platform.DISCORD:
@@ -2136,21 +2118,8 @@ def _get_home_target_chat_id(platform_name: str) -> str:
 
 
 def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
-    """Return the optional thread/topic ID for a platform home target.
-
-    Telegram-only override: ``TELEGRAM_CRON_THREAD_ID`` takes precedence over
-    ``TELEGRAM_HOME_CHANNEL_THREAD_ID`` for cron delivery. When topic mode is
-    enabled, deliveries that land in the root DM (thread_id unset) end up in
-    the system-only lobby where the user cannot reply — the gateway returns
-    the lobby reminder and drops ``reply_to_message_id`` (#24409). Pointing
-    cron at a dedicated topic via this env var lets replies work as expected
-    without changing the lobby invariant.
-    """
+    """Return the optional thread/topic ID for a platform home target."""
     env_var = _resolve_home_env_var(platform_name)
-    if platform_name.lower() == "telegram":
-        cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
-        if cron_thread:
-            return cron_thread
     value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
     if not value and env_var:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
@@ -2390,11 +2359,11 @@ def _normalize_deliver_value(deliver) -> str:
     """Normalize a stored/submitted ``deliver`` value to its canonical string form.
 
     The contract is that ``deliver`` is a string (``"local"``, ``"origin"``,
-    ``"telegram"``, ``"telegram:-1001:17"``, or comma-separated combinations).
+    ``"discord"``, ``"discord:123"``, or comma-separated combinations).
     Historically some callers — MCP clients passing an array, direct edits of
     ``jobs.json``, or stale code paths — have stored a list/tuple like
-    ``["telegram"]``.  ``str(["telegram"])`` would serialize to the literal
-    string ``"['telegram']"``, which is not a known platform and fails
+    ``["discord"]``.  ``str(["discord"])`` would serialize to the literal
+    string ``"['discord']"``, which is not a known platform and fails
     resolution silently.  Flatten lists/tuples into a comma-separated string
     so both forms work.  Returns ``"local"`` for anything falsy.
     """
@@ -2407,7 +2376,7 @@ def _normalize_deliver_value(deliver) -> str:
 
 
 # Routing intent tokens — resolved at fire time, not create time, so a
-# job created before Telegram was wired up will pick up Telegram once it
+# job created before a platform was wired up will pick it up once it
 # comes online.  ``all`` expands into the set of connected platforms
 # (those with a configured home chat_id) in _expand_routing_tokens.
 _ROUTING_TOKENS = frozenset({"all"})
@@ -2437,7 +2406,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     Accepts the legacy comma-separated ``deliver`` string plus the
     ``all`` routing-intent token, which expands to every platform with
     a configured home channel.  Tokens may be combined with explicit
-    targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
+    targets: ``origin,all`` and ``all,discord:123`` both work.
     Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
     existing dedup pass.
     """
@@ -2471,7 +2440,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
 
 # Media extension sets — audio routing is centralized in gateway.platforms.base
-# via should_send_media_as_audio() so Telegram-specific rules stay in one place.
+# via should_send_media_as_audio() so platform-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
@@ -2589,68 +2558,12 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
-def _is_channel_dm_topic(
-    runtime_adapter: Any,
-    chat_id: Any,
-    loop: Any,
-    job_id: str,
-) -> bool:
-    """Decide whether an (already-ambiguous) Telegram topic target is a genuine
-    Bot API *channel* Direct-Messages topic (route via
-    ``direct_messages_topic_id``) rather than a forum-style topic in a private
-    chat (route via ``message_thread_id``).
-
-    Callers gate this on the ambiguous shape first
-    (``telegram:<positive_chat_id>:<numeric_thread_id>``) — that shape is
-    identical for both cases, so shape alone cannot decide (this was the #52060
-    regression).  The real signal is the chat *type*: a genuine channel DM topic
-    lives on a ``channel`` chat.  Probe the live adapter's ``get_chat_info`` once
-    and only return True when the chat is a channel.
-
-    Fails SAFE to ``message_thread_id`` (returns False) for adapters without a
-    probe, or any probe error/timeout — that is the pre-#22773 behaviour and the
-    correct default for the common forum-topic case.
-    """
-    # Resolve on the CLASS, not the instance (general pitfall #11): a MagicMock
-    # instance auto-creates a truthy ``get_chat_info`` attribute, so an
-    # instance-level probe would misclassify test doubles. Real adapters expose
-    # the coroutine on the class regardless.
-    get_chat_info = getattr(type(runtime_adapter), "get_chat_info", None)
-    if not callable(get_chat_info):
-        return False
-    try:
-        from agent.async_utils import safe_schedule_threadsafe
-
-        future = safe_schedule_threadsafe(
-            get_chat_info(runtime_adapter, str(chat_id)), loop,  # type: ignore[arg-type]
-        )
-        if future is None:
-            return False
-        # Lighter than a send (metadata-only Bot API call), so a shorter bound
-        # than the 30s/60s send waits elsewhere in this file is intentional.
-        info = future.result(timeout=10)
-    except Exception:
-        logger.debug(
-            "Job '%s': get_chat_info probe failed for chat=%s — "
-            "defaulting to message_thread_id routing",
-            job_id, chat_id, exc_info=True,
-        )
-        return False
-    is_channel = isinstance(info, dict) and str(info.get("type") or "").lower() == "channel"
-    if is_channel:
-        logger.info(
-            "Job '%s': chat=%s is a channel — routing via direct_messages_topic_id",
-            job_id, chat_id,
-        )
-    return is_channel
-
-
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
     When ``adapters`` and ``loop`` are provided (gateway is running), tries to
-    use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
+    use the live adapter first — this supports E2EE rooms where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
 
@@ -2945,9 +2858,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # Continuable cron (thread-preferred): when mirroring is enabled for the
         # origin target and the gateway is live, try to open a DEDICATED thread
         # for this job and deliver the brief into it. On thread-capable
-        # platforms (Telegram/Discord/Slack) the brief + the user's replies live
+        # platforms (Discord/Slack) the brief + the user's replies live
         # in their own scrollback; the thread-keyed session is seeded so a reply
-        # continues with full context. On DM-only platforms (WhatsApp/Signal)
+        # continues with full context. On DM-only platforms (Signal)
         # create_handoff_thread returns None and we fall back to mirroring into
         # the origin DM session (handled after delivery). Cf. _process_handoff.
         #
@@ -2981,57 +2894,28 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 opened_thread_id = new_thread_id
 
         if live_adapter_ready:
-            # Telegram topic routing (#22773, regression fixed #52060): a
-            # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
-            # ambiguous — a forum-style topic in a private chat and a genuine
-            # Bot API channel Direct-Messages topic share the same shape and
-            # need OPPOSITE routing. Disambiguate at delivery time via
-            # ``_is_channel_dm_topic`` (see its docstring for the full
-            # rationale); ``thread_id`` goes in ``route_metadata`` so the
-            # anchorless cron send bypasses the DeliveryRouter's private-chat
-            # reply-anchor requirement. Compute the routed metadata ONCE so both
-            # the text send (via DeliveryRouter) and the media send agree.
+            # Route threaded cron deliveries via ``thread_id`` in
+            # ``route_metadata`` so the anchorless cron send bypasses the
+            # DeliveryRouter's private-chat reply-anchor requirement. Compute
+            # the routed metadata ONCE so both the text send (via
+            # DeliveryRouter) and the media send agree.
             from gateway.delivery import (
                 DeliveryRouter,
                 DeliveryTarget,
-                _looks_like_int,
-                looks_like_telegram_private_chat_id,
             )
 
-            is_ambiguous_telegram_topic = (
-                platform == Platform.TELEGRAM
-                and thread_id is not None
-                and looks_like_telegram_private_chat_id(str(chat_id))
-                and _looks_like_int(str(thread_id))
-            )
-            route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
-                runtime_adapter, chat_id, loop, job["id"],
-            )
-            if route_via_dm_topic:
-                # Genuine Bot API channel Direct-Messages topic (#22773 mode 2):
-                # routed via direct_messages_topic_id, no bare thread_id.
-                route_thread_id = None
-                route_metadata = {
-                    "direct_messages_topic_id": str(thread_id),
-                    "job_id": job["id"],
-                }
-                # Media metadata mirrors the text routing so attachments land in
-                # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
-            else:
-                # Forum-style topic (private chat / supergroup) or non-topic
-                # target: route via message_thread_id (#52060).  Put thread_id in
-                # *route_metadata* (not just the DeliveryTarget) deliberately —
-                # the DeliveryRouter's private-chat topic detection
-                # (gateway/delivery.py) demands a reply anchor when thread_id is
-                # absent from metadata; cron deliveries have no inbound reply
-                # anchor, so the metadata key bypasses that check and lets the
-                # adapter route via a plain message_thread_id.
-                route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
-                if route_thread_id:
-                    route_metadata["thread_id"] = route_thread_id
-                media_metadata = {"thread_id": thread_id} if thread_id else None
+            # Forum-style thread target: route via message_thread_id (#52060).
+            # Put thread_id in *route_metadata* (not just the DeliveryTarget)
+            # deliberately — the DeliveryRouter's private-chat topic detection
+            # (gateway/delivery.py) demands a reply anchor when thread_id is
+            # absent from metadata; cron deliveries have no inbound reply
+            # anchor, so the metadata key bypasses that check and lets the
+            # adapter route via a plain message_thread_id.
+            route_thread_id = str(thread_id) if thread_id is not None else None
+            route_metadata = {"job_id": job["id"]}
+            if route_thread_id:
+                route_metadata["thread_id"] = route_thread_id
+            media_metadata = {"thread_id": thread_id} if thread_id else None
 
             # Relay egress needs a tenant discriminator on the frame: the
             # connector's fail-closed guard resolves the workspace/guild from
@@ -3053,7 +2937,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
                 # gets the same platform-specific routing as live messages —
-                # in particular Telegram's three-mode topic routing.  The
+                # in particular the platform's topic routing.  The
                 # standalone cron path lacked this, so DM-topic cron deliveries
                 # landed in the General topic or were rejected by Bot API 10.0
                 # (#22773).
@@ -3072,7 +2956,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         is_explicit=True,
                     )
                     # Pass thread routing via the target (not a bare metadata
-                    # "thread_id"): the router only applies its Telegram DM-topic
+                    # "thread_id"): the router only applies its DM-topic
                     # detection when "thread_id"/"message_thread_id" are absent
                     # from metadata, deriving the routing from target.thread_id
                     # or the explicit direct_messages_topic_id above.
@@ -4840,7 +4724,7 @@ def run_job(
     # no_agent short-circuit — the script IS the job, no LLM involvement.
     # ---------------------------------------------------------------
     # This mirrors the classic "run a bash script on a timer, send its
-    # stdout to telegram" watchdog pattern. The agent path is skipped
+    # stdout to chat" watchdog pattern. The agent path is skipped
     # entirely: no AIAgent, no prompt, no tool loop, no token spend.
     #
     # We check this BEFORE importing run_agent / constructing SessionDB so
@@ -4857,9 +4741,9 @@ def run_job(
     if job.get("no_agent"):
         # Load .env before the script runs so auto-delivery can resolve home
         # channels. A standalone cron tick process typically starts WITHOUT
-        # TELEGRAM_HOME_CHANNEL/DISCORD_HOME_CHANNEL in its environment, and
+        # DISCORD_HOME_CHANNEL/SLACK_HOME_CHANNEL in its environment, and
         # the agent path's per-run dotenv reload below never executes for
-        # no_agent jobs — every deliver=telegram/all script job failed with
+        # no_agent jobs — every deliver=discord/all script job failed with
         # "no delivery target resolved". load_son_of_anton_dotenv does not override
         # already-set vars, so the gateway's in-process tick is unaffected.
         try:
@@ -5976,7 +5860,7 @@ def run_job(
         # (#34452) replaces a blank/empty model turn with a "⚠️ No reply: …"
         # string so interactive surfaces (CLI/gateway) explain why the box is
         # empty.  In a cron context that turns a previously-silent empty turn
-        # into a delivered warning (Manfredi's Telegram symptom).  Detect the
+        # into a delivered warning (Manfredi's symptom).  Detect the
         # explainer text deterministically (via the same formatter that
         # produced it) and treat it as empty so the empty-response suppression
         # and soft-failure marking below apply — restoring pre-#34452 silence
@@ -6367,7 +6251,7 @@ def run_one_job(
     failure is recorded via ``mark_job_run``), False only if processing raised.
 
     ``cancel_event``: optional transport-level cancellation source (dashboard
-    webhook drain, API server shutdown). It is OR-combined with the internal
+    dashboard drain, shutdown). It is OR-combined with the internal
     fire-claim heartbeat's lost-ownership event, so either trigger stops the
     run cooperatively — agent interruption AND script process-tree kill —
     through the single fenced completion path.

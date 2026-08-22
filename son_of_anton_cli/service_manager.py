@@ -651,14 +651,14 @@ class S6ServiceManager:
         completely different (and almost always nonexistent) profile.
 
         Port selection: the gateway binds the port resolved by
-        ``gateway/config.py`` from the profile's own environment —
-        ``API_SERVER_PORT`` (or ``platforms.api_server.extra.port`` in
-        that profile's ``config.yaml``), defaulting to 8642. There is
-        no ``[gateway] port`` key and no Python-side allocator: because
-        each supervised profile gateway loads its own ``SON_OF_ANTON_HOME``,
-        two profiles that both leave the port unset will both try to
-        bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in
-        its ``.env``. Previously this method took a ``port`` parameter
+        ``gateway/config.py`` from the profile's own environment — no
+        built-in platform binds a TCP port anymore; plugin platforms may
+        still declare one. There is no ``[gateway] port`` key and no
+        Python-side allocator: because each supervised profile gateway
+        loads its own ``SON_OF_ANTON_HOME``, profiles that register the
+        same plugin listener port would conflict — give each profile a
+        distinct port in its own ``.env``.
+        Previously this method took a ``port`` parameter
         that was passed in but never substituted into the rendered
         script (carried for "API parity" with a deterministic SHA-256
         allocator in ``son_of_anton_cli.profiles._allocate_gateway_port``).

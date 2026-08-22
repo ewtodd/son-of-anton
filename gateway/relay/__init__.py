@@ -5,7 +5,7 @@ relay design: a generic ``RelayAdapter`` plus the wire-serializable
 ``CapabilityDescriptor`` the connector hands it at handshake time, and the
 production ``WebSocketRelayTransport`` that dials the connector. The public API
 (module names, descriptor field set, transport protocol) MAY CHANGE without a
-deprecation cycle until at least two real Class-1 platforms (Discord + Telegram)
+deprecation cycle until at least two real Class-1 platforms (Discord + Slack)
 have shaken out the schema.
 
 See ``docs/relay-connector-contract.md`` for the formal cross-repo interface.
@@ -64,9 +64,9 @@ def relay_platform_identities() -> list[tuple[str, str]]:
     one gateway fronts a SET of platforms on one WS connection. The set is the
     env-stamped deploy config:
 
-      - ``GATEWAY_RELAY_PLATFORMS`` — comma-sep list (e.g. ``discord,telegram``).
+      - ``GATEWAY_RELAY_PLATFORMS`` — comma-sep list (e.g. ``discord,slack``).
       - ``GATEWAY_RELAY_BOT_IDS`` — JSON keyed map
-        ``{"discord": {"botId": "..."}, "telegram": {"botId": "...", "username": "..."}}``.
+        ``{"discord": {"botId": "..."}, "slack": {"botId": "..."}}``.
 
     Returns the ordered list of ``(platform, bot_id)`` pairs (the FIRST is the
     default the handshake/descriptor falls back to). The connector accepts N
@@ -127,7 +127,7 @@ def _relay_bot_ids_map() -> dict:
 
 
 def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform (e.g. Telegram's
+    """The bot's deep-link username/handle for a platform
     ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
     ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
     """
@@ -354,7 +354,7 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
 
     The connector's relevance gate (Phase 6 Unit ζ) reasons over a
     platform-agnostic policy — ``requireAddress`` / ``freeResponseScopes`` /
-    ``allowOtherBots`` — NOT over Discord/Telegram words. This is the gateway
+    ``allowOtherBots`` — NOT over Discord words. This is the gateway
     side of that contract: it reads the agent's existing relevance knobs and
     emits the generic shape the connector stores per-instance (Phase 1.5: the
     connector keys the policy by ``(tenant, platform, instanceId)``, so each

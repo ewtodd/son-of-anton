@@ -7,7 +7,7 @@ resolved per-channel presentation settings (tool-progress mode, preview length)
 and routes each event through the adapter's render hooks.
 
 Message/commentary/segment events flow into the consumer (native draft on
-Telegram DMs, edit-in-place elsewhere).  Tool events are formatted by the
+streaming-capable DMs, edit-in-place elsewhere).  Tool events are formatted by the
 adapter — which may return None to *eat* the event on platforms that can't
 render tool chrome — and the rendered line is enqueued onto the same tool
 progress queue the gateway already drains, so the two no longer race through

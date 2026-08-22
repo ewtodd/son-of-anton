@@ -368,7 +368,7 @@ def recover_pending_to_db(
                 continue
 
             # The session_key is a gateway routing key (e.g.
-            # "agent:main:telegram:supergroup:...").  We need the actual
+            # "agent:main:discord:group:...").  We need the actual
             # session_id (e.g. "20260728_120000_abc123") to append a
             # message row.  Try the session_id field from the serialised
             # data first; fall back to scanning sessions for a matching

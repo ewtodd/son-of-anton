@@ -5,14 +5,14 @@ callbacks (``stream_delta_callback(text)``, ``tool_progress_callback(event_type,
 tool_name, preview, args)``, ``interim_assistant_callback(text)`` …) and each
 gateway callback decided *both* what to render and how to send it.  That
 coupling is why tool-progress bubbles and the streaming draft raced each other
-on Telegram, and why tool-call formatting lived agent-side even though only the
+on streaming platforms, and why tool-call formatting lived agent-side even though only the
 gateway knows what a given platform can render.
 
 This module defines a small, typed event vocabulary that names *what happened*
 without prescribing *how it is delivered*.  The gateway's stream consumer
 (``GatewayStreamConsumer``) is the single sink; the platform adapter decides how
-to render each event (Telegram can stream a MarkdownV2 ```bash``` block as a
-native draft; iMessage has no rich formatting and may collapse or drop tool
+to render each event (some platforms can stream a MarkdownV2 ```bash``` block as a
+native draft; others have no rich formatting and may collapse or drop tool
 chrome).  Separation of concerns: smart agent emits structured data, smart
 gateway decides delivery.
 
@@ -46,7 +46,7 @@ class MessageChunk:
 
     ``text`` is the incremental content as it arrives from the model.  The
     consumer accumulates chunks and progressively renders them (native draft on
-    Telegram DMs, edit-in-place elsewhere).  Reasoning/think-block content is
+    streaming-capable DMs, edit-in-place elsewhere).  Reasoning/think-block content is
     filtered upstream and never arrives as a MessageChunk.
     """
     text: str

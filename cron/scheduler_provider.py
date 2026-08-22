@@ -101,7 +101,7 @@ class CronScheduler(ABC):
 
         For the built-in this BLOCKS in the 60s loop until stop_event is set
         (it is run inside a daemon thread by the caller, exactly as today).
-        An external provider may register a schedule/webhook and return
+        An external provider may register a schedule/fire-endpoint and return
         immediately; in that case it must still honor stop_event for teardown.
         """
 
@@ -156,7 +156,7 @@ class CronScheduler(ABC):
         force: bool = False,
     ) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
-        inbound fire webhook when an external scheduler signals a job is due.
+        inbound fire endpoint when an external scheduler signals a job is due.
 
         The default claims the job with a store-level compare-and-set
         (multi-machine at-most-once), then runs it via the shared
@@ -175,7 +175,7 @@ class CronScheduler(ABC):
     def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
         """Durably claim one fire and create its audit attempt before dispatch.
 
-        Webhook transports call this synchronously before acknowledging the
+        Fire transports call this synchronously before acknowledging the
         external scheduler, then pass the exact owner-bearing snapshot to
         ``fire_claimed`` in tracked background work.
         """
@@ -217,8 +217,8 @@ class CronScheduler(ABC):
 
         ``cancel_event``: optional transport-owned ``threading.Event`` (or
         compatible) that lets the caller stop this execution cooperatively
-        — e.g. the dashboard lifespan drain signalling pending webhook
-        fires before the event loop shuts down.
+        — e.g. the dashboard lifespan drain signalling pending fire
+        deliveries before the event loop shuts down.
         """
         from cron.scheduler import run_one_job
 
@@ -257,7 +257,7 @@ def provider_supports_force_fire(provider: Any) -> bool:
 def provider_supports_split_fire(provider: Any) -> bool:
     """Return whether a provider implements the two-phase fire contract.
 
-    The webhook admission path uses ``claim_fire`` + ``fire_claimed`` so the
+    The fire-admission path uses ``claim_fire`` + ``fire_claimed`` so the
     202 response is backed by a durable, owner-fenced claim. A legacy
     third-party provider that overrides the documented single-phase
     ``fire_due`` hook (custom claim/re-arm/telemetry behavior) but inherits
@@ -334,9 +334,9 @@ def fire_overdue_jobs(
     """Fire jobs whose scheduled time passed without an external fire arriving.
 
     The misfire catch-up half of the hosted fire path. External providers
-    (Chronos) deliver scheduled fires over HTTP to this process's api_server
-    adapter; when that hop is down at fire time (gateway restart window,
-    api_server not bound, scheduler retry budget exhausted), the job's
+    (Chronos) deliver scheduled fires over HTTP to this process; when that
+    hop is down at fire time (gateway restart window, listener not bound,
+    scheduler retry budget exhausted), the job's
     ``next_run_at`` stays parked in the past and — because external providers
     have no local tick loop — nothing ever runs it. The day is silently lost
     even though the gateway may be healthy again minutes later.
@@ -348,7 +348,7 @@ def fire_overdue_jobs(
     - **Routes through the provider's own two-phase fire path** — a
       synchronous ``claim_fire`` (store CAS, so a late external retry
       landing concurrently is de-duplicated) and then ``fire_claimed`` in
-      a daemon thread, mirroring the webhook admission pattern. The
+      a daemon thread, mirroring the fire-admission pattern. The
       housekeeping loop that calls this must never block for the length
       of an agent run. Provider-specific re-arm logic (Chronos NAS
       one-shots) runs exactly as for a normal fire.
@@ -403,7 +403,7 @@ def fire_overdue_jobs(
             overdue_seconds / 60,
         )
         try:
-            # Two-phase, webhook-style: claim synchronously (fast store
+            # Two-phase, fire-style: claim synchronously (fast store
             # CAS — losing means an external retry beat us, which is
             # fine), then run the job off-thread so the caller's loop is
             # never blocked for the length of an agent run.
@@ -474,7 +474,7 @@ def scheduler_for_profile_mode(
     External providers currently own one unscoped remote registry/client and
     therefore cannot safely reconcile several profile stores from one process.
     Fail closed to the built-in multiplex ticker until the provider API carries
-    explicit profile identity through lifecycle and webhook calls.
+    explicit profile identity through lifecycle and fire calls.
     """
     if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):
         return provider

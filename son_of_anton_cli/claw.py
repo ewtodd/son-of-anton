@@ -116,7 +116,7 @@ def _detect_openclaw_processes() -> list[str]:
 def _warn_if_openclaw_running(auto_yes: bool) -> None:
     """Warn if OpenClaw is still running before migration.
 
-    Telegram, Discord, and Slack only allow one active connection per bot
+    Discord and Slack only allow one active connection per bot
     token. Migrating while OpenClaw is running causes both to fight for the
     same token.
     """
@@ -129,7 +129,7 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
     for detail in running:
         print_info(f"  * {detail}")
     print_info(
-        "Messaging platforms (Telegram, Discord, Slack) only allow one "
+        "Messaging platforms (Discord, Slack) only allow one "
         "active session per bot token. If you continue, both OpenClaw and "
         "Son of Anton may try to use the same token, causing disconnects."
     )
@@ -149,7 +149,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
     """Check if a Son of Anton gateway is running with connected platforms.
 
     Migrating bot tokens while the gateway is polling will cause conflicts
-    (e.g. Telegram 409 "terminated by other getUpdates request"). Warn the
+    (e.g. a 409 "terminated by other getUpdates request"). Warn the
     user and let them decide whether to continue.
     """
     from gateway.status import get_running_pid, read_runtime_status
@@ -171,7 +171,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
     )
     print_info(
         "Migrating bot tokens while the gateway is active will cause "
-        "conflicts (Telegram, Discord, and Slack only allow one active "
+        "conflicts (Discord and Slack only allow one active "
         "session per token)."
     )
     print_info("Recommendation: stop the gateway first with 'son-of-anton gateway stop'.")
@@ -391,7 +391,7 @@ def _cmd_migrate(args):
     print()
 
     # Check if OpenClaw is still running — migrating tokens while both are
-    # active will cause conflicts (e.g. Telegram 409).
+    # active will cause conflicts.
     _warn_if_openclaw_running(auto_yes)
 
     # Check if a Son of Anton gateway is running with connected platforms.

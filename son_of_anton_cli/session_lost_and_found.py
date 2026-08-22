@@ -39,9 +39,9 @@ MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 # Values observed in sessions.source across gateway platforms and tooling.
 KNOWN_SOURCES = frozenset({
-    "cli", "telegram", "discord", "slack", "whatsapp", "signal", "matrix",
-    "irc", "email", "x", "twitter", "api", "gateway", "web", "dashboard",
-    "tool", "subagent", "cron", "recovered", "imported", "acp",
+    "cli", "discord", "slack", "signal", "x", "twitter", "api", "gateway",
+    "web", "dashboard", "tool", "subagent", "cron", "recovered", "imported",
+    "acp",
 })
 
 # Historical physical layouts of the sessions table. Columns are only ever

@@ -106,7 +106,7 @@ def messaging_is_relay_only_or_absent(platforms: Iterable[Any]) -> bool:
     """True iff the only connected messaging platform is RELAY, or there is none
     (a Chronos-only / no-platform agent) — the F6/D1 structural precondition.
 
-    A directly-connected platform (Discord/Telegram/Slack/...) holds a live
+    A directly-connected platform (Discord/Slack/Signal/...) holds a live
     socket and cannot scale to zero, so its presence disarms the feature. We
     compare by the platform's ``.value``/name to avoid importing the enum here
     (keeps this module import-light and unit-testable).

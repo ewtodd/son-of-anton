@@ -1,5 +1,5 @@
 """
-Sticker description cache for Telegram.
+Sticker description cache for messaging platforms.
 
 When users send stickers, we describe them via the vision tool and cache
 the descriptions keyed by file_unique_id so we don't re-analyze the same
@@ -77,7 +77,7 @@ def cache_sticker_description(
     Store a sticker description in the cache.
 
     Args:
-        file_unique_id: Telegram's stable sticker identifier.
+        file_unique_id: the platform's stable sticker identifier.
         description:    Vision-generated description text.
         emoji:          Associated emoji (e.g. "😀").
         set_name:       Sticker set name if available.

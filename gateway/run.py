@@ -81,17 +81,6 @@ from son_of_anton_cli.fallback_config import get_fallback_chain
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
-# Telegram cold polling now proves one real getUpdates round trip before connect
-# returns. Leave enough outer budget for initialize/deleteWebhook/start_polling
-# wall deadlines plus readiness; other platforms retain the 30s isolation bound.
-_TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
-# Cold-start cap for Telegram (#85993): the initial connect awaited before the
-# gateway reaches `running` must not spend the full 180s budget — an
-# unreachable Telegram would hold EVERY platform's serving state hostage for
-# the whole window. The initial attempt gets one bounded try; on timeout the
-# platform is queued for the reconnect watcher, which retries with the full
-# 180s budget (is_reconnect=True preserves the offline update queue, #46621).
-_TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 # End reasons that mean the USER deliberately closed this thread of work
 # (/new -> session_reset / new_session, an explicit exit, or a /switch).
@@ -112,10 +101,9 @@ _USER_BOUNDARY_END_REASONS = (
 # on timeout the latch stays clear and the next tick retries).
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
-_TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
 
-_TELEGRAM_NOISY_STATUS_RE = re.compile(
+_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
@@ -327,10 +315,10 @@ def _status_template_to_regex(template: str) -> str:
 # constants the emit sites format (agent/conversation_compression.py, #69550)
 # — never re-inlined wording. Used ONLY by the opt-in
 # ``compression.progress_notices`` gate below (#52995) to decide which of the
-# noisy statuses matched by _TELEGRAM_NOISY_STATUS_RE are compression
+# noisy statuses matched by _NOISY_STATUS_RE are compression
 # progress (deliverable when the user opted in) versus unrelated aux/retry
 # chatter (always suppressed on chat surfaces). Failure notices and manual
-# /compress feedback never match _TELEGRAM_NOISY_STATUS_RE in the first
+# /compress feedback never match _NOISY_STATUS_RE in the first
 # place, so they are unaffected by this gate.
 _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
     "|".join(
@@ -374,13 +362,13 @@ def _gateway_compression_progress_notices_enabled() -> bool:
     return False
 
 # Surfaces that consume gateway text programmatically (CLI/TUI "local"
-# diagnostics, API JSON, webhook payloads) and therefore must keep RAW
-# status/error text. EVERY other platform is a human-facing chat surface
-# where operational lifecycle/provider-error noise (and any secrets in it)
-# must be suppressed or sanitized. Widens #28533's Telegram-only filter to
-# all chat gateways (#39293). Fail-closed: unknown/empty platform -> chat.
+# diagnostics) and therefore must keep RAW status/error text. EVERY other
+# platform is a human-facing chat surface where operational
+# lifecycle/provider-error noise (and any secrets in it) must be suppressed
+# or sanitized. Widens the original platform-only filter to all chat
+# gateways (#39293). Fail-closed: unknown/empty platform -> chat.
 _GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
-    {"local", "api_server", "webhook", "msgraph_webhook"}
+    {"local"}
 )
 
 
@@ -578,7 +566,7 @@ def _seed_hygiene_system_prompt(
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
-    The crash class targeted by #31066 / #31110: an unhandled Telegram
+    The crash class targeted by #31066 / #31110: an unhandled SDK
     ``TimedOut`` (or peer ``NetworkError`` / ``httpx`` connection error)
     propagating to the event loop and killing the entire gateway
     process. These are by definition transient — the next poll cycle or
@@ -624,8 +612,8 @@ def _gateway_loop_exception_handler(
 ) -> None:
     """Loop-level safety net for transient network errors.
 
-    Installed once during :func:`start_gateway`. Catches the
-    ``telegram.error.TimedOut`` crash class (issues #31066 / #31110)
+    Installed once during :func:`start_gateway`. Catches transient
+    SDK/transport crash classes (issues #31066 / #31110)
     and any peer transient network error before it can kill the
     gateway process. Logs at WARNING with full traceback so the
     originating call site stays diagnosable; non-transient errors
@@ -727,7 +715,7 @@ def _format_exec_approval_fallback(
     )
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a short user-safe chat reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "
@@ -801,12 +789,12 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
-    Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
-    Signal, Matrix, plugin platforms, etc.) should receive concise, safe
+    Every human-facing chat surface (Discord, Slack, Signal, plugin
+    platforms, etc.) should receive concise, safe
     provider failure categories with secrets redacted instead of raw HTTP
     bodies, request IDs, leaked credentials, or policy text. Only programmatic
-    surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` (CLI/TUI ``local`` diagnostics,
-    API JSON, webhook payloads) keep the raw text unchanged.
+    surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` (CLI/TUI ``local``
+    diagnostics) keep the raw text unchanged.
     """
     if not text:
         return text
@@ -814,7 +802,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return text
 
     # Lone UTF-16 surrogates (U+D800–U+DFFF) in model output crash chat
-    # surfaces downstream: Telegram's ``utf16_len`` length check and Signal
+    # surfaces downstream: the UTF-16 length check and Signal
     # formatting both ``.encode()`` the reply and raise UnicodeEncodeError
     # before any send (#55143, #55309). The stored-history copy is already
     # sanitized by ``build_assistant_message`` and ``finalize_turn`` scrubs
@@ -850,7 +838,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+    if _NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
         # membership check is derived from the #69550 template constants, so
@@ -875,8 +863,8 @@ def render_notice_line(notice) -> str:
     (⚠ / • / ✕ / ✓) into the text, and the TUI + CLI REPL render that text
     verbatim — so we emit it as-is here too. Prepending a per-level glyph would
     DOUBLE it ("⚠ ⚠ Credits 90% used", "⛔ ✕ Credit access paused"). Plaintext
-    only — no markdown — so it renders uniformly across Telegram/Discord/Slack/
-    SMS without per-platform escaping. Fail-soft: a malformed/empty notice
+    only — no markdown — so it renders uniformly across Discord/Slack/Signal
+    without per-platform escaping. Fail-soft: a malformed/empty notice
     degrades to "" rather than raising on the agent's callback path.
     """
     return str(getattr(notice, "text", "") or "").strip()
@@ -885,9 +873,9 @@ def render_notice_line(notice) -> str:
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
-    Issue #30045: adapters that implement send_or_update_status (currently
-    Telegram) edit the previous bubble for the same status_key instead of
-    appending a new one. Adapters without the method fall back to plain send.
+    Issue #30045: adapters that implement send_or_update_status edit the
+    previous bubble for the same status_key instead of appending a new
+    one. Adapters without the method fall back to plain send.
     """
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
@@ -1010,7 +998,7 @@ def _resolve_progress_thread_id(
         return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
-    if platform_key in {"slack", "mattermost"} and event_message_id:
+    if platform_key == "slack" and event_message_id:
         return str(event_message_id)
     return None
 
@@ -1039,9 +1027,9 @@ def _resolve_gateway_display_bool(
     """Resolve a boolean display setting with optional platform-only opt-in.
 
     Some display features expose assistant scratch text rather than deliberate
-    user-facing output.  For high-noise threaded chat surfaces such as
-    Mattermost, a global opt-in is too broad: they must be enabled with an
-    explicit display.platforms.<platform>.<setting> override.
+    user-facing output.  For high-noise threaded chat surfaces, a global
+    opt-in is too broad: they must be enabled with an explicit
+    display.platforms.<platform>.<setting> override.
     """
     current_platform = _gateway_platform_value(platform or platform_key)
     platform_only = {
@@ -1066,28 +1054,7 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
-def _telegramize_command_mentions(text: str, platform: Any) -> str:
-    """Rewrite slash-command mentions to Telegram-valid command names.
-
-    Telegram Bot API command names allow only lowercase letters, digits, and
-    underscores.  Keep other platform renderings unchanged, but normalize
-    Telegram help text so command mentions remain clickable/valid there.
-    """
-    platform_value = getattr(platform, "value", platform)
-    if platform_value != "telegram":
-        return text
-
-    from son_of_anton_cli.commands import _sanitize_telegram_name
-
-    def _replace(match: re.Match[str]) -> str:
-        sanitized = _sanitize_telegram_name(match.group(1))
-        return f"/{sanitized}" if sanitized else match.group(0)
-
-    return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
-
-
-# Only auto-continue interrupted gateway turns while the interruption is fresh.
-# Stale tool-tail/resume markers can otherwise revive an unrelated old task
+# Only auto-continue interrupted gateway turns while the interruption is fresh.# Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
 #
 # The freshness signal is the timestamp of the last transcript row, which
@@ -1284,8 +1251,8 @@ def build_resume_recovery_note(
 
     ``interactive`` selects the empty-message guidance: on interactive
     platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
+    is right.  On non-interactive event platforms (adapters with
+    ``interactive_resume = False``) nobody can answer; the
     resumed turn must instead complete the interrupted work, or the task is
     silently abandoned behind a "restored" acknowledgement that goes
     nowhere (#57056).
@@ -1467,25 +1434,6 @@ def _build_replay_entry(
     return entry
 
 
-_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
-_CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
-
-
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
-
-    Telegram's observe-unmentioned mode persists skipped group chatter so a
-    later @mention can see it. Those rows must not replay as ordinary user
-    turns: a weak wake word like ``@bot cambio`` should not make the model treat
-    old unmentioned chatter as pending work. The Telegram adapter marks these
-    turns with a channel prompt; this helper keeps the run-path check explicit
-    and unit-testable.
-    """
-
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
-
-
 def _csv_or_list_to_set(raw: Any) -> set[str]:
     """Normalize a config list or comma-separated scalar into a string set."""
     if raw is None:
@@ -1561,12 +1509,6 @@ def _build_gateway_agent_history(
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
-    Observed Telegram group rows are returned as API-only context for the
-    current addressed message instead of being replayed as normal prior user
-    turns.  Keeping that context out of ``conversation_history`` avoids
-    consecutive-user repair merging it with the live user turn and then hiding
-    the current message behind ``history_offset`` during persistence.
-
     When ``inject_timestamps`` is True (gateway.message_timestamps.enabled),
     each replayed user message is rendered with a single human-readable
     timestamp prefix from its stored metadata.
@@ -1579,8 +1521,6 @@ def _build_gateway_agent_history(
 
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
-    observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
     for msg in history or []:
         role = msg.get("role")
@@ -1599,9 +1539,6 @@ def _build_gateway_agent_history(
         content = msg.get("content")
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
-            continue
 
         # Rich agent messages (tool_calls, tool results) must be passed through
         # intact so the API sees valid assistant→tool sequences.
@@ -1654,8 +1591,7 @@ def _build_gateway_agent_history(
         agent_history, now=time.time()
     )
 
-    observed_context = "\n".join(observed_group_context).strip() or None
-    return agent_history, observed_context
+    return agent_history, None
 
 
 def _select_cached_agent_history(
@@ -1690,32 +1626,6 @@ def _select_cached_agent_history(
         if has_unpersisted_row:
             return list(live_history)
     return persisted_history
-
-
-def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
-
-    if not observed_context:
-        return message
-
-    prefix = (
-        f"{_OBSERVED_GROUP_CONTEXT_HEADER}\n"
-        f"{observed_context}\n\n"
-        f"{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
-    )
-
-    if isinstance(message, str):
-        return f"{prefix}{message}"
-
-    if isinstance(message, list):
-        wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
-        for part in wrapped:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part["text"] = f"{prefix}{part.get('text', '')}"
-                return wrapped
-        return [{"type": "text", "text": prefix.rstrip()}] + wrapped
-
-    return message
 
 
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
@@ -2175,7 +2085,7 @@ def _current_max_iterations() -> int:
 from contextlib import contextmanager as _contextmanager
 
 
-# Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
+# Platforms that bind a host TCP port (HTTP listeners). In a profile
 # multiplexer the default profile owns the single shared listener and serves
 # every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
 # enabling one of these is always a misconfiguration. We skip that secondary
@@ -2261,7 +2171,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     resolve through the secret scope — the same path secondary profiles use
     in ``_start_one_profile_adapters``. Without this, primary startup calls
     ``load_gateway_config()`` unscoped: ``_getenv`` falls through to
-    ``os.environ``, which often has no ``TELEGRAM_BOT_TOKEN`` once the token
+    ``os.environ``, which often has no platform token once it
     lives only under ``profiles/<name>/.env`` (#64674).
 
     Single-profile gateways never set ``multiplex_profiles``, so they keep the
@@ -2657,7 +2567,6 @@ from gateway.session import (
 )
 from gateway.delivery import (
     DeliveryRouter,
-    looks_like_telegram_private_chat_id,
     resolve_delivery_transport,
 )
 from gateway.turn_lease import (
@@ -2705,22 +2614,14 @@ from gateway.restart import (
 )
 
 
-from gateway.whatsapp_identity import (
-    canonical_whatsapp_identifier as _canonical_whatsapp_identifier,  # noqa: F401
-    expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
-    normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
-)
-
-
 logger = logging.getLogger(__name__)
 
 
 _OWN_POLICY_OPEN_ENV = {
-    Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
-    Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
-    Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
-    Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
-    Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS"),
+    # No built-in platform ships an open-policy default that needs an
+    # allow-all opt-in anymore; the entries for removed platforms were
+    # deleted.  Plugin platforms with open-policy defaults can add entries
+    # here if the startup-abort guard should apply to them.
 }
 
 
@@ -3341,7 +3242,7 @@ def _dump_wedged_turn_stacks(task_id: str) -> None:
     When the inactivity reaper fires, the model loop is usually long done and
     the worker thread is wedged somewhere in post-turn finalization — but the
     reaper's hard interrupt frees it, so the blocked frame is gone before
-    anyone can attach a profiler. A live incident (Aug 2026, WhatsApp session
+    anyone can attach a profiler. A live incident (Aug 2026, a session
     on a Relay-corrupted scope stack) wedged EVERY turn for exactly the
     1800s timeout between "Turn ended" and run_sync returning, and the wedge
     point was unrecoverable post-mortem. Dumping the stacks here, BEFORE the
@@ -4774,7 +4675,7 @@ class TurnRunner:
             return
 
         # Skip tool progress for platforms that don't support message
-        # editing (e.g. iMessage/BlueBubbles) — each progress update
+        # editing — each progress update
         # would become a separate message bubble, which is noisy.
         # getattr, not attribute access: duck-typed adapters (test fakes,
         # minimal plugin adapters) may not define edit_message at all —
@@ -4791,7 +4692,7 @@ class TurnRunner:
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
-        _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+        _last_edit_ts = 0.0      # Throttle edits to avoid platform flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
         _progress_len_fn = (
@@ -4822,7 +4723,7 @@ class TurnRunner:
         )
 
         # Detect whether the adapter's edit_message accepts metadata so
-        # overflow edits preserve Telegram topic/thread routing (#27487).
+        # overflow edits preserve topic/thread routing (#27487).
         _edit_accepts_metadata = False
         if ctx._progress_metadata:
             try:
@@ -4989,7 +4890,7 @@ class TurnRunner:
                     continue
 
                 # Throttle edits: batch rapid tool updates into fewer
-                # API calls to avoid hitting Telegram flood control.
+                # API calls to avoid hitting platform flood control.
                 # (grammY auto-retry pattern: proactively rate-limit
                 # instead of reacting to 429s.)
                 _now = time.monotonic()
@@ -5269,14 +5170,7 @@ class TurnRunner:
             # TitleCallback. Renaming twice lands on the same name at twice the
             # cost, and Discord's 2-per-10-minutes channel budget can spend
             # itself on the throwaway and drop the one worth showing.
-            if self._runner._is_telegram_topic_lane(source):
-                agent._on_session_title = lambda title, title_source: (
-                    title_source == "llm"
-                    and self._runner._schedule_telegram_topic_title_rename(
-                        source, session_id, title,
-                    )
-                )
-            elif self._runner._is_discord_auto_thread_lane(source) or (
+            if self._runner._is_discord_auto_thread_lane(source) or (
                 self._runner._is_relay_discord_channel_lane(source)
             ):
                 # Relay note: the second predicate is shape-only (relay
@@ -5497,7 +5391,7 @@ class TurnRunner:
         # the persona survives even with minimal context.
         _platforms_gw_cfg = (ctx.user_config.get("gateway") or {}).get("platforms") or {}
         # ``son-of-anton gateway setup`` writes ``gateway.platforms`` as a LIST of
-        # enabled platform names (e.g. ``- telegram``), not a dict.  Treat any
+        # enabled platform names (e.g. ``- discord``), not a dict.  Treat any
         # non-dict shape as "no per-platform overrides" instead of crashing
         # on ``.get()`` for every incoming turn (#83185).
         if not isinstance(_platforms_gw_cfg, dict):
@@ -5998,8 +5892,9 @@ class TurnRunner:
         agent.clarify_callback = _clarify_callback_sync
 
         # Show assistant thinking between tool calls — independent of
-        # tool_progress mode. Mattermost needs an explicit per-platform
-        # opt-in so global scratch-text display does not leak into threads.
+        # tool_progress mode. High-noise threaded surfaces need an
+        # explicit per-platform opt-in so global scratch-text display
+        # does not leak into threads.
         agent.thinking_progress = ctx._thinking_enabled
         # Store agent reference for interrupt support
         ctx.agent_holder[0] = agent
@@ -6024,11 +5919,8 @@ class TurnRunner:
         #      - These must be passed through intact so the API sees valid
         #        assistant→tool sequences (dropping tool_calls causes 500 errors)
         #
-        # Telegram observed group context is handled structurally here:
-        # observed=True transcript rows are withheld from replayable
-        # history and attached to the current addressed message as
-        # API-only context, so persisted history stores only the real
-        # addressed user turn.
+        # The second tuple element (observed-context sidecar) is reserved for
+        # future use; it is always None for the current platform set.
         agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history,
             channel_prompt=ctx.channel_prompt,
@@ -6156,9 +6048,9 @@ class TurnRunner:
                     )
 
             # Fallback: plain text approval prompt.  Use the adapter's
-            # typed prefix so Slack/Matrix users are told the form they
+            # typed prefix so Slack users are told the form they
             # can actually type (`!approve`) — typed "/" is blocked in
-            # Slack threads and reserved by Matrix clients.
+            # Slack threads.
             _p = getattr(ctx._status_adapter, "typed_command_prefix", "/")
             msg = _format_exec_approval_fallback(
                 cmd,
@@ -6267,7 +6159,7 @@ class TurnRunner:
             # synthesized by _schedule_resume_pending_sessions — there is
             # no NEW user message to address.  Guidance is adapter-aware:
             # interactive platforms report the restore and ask what next;
-            # non-interactive event platforms (webhook, API server)
+            # non-interactive event platforms
             # continue the interrupted work instead, because nobody is
             # present to answer and an acknowledgement would silently
             # abandon the task (#57056).
@@ -6361,18 +6253,13 @@ class TurnRunner:
             else:
                 _run_message = ctx.message
 
-            _api_run_message = _wrap_current_message_with_observed_context(
-                _run_message,
-                observed_group_context,
-            )
+            _api_run_message = _run_message
             _conversation_kwargs = {
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
             }
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override
-            elif observed_group_context:
-                _conversation_kwargs["persist_user_message"] = ctx.message
             if ctx.persist_user_display_kind:
                 # Internal self-injected turn (#82888): type the persisted user
                 # row at turn start so UIs render it as a timeline notice, not
@@ -6471,7 +6358,6 @@ class TurnRunner:
                 ctx.session_id, agent_session_id,
             )
             entry = self._runner.session_store._entries.get(ctx.session_key)
-            _session_split_entry_persisted = False
             if entry:
                 entry_session_id = getattr(entry, "session_id", None)
                 if not ctx._run_still_current():
@@ -6481,8 +6367,6 @@ class TurnRunner:
                         ctx.session_key or "?",
                         ctx.run_generation,
                     )
-                elif entry_session_id == agent_session_id:
-                    _session_split_entry_persisted = True
                 elif entry_session_id != ctx.session_id:
                     logger.info(
                         "Skipping session split sync for %s because the "
@@ -6500,45 +6384,6 @@ class TurnRunner:
                         ctx.session_key,
                         ctx.source,
                     )
-                    _session_split_entry_persisted = True
-
-            # If this is a Telegram DM and source.thread_id was lost during
-            # the session split (synthetic / recovered event), restore it
-            # from the binding so _thread_metadata_for_source produces the
-            # correct message_thread_id instead of routing to the General
-            # thread.  Failure here is non-fatal — we log and continue;
-            # worst case the message lands in General, which is the
-            # pre-fix behaviour. Only do this after this run successfully
-            # published its session split; a stale /stop→/new predecessor
-            # must not mutate routing/binding state for the fresh session.
-            if _session_split_entry_persisted and (
-                getattr(ctx.source, "platform", None) == Platform.TELEGRAM
-                and getattr(ctx.source, "chat_type", None) == "dm"
-                and getattr(ctx.source, "thread_id", None) is None
-                and self._runner._session_db is not None
-            ):
-                try:
-                    # run_sync is off-loop (executor); sync DB is fine.
-                    _binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(
-                        session_id=agent_session_id,
-                    )
-                    if _binding and _binding.get("thread_id"):
-                        ctx.source.thread_id = str(_binding["thread_id"])
-                        logger.debug(
-                            "Restored source.thread_id=%s from binding after session split %s → %s",
-                            ctx.source.thread_id,
-                            ctx.session_id,
-                            agent_session_id,
-                        )
-                except Exception:
-                    logger.debug(
-                        "Failed to restore thread_id from binding after session split",
-                        exc_info=True,
-                    )
-            if _session_split_entry_persisted:
-                self._runner._sync_telegram_topic_binding(
-                    ctx.source, entry, reason="agent-run-compression",
-                )
 
         effective_session_id = agent_session_id
         self._runner._sync_session_model_from_agent(effective_session_id, agent)
@@ -7295,7 +7140,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return
 
         connected = self.config.get_connected_platforms()
-        messaging_platforms = [p for p in connected if p not in {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}]
+        messaging_platforms = [p for p in connected if p != Platform.LOCAL]
         if not messaging_platforms:
             return
 
@@ -7407,7 +7252,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         Both ``cancel_background_tasks()`` and ``disconnect()`` can block
         indefinitely when a platform's network state is half-dead (e.g. a
-        wedged Feishu/Lark WebSocket thread waiting on I/O). An unbounded
+        wedged WebSocket thread waiting on I/O). An unbounded
         await here stalls the entire shutdown sequence past systemd's
         ``TimeoutStopSec``; the resulting SIGKILL skips ``atexit`` PID-file
         cleanup, so the next start dies with "PID file race lost" (#14128).
@@ -7471,13 +7316,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Return the per-platform connect timeout used during startup/retry.
 
         ``initial=True`` marks the cold-start connect awaited before the
-        gateway reaches ``running``. Telegram's full connect budget (180s,
-        raised for #67498 so cold polling can prove getUpdates readiness) is
-        deliberately NOT spent there: an unreachable Telegram would hold the
-        whole gateway out of the ``running`` state for the full budget
-        (#85993). The cold-start wait is capped and the platform is handed to
-        the reconnect watcher, which retries with the full budget (and
-        ``is_reconnect=True``, preserving the offline update queue — #46621).
+        gateway reaches ``running``. The cold-start wait is capped and the
+        platform is handed to the reconnect watcher, which retries with the
+        full budget (and ``is_reconnect=True``, preserving the offline
+        update queue — #46621).
         """
         raw = os.getenv("SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
         if raw:
@@ -7490,10 +7332,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
             else:
                 return max(0.0, timeout)
-        if platform == Platform.TELEGRAM:
-            if initial:
-                return _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT
-            return _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
     async def _connect_adapter_with_timeout(
@@ -7509,7 +7347,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         ``initial`` selects the capped cold-start budget for platforms whose
         full connect budget is too long to spend before the gateway reaches
-        ``running`` (#85993 — Telegram's 180s).
+        ``running`` (#85993).
         """
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
         if timeout <= 0:
@@ -7601,230 +7439,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
             profile=_profile,
         )
-
-    def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
-        """Return whether Telegram DM topic mode is active for this chat."""
-        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
-            return False
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None:
-            return False
-        # Runs off-loop (always via asyncio.to_thread); use the sync handle.
-        session_db = getattr(session_db, "_db", session_db)
-        try:
-            raw = session_db.is_telegram_topic_mode_enabled(
-                chat_id=str(source.chat_id),
-                user_id=str(source.user_id),
-            )
-        except Exception:
-            logger.debug("Failed to read Telegram topic mode state", exc_info=True)
-            return False
-        # Only honor a real True from the SessionDB. Any other value
-        # (including MagicMock instances from test fixtures that didn't
-        # opt into topic mode) means topic mode is off for this chat.
-        return raw is True
-
-    # Telegram's General (pinned top) topic in forum-enabled private chats.
-    # Bot API behavior varies: some clients omit message_thread_id for
-    # General, others send "1". Treat both as "root" for lobby/lane purposes.
-    _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
-
-    def _is_telegram_topic_root_lobby(self, source: SessionSource) -> bool:
-        """True for the main Telegram DM (or General topic) when topic mode has made it a lobby."""
-        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
-            return False
-        if not self._telegram_topic_mode_enabled(source):
-            return False
-        tid = str(source.thread_id or "")
-        return tid in self._TELEGRAM_GENERAL_TOPIC_IDS
-
-    def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
-        """True for a user-created Telegram private-chat topic lane."""
-        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
-            return False
-        if not self._telegram_topic_mode_enabled(source):
-            return False
-        tid = str(source.thread_id or "")
-        if not tid or tid in self._TELEGRAM_GENERAL_TOPIC_IDS:
-            return False
-        return True
-
-    _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
-
-    def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
-        """Rate-limit root-DM lobby reminders to one message per cooldown window.
-
-        A user who forgets multi-session mode is enabled and types several
-        prompts in the root DM would otherwise get a reminder for every
-        message. Cap it so the first one lands and the rest stay quiet.
-        """
-        if not hasattr(self, "_telegram_lobby_reminder_ts"):
-            self._telegram_lobby_reminder_ts = {}
-        chat_id = str(source.chat_id or "")
-        if not chat_id:
-            return True
-        import time as _time
-        now = _time.monotonic()
-        last = self._telegram_lobby_reminder_ts.get(chat_id, 0.0)
-        if now - last < self._TELEGRAM_LOBBY_REMINDER_COOLDOWN_S:
-            return False
-        self._telegram_lobby_reminder_ts[chat_id] = now
-        return True
-
-    def _telegram_topic_root_lobby_message(self) -> str:
-        return (
-            "This main chat is reserved for system commands.\n\n"
-            "To start a new Son of Anton chat, open the All Messages topic at the top "
-            "of this bot interface and send any message there. Telegram will "
-            "create a new topic for that message; each topic works as an "
-            "independent Son of Anton session."
-        )
-
-    def _telegram_topic_root_new_message(self) -> str:
-        return (
-            "To start a new parallel Son of Anton chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
-            "Each topic is an independent Son of Anton session. Use /new inside an "
-            "existing topic only if you want to replace that topic's current session."
-        )
-
-    def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
-        if not self._is_telegram_topic_lane(source):
-            return None
-        return (
-            "Started a new Son of Anton session in this topic.\n\n"
-            "Tip: for parallel work, open All Messages and send a message there "
-            "to create a separate topic instead of using /new here. /new replaces "
-            "the session attached to the current topic."
-        )
-
-    def _record_telegram_topic_binding(
-        self,
-        source: SessionSource,
-        session_entry,
-    ) -> None:
-        """Persist the Telegram topic -> Son of Anton session binding for topic lanes."""
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None or not source.chat_id or not source.thread_id:
-            return
-        # Runs off-loop (always via asyncio.to_thread); use the sync handle.
-        session_db = getattr(session_db, "_db", session_db)
-        session_db.bind_telegram_topic(
-            chat_id=str(source.chat_id),
-            thread_id=str(source.thread_id),
-            user_id=str(source.user_id or ""),
-            session_key=session_entry.session_key,
-            session_id=session_entry.session_id,
-        )
-
-    def _sync_telegram_topic_binding(
-        self,
-        source: SessionSource,
-        session_entry,
-        *,
-        reason: str,
-    ) -> None:
-        """Update the topic binding to point at ``session_entry.session_id``.
-
-        Telegram topic lanes persist a (chat_id, thread_id) -> session_id row
-        so reopening a topic in a fresh process resumes the right Son of Anton
-        session. When compression rotates ``session_entry.session_id`` mid-turn,
-        the binding goes stale and the next inbound message in that topic
-        reloads the oversized parent transcript instead of the compressed
-        child, retriggering preflight compression — sometimes in a loop
-        (#20470, #29712, #33414).
-        """
-        if not self._is_telegram_topic_lane(source):
-            return
-        try:
-            self._record_telegram_topic_binding(source, session_entry)
-        except Exception:
-            logger.debug(
-                "telegram topic binding refresh failed (%s)", reason, exc_info=True,
-            )
-
-    def _recover_telegram_topic_thread_id(
-        self,
-        source: SessionSource,
-    ) -> Optional[str]:
-        """Pin DM-topic routing to the user's last-active topic.
-
-        Telegram can omit ``message_thread_id`` or surface General (``1``)
-        for some topic-mode DM replies. In those lobby-shaped cases, keep the
-        conversation attached to the user's most-recent bound topic.
-
-        Do not rewrite a non-lobby, previously-unbound thread id: a newly
-        created Telegram DM topic is also "unknown" until the first inbound
-        message is recorded, and rewriting it would send that brand-new topic's
-        answer into an older lane. Returns None to leave the source alone.
-        """
-        if (
-            source.platform != Platform.TELEGRAM
-            or source.chat_type != "dm"
-            or not source.chat_id
-            or not source.user_id
-            or not self._telegram_topic_mode_enabled(source)
-        ):
-            return None
-        inbound = str(source.thread_id or "")
-        is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
-        if not is_lobby:
-            # A non-lobby, unknown thread_id is most likely the first message in
-            # a brand-new Telegram DM topic. Preserve it so it can be recorded
-            # as a new independent lane below instead of hijacking the latest
-            # existing topic binding.
-            return None
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None:
-            return None
-        # Runs off-loop (always via asyncio.to_thread); use the sync handle.
-        session_db = getattr(session_db, "_db", session_db)
-        try:
-            bindings = session_db.list_telegram_topic_bindings_for_chat(
-                chat_id=str(source.chat_id),
-            )
-        except Exception:
-            logger.debug("topic-recover: read failed", exc_info=True)
-            return None
-        if not bindings:
-            return None
-        user_id = str(source.user_id)
-        for b in bindings:  # newest-first
-            if str(b.get("user_id") or "") == user_id:
-                recovered = str(b.get("thread_id") or "")
-                if recovered and recovered != inbound:
-                    return recovered
-                return None
-        return None
-
-    def _normalize_source_for_session_key(
-        self,
-        source: SessionSource,
-    ) -> SessionSource:
-        """Apply Telegram DM topic recovery to a source for session-key purposes.
-
-        ``_handle_message_with_agent`` rewrites ``source.thread_id`` via
-        ``_recover_telegram_topic_thread_id`` *before* deriving the session
-        key for a normal message turn (a lobby/stripped reply gets pinned to
-        the user's last-active topic).  Session-scoped command handlers like
-        ``/model`` and ``/reasoning`` derive their override key from the raw
-        inbound ``event.source``, which skips that recovery — so the override
-        is stored under a different key than the next message turn reads,
-        and the override is silently dropped on Telegram forum topics and
-        after compression session splits (#30479).
-
-        Returns a recovery-normalized copy when a rewrite applies, otherwise
-        the original source unchanged.  Always derive the override storage key
-        from the result so storage and read use an identical key.
-        """
-        try:
-            recovered = self._recover_telegram_topic_thread_id(source)
-        except Exception:
-            return source
-        if recovered is None:
-            return source
-        return dataclasses.replace(source, thread_id=recovered)
 
     def _resolve_session_agent_runtime(
         self,
@@ -8116,7 +7730,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         disconnect()'s current-task guard misses it because
         _safe_adapter_disconnect runs the close in a wrapper task. A cancelled
         handler dies between the fatal log and the reconnect queue, silently
-        stranding the platform (observed 2026-07-21: telegram popped from
+        stranding the platform (observed 2026-07-21: an adapter popped from
         adapters but never queued after a travel network outage). Run the real
         work in a detached task that adapter teardown cannot cancel.
         """
@@ -8325,7 +7939,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             #   • cron jobs still run
             #   • the reconnect watcher can recover platforms when the
             #     underlying problem clears (proxy comes back, user runs
-            #     `son-of-anton whatsapp`, etc.)
+            #     `son-of-anton slack`, etc.)
             # We used to exit-with-failure here to trigger systemd restart,
             # but that converted a transient outage into a restart loop and
             # killed in-process state every time. The reconnect watcher
@@ -8350,7 +7964,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return (
             self._running_agent_count()
             + self._active_cron_job_count()
-            + self._active_api_run_count()
+            + self._active_stateless_run_count()
         )
 
     def _active_cron_job_count(self) -> int:
@@ -8373,36 +7987,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             return 0
 
-    def _active_api_run_count(self) -> int:
+    def _active_stateless_run_count(self) -> int:
         """Count API-server work that is outside ``_running_agents``.
 
-        The primary API server owns the sole HTTP listener. Secondary multiplex
-        profiles cannot create an ``api_server`` adapter because it binds a port,
-        so only the primary registry is a supported source of this work.
+        The former API-server platform is removed; this always returns 0.
+        Kept as a method so shutdown-drain callers stay unchanged.
         """
-        try:
-            adapter = getattr(self, "adapters", {}).get(Platform.API_SERVER)
-            helper = getattr(adapter, "active_agent_work_count", None)
-            return max(0, int(helper())) if callable(helper) else 0
-        except Exception:
-            return 0
+        return 0
 
-    def _interrupt_api_server_runs(self, reason: str) -> int:
+    def _interrupt_stateless_runs(self, reason: str) -> int:
         """Interrupt API-server agents that are not in ``_running_agents``.
 
-        Counterpart of ``_active_api_run_count()``: that method folds
-        adapter-owned API work into the shutdown drain, so this one must reach
-        the same agents when the drain times out. Duck-typed on the adapter so
-        an older adapter (or a minimal test double for this class) without the
-        hook is simply skipped rather than raising mid-shutdown.
+        The former API-server platform is removed; this is a no-op that
+        returns 0.  Kept so the shutdown-drain path stays unchanged.
         """
-        try:
-            adapter = getattr(self, "adapters", {}).get(Platform.API_SERVER)
-            helper = getattr(adapter, "interrupt_active_runs", None)
-            return max(0, int(helper(reason))) if callable(helper) else 0
-        except Exception as exc:
-            logger.debug("Failed interrupting api_server runs during shutdown: %s", exc)
-            return 0
+        return 0
 
     # ── scale-to-zero idle detection / dormant-quiesce (Phase 0) ──────────────
     # The gateway-side BEHAVIOUR that consumes the relay scale-to-zero primitives
@@ -8504,18 +8103,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         - enabled only: config.platforms is pre-seeded with disabled
           placeholders for the full platform catalog (the F25 bug).
         - MESSAGING only: non-messaging surfaces must not disarm scale-to-zero.
-          The api_server is a loopback listener force-enabled by the presence
-          of API_SERVER_KEY (which the Docker stage2 hook now generates for
-          every container, so hosted instances ALWAYS have it enabled) — it
-          holds no outbound socket and Chronos fires through it already reset
-          the idle clock. Counting it made messaging_is_relay_only_or_absent
-          False on every hosted instance, silently disarming the feature.
           Mirrors the non-messaging exclusion set used for handoff eligibility
           (see the `messaging_platforms` computation in _connect_platforms).
         """
         if not self.config:
             return []
-        non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        non_messaging = {Platform.LOCAL}
         try:
             return [
                 p
@@ -8592,7 +8185,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # counting agents alone let a suspend land mid-cron-job.
         #
         # Fail-AWAKE accounting: the shared shutdown-drain counters
-        # (_active_cron_job_count/_active_api_run_count) swallow exceptions to
+        # (_active_cron_job_count/_active_stateless_run_count) swallow exceptions to
         # 0, which is fine for a drain but unsafe for a suspend predicate — a
         # transient read failure would make live work look idle and reopen the
         # mid-job freeze. Here an unreadable source counts as work (sentinel 1)
@@ -8604,13 +8197,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:  # noqa: BLE001 - unreadable source => assume busy
             logger.debug("scale-to-zero: cron work count unreadable — staying awake", exc_info=True)
             cron_count = 1
-        try:
-            adapter = getattr(self, "adapters", {}).get(Platform.API_SERVER)
-            helper = getattr(adapter, "active_agent_work_count", None)
-            api_count = max(0, int(helper())) if callable(helper) else 0
-        except Exception:  # noqa: BLE001 - unreadable source => assume busy
-            logger.debug("scale-to-zero: api work count unreadable — staying awake", exc_info=True)
-            api_count = 1
+        # The former API-server platform is removed; no adapter can contribute
+        # API-server work outside ``_running_agents`` anymore.
+        api_count = 0
         return is_idle(
             active_work_count=self._running_agent_count() + cron_count + api_count,
             seconds_since_last_inbound=time.time() - self._last_inbound_at,
@@ -9954,7 +9543,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
-        # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
+        # otherwise unauthorized users in shared threads (Slack/Discord)
         # can inject messages into an active session they don't own.
         if not self._is_user_authorized(event.source):
             logger.warning(
@@ -9987,11 +9576,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                    None
+                    if event.source.thread_id
+                    else event.message_id
                 ),
                 metadata=thread_meta,
             )
@@ -10006,7 +9593,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # resolves, so the approval times out and auto-denies (a deadlock).
         #
         # Slash forms (/approve, /deny) already bypass to the runner at the
-        # base-adapter guard.  This handles the bare-word forms (Signal/SMS
+        # base-adapter guard.  This handles the bare-word forms (Signal
         # users naturally type "yes" rather than "/approve").  Gating on
         # has_blocking_approval(session_key) is the disambiguator that keeps
         # a conversational "yes" from triggering a dangerous command when no
@@ -10042,7 +9629,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     # event.get_command_args().  Always use a literal "/" —
                     # MessageEvent.is_command()/get_command_args() only
                     # recognize the "/" prefix, not the per-platform display
-                    # prefix ("!" on Slack/Matrix).
+                    # prefix ("!" on Slack).
                     _verb = "approve" if _approval_handler is self._handle_approve_command else "deny"
                     _synth = f"/{_verb}"
                     if _normalized_args:
@@ -10383,11 +9970,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                    None
+                    if event.source.thread_id
+                    else event.message_id
                 ),
                 metadata=thread_meta,
             )
@@ -10402,7 +9987,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         snapshot = self._snapshot_running_agents()
         last_active_count = self._running_agent_count()
         last_cron_count = self._active_cron_job_count()
-        last_api_count = self._active_api_run_count()
+        last_api_count = self._active_stateless_run_count()
         last_status_at = 0.0
 
         def _maybe_update_status(force: bool = False) -> None:
@@ -10410,7 +9995,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             now = asyncio.get_running_loop().time()
             active_count = self._running_agent_count()
             cron_count = self._active_cron_job_count()
-            api_count = self._active_api_run_count()
+            api_count = self._active_stateless_run_count()
             if (
                 force
                 or active_count != last_active_count
@@ -10451,7 +10036,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         def _still_draining() -> bool:
             now = loop.time()
             if (
-                len(self._running_agents) or self._active_api_run_count()
+                len(self._running_agents) or self._active_stateless_run_count()
             ) and now < deadline:
                 return True
             return bool(self._active_cron_job_count()) and now < cron_deadline
@@ -10466,7 +10051,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         timed_out = (
             bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
-            or bool(self._active_api_run_count())
+            or bool(self._active_stateless_run_count())
         )
         _maybe_update_status(force=True)
         return snapshot, timed_out
@@ -10480,12 +10065,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
-        # API-server / desk turns are adapter-owned and never enter
-        # _running_agents, so the loop above cannot see them even though
-        # _drain_active_agents() waited for them (#63529).
-        interrupted_api = self._interrupt_api_server_runs(reason)
-        if interrupted_api:
-            logger.debug("Interrupted %d api_server run(s) during shutdown", interrupted_api)
 
     async def _notify_interrupted_cron_jobs(self, job_ids) -> int:
         """Tell the owner of each just-interrupted cron job that its run died.
@@ -11481,7 +11060,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         a wedged agent pinned ``son-of-anton update`` in "draining" for the full
         ``restart_after_turn_timeout`` cap because the drain counted it as
         active while its own inactivity watchdog had already declared it dead
-        (Aug 2026, WhatsApp turn idle 30+ min, drain waited on it anyway).
+        (Aug 2026, a turn idle 30+ min, drain waited on it anyway).
 
         Returns 0 when the inactivity timeout is disabled (``gateway_timeout``
         0/unset ⇒ the operator opted into unbounded turns; the after-turn cap
@@ -12000,7 +11579,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             # Validate the session owner against the current allowlist
             # before auto-resuming. A session created before
-            # TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or
+            # a platform allowlist (or equivalent) was configured, or
             # before the owner was removed from it, must not silently
             # receive a full agent response on gateway restart just
             # because it has a resume-pending marker (issue #23778).
@@ -12358,42 +11937,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
-            "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-            "WHATSAPP_ALLOWED_USERS", "WHATSAPP_CLOUD_ALLOWED_USERS",
+            "DISCORD_ALLOWED_USERS",
             "SLACK_ALLOWED_USERS",
             "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-            "TELEGRAM_GROUP_ALLOWED_USERS",
-            "TELEGRAM_GROUP_ALLOWED_CHATS",
-            "EMAIL_ALLOWED_USERS",
-            "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-            "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
-            "FEISHU_ALLOWED_USERS",
-            "WECOM_ALLOWED_USERS",
-            "WECOM_CALLBACK_ALLOWED_USERS",
-            "WEIXIN_ALLOWED_USERS",
-            "BLUEBUBBLES_ALLOWED_USERS",
-            "QQ_ALLOWED_USERS",
-            "YUANBAO_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
-            "TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
-            "WHATSAPP_ALLOW_ALL_USERS", "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+            "DISCORD_ALLOW_ALL_USERS",
             "SLACK_ALLOW_ALL_USERS",
-            "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
-            "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-            "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
-            "FEISHU_ALLOW_ALL_USERS",
-            "WECOM_ALLOW_ALL_USERS",
-            "WECOM_CALLBACK_ALLOW_ALL_USERS",
-            "WEIXIN_ALLOW_ALL_USERS",
-            "BLUEBUBBLES_ALLOW_ALL_USERS",
-            "QQ_ALLOW_ALL_USERS",
-            "YUANBAO_ALLOW_ALL_USERS",
+            "SIGNAL_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
-        # accurate as plugins like IRC come online.
+        # accurate as plugin platforms come online.
         _plugin_allowed_vars: tuple = ()
         _plugin_allow_all_vars: tuple = ()
         try:
@@ -12419,7 +11975,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             logger.warning(
                 "No env user allowlists configured. Messaging platforms default to "
                 "pairing/allowlist policies and will deny unknown senders unless you "
-                "configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id) "
+                "configure platform allowlists (e.g., DISCORD_ALLOWED_USERS=your_id) "
                 "or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true plus "
                 "dm_policy/group_policy: open on the platform."
             )
@@ -12598,9 +12154,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         #
         # Parallel startup connect (#83791): the original code ran a serial for-loop,
         # so every platform's connect() (with its own timeout) had to finish before
-        # the next began. A single slow/failing platform (e.g. Telegram behind a dead
-        # proxy) therefore delayed every other platform's connect by a full timeout
-        # window, cascading one platform's failure onto WeChat/QQ/etc. We now launch
+        # the next began. A single slow/failing platform behind a dead
+        # proxy therefore delayed every other platform's connect by a full timeout
+        # window. We now launch
         # all platform connects concurrently and let each resolve on its own timeline;
         # per-platform timeouts and error handling are unchanged.
         # The serial pre-filter (cheap checks, adapter creation, handler wiring) stays
@@ -12655,7 +12211,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             _set_reaction = getattr(adapter, "set_reaction_handler", None)
             if callable(_set_reaction):
                 _set_reaction(self._handle_reaction_event)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter.set_platform_event_handler(self._primary_platform_event_handler())
             adapter._busy_text_mode = self._busy_text_mode
@@ -12884,9 +12439,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return True
             if startup_nonretryable_errors:
                 # Mixed failure mode (NS-609): some platforms are fatally
-                # misconfigured (e.g. WhatsApp enabled but never paired) while
-                # others hit merely transient errors (e.g. Telegram TimedOut
-                # during polling startup).  Exiting with
+                # misconfigured while others hit merely transient errors.
+                # Exiting with
                 # GATEWAY_FATAL_CONFIG_EXIT_CODE here is wrong in both
                 # supervision worlds: under supervisors that honor the
                 # exit-78 contract (systemd RestartPreventExitStatus, s6
@@ -12911,7 +12465,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     #   • cron jobs still run
                     #   • the reconnect watcher gets a chance to recover the
                     #     failing platforms once the underlying problem is
-                    #     fixed (e.g. user runs `son-of-anton whatsapp`, fixes
+                    #     fixed (e.g. user runs `son-of-anton slack`, fixes
                     #     proxy, etc.)
                     # Exiting here used to convert a single misconfigured
                     # platform into an infinite systemd restart loop.
@@ -13353,7 +12907,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         # Try to create a fresh thread on the destination so the handoff
         # has its own scrollback. Adapter returns None if threading isn't
-        # supported (Matrix/WhatsApp/Signal/SMS) or if creation failed
+        # supported (e.g. Signal) or if creation failed
         # (no permission, topics-mode off, parent is a DM, etc.). When
         # None we fall through to using the home channel directly — the
         # synthetic turn still lands; just without thread isolation.
@@ -13377,29 +12931,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
 
         # Determine chat_type/user_id for the destination source.
-        #
-        # Telegram private-chat DM topics are represented differently from
-        # group/forum threads by the inbound adapter. A handoff-created topic
-        # in a positive Telegram chat_id must therefore use the same DM-topic
-        # source shape as the user's next real message; otherwise the synthetic
-        # handoff turn binds a generic `thread` session key while real replies
-        # arrive on a `dm` session key.
         home_chat_id = str(home.chat_id)
-        is_telegram_private_chat = (
-            platform == Platform.TELEGRAM
-            and looks_like_telegram_private_chat_id(home_chat_id)
-        )
 
-        if new_thread_id and not is_telegram_private_chat:
+        if new_thread_id:
             dest_chat_type = "thread"
             dest_user_id = "system:handoff"
         else:
-            # No thread — assume DM-style for the home channel. For Telegram
-            # private-chat topics, use the real user id (same as chat_id) so
-            # topic-mode checks and binding persistence see the same identity as
-            # subsequent inbound user messages.
+            # No thread — assume DM-style for the home channel.
             dest_chat_type = "dm"
-            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
+            dest_user_id = "system:handoff"
 
         # Discord thread destinations must key on the thread's OWN id, not the
         # parent channel's, because the Discord adapter builds organic in-thread
@@ -13409,7 +12949,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # reply in the thread resolves to a DIFFERENT session_key and spawns a
         # fresh session instead of continuing the handed-off one.
         #
-        # This is Discord-specific: Slack and Telegram adapters key organic
+        # This is Discord-specific: Slack adapters key organic
         # thread messages with ``chat_id == parent_channel`` and the thread
         #/topic id only in ``thread_id``, so for those platforms the parent
         # channel is correct (and the deeper chat_type normalization — handoff
@@ -13542,7 +13082,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
                 if _expired_entries:
                     # Extract platform names from session keys for a compact summary.
-                    # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
+                    # Keys look like "agent:main:discord:dm:12345" — platform is field [2].
                     _platforms: dict[str, int] = {}
                     for _k, _e in _expired_entries:
                         _parts = _k.split(":")
@@ -14099,7 +13639,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     _set_reaction = getattr(adapter, "set_reaction_handler", None)
                     if callable(_set_reaction):
                         _set_reaction(self._handle_reaction_event)
-                    adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
                     adapter.set_platform_event_handler(self._primary_platform_event_handler())
                     adapter._busy_text_mode = self._busy_text_mode
@@ -14391,7 +13930,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "running": bool(self._running),
                     "active_agents": self._running_agent_count(),
                     "active_cron_jobs": self._active_cron_job_count(),
-                    "active_api_runs": self._active_api_run_count(),
+                    "active_api_runs": self._active_stateless_run_count(),
                     "restart_drain_timeout": self._restart_drain_timeout,
                     "watchdog_delay_s": resolve_shutdown_watchdog_delay(
                         self._restart_drain_timeout
@@ -14466,7 +14005,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
             _cron_at_start = self._active_cron_job_count()
-            _api_at_start = self._active_api_run_count()
+            _api_at_start = self._active_stateless_run_count()
             # In-flight cron work gets its own floor, clamped to the watchdog
             # leash we're already running under so the extra wait can never
             # cost us the post-drain cleanup window (#82161).
@@ -14510,7 +14049,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 _cron_at_start,
                 self._active_cron_job_count(),
                 _api_at_start,
-                self._active_api_run_count(),
+                self._active_stateless_run_count(),
             )
 
             if not timed_out:
@@ -14529,13 +14068,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             if timed_out:
                 logger.warning(
-                    "Gateway drain timed out after %.1fs with %d active agent(s), "
-                    "%d in-flight cron job(s), and %d api_server run(s); "
-                    "interrupting remaining work.",
+                    "Gateway drain timed out after %.1fs with %d active agent(s) "
+                    "and %d in-flight cron job(s); interrupting remaining work.",
                     _drain_elapsed,
                     self._running_agent_count(),
                     self._active_cron_job_count(),
-                    self._active_api_run_count(),
                 )
                 # Mark forcibly-interrupted sessions as resume_pending BEFORE
                 # interrupting the agents.  This preserves each session's
@@ -14581,7 +14118,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # to stop gets its tool subprocesses killed below before it can
                 # unwind — the exact amputation this interrupt exists to avoid.
                 while (
-                    self._running_agents or self._active_api_run_count()
+                    self._running_agents or self._active_stateless_run_count()
                 ) and asyncio.get_running_loop().time() < interrupt_deadline:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
@@ -14596,7 +14133,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # at settle-loop exit, re-signal so a late-materializing
                 # agent gets a cooperative interrupt instead of going
                 # straight to the tool-subprocess kill.
-                if self._running_agents or self._active_api_run_count():
+                if self._running_agents or self._active_stateless_run_count():
                     self._interrupt_running_agents(
                         _INTERRUPT_REASON_GATEWAY_RESTART
                         if self._restart_requested
@@ -15095,8 +14632,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     )
                     # This adapter has not connected and therefore owns no
                     # resources to clean up. Calling disconnect here can mutate
-                    # the shared platform state and, for a same-credential Photon
-                    # adapter, shut down the primary profile's live sidecar.
+                    # the shared platform state.
                     continue
 
             listener_claim = self._adapter_listener_claim(platform, adapter)
@@ -15186,7 +14722,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
-        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
         adapter.set_authorization_check(
             self._make_adapter_auth_check(platform, profile_name=profile_name)
         )
@@ -15486,23 +15021,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _adapter_listener_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
         """Return the exclusive listener resource claimed by an adapter.
 
-        Photon sidecars are per-profile processes. Even when two profiles use
-        different project credentials, their sidecars cannot share a bind and
-        port. Represent that endpoint as a claim so multiplex startup rejects
-        the later adapter before either ``connect()`` or ``disconnect()`` can
-        disturb the first profile.
+        Plugin platforms that bind a host port (none remain in the built-in
+        set) can represent that endpoint as a claim so multiplex startup
+        rejects the later adapter before either ``connect()`` or
+        ``disconnect()`` can disturb the first profile.
         """
-        if getattr(platform, "value", None) != "photon":
-            return None
-        bind = getattr(adapter, "_sidecar_bind", None)
-        port = getattr(adapter, "_sidecar_port", None)
-        if not isinstance(bind, str) or not bind.strip():
-            return None
-        try:
-            port = int(port)
-        except (TypeError, ValueError):
-            return None
-        return ("listener", "photon", bind.strip().lower(), port)
+        return None
 
     @staticmethod
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:
@@ -15520,9 +15044,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             "_token",
             "api_token",
             "_bot_token",
-            # Photon/Spectrum authenticates with project credentials instead
-            # of a bot token. Including its secret keeps multiplexed profiles
-            # from spawning competing sidecars for the same account and port.
             "_project_secret",
         ):
             val = getattr(adapter, attr, None)
@@ -15600,19 +15121,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
         # Fall through to built-in adapters below
 
-        if platform == Platform.WHATSAPP_CLOUD:
-            from gateway.platforms.whatsapp_cloud import (
-                WhatsAppCloudAdapter,
-                check_whatsapp_cloud_requirements,
-            )
-            if not check_whatsapp_cloud_requirements():
-                logger.warning(
-                    "WhatsApp Cloud: aiohttp/httpx missing — reinstall son-of-anton"
-                )
-                return None
-            return WhatsAppCloudAdapter(config)
-        
-        elif platform == Platform.SIGNAL:
+        if platform == Platform.SIGNAL:
             from gateway.platforms.signal import (
                 SignalAdapter,
                 check_signal_requirements,
@@ -15625,62 +15134,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
             return SignalAdapter(config)
-
-        elif platform == Platform.WEIXIN:
-            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
-            if not check_weixin_requirements():
-                logger.warning("Weixin: aiohttp/cryptography not installed")
-                return None
-            return WeixinAdapter(config)
-
-        elif platform == Platform.API_SERVER:
-            from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
-            if not check_api_server_requirements():
-                logger.warning("API Server: aiohttp not installed")
-                return None
-            adapter = APIServerAdapter(config)
-            adapter.gateway_runner = self
-            return adapter
-
-        elif platform == Platform.WEBHOOK:
-            from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
-            if not check_webhook_requirements():
-                logger.warning("Webhook: aiohttp not installed")
-                return None
-            adapter = WebhookAdapter(config)
-            adapter.gateway_runner = self  # For cross-platform delivery
-            return adapter
-
-        elif platform == Platform.MSGRAPH_WEBHOOK:
-            from gateway.platforms.msgraph_webhook import (
-                MSGraphWebhookAdapter,
-                check_msgraph_webhook_requirements,
-            )
-            if not check_msgraph_webhook_requirements():
-                logger.warning("MSGraph webhook: aiohttp not installed")
-                return None
-            return MSGraphWebhookAdapter(config)
-
-        elif platform == Platform.BLUEBUBBLES:
-            from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
-            if not check_bluebubbles_requirements():
-                logger.warning("BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured")
-                return None
-            return BlueBubblesAdapter(config)
-
-        elif platform == Platform.QQBOT:
-            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
-            if not check_qq_requirements():
-                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
-                return None
-            return QQAdapter(config)
-
-        elif platform == Platform.YUANBAO:
-            from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
-            if not WEBSOCKETS_AVAILABLE:
-                logger.warning("Yuanbao: websockets not installed. Run: pip install websockets")
-                return None
-            return YuanbaoAdapter(config)
 
         return None
 
@@ -16064,8 +15517,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
 
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
-        # Telegram sends /start for bot launches/deep-links. Treat it as a
-        # platform ping, not a user command: no help dump, no agent
+        # Some platforms send /start for bot launches/deep-links. Treat it
+        # as a platform ping, not a user command: no help dump, no agent
         # interrupt, no queued text.
         logger.info("Ignoring /start platform ping for active session %s", quick_key)
         return ""
@@ -16372,12 +15825,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if is_internal:
             pass
         elif source.user_id is None:
-            # Messages with no user identity (Telegram service messages,
+            # Messages with no user identity (service messages,
             # channel forwards, anonymous admin posts, sender_chat) can't
             # be paired, but they can still be authorized via a
-            # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
-            # authorizes every member of the listed chat regardless of
-            # sender). Defer to _is_user_authorized so that path runs.
+            # chat-scoped allowlist that authorizes every member of the
+            # listed chat regardless of sender. Defer to
+            # _is_user_authorized so that path runs.
             if not self._is_user_authorized(source):
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
@@ -16694,7 +16147,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if allow_gateway_control and _pending_confirm and not _tool_approval_live:
             _raw_reply = (event.text or "").strip()
             # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim.
-            # Slack/Matrix instruction text shows the `!` prefix (typed `/`
+            # Slack instruction text shows the `!` prefix (typed `/`
             # is blocked in Slack threads), but the adapters only rewrite
             # `!<known-command>` — `always`/`cancel` are confirm keywords,
             # not registered commands, so the `!` survives to here.
@@ -16727,7 +16180,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
         #
-        # Special case: Telegram/photo bursts often arrive as multiple near-
+        # Special case: photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
 
@@ -16829,36 +16282,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return None
 
             effective_busy_input_mode = self._effective_busy_input_mode(source)
-            _telegram_followup_grace = float(
-                os.getenv("SON_OF_ANTON_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
-            )
-            _grace_state = self._peek_session_state(_quick_key)
-            _started_at = _grace_state.turn.started_ts if _grace_state else 0
-            if (
-                source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
-                and _telegram_followup_grace > 0
-                and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
-            ):
-                logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                    time.time() - _started_at,
-                    _quick_key,
-                )
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    if effective_busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
-                    else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
-                        )
-                return None
-
             _ra_state = self._peek_session_state(_quick_key)
             running_agent = _ra_state.turn.agent if _ra_state else None
             if running_agent is _AGENT_PENDING_SENTINEL:
@@ -17125,8 +16548,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return await self._handle_pause_command(event)
 
         if canonical == "new":
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                return self._telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
             return await self._maybe_confirm_destructive_slash(
@@ -17140,9 +16561,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 execute=_do_reset,
             )
 
-        if canonical == "topic":
-            return await self._handle_topic_command(event)
-        
         if canonical == "help":
             return await self._handle_help_command(event)
 
@@ -17498,9 +16916,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if command:
             try:
                 from son_of_anton_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so Telegram's underscored
+                # Normalize underscores to hyphens so underscored
                 # autocomplete form matches plugin commands registered with
-                # hyphens. See son_of_anton_cli/commands.py:_build_telegram_menu.
+                # hyphens.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
@@ -17512,8 +16930,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 logger.warning("Plugin command dispatch failed: %s", e)
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
-        # resolve_skill_command_key() handles the Telegram underscore/hyphen
-        # round-trip so /claude_code from Telegram autocomplete still resolves
+        # resolve_skill_command_key() handles the underscore/hyphen
+        # round-trip so /claude_code still resolves
         # to the claude-code skill.
         if command:
             # Skill bundles take precedence over individual skill commands —
@@ -17661,15 +17079,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
-
-        if not is_internal and await asyncio.to_thread(
-            self._is_telegram_topic_root_lobby, source
-        ):
-            # Debounce the lobby reminder so a user who forgets about
-            # topic mode and fires ten prompts doesn't get ten copies.
-            if self._should_send_telegram_lobby_reminder(source):
-                return self._telegram_topic_root_lobby_message()
-            return None
 
         # ── External-drain new-turn gate (Phase 2) ────────────────────
         # When NAS has engaged an external drain (.drain_request.json present,
@@ -18510,21 +17919,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
 
         # Get or create session
-        # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
-        # last-active topic so a cross-topic Reply or stripped plain reply
-        # doesn't fragment the conversation across sessions.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-        if recovered is not None:
-            logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
-            )
-            source = dataclasses.replace(source, thread_id=recovered)
-            try:
-                event.source = source
-            except Exception:
-                pass
-
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(
             event_metadata.get("gateway_session_key") or ""
@@ -18577,63 +17971,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
-            try:
-                binding = (await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                )) if self._session_db else None
-            except Exception:
-                logger.debug("Failed to read Telegram topic binding", exc_info=True)
-                binding = None
-            if binding:
-                bound_session_id = str(binding.get("session_id") or "")
-                # Heal bindings that point at a pre-compression parent: walk
-                # the compression-continuation chain forward to its tip so the
-                # next message resumes the compressed child instead of
-                # reloading the oversized parent transcript (#20470/#29712/
-                # #33414). Returns the input unchanged when the session isn't
-                # a compression parent, so this is cheap and safe.
-                if bound_session_id and self._session_db is not None:
-                    try:
-                        canonical_session_id = await self._session_db.get_compression_tip(
-                            bound_session_id,
-                        )
-                    except Exception:
-                        logger.debug(
-                            "compression-tip lookup failed for %s",
-                            bound_session_id, exc_info=True,
-                        )
-                        canonical_session_id = bound_session_id
-                    if (
-                        canonical_session_id
-                        and canonical_session_id != bound_session_id
-                    ):
-                        bound_session_id = canonical_session_id
-                if bound_session_id and bound_session_id != session_entry.session_id:
-                    # Route the override through SessionStore so the session_key
-                    # → session_id mapping is persisted to disk and the previous
-                    # lane session is ended cleanly. Mutating session_entry in
-                    # place here created a split-brain state where the JSON
-                    # index pointed at one id but code downstream used another.
-                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
-                    if switched is not None:
-                        session_entry = switched
-                # If the stored binding pointed at a parent, rewrite it to the
-                # canonical descendant now that we've followed the chain.
-                if (
-                    bound_session_id
-                    and bound_session_id != str(binding.get("session_id") or "")
-                ):
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compression-tip-walk",
-                    )
-            else:
-                try:
-                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
-                except Exception:
-                    logger.debug("Failed to record Telegram topic binding", exc_info=True)
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).
@@ -18744,7 +18081,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
-            # - the platform is excluded (e.g. api_server, webhook)
+            # - the platform is excluded via notify_exclude_platforms
             # - the expired session had no activity (nothing was cleared)
             try:
                 policy = self.session_store.config.get_reset_policy(
@@ -18801,8 +18138,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
+        # Auto-load skill(s) for topic/channel bindings
+        # (Discord channel_skill_bindings).  Supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
         _auto = getattr(event, "auto_skill", None)
@@ -19481,11 +18818,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                 _quick_key, run_generation, _hyg_new_sid
                                             )
                                             await self.async_session_store._save()
-                                            await asyncio.to_thread(
-                                                self._sync_telegram_topic_binding,
-                                                source, session_entry,
-                                                reason="hygiene-compression",
-                                            )
 
                                     if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
@@ -19699,8 +19031,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 turn_sidecar_notes.append(_intro_note)
         
         # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if not history and source.platform and source.platform != Platform.LOCAL:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             # Multiplex: home channel may live only in the profile secret
@@ -20003,10 +19334,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         session_key,
                         source,
                     )
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="agent-result-compression",
-                    )
                 else:
                     logger.info(
                         "Skipping agent-result session split sync for %s because "
@@ -20018,8 +19345,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     )
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
-            # Mattermost requires explicit per-platform opt-in because this is
-            # scratch text, not ordinary final-answer content.
             try:
                 _show_reasoning_effective = _resolve_gateway_display_bool(
                     _load_gateway_config(),
@@ -20027,14 +19352,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "show_reasoning",
                     default=bool(getattr(self, "_show_reasoning", False)),
                     platform=source.platform,
-                    require_platform_override_for={Platform.MATTERMOST},
                 )
             except Exception:
-                _show_reasoning_effective = (
-                    False
-                    if source.platform == Platform.MATTERMOST
-                    else getattr(self, "_show_reasoning", False)
-                )
+                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -20228,23 +19548,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     session_key, reason="compression_exhausted_reset"
                 )
                 if new_entry is not None:
-                    # Drop the stale reference to the bloated compressed child and
-                    # re-point the Telegram topic binding at the fresh session.
-                    # Compression rotated session_entry.session_id to the oversized
-                    # compressed child earlier this turn (the agent-result sync
-                    # above), and that _sync also rewrote the (chat_id, thread_id)
-                    # -> bloated-child binding. reset_session swaps in a clean,
-                    # parentless session, but without re-syncing the binding the
-                    # next inbound message in this topic gets switch_session'd back
-                    # onto the bloated child by the binding-heal walk, reloads the
-                    # oversized transcript, and re-triggers compression exhaustion
-                    # forever (#35809 — regression of the #9893/#10063 auto-reset).
-                    # No-op on non-topic lanes.
                     session_entry = new_entry
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compression-exhausted-reset",
-                    )
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -20315,7 +19619,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
-                # transcript (prevents duplicate user turns on Telegram retries
+                # transcript (prevents duplicate user turns on retries
                 # after transient failures). #47237
                 _skip_persist = (
                     event.message_id
@@ -20372,7 +19676,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 else:
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
-                    # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
                     # can find earlier @bot messages by their original message_id.
                     _user_msg_id_attached = False
                     for msg in new_messages:
@@ -20457,7 +19760,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Telegram/Discord/etc.
+                # Send it now as a small trailing message so Discord/Slack/etc.
                 # still surface the runtime metadata on the final reply.
                 if _footer_line:
                     try:
@@ -20755,95 +20058,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
 
 
-    def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """Return True if this /restart is a Telegram re-delivery we already handled.
-
-        The previous gateway wrote ``.restart_last_processed.json`` with the
-        triggering platform + update_id when it processed the /restart.  If
-        we now see a /restart on the same platform with an update_id <= that
-        recorded value, it is a redelivery when this process booted from that
-        restart. Otherwise the marker must still be recent (< 5 minutes).
-
-        Only applies to Telegram today (the only platform that exposes a
-        numeric cross-session update ordering); other platforms return False.
-        """
-        if event is None or event.source is None:
-            return False
-        if event.platform_update_id is None:
-            return False
-        if event.source.platform is None:
-            return False
-        # Only Telegram populates platform_update_id currently; be explicit
-        # so future platforms aren't accidentally gated by this check.
-        try:
-            platform_value = event.source.platform.value
-        except Exception:
-            return False
-        if platform_value != "telegram":
-            return False
-
-        try:
-            marker_path = _son_of_anton_home / ".restart_last_processed.json"
-            if not marker_path.exists():
-                # Belt-and-suspenders for when the dedup marker goes missing
-                # (manually cleaned up, or the previous cycle's write failed).
-                # Without a marker the update_id comparison below can't run, so
-                # a redelivered /restart would sail through and re-restart the
-                # gateway — an infinite loop (issue #18528).
-                #
-                # Suppress ONLY when we can independently confirm we just came
-                # out of a restart cycle: this process booted from a
-                # chat-originated /restart (_booted_from_restart) AND is still
-                # within a short post-boot window. This never swallows a
-                # genuine first /restart on a fresh boot (no restart marker on
-                # boot → flag stays False). Consume the flag one-shot so a
-                # legitimate /restart sent later in the same session is honored.
-                if (
-                    getattr(self, "_booted_from_restart", False)
-                    and time.time() - getattr(self, "_startup_time", 0.0) < 60
-                ):
-                    self._booted_from_restart = False
-                    return True
-                return False
-            data = json.loads(marker_path.read_text(encoding="utf-8"))
-        except Exception:
-            return False
-
-        if data.get("platform") != platform_value:
-            return False
-        recorded_uid = data.get("update_id")
-        if not isinstance(recorded_uid, int):
-            return False
-        if event.platform_update_id > recorded_uid:
-            return False
-
-        # A service-managed restart can legitimately take longer than the
-        # marker's normal five-minute trust window while adapters, cron, and
-        # in-flight deliveries drain. If this process booted from the recorded
-        # chat restart, the first same-or-older update is still that restart's
-        # redelivery regardless of elapsed wall time. Consume the boot signal
-        # one-shot so a later genuine command is evaluated normally.
-        if getattr(self, "_booted_from_restart", False):
-            self._booted_from_restart = False
-            return True
-
-        # Staleness guard: ignore markers older than 5 minutes.  A legitimately
-        # old marker (e.g. crash recovery where notify never fired) should not
-        # swallow a fresh /restart from the user.
-        requested_at = data.get("requested_at")
-        if isinstance(requested_at, (int, float)):
-            if time.time() - requested_at > 300:
-                return False
-        return True
-
-
-
-
-
-
-
-
-
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
         """Handle /suggestions in the gateway.
 
@@ -21119,7 +20333,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         The gateway message handler returns the agent response to the platform
         adapter, which sends it after this method's caller has returned.  For a
-        natural Discord/Telegram reading order, goal status belongs after that
+        natural Discord/Slack reading order, goal status belongs after that
         send.  Platform adapters provide a one-shot post-delivery callback for
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
@@ -21511,7 +20725,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # Capture [[as_document]] before extract_media strips it, so the
             # dispatch partition below can route image-extension files
             # through send_document (preserving bytes) instead of
-            # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
+            # send_multiple_images (which recompresses photos).
             force_document_attachments = "[[as_document]]" in response
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
@@ -21707,8 +20921,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     ) -> list:
         """Resolve enabled toolsets for an agent run, honoring per-source overrides.
 
-        Asks the receiving adapter for a ``toolsets_for_source()`` override
-        (e.g. per-route webhook toolsets). When present, the override list is
+        Asks the receiving adapter for a ``toolsets_for_source()`` override.
+        When present, the override list is
         validated through the SAME ``_get_platform_tools`` path as normal
         platform config — by substituting it as the platform's toolset list —
         so unknown names and platform-restricted toolsets are dropped rather
@@ -21948,104 +21162,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
 
 
-
-    async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
-        """Read Telegram private-topic capability flags via Bot API getMe."""
-        adapter = self._adapter_for_source(source)
-        bot = getattr(adapter, "_bot", None)
-        if bot is None or not hasattr(bot, "get_me"):
-            return {"checked": False}
-        try:
-            me = await bot.get_me()
-        except Exception:
-            logger.debug("Failed to fetch Telegram getMe topic capabilities", exc_info=True)
-            return {"checked": False}
-
-        def _field(name: str):
-            if hasattr(me, name):
-                return getattr(me, name)
-            api_kwargs = getattr(me, "api_kwargs", None)
-            if isinstance(api_kwargs, dict) and name in api_kwargs:
-                return api_kwargs.get(name)
-            if isinstance(me, dict):
-                return me.get(name)
-            return None
-
-        return {
-            "checked": True,
-            "has_topics_enabled": _field("has_topics_enabled"),
-            "allows_users_to_create_topics": _field("allows_users_to_create_topics"),
-        }
-
-    async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
-        """Create/pin the managed System topic after /topic activation when possible."""
-        adapter = self._adapter_for_source(source)
-        if adapter is None or not source.chat_id:
-            return
-
-        thread_id = None
-        create_topic = getattr(adapter, "_create_dm_topic", None)
-        if callable(create_topic):
-            try:
-                thread_id = await create_topic(int(source.chat_id), "System")
-            except Exception:
-                logger.debug("Failed to create Telegram System topic", exc_info=True)
-        if not thread_id:
-            return
-
-        message_id = None
-        try:
-            send_result = await adapter.send(
-                source.chat_id,
-                "System topic for Son of Anton commands and status.",
-                metadata={"thread_id": str(thread_id)},
-            )
-            message_id = getattr(send_result, "message_id", None)
-        except Exception:
-            logger.debug("Failed to send Telegram System topic intro", exc_info=True)
-        if not message_id:
-            return
-
-        bot = getattr(adapter, "_bot", None)
-        if bot is None or not hasattr(bot, "pin_chat_message"):
-            return
-        try:
-            await bot.pin_chat_message(
-                chat_id=int(source.chat_id),
-                message_id=int(message_id),
-                disable_notification=True,
-            )
-        except Exception:
-            logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
-
-    async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
-        """Send the bundled BotFather Threads Settings screenshot when available."""
-        adapter = self._adapter_for_source(source)
-        if adapter is None or not source.chat_id or not hasattr(adapter, "send_image_file"):
-            return
-        image_path = Path(__file__).resolve().parent / "assets" / "telegram-botfather-threads-settings.jpg"
-        if not image_path.exists():
-            return
-        try:
-            await adapter.send_image_file(
-                chat_id=source.chat_id,
-                image_path=str(image_path),
-                caption="BotFather → Bot Settings → Threads Settings",
-                metadata={"thread_id": str(source.thread_id)} if source.thread_id else None,
-            )
-        except Exception:
-            logger.debug("Failed to send Telegram topic setup image", exc_info=True)
-
-    def _sanitize_telegram_topic_title(self, title: str) -> str:
-        """Return a Bot API-safe forum topic name from a generated session title."""
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
-        if not cleaned:
-            return "Son of Anton Chat"
-        # Telegram forum topic names are short (currently 1-128 chars). Keep
-        # extra room for multi-byte titles and avoid trailing ellipsis churn.
-        if len(cleaned) > 120:
-            cleaned = cleaned[:117].rstrip() + "..."
-        return cleaned
 
     def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
         """Return True only for Discord threads Son of Anton just auto-created."""
@@ -22299,337 +21415,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         future.add_done_callback(_log_rename_failure)
 
-    async def _rename_telegram_topic_for_session_title(
-        self,
-        source: SessionSource,
-        session_id: str,
-        title: str,
-    ) -> None:
-        """Best-effort rename of a Telegram DM topic when Son of Anton auto-titles a session."""
-        if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
-            return
-
-        # Operator can fully disable per-topic auto-rename via
-        # extra.disable_topic_auto_rename. Useful when topics are managed
-        # by the user (ad-hoc Threaded Mode) and auto-rename would
-        # overwrite their chosen names every time the auto-title fires.
-        if self._telegram_topic_auto_rename_disabled(source):
-            return
-
-        # Skip rename when the topic is operator-declared via
-        # extra.dm_topics. Those topics have fixed names chosen by the
-        # operator (plus optional skill binding); auto-renaming would
-        # silently mutate operator config.
-        #
-        # Check the class, not the instance — getattr() on MagicMock
-        # auto-creates attributes, so `hasattr(adapter, "_get_dm_topic_info")`
-        # would return True for every test double.
-        adapter = self._adapter_for_source(source)
-        if adapter is not None:
-            get_info = getattr(type(adapter), "_get_dm_topic_info", None)
-            if callable(get_info):
-                try:
-                    operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
-                except Exception:
-                    operator_topic = None
-                # Only treat dict-shaped returns as operator-declared; a
-                # bare MagicMock or other sentinel shouldn't count.
-                if isinstance(operator_topic, dict):
-                    return
-
-        session_db = getattr(self, "_session_db", None)
-        if session_db is not None:
-            try:
-                binding = await session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                )
-                if binding and str(binding.get("session_id") or "") != str(session_id):
-                    return
-            except Exception:
-                logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
-                return
-
-        if adapter is None:
-            return
-        topic_name = self._sanitize_telegram_topic_title(title)
-        try:
-            rename_topic = getattr(adapter, "rename_dm_topic", None)
-            if rename_topic is not None:
-                await rename_topic(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                    name=topic_name,
-                )
-                return
-
-            bot = getattr(adapter, "_bot", None)
-            edit_forum_topic = getattr(bot, "edit_forum_topic", None) if bot is not None else None
-            if edit_forum_topic is None:
-                edit_forum_topic = getattr(bot, "editForumTopic", None) if bot is not None else None
-            if edit_forum_topic is None:
-                return
-            try:
-                await edit_forum_topic(
-                    chat_id=int(source.chat_id),
-                    message_thread_id=int(source.thread_id),
-                    name=topic_name,
-                )
-            except (TypeError, ValueError):
-                await edit_forum_topic(
-                    chat_id=source.chat_id,
-                    message_thread_id=source.thread_id,
-                    name=topic_name,
-                )
-        except Exception:
-            logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
-
-    def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
-        """Return True when operator disabled per-topic auto-rename for this Telegram chat.
-
-        Controlled via ``gateway.platforms.telegram.extra.disable_topic_auto_rename``.
-        Default is False (auto-rename enabled, preserves prior behaviour).
-        """
-        platform_cfg = (
-            self.config.platforms.get(source.platform)
-            if getattr(self, "config", None) and getattr(self.config, "platforms", None)
-            else None
-        )
-        if platform_cfg is None:
-            return False
-        extra = getattr(platform_cfg, "extra", None) or {}
-        value = extra.get("disable_topic_auto_rename")
-        if value is None:
-            return False
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _schedule_telegram_topic_title_rename(
-        self,
-        source: SessionSource,
-        session_id: str,
-        title: str,
-    ) -> None:
-        """Schedule a topic rename from the auto-title background thread."""
-        if not title or not self._is_telegram_topic_lane(source):
-            return
-        if self._telegram_topic_auto_rename_disabled(source):
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = getattr(self, "_gateway_loop", None)
-        if loop is None or loop.is_closed():
-            return
-        try:
-            copied_source = dataclasses.replace(source)
-        except Exception:
-            copied_source = source
-        future = safe_schedule_threadsafe(
-            self._rename_telegram_topic_for_session_title(copied_source, session_id, title),
-            loop,
-            logger=logger,
-            log_message="Telegram topic title rename failed to schedule",
-        )
-        if future is None:
-            return
-        def _log_rename_failure(fut) -> None:
-            try:
-                fut.result()
-            except Exception:
-                logger.debug("Telegram topic title rename failed", exc_info=True)
-
-        future.add_done_callback(_log_rename_failure)
-
-    _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
-
-    def _should_send_telegram_capability_hint(self, source: SessionSource) -> bool:
-        """Rate-limit the BotFather Threads Settings screenshot.
-
-        If a user sends /topic repeatedly while Threads Settings are still
-        off, we shouldn't keep re-uploading the screenshot every time.
-        """
-        if not hasattr(self, "_telegram_capability_hint_ts"):
-            self._telegram_capability_hint_ts = {}
-        chat_id = str(source.chat_id or "")
-        if not chat_id:
-            return True
-        import time as _time
-        now = _time.monotonic()
-        last = self._telegram_capability_hint_ts.get(chat_id, 0.0)
-        if now - last < self._TELEGRAM_CAPABILITY_HINT_COOLDOWN_S:
-            return False
-        self._telegram_capability_hint_ts[chat_id] = now
-        return True
-
-    def _telegram_topic_help_text(self) -> str:
-        return (
-            "/topic — enable multi-session DM mode (one bot, many parallel chats)\n"
-            "\n"
-            "Usage:\n"
-            "  /topic             Enable topic mode, or show status if already on\n"
-            "  /topic help        Show this message\n"
-            "  /topic off         Disable topic mode and clear topic bindings\n"
-            "  /topic <id>        Inside a topic: restore a previous session by ID\n"
-            "\n"
-            "How it works:\n"
-            "1. Run /topic once in this DM — Son of Anton checks BotFather Threads\n"
-            "   Settings are enabled and flips on multi-session mode.\n"
-            "2. Tap All Messages at the top of the bot and send any message.\n"
-            "   Telegram creates a new topic for that message; each topic is\n"
-            "   an independent Son of Anton session (fresh history, fresh context).\n"
-            "3. The root DM becomes a system lobby — send /topic, /status,\n"
-            "   /help, /usage there. Normal prompts go in a topic.\n"
-            "4. /new inside a topic resets just that topic's session.\n"
-            "5. /topic <id> inside a topic restores an old session into it."
-        )
-
-    async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
-        """Cleanly disable topic mode for a chat via /topic off."""
-        if not self._session_db:
-            from son_of_anton_state import format_session_db_unavailable
-            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
-        chat_id = str(source.chat_id or "")
-        if not chat_id:
-            return "Could not determine chat ID."
-        # No-op if never enabled.
-        try:
-            currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
-                chat_id=chat_id,
-                user_id=str(source.user_id or ""),
-            )
-        except Exception:
-            currently_enabled = False
-        if not currently_enabled:
-            return "Multi-session topic mode is not currently enabled for this chat."
-        try:
-            await self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
-        except Exception as exc:
-            logger.exception("Failed to disable Telegram topic mode")
-            return f"Failed to disable topic mode: {exc}"
-        # Reset per-chat debounce state so the user doesn't see a stale
-        # cooldown on the next activation.
-        for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
-            store = getattr(self, attr, None)
-            if isinstance(store, dict):
-                store.pop(chat_id, None)
-        return (
-            "Multi-session topic mode is now OFF for this chat.\n\n"
-            "Existing topics in Telegram aren't removed — they'll just stop "
-            "being gated as independent sessions. The root DM works as a "
-            "normal Son of Anton chat again. Run /topic to re-enable later."
-        )
-
-
-    async def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
-        lines = [
-            "Telegram multi-session topics are enabled.",
-            "",
-            "To create a new Son of Anton chat, open All Messages at the top of this "
-            "bot interface and send any message there. Telegram will create a "
-            "new topic for it.",
-            "",
-        ]
-        try:
-            sessions = await self._session_db.list_unlinked_telegram_sessions_for_user(
-                chat_id=str(source.chat_id),
-                user_id=str(source.user_id),
-                limit=10,
-            )
-        except Exception:
-            logger.debug("Failed to list unlinked Telegram sessions", exc_info=True)
-            sessions = []
-
-        if sessions:
-            lines.append("Previous unlinked sessions:")
-            for session in sessions:
-                session_id = str(session.get("id") or "")
-                title = str(session.get("title") or "Untitled session")
-                preview = str(session.get("preview") or "").strip()
-                line = f"- {title} — `{session_id}`"
-                if preview:
-                    line += f" — {preview}"
-                lines.append(line)
-            lines.extend([
-                "",
-                "To restore one:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
-                f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
-            ])
-        else:
-            lines.extend([
-                "No previous unlinked Telegram sessions found.",
-                "",
-                "To restore a previous session later:",
-                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
-                "2. Send /topic <session-id> inside that topic.",
-            ])
-        return "\n".join(lines)
-
-    async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
-        """Restore an existing Telegram-owned Son of Anton session into this topic."""
-        source = event.source
-        session_id = await self._session_db.resolve_session_id(raw_session_id.strip())
-        if not session_id:
-            return f"Session not found: {raw_session_id.strip()}"
-
-        session = await self._session_db.get_session(session_id)
-        if not session:
-            return f"Session not found: {raw_session_id.strip()}"
-        if str(session.get("source") or "") != "telegram":
-            return "That session is not a Telegram session and cannot be restored into this topic."
-        if str(session.get("user_id") or "") != str(source.user_id):
-            return "That session does not belong to this Telegram user."
-
-        linked = await self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
-        current_binding = await self._session_db.get_telegram_topic_binding(
-            chat_id=str(source.chat_id),
-            thread_id=str(source.thread_id),
-        )
-        if linked:
-            if not current_binding or current_binding.get("session_id") != session_id:
-                return "That session is already linked to another Telegram topic."
-
-        session_key = self._session_key_for_source(source)
-        try:
-            await self._session_db.bind_telegram_topic(
-                chat_id=str(source.chat_id),
-                thread_id=str(source.thread_id),
-                user_id=str(source.user_id),
-                session_key=session_key,
-                session_id=session_id,
-                managed_mode="restored",
-            )
-        except ValueError as exc:
-            if "already linked" in str(exc):
-                return "That session is already linked to another Telegram topic."
-            raise
-
-        title = await self._session_db.get_session_title(session_id) or session_id
-        last_assistant = None
-        try:
-            for message in reversed(await self._session_db.get_messages(session_id)):
-                if message.get("role") == "assistant" and message.get("content"):
-                    last_assistant = str(message.get("content"))
-                    break
-        except Exception:
-            last_assistant = None
-
-        response = f"Session restored: {title}"
-        if last_assistant:
-            response += f"\n\nLast Son of Anton message:\n{last_assistant}"
-        return response
-
-
-
-
-
-
-
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
@@ -22747,7 +21532,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # /reload-mcp, which invalidates the prompt cache).  Two delivery
     # paths:
     #   1. Button UI — adapters that override ``send_slash_confirm``
-    #      (Telegram, Discord, Slack, Matrix, Feishu) render three
+    #      (Discord, Slack) render three
     #      inline buttons.  The adapter routes the button click back via
     #      ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``.
     #   2. Text fallback — adapters that don't override the hook get a
@@ -22771,7 +21556,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ``approvals.destructive_slash_confirm`` config gate is off, ``execute``
         runs immediately (returning its result).  Otherwise this routes
         through ``_request_slash_confirm`` — native yes/no buttons on
-        Telegram/Discord/Slack, text fallback elsewhere.
+        Discord/Slack, text fallback elsewhere.
 
         Three-option resolution:
 
@@ -22999,59 +21784,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if self._is_telegram_dm_topic_target(
-            platform,
-            chat_id,
-            thread_id,
-            chat_type=chat_type,
-            adapter=adapter,
-        ):
-            metadata["telegram_dm_topic_reply_fallback"] = True
-            # Telegram DM topic lanes need direct_messages_topic_id in metadata
-            # so synthetic/queued messages (goal continuations, status notices)
-            # route to the correct topic even when reply anchor is unavailable.
-            tid = str(thread_id)
-            if tid and tid not in {"", "1"}:
-                metadata["direct_messages_topic_id"] = tid
-            if reply_to_message_id is not None:
-                metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
         if platform == Platform.SLACK and reply_to_message_id is not None:
             # Slack's reply_in_thread=false path uses message_id to distinguish
             # real existing threads from synthetic top-level session keys.
             metadata["message_id"] = str(reply_to_message_id)
         return metadata
-
-    @staticmethod
-    def _is_telegram_dm_topic_target(
-        platform: Optional[Platform],
-        chat_id: Optional[str],
-        thread_id: Optional[str],
-        *,
-        chat_type: Optional[str] = None,
-        adapter: Optional[Any] = None,
-    ) -> bool:
-        """Return True when a target is a Telegram private DM topic lane."""
-        if platform != Platform.TELEGRAM or thread_id is None:
-            return False
-        if chat_type == "dm":
-            return True
-        # Inspect operator-declared DM topics via the adapter's lookup. Resolve
-        # the method on the CLASS, not the instance: getattr() on a MagicMock
-        # auto-creates a callable child for any attribute, so an instance-level
-        # lookup would report a DM topic for every test double. Only a
-        # dict-shaped return counts as an operator-declared topic — a bare
-        # MagicMock or other sentinel must not. Mirrors the guard in
-        # _rename_telegram_topic_for_session_title.
-        if adapter is not None and chat_id:
-            get_dm_topic_info = getattr(type(adapter), "_get_dm_topic_info", None)
-            if callable(get_dm_topic_info):
-                try:
-                    topic_info = get_dm_topic_info(adapter, str(chat_id), str(thread_id))
-                except Exception:
-                    logger.debug("Failed to inspect Telegram DM topic metadata", exc_info=True)
-                else:
-                    return isinstance(topic_info, dict)
-        return False
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
@@ -23068,16 +21805,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
-    # ACP, API server, and webhooks are programmatic interfaces that should
-    # not trigger system updates.  Plugin-migrated platforms (discord,
-    # mattermost, teams, irc, line, …) are NOT listed here — they declare
-    # ``allow_update_command=True`` on their ``PlatformEntry`` and are
+    # Plugin-migrated platforms (discord, slack) are NOT listed here — they
+    # declare ``allow_update_command=True`` on their ``PlatformEntry`` and are
     # honored via the registry fallback at ``_handle_update_command`` below.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
-        Platform.TELEGRAM, Platform.SLACK, Platform.WHATSAPP,
-        Platform.SIGNAL, Platform.MATRIX,
-        Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.SIGNAL, Platform.LOCAL,
     })
 
 
@@ -23193,7 +21925,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if not buffer.strip():
                 buffer = ""
                 return
-            # Chunk to fit message limits (Telegram: 4096, others: generous)
+            # Chunk to fit message limits
             clean = _strip_ansi(buffer).strip()
             buffer = ""
             last_stream_time = loop.time()
@@ -23288,7 +22020,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         # Flush any buffered output first so the user sees
                         # context before the prompt
                         await _flush_buffer()
-                        # Try platform-native buttons first (Discord, Telegram)
+                        # Try platform-native buttons first (Discord)
                         sent_buttons = False
                         if getattr(type(adapter), "send_update_prompt", None) is not None:
                             try:
@@ -23727,7 +22459,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # (terminal notify_on_complete / watch_patterns, delegate_task
         # background=True) know whether this channel can wake a later turn.
         # Default True keeps CLI / unknown paths working; stateless adapters
-        # (api_server) declare supports_async_delivery=False. Use getattr so
+        # may declare supports_async_delivery=False. Use getattr so
         # bare runners built via object.__new__ (tests) without self.adapters
         # don't blow up — they simply default to supported.
         _adapters = getattr(self, "adapters", None) or {}
@@ -24349,46 +23081,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
-            # API-server-originated sessions bind a RAW session key (the
-            # X-Son of Anton-Session-Id value — see _bind_api_server_session), not a
-            # structured ``agent:main:...`` key, so _build_process_event_source
-            # cannot derive routing metadata from it and returns None above.
-            # Recover the raw session id and wake the real session via the API
-            # server's own /v1/chat/completions entry point instead of
-            # dropping the event.
-            raw_sid = str(evt.get("origin_session_id") or "").strip()
-            if not raw_sid:
-                _sk = str(evt.get("session_key") or "").strip()
-                if _sk and _parse_session_key(_sk) is None:
-                    raw_sid = _sk
-            if raw_sid:
-                adapter = self.adapters.get(Platform.API_SERVER)
-                from gateway.wake import adapter_supports_push, deliver_wake
-                if adapter is not None and not adapter_supports_push(adapter):
-                    try:
-                        logger.info(
-                            "Watch pattern notification — waking api_server "
-                            "session %s via self-post",
-                            raw_sid,
-                        )
-                        await deliver_wake(adapter, text=synth_text, session_id=raw_sid)
-                        return True
-                    except Exception as e:
-                        logger.warning(
-                            "Watch notification self-post wake failed for "
-                            "session %s: %s",
-                            raw_sid, e,
-                        )
-                        return False
-                logger.warning(
-                    "Dropping watch notification for raw session %s: no "
-                    "api_server adapter to self-post through",
-                    raw_sid,
-                )
-                return None
-            logger.warning(
-                "Dropping watch notification with no routing metadata for process %s",
-                evt.get("session_id", "unknown"),
+            # No routable gateway source could be derived from the event.
+            # There is no fallback route.
+            logger.debug(
+                "Dropping watch notification: no gateway route derivable "
+                "from event %r",
+                evt,
             )
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -24425,16 +23123,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return None
         from gateway.wake import adapter_supports_push as _wake_push_ok
         if not _wake_push_ok(adapter):
-            # Non-push adapter (api_server) resolved WITH routing metadata:
-            # its chat_id is the raw session id (see _bind_api_server_session,
-            # which binds chat_id = session_id). handle_message would run the
-            # wake under a build_session_key()-derived key that never matches
-            # the raw X-Son of Anton-Session-Id session — self-post instead.
+            # Non-push adapters resolved WITH routing metadata self-post
+            # through the adapter's own delivery entry point instead.
             from gateway.wake import deliver_wake
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             try:
                 logger.info(
-                    "Watch pattern notification — waking api_server session "
+                    "Watch pattern notification — waking non-push session "
                     "%s via self-post",
                     raw_sid,
                 )
@@ -26829,7 +25524,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         on_missing_cursor: str,
     ) -> "tuple[Any, Optional[Callable[[], None]]]":
         """Build the shared ``StreamConsumerConfig`` and the optional
-        Telegram pause-typing closure used by both agent-run paths.
+        pause-typing closure used by both agent-run paths.
 
         ``on_missing_cursor`` controls how platforms whose adapter sets
         ``SUPPORTS_MESSAGE_EDITING = False`` are handled — both semantics
@@ -26844,14 +25539,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         from gateway.stream_consumer import StreamConsumerConfig
 
         _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(
-                _adapter=adapter,
-                _chat_id=source.chat_id,
-            ) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
         # Platforms that don't support editing sent messages
-        # (e.g. QQ, WeChat) should skip streaming entirely —
+        # should skip streaming entirely —
         # without edit support, the consumer sends a partial
         # first message that can never be updated, resulting in
         # duplicate messages (partial + final).
@@ -26861,23 +25550,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not _adapter_supports_edit and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
-        # Some Matrix clients render the streaming cursor
-        # as a visible tofu/white-box artifact.  Keep
-        # streaming text on Matrix, but suppress the cursor.
         _buffer_only = False
-        if source.platform == Platform.MATRIX:
-            _effective_cursor = ""
-            _buffer_only = True
-        # Fresh-final applies to Telegram only — other
-        # platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit /
-        # edit-timestamp-stays-stale problem.
+        # Fresh-final (fresh-message replacement of a long-lived streamed
+        # preview) is a per-platform opt-in; none of the remaining platforms
+        # enable it, so the value is always 0.0.
         # (Ported from openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM
-            else 0.0
-        )
+        _fresh_final_secs = 0.0
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval,
             buffer_threshold=scfg.buffer_threshold,
@@ -26908,7 +25586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         (encryption, threading, media) and delegates all agent work to the
         remote server via ``POST /v1/chat/completions`` with SSE streaming.
 
-        This lets a Docker container handle Matrix E2EE while the actual
+        This lets a Docker container handle E2EE while the actual
         agent runs on the host with full access to local files, memory,
         skills, and a unified session store.
         """
@@ -26949,14 +25627,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return True
             return self._is_session_run_current(session_key, run_generation)
 
-        # Build messages in OpenAI chat format --------------------------
-        #
-        # The remote api_server can maintain session continuity via
-        # X-Son of Anton-Session-Id, so it loads its own history.  We only
-        # need to send the current user message.  If the remote has
-        # no history for this session yet, include what we have locally
-        # so the first exchange has context.
-        #
         # We always include the current message.  For history, send a
         # compact version (text-only user/assistant turns) — the remote
         # handles tool replay and system prompts.
@@ -27501,10 +26171,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
-        # Disable tool progress for webhooks - they don't support message editing,
-        # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = progress_mode not in {"off", "log"}
         # Live working-state status for text-rendering typing indicators
         # (Slack's assistant status line). Independent of tool_progress —
         # Slack defaults tool_progress off (permanent lines spam channels)
@@ -27522,7 +26190,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             _live_status_adapter = None
         # "log" mode: tool calls are written to ~/.son-of-anton/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
-        log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
+        log_mode_enabled = progress_mode == "log"
         log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
@@ -27530,20 +26198,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         interim_assistant_messages_mode = _display_surface_mode(
             "interim_assistant_messages",
             default=True,
-            require_platform_override_for={Platform.MATTERMOST},
         )
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
-            and interim_assistant_messages_mode != "off"
+            interim_assistant_messages_mode != "off"
         )
         # thinking_progress is independent — if enabled, we need the progress
         # queue even when tool_progress is off (thinking relay uses same infra).
-        # Mattermost requires a per-platform opt-in: global scratch-text display
-        # is too easy to leak into busy public threads.
         _thinking_mode = _display_surface_mode(
             "thinking_progress",
             default=False,
-            require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
         # Slack-native task cards (#29483): when the Slack adapter's opt-in
@@ -27603,7 +26266,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # voice_ack_callback extracted to TurnRunner.voice_ack_callback
         # (published onto turn_ctx after the runner is constructed below).
 
-        # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
+        # Auto-cleanup of temporary progress bubbles (any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
         # from the tool-progress / "⏳ Working — N min" / status-callback bubbles
@@ -27689,10 +26352,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         #
         # Threading metadata is platform-specific:
         # - Slack DM threading needs event_message_id fallback (reply thread)
-        # - Telegram forum topics use message_thread_id; Son of Anton-created private
-        #   DM topic lanes require both thread metadata and a reply anchor
-        # - Feishu only honors reply_in_thread when sending a reply, so topic
-        #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
         #
         # Slack honours platforms.slack.extra.reply_in_thread=false: if the
@@ -27771,12 +26430,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 _progress_metadata.setdefault("recipient_user_id", source.user_id)
         _progress_reply_to = (
             event_message_id
-            if (
-                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
-                and source.thread_id
-                and event_message_id
-            )
-            or _relay_prospective_thread_id
+            if _relay_prospective_thread_id
             else None
         )
 
@@ -27870,34 +26524,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self._adapter_for_source(source)
         _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            # Feishu topics only keep messages inside the topic when they are
-            # sent via the reply API with reply_in_thread=true. Status/interim,
-            # approval, and stream-consumer paths usually only receive metadata,
-            # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
-                "reply_to_message_id": event_message_id,
+        _status_thread_metadata = (
+            self._thread_metadata_for_source(source, event_message_id)
+            if _progress_thread_id == source.thread_id
+            else self._thread_metadata_for_target(
+                source.platform,
+                source.chat_id,
+                _progress_thread_id,
+                chat_type=getattr(source, "chat_type", None),
+                reply_to_message_id=event_message_id,
+            )
+        ) if _progress_thread_id else None
+        if _status_thread_metadata is None and _relay_prospective_thread_id:
+            # Relay Discord auto-thread lane (see _progress_metadata above):
+            # carry the reply anchor so status/interim bubbles route into
+            # the same connector-created thread as the final reply.
+            _status_thread_metadata = {
+                "reply_to_message_id": event_message_id
             }
-        else:
-            _status_thread_metadata = (
-                self._thread_metadata_for_source(source, event_message_id)
-                if _progress_thread_id == source.thread_id
-                else self._thread_metadata_for_target(
-                    source.platform,
-                    source.chat_id,
-                    _progress_thread_id,
-                    chat_type=getattr(source, "chat_type", None),
-                    reply_to_message_id=event_message_id,
-                )
-            ) if _progress_thread_id else None
-            if _status_thread_metadata is None and _relay_prospective_thread_id:
-                # Relay Discord auto-thread lane (see _progress_metadata above):
-                # carry the reply anchor so status/interim bubbles route into
-                # the same connector-created thread as the final reply.
-                _status_thread_metadata = {
-                    "reply_to_message_id": event_message_id
-                }
 
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the
@@ -28059,7 +26703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if not _notify_adapter:
                 return
             # Track the heartbeat message id so we can edit-in-place on
-            # platforms that support it (Telegram, Discord, Slack, etc.)
+            # platforms that support it (Discord, Slack, etc.)
             # instead of spamming a new "Still working" bubble every
             # interval. Falls back to send-new when edit fails or isn't
             # supported by the adapter.
@@ -29247,7 +27891,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         # Misfire catch-up (external cron providers only): fire jobs whose
         # scheduled time passed with no external fire delivered — the
         # backstop for a dead loopback fire hop (gateway restart window,
-        # api_server not bound, scheduler retries exhausted). The helper
+        # scheduler retries exhausted). The helper
         # no-ops for the built-in ticker and enforces the
         # cron.misfire_grace_minutes window; the store CAS claim de-dupes
         # against a late external retry arriving concurrently.
@@ -29784,7 +28428,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Install a loop-level exception handler that swallows transient
     # network errors from background tasks. Issues #31066 / #31110:
-    # an unhandled ``telegram.error.TimedOut`` (or peer NetworkError /
+    # an unhandled SDK ``TimedOut`` (or peer NetworkError /
     # httpx connection error) in any awaited coroutine would propagate
     # to the loop and kill the gateway process, taking down every
     # profile attached to the same runner. systemd then restarts the
@@ -29835,7 +28479,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # This closes the --replace race window: two concurrent `gateway run
     # --replace` invocations both pass the termination-wait above, but
     # only the winner of the O_CREAT|O_EXCL race below will ever open
-    # Telegram polling, Discord gateway sockets, etc. The loser exits
+    # platform polling, Discord gateway sockets, etc. The loser exits
     # cleanly before touching any external service.
     import atexit
     from gateway.status import write_pid_file, remove_pid_file, get_running_pid
@@ -29886,7 +28530,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # stays responsive even when a configured MCP server is slow or
     # unreachable.  discover_mcp_tools() uses a blocking 120s wait
     # internally; calling it from the loop thread would freeze platform
-    # heartbeats (Discord shard, Telegram polling) until it returned.
+    # heartbeats (Discord shard, Slack polling) until it returned.
     # See #16856.
     try:
         from tools.mcp_tool import discover_mcp_tools
@@ -30006,32 +28650,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-scheduler",
     )
     cron_thread.start()
-
-    # Preflight tell for the hosted fire path: an external cron provider
-    # (Chronos) delivers scheduled fires over HTTP to THIS process's
-    # api_server adapter on loopback. If that adapter never came up (most
-    # commonly API_SERVER_KEY missing from this process's environment —
-    # e.g. a gateway relaunched outside its supervisor without the profile
-    # env), every scheduled fire will fail with ConnectError at the
-    # dashboard forwarder while manual runs keep working, which users
-    # reliably misread as a job bug. Say it loudly ONCE at startup, when
-    # it is fixable, instead of letting the first miss say it at 2am.
-    if not isinstance(cron_provider, InProcessCronScheduler):
-        try:
-            _has_api_server = Platform.API_SERVER in (runner.adapters or {})
-        except Exception:
-            _has_api_server = True  # never let the tell break startup
-        if not _has_api_server:
-            logger.warning(
-                "Cron provider '%s' is active but the api_server adapter is "
-                "NOT running in this gateway — scheduled fires arrive over "
-                "loopback HTTP and will all fail (jobs only run when "
-                "triggered manually). Most common cause: API_SERVER_KEY is "
-                "missing from this gateway process's environment. Restart "
-                "the gateway through its supervisor (`son-of-anton gateway "
-                "restart`) so the profile env loads.",
-                getattr(cron_provider, "name", "external"),
-            )
 
     # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
     # sweep, curator) — runs independently of which cron provider is active.

@@ -4,9 +4,9 @@ Historically every gateway adapter hand-rolled its own mime→extension map
 before handing downloaded bytes to the cache primitives in
 ``gateway.platforms.base`` (``cache_image_from_bytes``,
 ``cache_audio_from_bytes``, ``cache_document_from_bytes``).  Those maps
-*disagree* with each other on purpose — e.g. BlueBubbles coerces
+*disagree* with each other on purpose — e.g. one platform coerces
 ``image/heic`` to ``.jpg`` because downstream vision tools can't read HEIC,
-while WhatsApp Cloud pins ``audio/ogg`` to ``.ogg`` (not the RFC-correct
+while another pins ``audio/ogg`` to ``.ogg`` (not the RFC-correct
 ``.oga`` Python's ``mimetypes`` returns) because the STT pipeline whitelists
 extensions.
 
@@ -29,7 +29,7 @@ as ``overrides`` (and, where their historical code never consulted
 ``tests/gateway/test_media_cache.py`` hardcode the historical outputs as
 the contract.
 
-NOTE: ``gateway/platforms/weixin.py`` also has a private mime map
+NOTE: some adapters also keep a private mime map
 (``_mime_from_filename``) but is intentionally NOT migrated here — another
 in-flight branch edits that file.  Follow-up: fold it in once that lands.
 """
@@ -50,19 +50,19 @@ from typing import Mapping, Optional
 # RFC-correct one (``audio/ogg`` → ``.ogg``, not ``.oga``) because the
 # downstream STT/vision pipelines whitelist real-world extensions.
 DEFAULT_MIME_TO_EXT: dict[str, str] = {
-    # --- images (bluebubbles + whatsapp_cloud agree; matches mimetypes) ---
+    # --- images (matches mimetypes) ---
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/gif": ".gif",
     "image/webp": ".webp",
     # --- audio ---
-    "audio/ogg": ".ogg",          # bluebubbles + whatsapp_cloud agree
-    "audio/x-opus+ogg": ".ogg",   # whatsapp voice notes (opus-in-ogg)
-    "audio/opus": ".ogg",         # whatsapp voice notes (opus-in-ogg)
+    "audio/ogg": ".ogg",
+    "audio/x-opus+ogg": ".ogg",
+    "audio/opus": ".ogg",
     "audio/mpeg": ".mp3",
     "audio/mp3": ".mp3",          # non-standard but seen in the wild
     "audio/wav": ".wav",
-    "audio/mp4": ".m4a",          # bluebubbles + whatsapp_cloud agree
+    "audio/mp4": ".m4a",
     "audio/x-m4a": ".m4a",
     "audio/aac": ".aac",
     # --- video / documents (from signal's inverse table) ---

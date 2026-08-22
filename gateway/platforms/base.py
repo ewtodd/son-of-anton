@@ -1,7 +1,7 @@
 """
 Base platform adapter interface.
 
-All platform adapters (Telegram, Discord, WhatsApp, Weixin, and more) inherit from this
+All platform adapters (Discord, Slack, Signal, and more) inherit from this
 and implement the required methods.
 """
 
@@ -45,8 +45,6 @@ def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
 
 
 # Audio file extensions Son of Anton recognizes for native audio delivery.
-# Keep Telegram's narrower attachment/voice sets below separate: formats such
-# as MPEG-2 Layer II are audio to Son of Anton but unsupported by sendAudio/sendVoice.
 _AUDIO_MIME_TYPES = {
     ".ogg": "audio/ogg",
     ".opus": "audio/opus",
@@ -57,11 +55,6 @@ _AUDIO_MIME_TYPES = {
     ".flac": "audio/flac",
 }
 _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
-# Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
-# formats either need to go through sendVoice (Opus/OGG) or must be
-# delivered as a regular document.
-_TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
-_TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # Delivery-time history is best-effort dedup metadata, not canonical state.
 # Keep this comfortably below the Discord heartbeat watchdog window and fail
@@ -96,11 +89,7 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     """Build platform-aware thread metadata for adapter sends.
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
-    value. Telegram private-chat topics created through Son of Anton' DM-topic helper
-    are exposed in updates as ``message_thread_id`` plus a reply anchor. Live
-    user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
-    synthetic/resumed sends that have no reply anchor fall back to Telegram's
-    ``direct_messages_topic_id`` when the Bot API supports it.
+    value.
     """
     thread_id = getattr(source, "thread_id", None)
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
@@ -114,14 +103,6 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
             metadata["slack_team_id"] = str(scope_id)
     if not metadata:
         return None
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
-        metadata["telegram_dm_topic_reply_fallback"] = True
-        tid = str(thread_id)
-        if tid and tid not in {"", "1"}:
-            metadata["direct_messages_topic_id"] = tid
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
-        if anchor is not None:
-            metadata["telegram_reply_to_message_id"] = str(anchor)
     return metadata
 
 
@@ -133,14 +114,7 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 
 def _reply_anchor_for_event(event) -> str | None:
-    """Return reply_to id for platforms that need reply semantics.
-
-    Telegram forum/supergroup topics should be routed by topic metadata, not by
-    replying to the triggering message. Son of Anton-created Telegram private-chat
-    topic lanes prefer replying to the triggering user message so the answer
-    stays attached to the active lane; synthetic/resumed sends fall back to
-    ``direct_messages_topic_id`` metadata when no message id is available.
-    """
+    """Return reply_to id for platforms that need reply semantics."""
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
@@ -156,70 +130,24 @@ def _reply_anchor_for_event(event) -> str | None:
         # SlackAdapter._resolve_thread_ts() treat it as a thread anchor and
         # reply in a (nonexistent) thread anyway.
         return None
-    if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
-        # Reply to the triggering user message. Replying to Telegram's earlier
-        # topic seed/anchor can render the bot response outside the active lane.
-        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
-    if platform == "telegram" and thread_id:
-        return None
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
     """Return True when a media file should use the platform's audio sender.
 
-    Other platforms: every recognized audio extension routes through the
-    audio sender.
-
-    Telegram: the Bot API only accepts MP3/M4A for sendAudio and
-    Opus/OGG for sendVoice. Opus/OGG is only routed as audio when the
-    caller flagged ``is_voice=True`` (so we don't turn a regular audio
-    attachment into a voice bubble just because the file happens to be
-    Opus). Everything else falls through to document delivery by
-    returning ``False``.
+    Every recognized audio extension routes through the audio sender.
     """
     normalized_ext = (ext or "").lower()
     if normalized_ext not in _AUDIO_EXTS:
         return False
-    if _platform_name(platform) == "telegram":
-        if normalized_ext in _TELEGRAM_VOICE_EXTS:
-            return is_voice
-        return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
     return True
-
-
-def build_auto_tts_output_path(platform) -> str:
-    """Return a unique temp output path for gateway auto-TTS synthesis.
-
-    Platform-awareness lives HERE (the caller knows its platform), not in the
-    TTS tool's ``SON_OF_ANTON_SESSION_PLATFORM`` contextvar — that contextvar is
-    cleared by ``_clear_session_env`` before the post-handler auto-TTS block
-    in ``BasePlatformAdapter`` runs, so relying on it always produced MP3
-    (#57049, #36685). Platforms whose native voice bubbles require Ogg/Opus
-    (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the single source of truth)
-    get an explicit ``.ogg`` path; the tool's central container repair
-    (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every
-    provider, including MP3-only backends like Edge TTS. Everything else
-    keeps the MP3 default.
-    """
-    from tools.tts_tool import OPUS_VOICE_PLATFORMS
-
-    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
-    audio_path = os.path.join(
-        tempfile.gettempdir(),
-        "son_of_anton_voice",
-        f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}",
-    )
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    return audio_path
 
 
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
 
-    Telegram's message-length limit (4 096) is measured in UTF-16 code units,
+    The platform message-length limits are measured in UTF-16 code units,
     **not** Unicode code-points.  Characters outside the Basic Multilingual
     Plane (emoji like 😀, CJK Extension B, musical symbols, …) are encoded as
     surrogate pairs and therefore consume **two** UTF-16 code units each, even
@@ -584,75 +512,6 @@ if TYPE_CHECKING:
     from agent.display import ToolPreview
 
 
-# ---------------------------------------------------------------------------
-# Streaming TTS format descriptor and handle (#60671)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class AudioFormat:
-    """Declared PCM format for a streaming-TTS session.
-
-    All chunks delivered via ``write_streaming_tts`` must conform to this
-    format: raw little-endian PCM at the declared sample rate, channels,
-    and sample width.
-    """
-    sample_rate: int = 24000
-    channels: int = 1
-    sample_width: int = 2  # bytes per sample (int16 = 2)
-
-
-@dataclass
-class StreamingTTSHandle:
-    """Opaque handle returned by ``begin_streaming_tts``.
-
-    Adapters may subclass or extend this with platform-specific state
-    (track IDs, buffers, etc.).  The base fields are used by the consumer
-    for bookkeeping and cancellation.
-    """
-    chat_id: str = ""
-    audio_format: AudioFormat = field(default_factory=AudioFormat)
-    # Set to True after the first PCM chunk has been written (audible output
-    # has started).  The consumer uses this to decide whether a failure
-    # should fall back to whole-file TTS (not yet audible) or just end
-    # cleanly (already audible — don't replay from the beginning).
-    audible: bool = False
-    # Set to True by abort_streaming_tts; late chunks are dropped.
-    aborted: bool = False
-
-
-def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:
-    """Return a per-turn streaming-TTS suppression key.
-
-    The key is intentionally turn-scoped, not chat-scoped, so overlapping
-    turns in the same chat cannot suppress each other's fallback paths.
-    ``turn_marker`` is usually the gateway run generation; if that is absent
-    we fall back to the current event's message/update identifiers.
-    """
-    if not session_key:
-        return None
-    if turn_marker is None and event is not None:
-        turn_marker = getattr(event, "message_id", None) or getattr(event, "platform_update_id", None)
-    if turn_marker is None:
-        return None
-    return f"{session_key}:{turn_marker}"
-
-
-def streaming_tts_should_skip_whole_file(
-    completed_turns: set[str],
-    session_key: str | None,
-    turn_marker: Any = None,
-    *,
-    event: Any = None,
-) -> bool:
-    """Pure helper used by the auto-TTS suppression path.
-
-    Keeps the suppression decision turn-scoped and testable without
-    exercising the whole adapter method stack.
-    """
-    turn_key = streaming_tts_turn_key(session_key, turn_marker, event=event)
-    return bool(turn_key and turn_key in completed_turns)
-
-
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.son-of-anton/.env manually."
@@ -718,7 +577,7 @@ async def _ssrf_redirect_guard(response):
 # When users send images on messaging platforms, we download them to a local
 # cache directory so they can be analyzed by the vision tool (which accepts
 # local file paths). This avoids issues with ephemeral platform URLs
-# (e.g. Telegram file URLs expire after ~1 hour).
+# (e.g. platform file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
 # Import-time default. Tests monkeypatch this; the get_*_cache_dir() getters
@@ -1392,8 +1251,6 @@ def _media_delivery_denied_paths() -> List[Path]:
         "google_token.json",
         "google_oauth_pending.json",
         os.path.join("auth", "google_oauth.json"),
-        # Webhook subscription HMAC secrets.
-        "webhook_subscriptions.json",
         # Bitwarden Secrets Manager plaintext and encrypted disk caches.
         os.path.join("cache", "bws_cache.json"),
         os.path.join("cache", "bws_cache.enc.json"),
@@ -1687,7 +1544,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     Default mode (single-user / private gateway): accept any existing regular
     file that isn't under the credential / system-path denylist
     (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
-    This matches the symmetry of inbound delivery — Telegram/Discord/Slack
+    This matches the symmetry of inbound delivery — Discord/Slack
     will hand the agent any file the user uploads, and the agent can hand
     back any file that isn't a credential.
 
@@ -1837,7 +1694,7 @@ _TEXT_INJECT_EXTENSIONS = {
 # Image document types
 #
 # Image extensions that platforms may deliver as "documents" rather than
-# native photo attachments (Telegram users uploading via the file picker,
+# native photo attachments (users uploading via the file picker,
 # clients that wrap stickers/screenshots as files, etc.). When we see one
 # of these, we route the bytes through the image cache and the normal
 # vision/photo handling path instead of rejecting them as unsupported
@@ -2172,7 +2029,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 # registries above, routes to the right cache_*_from_bytes helper, and returns
 # a small result the caller can store and/or describe in a transcript. Used by
 # both the addressed-message path and the observed-group-context path, on any
-# platform — not Telegram-specific.
+# platform — not platform-specific.
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -2219,7 +2076,7 @@ def cache_media_bytes(
     """Classify and cache raw attachment bytes; return a CachedMedia or None.
 
     ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
-    when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
+    when the extension/MIME are ambiguous — e.g. a native photo whose
     file has no usable name. Any non-image/video/audio file is cached as a
     document and surfaced to the agent (arbitrary types get
     ``application/octet-stream``); only images that fail validation
@@ -2312,7 +2169,7 @@ class MessageEvent:
     # can resolve "who said this" without having to dig into ``source``.
     # ``source`` still carries the same values for callers that already
     # read from there.  Adapters that produce events from non-IM sources
-    # (cron, webhook, autonomous) may leave these as ``None``.
+    # (cron, autonomous) may leave these as ``None``.
     user_id: Optional[str] = None
     user_name: Optional[str] = None
 
@@ -2323,13 +2180,10 @@ class MessageEvent:
     raw_message: Any = None
     message_id: Optional[str] = None
 
-    # Platform-specific update identifier.  For Telegram this is the
-    # ``update_id`` from the PTB Update wrapper; other platforms currently
-    # ignore it.  Used by ``/restart`` to record the triggering update so the
-    # new gateway can advance the Telegram offset past it and avoid processing
-    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
-    # ("Error while calling `get_updates` one more time to mark all fetched
-    # updates" in gateway.log).
+    # Platform-specific update identifier.
+    # Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the platform offset past it and avoid
+    # processing the same ``/restart`` twice.
     platform_update_id: Optional[int] = None
     
     # Media attachments
@@ -2346,15 +2200,15 @@ class MessageEvent:
 
     # Structured interactive-prompt reply (relay Phase 3). Present when this
     # event is the user answering a native interactive prompt rendered by the
-    # relay connector (Discord component / Telegram inline keyboard / Slack
-    # Block Kit / WhatsApp button-list). Shape mirrors the wire contract:
+    # relay connector (Discord component / Slack
+    # Block Kit button-list). Shape mirrors the wire contract:
     # {prompt_id, option_id, label?, prompt_message_id?}. The RelayAdapter
     # consumes it in _on_inbound (routing to the approval/slash-confirm/
     # clarify resolvers) BEFORE normal dispatch; native adapters never set it
     # (their button callbacks resolve in-process).
     prompt_response: Optional[Dict[str, Any]] = None
     
-    # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
+    # Auto-loaded skill(s) for topic/channel bindings
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
 
@@ -2373,8 +2227,7 @@ class MessageEvent:
     internal: bool = False
 
     # Free-form per-event metadata.  Adapters may set platform-specific
-    # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
-    # the bridge is configured to forward owner-typed messages).  Plugins
+    # signals here.  Plugins
     # consume via ``event.metadata.get(...)`` and must not rely on any
     # particular key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -2471,17 +2324,17 @@ class SendResult:
     raw_response: Any = None
     # Adapter-specific metadata.  Cross-layer contracts that affect delivery
     # semantics must be documented at the producer and consumer sites.  Current
-    # known contract: Telegram edit overflow partials set
+    # known contract: edit overflow partials set
     # raw_response["partial_overflow"] with delivered_chunks, total_chunks,
     # last_message_id, delivered_prefix, and continuation_message_ids so the
     # stream consumer can send the missing tail instead of marking a clipped
     # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
-    # Server-requested retry delay in seconds (e.g. Telegram FloodWait retry_after).
+    # Server-requested retry delay in seconds.
     # When present, _send_with_retry() honors this instead of its default backoff.
     retry_after: Optional[float] = None
     # When the adapter had to split an oversized payload across multiple
-    # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
+    # platform messages (e.g. edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
     # the most recent chunk) and these are the additional message ids that
     # made up the full payload, in send order.  Empty tuple for the common
@@ -2710,7 +2563,7 @@ def merge_pending_message_event(
     the whole burst.
 
     When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
-    instead of replacing the pending turn. This is used for Telegram bursty
+    instead of replacing the pending turn. This is used for bursty
     follow-ups so a multi-part user thought is not silently truncated to only
     the last queued fragment.
     """
@@ -2912,7 +2765,7 @@ class BasePlatformAdapter(ABC):
     # next to the bot name) rather than a native textless bubble. When True,
     # the gateway feeds live per-tool status phrases via set_status_text()
     # ("is running pytest…") and send_typing() renders them. Textless
-    # platforms (Telegram, Discord, Matrix, …) keep the default False and
+    # platforms (Discord, …) keep the default False and
     # never see these calls.
     supports_status_text: bool = False
 
@@ -2939,7 +2792,7 @@ class BasePlatformAdapter(ABC):
     # process completion (terminal notify_on_complete / watch_patterns) or a
     # detached subagent result (delegate_task background=True).
     #
-    # True for adapters that hold a persistent outbound channel (Telegram,
+    # True for adapters that hold a persistent outbound channel
     # Discord, Slack, ... — they have a real ``send()`` and the gateway runs
     # the watcher/drain loops). False for stateless request/response adapters
     # (the API server): every route closes its channel when the turn ends, so
@@ -2954,7 +2807,7 @@ class BasePlatformAdapter(ABC):
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the
     # adapter chunk natively — preserving full output on platforms that
-    # support multi-message delivery (Discord, Telegram, …).  Default False
+    # support multi-message delivery (Discord, …).  Default False
     # (conservative); adapters verified to chunk in ``send()`` set True.
     splits_long_messages: bool = False
 
@@ -2962,7 +2815,7 @@ class BasePlatformAdapter(ABC):
     # Son of Anton commands.  Default "/" (most platforms deliver "/approve" etc.
     # as plain message text).  Platforms where typing a leading "/" is
     # intercepted or restricted by the client (Slack blocks native slash
-    # commands inside threads; Matrix clients reserve "/" for client-local
+    # commands inside threads; some clients reserve "/" for client-local
     # commands) ship a "!" alias rewrite in their adapter and set this to
     # "!" so user-facing instruction text ("Reply `!approve` ...") tells
     # users the form that actually works everywhere.  Capability flag —
@@ -2989,9 +2842,9 @@ class BasePlatformAdapter(ABC):
     # "session restored — what next?" prompt.  The startup auto-resume turn
     # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
     # branch in ``_handle_message_with_agent``) reads this to pick its
-    # guidance: interactive platforms (Telegram, Slack, Discord DMs, …) get
+    # guidance: interactive platforms (Slack, Discord DMs, …) get
     # "report the restore and ask what the user wants next"; non-interactive
-    # event platforms (webhook) get "finish the interrupted work" because
+    # non-interactive event platforms get "finish the interrupted work" because
     # nobody is there to answer, and an acknowledgement would silently
     # abandon the task (#57056).  Read generically via ``getattr(adapter,
     # "interactive_resume", True)`` — no per-platform branching at the call
@@ -3023,10 +2876,6 @@ class BasePlatformAdapter(ABC):
         self._platform_event_handler: Optional[
             Callable[[Dict[str, Any], Any], Awaitable[None]]
         ] = None
-        # Optional hook (e.g. Telegram DM topic recovery) that rewrites
-        # ``event.source.thread_id`` before session keying. Returns the
-        # corrected thread_id or None to leave the source untouched.
-        self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -3096,26 +2945,6 @@ class BasePlatformAdapter(ABC):
         # mitigating indirect prompt injection from third parties in a shared
         # thread/channel.
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
-        # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
-        # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
-        # Per-chat overrides live in two sets populated from ``_voice_mode``:
-        #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via ``/voice on``
-        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires even when
-        #     the global default is False.
-        #   - ``_auto_tts_disabled_chats``: chat explicitly opted out via
-        #     ``/voice off`` (mode is ``off``). Suppresses auto-TTS even when the
-        #     global default is True.
-        # The gate in _process_message() is:
-        #   fire if chat in _auto_tts_enabled_chats
-        #     OR (_auto_tts_default and chat not in _auto_tts_disabled_chats)
-        self._auto_tts_default: bool = False
-        self._auto_tts_enabled_chats: set = set()
-        self._auto_tts_disabled_chats: set = set()
-        # Per-turn streaming-TTS completion flag (#60671).  When the gateway
-        # streaming-TTS consumer successfully delivers audio, it adds the
-        # turn key here so the base adapter's whole-file auto-TTS path skips
-        # the duplicate.  Cleared after the turn completes.
-        self._streaming_tts_completed_turns: set[str] = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -3132,7 +2961,7 @@ class BasePlatformAdapter(ABC):
         """Return the length function for measuring message size on this platform.
 
         Override in adapters whose platform counts characters differently from
-        Python ``len`` (e.g. Telegram counts UTF-16 code units).
+        Python ``len`` (e.g. platforms counting UTF-16 code units).
         """
         return len
 
@@ -3143,7 +2972,7 @@ class BasePlatformAdapter(ABC):
         for a native adapter every chat lives on the same platform so the
         scalar is already correct. The relay adapter overrides this: one relay
         adapter fronts N platforms with different caps (Discord 2000 vs
-        Telegram 4096 vs Slack 39000), and the right cap depends on which
+        Different platforms have different caps, and the right one depends on which
         platform the chat's inbound arrived from.
         """
         try:
@@ -3155,7 +2984,7 @@ class BasePlatformAdapter(ABC):
         """Per-chat length function (companion to max_message_length_for_chat).
 
         Default: the adapter-wide ``message_len_fn``. The relay adapter
-        overrides it so a Telegram-fronted chat measures UTF-16 units while a
+        overrides it so a UTF-16-counting chat measures units while a
         Discord-fronted chat on the same adapter measures codepoints.
         """
         return self.message_len_fn
@@ -3164,7 +2993,7 @@ class BasePlatformAdapter(ABC):
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter gates inbound access before dispatch.
 
-        Some adapters (WeCom, Weixin, Yuanbao, QQBot, WhatsApp) implement a
+        Some adapters implement a
         documented config-driven access surface — ``dm_policy`` / ``group_policy`` /
         ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
         enforce it at intake: a message is dropped inside the adapter and never
@@ -3228,11 +3057,11 @@ class BasePlatformAdapter(ABC):
     ) -> bool:
         """Whether this adapter supports native streaming-draft updates.
 
-        Telegram Bot API 9.5 introduced ``sendMessageDraft``, which renders an
+        Some platform APIs introduce draft-style sends, which render an
         animated streaming preview as the bot calls it repeatedly with the
         same ``draft_id`` and growing text.  Adapters that implement
         ``send_draft`` should return True here for the chat types where the
-        platform supports it (Telegram restricts drafts to private DMs).
+        platform supports it.
 
         ``chat_id`` lets multi-platform adapters (relay) resolve the answer
         through the chat's own negotiated capability profile instead of the
@@ -3254,7 +3083,7 @@ class BasePlatformAdapter(ABC):
         final-editing the preview.
 
         Some adapters can send richer final messages than their current edit
-        implementation supports. Telegram is the motivating case: Son of Anton sends
+        implementation supports. Son of Anton sends
         final replies through ``sendRichMessage`` but still finalizes streamed
         previews through its existing MarkdownV2 edit path until Bot API 10.1's
         ``rich_message`` edit parameter is wired directly. Such adapters
@@ -3272,9 +3101,9 @@ class BasePlatformAdapter(ABC):
         units) the stream consumer may accumulate before it splits, when the
         adapter can deliver a larger message than its legacy per-message limit.
 
-        Telegram Bot API 10.1 Rich Messages accept up to 32,768 chars in a
-        single ``sendRichMessage`` / ``sendRichMessageDraft``, far above the
-        4,096 MarkdownV2 limit.  Adapters with such a richer send/draft path
+        Some platform APIs accept up to 32,768 chars in a
+        single rich-message APIs, far above the
+        legacy MarkdownV2 limit.  Adapters with such a richer send/draft path
         override this so the consumer doesn't fragment a reply that fits one
         rich message; the live edit preview is still bound by the platform's
         edit limit, but the finalized reply (and DM draft preview) is delivered
@@ -3319,7 +3148,7 @@ class BasePlatformAdapter(ABC):
     # text/commentary/segment events delegate to the stream consumer, and
     # tool events render the same "emoji tool_name: preview" chrome the
     # gateway has always produced.  Adapters override these to be more native
-    # to their platform (e.g. Telegram streaming a MarkdownV2 ```bash``` block
+    # to their platform (e.g. streaming a MarkdownV2 ```bash``` block
     # as a draft; iMessage eating tool chrome it cannot format).
     #
     # The contract is presentation-only: nothing rendered here is persisted to
@@ -3421,21 +3250,6 @@ class BasePlatformAdapter(ABC):
     def fatal_error_retryable(self) -> bool:
         return self._fatal_error_retryable
 
-    def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
-        """Whether auto-TTS on voice input should fire for ``chat_id``.
-
-        Decision layers (Issue #16007):
-          1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
-             ``voice.auto_tts`` is False).
-          2. Explicit ``/voice off`` → never fire.
-          3. Fall back to the global ``voice.auto_tts`` config default.
-        """
-        if chat_id in self._auto_tts_enabled_chats:
-            return True
-        if chat_id in self._auto_tts_disabled_chats:
-            return False
-        return bool(self._auto_tts_default)
-
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
 
@@ -3507,7 +3321,7 @@ class BasePlatformAdapter(ABC):
         if asyncio.iscoroutine(result):
             # Run the handler as a detached, shielded task. The notification
             # is frequently awaited from inside an adapter-owned task (e.g.
-            # the Telegram ``_polling_error_task``), and the gateway's fatal
+            # the platform ``_polling_error_task``), and the gateway's fatal
             # handler tears the adapter down via ``disconnect()`` — which
             # cancels that very task. Without the shield the cancellation
             # killed the handler mid-flight: the adapter was already popped
@@ -3655,40 +3469,6 @@ class BasePlatformAdapter(ABC):
         """
         self._platform_event_handler = handler
 
-    def set_topic_recovery_fn(
-        self,
-        fn: Optional[Callable[[Any], Optional[str]]],
-    ) -> None:
-        """Install a thread_id-recovery hook (Telegram DM topic mode).
-
-        The hook is called with ``event.source`` before session keying;
-        a non-None return value replaces ``source.thread_id``. Pass
-        ``None`` to clear the hook.
-        """
-        # Guard against subclasses that initialize via ``object.__new__`` in
-        # tests and never run ``BasePlatformAdapter.__init__``.
-        self._topic_recovery_fn = fn  # type: ignore[attr-defined]
-
-    def _apply_topic_recovery(self, event: MessageEvent) -> None:
-        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
-        recover = getattr(self, "_topic_recovery_fn", None)
-        if recover is None:
-            return
-        source = getattr(event, "source", None)
-        if source is None:
-            return
-        try:
-            recovered = recover(source)
-        except Exception:
-            logger.debug("topic recovery hook failed", exc_info=True)
-            return
-        if recovered is None or str(recovered) == str(source.thread_id or ""):
-            return
-        try:
-            event.source = dataclasses.replace(source, thread_id=str(recovered))
-        except Exception:
-            logger.debug("topic recovery rewrite failed", exc_info=True)
-
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
@@ -3778,7 +3558,7 @@ class BasePlatformAdapter(ABC):
         falls back to the *active* profile and every bot in a multiplexed
         gateway derives the same ``agent:main:`` key. Batching dicts,
         ``_active_sessions`` and the busy-session guard are keyed on that
-        string, so two profiles sharing a chat id — which is EVERY Telegram DM,
+        string, so two profiles sharing a chat id — which is EVERY DM,
         where ``chat.id`` is the user's own id — collide on one lane.
 
         Resolution order:
@@ -3965,7 +3745,7 @@ class BasePlatformAdapter(ABC):
                 starting this platform for the first time); True when the
                 reconnect watcher is re-establishing a platform that was
                 previously running and dropped after an outage. Adapters
-                that buffer a server-side update queue (e.g. Telegram's Bot
+                that buffer a server-side update queue
                 API) should preserve that queue when ``is_reconnect`` is
                 True so messages sent during the outage are delivered rather
                 than silently discarded. Adapters with no such queue may
@@ -4006,7 +3786,7 @@ class BasePlatformAdapter(ABC):
     # no-op and is happy to have the stream consumer skip redundant final
     # edits.  Subclasses that *require* an explicit finalize call to close
     # out the message lifecycle (e.g. rich card / AI assistant surfaces
-    # such as DingTalk AI Cards) override this to True (class attribute or
+    # such as rich AI-card surfaces) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
@@ -4030,7 +3810,7 @@ class BasePlatformAdapter(ABC):
 
         Default implementation returns ``None`` — adapters that support
         threads override this. See:
-          - Telegram: forum topics in groups, DM topics with bot API 9.4+
+          - Forum topics in groups, DM topics with newer bot APIs
           - Discord:  text-channel threads (1440-min auto-archive)
           - Slack:    seed-message thread anchoring
         """
@@ -4051,12 +3831,12 @@ class BasePlatformAdapter(ABC):
         sending a new message.
 
         ``finalize`` signals that this is the last edit in a streaming
-        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        sequence.  Most platforms (Slack, Discord,
         etc.) treat it as a no-op because their edit APIs have no notion
         of message lifecycle state — an edit is an edit.  Platforms that
         render streaming updates with a distinct "in progress" state and
         require explicit closure (e.g. rich card / AI assistant surfaces
-        such as DingTalk AI Cards) use it to finalize the message and
+        such as rich AI-card surfaces) use it to finalize the message and
         transition the UI out of the streaming indicator — those should
         also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
         final edit through even when content is unchanged.  Callers
@@ -4083,7 +3863,7 @@ class BasePlatformAdapter(ABC):
 
         Returns ``True`` on successful deletion, ``False`` otherwise.
         Subclasses should override for platforms with a deletion API
-        (e.g. Telegram ``deleteMessage``).
+        (e.g. platform ``deleteMessage``).
         """
         return False
 
@@ -4120,7 +3900,7 @@ class BasePlatformAdapter(ABC):
         """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``.
 
         Best-effort — failures (gateway restart, permission denied, message
-        too old for Telegram's 48h window) are swallowed at debug level.
+        too old for the platform's 48h window) are swallowed at debug level.
         Does not block the caller.
         """
 
@@ -4172,7 +3952,7 @@ class BasePlatformAdapter(ABC):
     def _ea_escape(self, text: str) -> str:
         """Escape hook applied to the command preview and reason text.
 
-        Default is pass-through; HTML-mode platforms (Telegram) override.
+        Default is pass-through; HTML-mode platforms override.
         """
         return text
 
@@ -4247,8 +4027,8 @@ class BasePlatformAdapter(ABC):
         acknowledge — the current caller is ``/reload-mcp``, which
         invalidates the provider prompt cache.
 
-        Platforms with inline-button support (Telegram, Discord, Slack,
-        Matrix, Feishu) should override this to render three buttons:
+        Platforms with inline-button support (Discord, Slack)
+        should override this to render three buttons:
         Approve Once / Always Approve / Cancel.  Button callbacks MUST be
         routed back through the gateway by calling
         ``GatewayRunner._resolve_slash_confirm(confirm_id, choice)`` where
@@ -4261,7 +4041,7 @@ class BasePlatformAdapter(ABC):
 
         ``confirm_id`` is a short string generated by the gateway; the
         adapter stores it alongside any platform-specific state needed to
-        route the callback (e.g. Telegram's ``_approval_state`` dict).
+        route the callback (e.g. the platform's ``_approval_state`` dict).
         """
         return SendResult(success=False, error="Not supported")
 
@@ -4300,7 +4080,7 @@ class BasePlatformAdapter(ABC):
         ``mark_awaiting_text()`` so that the gateway text-intercept
         (:meth:`GatewayRunner._maybe_intercept_clarify_text`) catches the
         user's reply instead of timing out.
-        Adapters with native button UIs (Telegram, Discord) SHOULD
+        Adapters with native button UIs (Discord) SHOULD
         override this for a richer UX.
         """
         if choices:
@@ -4488,7 +4268,7 @@ class BasePlatformAdapter(ABC):
         Send an animated GIF natively via the platform API.
         
         Override in subclasses to send GIFs as proper animations
-        (e.g., Telegram send_animation) so they auto-play inline.
+        (e.g. platform send_animation) so they auto-play inline.
         Default falls back to send_image.
         """
         return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
@@ -4559,7 +4339,7 @@ class BasePlatformAdapter(ABC):
         """
         Send an audio file as a native voice message via the platform API.
 
-        Override in subclasses to send audio as voice bubbles (Telegram)
+        Override in subclasses to send audio as voice bubbles
         or file attachments (Discord). Default falls back to a friendly
         notice — never echo the local audio_path into chat, since it is a
         host filesystem path that would leak the Son of Anton home layout.
@@ -4575,123 +4355,6 @@ class BasePlatformAdapter(ABC):
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
-    def prepare_tts_text(self, text: str) -> str:
-        """Prepare a spoken script for TTS.
-
-        Auto-TTS should not feed raw chat Markdown, ``⋗`` reasoning
-        blocks, or compact symbols to the speech provider.  It should receive
-        a transcript-like script: reasoning blocks removed, headings and
-        bullets flattened into sentence pauses, and units like ``°C``
-        expanded to words such as ``degrees Celsius``.
-
-        Provider-safe chunking and platform delivery limits are enforced
-        by the TTS tool.
-        """
-        try:
-            from tools.tts_text_normalize import prepare_spoken_text
-            return prepare_spoken_text(text, max_chars=None)
-        except Exception:
-            # Keep auto-TTS best-effort if the normalizer ever fails.
-            text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
-            return re.sub(r'[*_`#\[\]()]', '', text).strip()
-
-    async def play_tts(
-        self,
-        chat_id: str,
-        audio_path: str,
-        **kwargs,
-    ) -> SendResult:
-        """
-        Play auto-TTS audio for voice replies.
-
-        Override in subclasses for invisible playback (e.g. Web UI).
-        Default falls back to send_voice (shows audio player).
-        """
-        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Streaming TTS adapter contract (#60671)
-    # ------------------------------------------------------------------
-    # Voice-capable adapters (LiveKit, Discord voice, …) override these to
-    # accept PCM audio chunks while the LLM is still generating.  The default
-    # implementations report "unsupported" so existing adapters are
-    # source-compatible and keep the whole-file auto-TTS fallback.
-
-    def supports_streaming_tts(self, chat_id: str, audio_format: AudioFormat) -> bool:
-        """Return True when this adapter can accept streaming PCM for *chat_id*.
-
-        Default: False (whole-file auto-TTS path remains).  Override to opt in.
-        """
-        return False
-
-    async def begin_streaming_tts(
-        self,
-        chat_id: str,
-        audio_format: AudioFormat,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[StreamingTTSHandle]:
-        """Open a streaming-audio session for *chat_id*.
-
-        Returns an opaque handle passed to subsequent ``write_streaming_tts``
-        / ``finish_streaming_tts`` / ``abort_streaming_tts`` calls, or
-        ``None`` to decline (caller falls back to whole-file TTS).
-        """
-        return None
-
-    async def write_streaming_tts(self, handle: StreamingTTSHandle, chunk: bytes) -> None:
-        """Write one PCM chunk to the adapter's outbound audio track."""
-        pass
-
-    async def finish_streaming_tts(self, handle: StreamingTTSHandle, *, interrupted: bool = False) -> None:
-        """Signal normal end of the audio stream."""
-        pass
-
-    async def abort_streaming_tts(self, handle: StreamingTTSHandle, error: Optional[str] = None) -> None:
-        """Abort the stream due to an error or cancellation.
-
-        Must be idempotent: late producer chunks after abort must be silently
-        dropped, not raise.  Restores adapter state to "not streaming".
-        """
-        pass
-
-    def _streaming_tts_turn_key(
-        self,
-        session_key: str | None,
-        turn_marker: Any = None,
-        *,
-        event: Any = None,
-    ) -> str | None:
-        return streaming_tts_turn_key(session_key, turn_marker, event=event)
-
-    def _mark_streaming_tts_completed_turn(
-        self,
-        session_key: str | None,
-        turn_marker: Any = None,
-        *,
-        event: Any = None,
-    ) -> None:
-        turn_key = self._streaming_tts_turn_key(session_key, turn_marker, event=event)
-        if turn_key is not None:
-            completed = getattr(self, "_streaming_tts_completed_turns", None)
-            if completed is None:
-                completed = set()
-                self._streaming_tts_completed_turns = completed
-            completed.add(turn_key)
-
-    def _streaming_tts_turn_completed(
-        self,
-        session_key: str | None,
-        turn_marker: Any = None,
-        *,
-        event: Any = None,
-    ) -> bool:
-        return streaming_tts_should_skip_whole_file(
-            getattr(self, "_streaming_tts_completed_turns", set()),
-            session_key,
-            turn_marker,
-            event=event,
-        )
 
     async def send_video(
         self,
@@ -4954,7 +4617,7 @@ class BasePlatformAdapter(ABC):
             MEDIA:/path/to/audio.ogg
 
         Skills that produce large/lossless images (e.g. info-graph, where a
-        rendered JPG is 1-2 MB but Telegram's sendPhoto recompresses to
+        rendered JPG is 1-2 MB but the photo path recompresses to
         ~200 KB at 1280px) can use ``[[as_document]]`` to request unmodified
         delivery via sendDocument instead of sendPhoto/sendMediaGroup. The
         directive is detected at the dispatch sites (which have access to the
@@ -5175,7 +4838,7 @@ class BasePlatformAdapter(ABC):
         """
         Continuously send typing indicator until cancelled.
         
-        Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
+        Platform typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
         
         Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
@@ -5184,8 +4847,8 @@ class BasePlatformAdapter(ABC):
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
 
         Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
-        network round-trip can't stall the refresh cadence.  Telegram- and
-        Discord-side typing expire after ~5s; if any individual send_typing
+        network round-trip can't stall the refresh cadence.  Discord-side
+        typing expires after ~5s; if any individual send_typing
         takes longer than the refresh interval, the bubble would die and
         stay dead until that call returns.  Abandoning the slow call lets
         the next tick fire a fresh send_typing on schedule — as long as
@@ -5568,7 +5231,7 @@ class BasePlatformAdapter(ABC):
 
         if is_network:
             # Retry with exponential backoff for transient errors.
-            # Honor server-requested retry_after (e.g. Telegram FloodWait)
+            # Honor server-requested retry_after
             # when present — it is authoritative over our backoff schedule.
             server_retry_after = result.retry_after
             for attempt in range(1, max_retries + 1):
@@ -6056,17 +5719,6 @@ class BasePlatformAdapter(ABC):
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
 
-        # Telegram topic recovery only applies to private DM topic lanes. Do
-        # not submit a no-op check for group/forum/channel traffic to the
-        # shared default executor: a busy pool would delay message dispatch.
-        needs_topic_recovery = (
-            getattr(self, "_topic_recovery_fn", None) is not None
-            and event.source.platform == Platform.TELEGRAM
-            and event.source.chat_type == "dm"
-        )
-        if needs_topic_recovery:
-            await asyncio.to_thread(self._apply_topic_recovery, event)
-
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -6376,7 +6028,7 @@ class BasePlatformAdapter(ABC):
                 # dispatch partition below can route image-extension files
                 # through send_document instead of send_multiple_images. Used
                 # by skills that produce large/lossless images (e.g. info-graph)
-                # where Telegram's sendPhoto recompression destroys legibility.
+                # where the photo path's recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
@@ -6456,109 +6108,11 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
-                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
-                # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
-                # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
-                # True globally and no ``/voice off`` has been issued.
-                # Skip when streaming TTS already delivered audio for this turn
-                # (#60671) — the gateway streaming-TTS consumer sets the flag.
-                _tts_path = None
-                _tts_paths: List[str] = []
-                _tts_requested_path = None
-                if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
-                        and text_content
-                        and not media_files
-                        and not self._streaming_tts_turn_completed(
-                            session_key,
-                            getattr(interrupt_event, "_son_of_anton_run_generation", None),
-                            event=event,
-                        )):
-                    try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-                        if check_tts_requirements():
-                            import json as _json
-                            speech_text = self.prepare_tts_text(text_content)
-                            if not speech_text:
-                                raise ValueError("Empty text after markdown cleanup")
-                            # Pass an explicit platform-aware output path: the
-                            # SON_OF_ANTON_SESSION_PLATFORM contextvar the tool would
-                            # otherwise consult is already cleared by the time
-                            # this post-handler block runs, which silently
-                            # produced MP3 (audio attachment, not a native
-                            # voice bubble) on Opus platforms (#57049, #36685).
-                            _tts_requested_path = build_auto_tts_output_path(
-                                self.platform
-                            )
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool,
-                                text=speech_text,
-                                output_path=_tts_requested_path,
-                            )
-                            tts_data = _json.loads(tts_result_str)
-                            if tts_data.get("success", True):
-                                raw_tts_paths = tts_data.get("file_paths") or [
-                                    tts_data.get("file_path")
-                                ]
-                                _tts_paths = [
-                                    str(path) for path in raw_tts_paths
-                                    if path and Path(path).exists()
-                                ]
-                                _tts_path = _tts_paths[0] if _tts_paths else None
-                    except Exception as tts_err:
-                        logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-
-                # Play TTS audio before text (voice-first experience)
-                _tts_caption_delivered = False
-                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
-                for _tts_index, _tts_path in enumerate(_tts_paths):
-                    try:
-                        # Caption eligibility and payload stay on the ORIGINAL
-                        # reply text. The spoken script is for synthesis only:
-                        # normalization can shrink a long reply below the
-                        # 1024-char caption limit, and captioning that spoken
-                        # form would suppress the full formatted reply the
-                        # user is meant to receive as a separate message.
-                        # Caption only on the first file.
-                        telegram_tts_caption = None
-                        if (
-                            _tts_index == 0
-                            and self.platform == Platform.TELEGRAM
-                            and text_content
-                            and text_content[:1024] == text_content
-                        ):
-                            telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
-                            chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            caption=telegram_tts_caption,
-                            metadata=_final_thread_metadata,
-                        )
-                        _record_delivery(tts_result)
-                        _tts_caption_delivered = bool(
-                            _tts_caption_delivered
-                            or (
-                                telegram_tts_caption
-                                and getattr(tts_result, "success", False)
-                            )
-                        )
-                    finally:
-                        try:
-                            os.remove(_tts_path)
-                        except OSError:
-                            pass
-                if not _tts_paths and _tts_cleanup_paths:
-                    for _cleanup_path in _tts_cleanup_paths:
-                        try:
-                            os.remove(_cleanup_path)
-                        except OSError:
-                            pass
-
                 # Send the text portion. A reconnect may have replaced this
                 # adapter while its in-flight handler was still producing a
                 # final response; that response is a new message, so resolve
                 # the current transport before sending it.
-                if text_content and not _tts_caption_delivered:
+                if text_content:
                     delivery_adapter = self._final_delivery_adapter(event.source)
                     logger.info(
                         "[%s] Sending response (%d chars) to %s",
@@ -6675,8 +6229,8 @@ class BasePlatformAdapter(ABC):
                 # can be sent as a single batch (Signal RPC). When
                 # ``[[as_document]]`` was set on the original response, image
                 # files skip the photo path and route to send_document below
-                # so they're delivered with original bytes (no Telegram
-                # sendPhoto recompression).
+                # so they're delivered with original bytes (no photo
+                # recompression).
                 from urllib.parse import quote as _quote
                 _image_paths: list = []
                 _non_image_media: list = []
@@ -6791,7 +6345,7 @@ class BasePlatformAdapter(ABC):
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
-                    delivery_attempted or _tts_caption_delivered
+                    delivery_attempted
                     or images or local_files or media_files
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
@@ -6804,15 +6358,6 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
-            # Clean up the per-turn streaming-TTS flag (#60671).
-            self._streaming_tts_completed_turns.discard(
-                self._streaming_tts_turn_key(
-                    session_key,
-                    getattr(interrupt_event, "_son_of_anton_run_generation", None),
-                    event=event,
-                )
-                or ""
-            )
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
@@ -7229,11 +6774,7 @@ class BasePlatformAdapter(ABC):
         ``_get_platform_tools`` path as platform-level config, so unknown or
         platform-restricted toolset names are dropped rather than trusted.
 
-        Currently used by the webhook adapter so individual routes can pin
-        their own toolsets (a trusted local monitoring route can get
-        ``terminal`` without widening every webhook route's default-safe
-        toolset). See ``platforms.webhook.extra.routes.<name>.toolsets`` and
-        the ``toolsets`` key in ``webhook_subscriptions.json``.
+        Reserved for adapters that pin per-source toolset overrides.
         """
         return None
     
@@ -7242,7 +6783,7 @@ class BasePlatformAdapter(ABC):
         Format a message for this platform.
         
         Override in subclasses to handle platform-specific formatting
-        (e.g., Telegram MarkdownV2, Discord markdown).
+        (e.g., Discord markdown).
         
         Default implementation returns content as-is.
         """
@@ -7268,7 +6809,7 @@ class BasePlatformAdapter(ABC):
             len_fn: Optional length function for measuring string length.
                      Defaults to ``len`` (Unicode code-points).  Pass
                      ``utf16_len`` for platforms that measure message
-                     length in UTF-16 code units (e.g. Telegram).
+                     length in UTF-16 code units.
 
         Returns:
             List of message chunks
@@ -7325,7 +6866,7 @@ class BasePlatformAdapter(ABC):
                 break
 
             # Find a natural split point (prefer newlines, then spaces).
-            # When _len != len (e.g. utf16_len for Telegram), headroom is
+            # When _len != len (e.g. utf16_len), headroom is
             # measured in the custom unit.  We need codepoint-based slice
             # positions that stay within the custom-unit budget.
             #
@@ -7365,7 +6906,7 @@ class BasePlatformAdapter(ABC):
             # backticks, the split falls inside inline code — the resulting
             # chunk would have an unpaired backtick and any special characters
             # (like parentheses) inside the broken span would be unescaped,
-            # causing MarkdownV2 parse errors on Telegram.
+            # causing MarkdownV2 parse errors on the platform.
             candidate = remaining[:split_at]
             backtick_count = candidate.count("`") - candidate.count("\\`")
             if backtick_count % 2 == 1:

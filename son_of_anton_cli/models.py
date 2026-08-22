@@ -1268,7 +1268,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # Some vendors expose several Son of Anton provider slugs (one per endpoint /
 # auth method: global API, China API, OAuth coding plan, ...). Listing every
 # slug as a top-level row in the interactive `son-of-anton model` / setup wizard /
-# Telegram `/model` pickers makes that list long and noisy.
+# Discord `/model` pickers makes that list long and noisy.
 #
 # These groups fold related slugs under one top-level row in INTERACTIVE
 # PICKERS only. They do NOT change ``CANONICAL_PROVIDERS``, slug identity,
@@ -1310,7 +1310,7 @@ def group_providers(slugs):
     """Fold a flat ordered slug iterable into picker rows by provider group.
 
     DISPLAY ONLY. Used by every interactive picker (``son-of-anton model``, the
-    setup wizard, the Telegram ``/model`` keyboard) so grouping is identical
+    setup wizard, the Discord ``/model`` keyboard) so grouping is identical
     across surfaces.
 
     Each returned row is a dict::

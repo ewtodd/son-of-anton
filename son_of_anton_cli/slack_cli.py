@@ -3,7 +3,7 @@
 Today only ``son-of-anton slack manifest`` is implemented — it generates the
 Slack app manifest JSON for registering every gateway command as a native
 Slack slash (``/btw``, ``/stop``, ``/model``, …) so users get the same
-first-class slash UX Discord and Telegram already have.
+first-class slash UX Discord already has.
 
 Typical workflow::
 

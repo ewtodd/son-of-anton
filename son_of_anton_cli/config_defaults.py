@@ -1337,21 +1337,19 @@ DEFAULT_CONFIG = {
         "reasoning_style": "code",
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
-        # that support message deletion (currently Telegram; other platforms
-        # ignore and leave the message in place).  Only affects slash-command
+        # that support message deletion (other platforms ignore and leave the
+        # message in place).  Only affects slash-command
         # replies wrapped with gateway.platforms.base.EphemeralReply — agent
         # responses and content messages are never touched.  Default 0
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
         # Per-platform display/streaming overrides. Each key is a gateway
-        # platform ("telegram", "discord", "slack", …) mapping to a dict of
+        # platform ("discord", "slack", "signal", …) mapping to a dict of
         # display settings that override the global value for that platform
         # only. A setting left unset here falls through to the global default.
         #
         # Shipped defaults encode the streaming experience that works best
         # per platform:
-        #   - Telegram has native animated draft streaming (sendMessageDraft),
-        #     which is smooth, so streaming is on by default there.
         #   - Discord and Slack only have edit-based streaming (repeated
         #     editMessage), which flickers and is noticeably jankier, so
         #     streaming is off by default for both.
@@ -1361,7 +1359,6 @@ DEFAULT_CONFIG = {
         # streaming.enabled master switch still gates everything — these
         # per-platform flags only take effect once streaming is enabled.
         "platforms": {
-            "telegram": {"streaming": True},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
         },
@@ -1810,40 +1807,6 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # WhatsApp platform settings (gateway mode)
-    "whatsapp": {
-        # Reply prefix prepended to every outgoing WhatsApp message.
-        # Default (None) uses the built-in "⚕ *Son of Anton Agent*" header.
-        # Set to "" (empty string) to disable the header entirely.
-        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
-    },
-
-    # Telegram platform settings (gateway mode)
-    "telegram": {
-        "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
-        "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
-        "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
-        "extra": {
-            "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
-            "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
-        },
-    },
-
-    # Mattermost platform settings (gateway mode)
-    "mattermost": {
-        "require_mention": True,       # Require @mention to respond in channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
-        "channel_prompts": {},         # Per-channel ephemeral system prompts
-    },
-
-    # Matrix platform settings (gateway mode)
-    "matrix": {
-        "require_mention": True,       # Require @mention to respond in rooms
-        "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
-        "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
-    },
-
     # Approval mode for dangerous commands:
     #   manual — always prompt the user
     #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
@@ -1866,7 +1829,7 @@ DEFAULT_CONFIG = {
     # timeout — seconds to wait for the user's approve/deny before failing
     # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
     # Messaging approvals arrive as a push notification the user may not see
-    # immediately — 60s proved too tight on Telegram/Discord (the prompt
+    # immediately — 60s proved too tight on Discord/Slack (the prompt
     # expired before the user reached their phone), so the default is 300.
     "approvals": {
         "mode": "smart",
@@ -1908,8 +1871,8 @@ DEFAULT_CONFIG = {
         # When true, destructive session slash commands (/clear, /new, /reset,
         # /undo) ask the user to confirm before discarding conversation state.
         # Three-option prompt (Approve Once / Always Approve / Cancel) routed
-        # through tools.slash_confirm — native yes/no buttons on Telegram,
-        # Discord, and Slack; text fallback elsewhere.  Users click "Always
+        # through tools.slash_confirm — native yes/no buttons on Discord and
+        # Slack; text fallback elsewhere.  Users click "Always
         # Approve" to silence the prompt permanently; that flips this key to
         # false.  TUI also honors this setting for its /clear, /new, and /reset
         # modal; SON_OF_ANTON_TUI_NO_CONFIRM=1 force-skips that modal regardless of
@@ -1924,7 +1887,7 @@ DEFAULT_CONFIG = {
 
     # Per-platform system-prompt hint overrides. Lets an admin append to or
     # replace Son of Anton' built-in platform hint for a single messaging platform
-    # (WhatsApp, Slack, Telegram, ...) without affecting other platforms.
+    # (Discord, Slack, Signal, ...) without affecting other platforms.
     # Useful for enterprise/managed profiles that ship platform-aware skills.
     # Each key is a platform name; the value is either:
     #   { "append": "extra text" }   — keep the default hint, append text
@@ -1932,7 +1895,7 @@ DEFAULT_CONFIG = {
     #   "extra text"                 — shorthand for { "append": ... }
     # `replace` wins over `append` if both are given. Example:
     #   platform_hints:
-    #     whatsapp:
+    #     slack:
     #       append: >
     #         When tabular output would be useful, invoke the
     #         table_formatting skill instead of emitting a Markdown table.
@@ -2076,13 +2039,13 @@ DEFAULT_CONFIG = {
         # `attach_to_session` overrides this for a single job.
         #
         # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
-        #   - Thread-capable platforms (Telegram forum/DM topics, Discord
+        #   - Thread-capable platforms (Discord
         #     threads, Slack threads): a dedicated thread is opened for the job
         #     via the adapter's create_handoff_thread, the brief is delivered
         #     into it, and that thread's session is seeded so the user's reply
         #     in-thread continues with full context. Each continuable job gets
         #     its own scrollback, isolated from the parent channel.
-        #   - DM-only platforms (WhatsApp / Signal / SMS): no threads exist, so
+        #   - DM-only platforms (Signal): no threads exist, so
         #     the brief is mirrored into the origin DM session instead — the
         #     DM itself is the continuation surface.
         # Both paths ride the shipped gateway.mirror.mirror_to_session and are
@@ -2275,8 +2238,8 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
-    # Gateway settings — control how messaging platforms (Telegram, Discord,
-    # Slack, etc.) deliver agent-produced files as native attachments.
+    # Gateway settings — control how messaging platforms (Discord, Slack,
+    # Signal, etc.) deliver agent-produced files as native attachments.
     "gateway": {
         # Optional named-profile allowlist for multiplex mode. None preserves
         # the historical serve-all behavior; [] serves only the default.
@@ -2427,20 +2390,9 @@ DEFAULT_CONFIG = {
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
 
-        # OpenAI-compatible API server platform
-        # (gateway/platforms/api_server.py).
-        "api_server": {
-            # Maximum number of agent runs the API server will service
-            # concurrently. Requests to /v1/chat/completions, /v1/responses,
-            # and /v1/runs that arrive while this many runs are already
-            # in flight are rejected with HTTP 429 + a Retry-After header,
-            # bounding CPU / memory / upstream-LLM-quota exhaustion from a
-            # request flood. Set to 0 to disable the cap entirely.
-            "max_concurrent_runs": 10,
-        },
     },
 
-    # Real-time token streaming to messaging platforms (Telegram, Discord,
+    # Real-time token streaming to messaging platforms (Discord, Slack,
     # Slack, etc.). Read at the top level by the gateway; absent this block the
     # gateway falls back to these same defaults, so adding it here only makes
     # the feature discoverable in config.yaml — it does not change behavior.
@@ -2453,19 +2405,15 @@ DEFAULT_CONFIG = {
         "enabled": False,
         # Transport selection:
         #   "auto"  — prefer native draft streaming where the platform
-        #             supports it (Telegram DMs via sendMessageDraft,
-        #             Bot API 9.5+) and fall back to edit-based elsewhere.
+        #             supports it and fall back to edit-based elsewhere.
         #             Safe global default: platforms without draft support
-        #             (Discord, Slack, Matrix, Telegram groups) transparently
-        #             use the edit path, so "auto" only upgrades chats that
-        #             can render the smoother native preview.
+        #             transparently use the edit path.
         #   "draft" — explicitly request native drafts; falls back to edit
         #             when the platform/chat doesn't support them.
         #   "edit"  — progressive editMessageText only (legacy behavior).
         #   "off"   — disable streaming entirely (same as enabled: false).
         "transport": "auto",
-        # Minimum seconds between progressive edits — tuned for Telegram's
-        # ~1 edit/s flood envelope.
+        # Minimum seconds between progressive edits.
         "edit_interval": 0.8,
         # Flush the buffer to the platform once this many characters have
         # accumulated, so short replies feel near-instant.
@@ -2475,7 +2423,7 @@ DEFAULT_CONFIG = {
         # When >0, the final edit for a long-running streamed response is
         # delivered as a fresh message if the preview has been visible at
         # least this many seconds, so the platform timestamp reflects
-        # completion time. Telegram only; other platforms ignore it.
+        # completion time. Platforms opt in; others ignore it.
         "fresh_final_after_seconds": 0.0,
     },
 
@@ -2661,7 +2609,7 @@ DEFAULT_CONFIG = {
     # cwd (or the file being edited) is inside a git worktree, LSP
     # runs against that workspace.  When neither is in a git repo,
     # LSP stays dormant and the in-process syntax check is the only
-    # tier — handy for Telegram/Discord chats where the cwd is the
+    # tier — handy for Discord/Slack chats where the cwd is the
     # user's home directory.
     "lsp": {
         # Master toggle.  Setting this to false disables the entire
@@ -3574,26 +3522,6 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Messaging platforms ──
-    "TELEGRAM_BOT_TOKEN": {
-        "description": "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon and secret)",
-        "prompt": "Telegram bot token",
-        "url": "https://t.me/BotFather",
-        "password": True,
-        "category": "messaging",
-    },
-    "TELEGRAM_ALLOWED_USERS": {
-        "description": "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to approve new users through DM pairing",
-        "prompt": "Allowed Telegram user IDs (comma-separated)",
-        "url": "https://t.me/userinfobot",
-        "password": False,
-        "category": "messaging",
-    },
-    "TELEGRAM_PROXY": {
-        "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",
-        "prompt": "Telegram proxy URL (optional)",
-        "password": False,
-        "category": "messaging",
-    },
     "DISCORD_BOT_TOKEN": {
         "description": "Discord bot token from Developer Portal",
         "prompt": "Discord bot token",
@@ -3641,307 +3569,6 @@ OPTIONAL_ENV_VARS = {
         "help": "In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.",
         "url": "https://api.slack.com/apps",
         "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_URL": {
-        "description": "Mattermost server URL (e.g. https://mm.example.com)",
-        "prompt": "Mattermost server URL",
-        "url": "https://mattermost.com/deploy/",
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_TOKEN": {
-        "description": "Mattermost bot token or personal access token",
-        "prompt": "Mattermost bot token",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-    "MATTERMOST_ALLOWED_USERS": {
-        "description": "Comma-separated Mattermost user IDs allowed to use the bot",
-        "prompt": "Allowed Mattermost user IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_REQUIRE_MENTION": {
-        "description": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages.",
-        "prompt": "Require @mention in channels",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_FREE_RESPONSE_CHANNELS": {
-        "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
-        "prompt": "Free-response channel IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_HOMESERVER": {
-        "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
-        "prompt": "Matrix homeserver URL",
-        "url": "https://matrix.org/ecosystem/servers/",
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_ACCESS_TOKEN": {
-        "description": "Matrix access token (preferred over password login)",
-        "prompt": "Matrix access token",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-    "MATRIX_USER_ID": {
-        "description": "Matrix user ID (e.g. @son-of-anton:example.org)",
-        "prompt": "Matrix user ID (@user:server)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_ALLOWED_USERS": {
-        "description": "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
-        "prompt": "Allowed Matrix user IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_REQUIRE_MENTION": {
-        "description": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages.",
-        "prompt": "Require @mention in rooms (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_FREE_RESPONSE_ROOMS": {
-        "description": "Comma-separated Matrix room IDs where bot responds without @mention",
-        "prompt": "Free-response room IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_AUTO_THREAD": {
-        "description": "Auto-create threads for messages in Matrix rooms (default: true)",
-        "prompt": "Auto-create threads in rooms (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_DM_AUTO_THREAD": {
-        "description": "Auto-create threads for DM messages in Matrix (default: false)",
-        "prompt": "Auto-create threads in DMs (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_DEVICE_ID": {
-        "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. SON_OF_ANTON_BOT)",
-        "prompt": "Matrix device ID (stable across restarts)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_RECOVERY_KEY": {
-        "description": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)",
-        "prompt": "Matrix recovery key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "BLUEBUBBLES_SERVER_URL": {
-        "description": "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
-        "prompt": "BlueBubbles server URL",
-        "url": "https://bluebubbles.app/",
-        "password": False,
-        "category": "messaging",
-    },
-    "BLUEBUBBLES_PASSWORD": {
-        "description": "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
-        "prompt": "BlueBubbles server password",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-    "BLUEBUBBLES_ALLOWED_USERS": {
-        "description": "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
-        "prompt": "Allowed iMessage addresses (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "BLUEBUBBLES_ALLOW_ALL_USERS": {
-        "description": "Allow all BlueBubbles users without allowlist",
-        "prompt": "Allow All BlueBubbles Users",
-        "category": "messaging",
-    },
-    "QQ_APP_ID": {
-        "description": "QQ Bot App ID from QQ Open Platform (q.qq.com)",
-        "prompt": "QQ App ID",
-        "url": "https://q.qq.com",
-        "category": "messaging",
-    },
-    "QQ_CLIENT_SECRET": {
-        "description": "QQ Bot Client Secret from QQ Open Platform",
-        "prompt": "QQ Client Secret",
-        "password": True,
-        "category": "messaging",
-    },
-    "QQ_ALLOWED_USERS": {
-        "description": "Comma-separated QQ user IDs allowed to use the bot",
-        "prompt": "QQ Allowed Users",
-        "category": "messaging",
-    },
-    "QQ_GROUP_ALLOWED_USERS": {
-        "description": "Comma-separated QQ group IDs allowed to interact with the bot",
-        "prompt": "QQ Group Allowed Users",
-        "category": "messaging",
-    },
-    "QQ_ALLOW_ALL_USERS": {
-        "description": "Allow all QQ users without an allowlist (true/false)",
-        "prompt": "Allow All QQ Users",
-        "category": "messaging",
-    },
-    "QQBOT_HOME_CHANNEL": {
-        "description": "Default QQ channel/group for cron delivery and notifications",
-        "prompt": "QQ Home Channel",
-        "category": "messaging",
-    },
-    "QQBOT_HOME_CHANNEL_NAME": {
-        "description": "Display name for the QQ home channel",
-        "prompt": "QQ Home Channel Name",
-        "category": "messaging",
-    },
-    "QQ_SANDBOX": {
-        "description": "Enable QQ sandbox mode for development testing (true/false)",
-        "prompt": "QQ Sandbox Mode",
-        "category": "messaging",
-    },
-    "IRC_SERVER": {
-        "description": "IRC server hostname (e.g. irc.libera.chat)",
-        "prompt": "IRC server",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "IRC_CHANNEL": {
-        "description": "IRC channel to join (e.g. #son-of-anton)",
-        "prompt": "IRC channel",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "IRC_NICKNAME": {
-        "description": "Bot nickname on IRC (default: son-of-anton-bot)",
-        "prompt": "IRC nickname",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "IRC_SERVER_PASSWORD": {
-        "description": "IRC server password (if required)",
-        "prompt": "IRC server password",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "IRC_NICKSERV_PASSWORD": {
-        "description": "NickServ password for nick identification",
-        "prompt": "NickServ password",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_ALLOW_ALL_USERS": {
-        "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
-        "prompt": "Allow all users (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_ENABLED": {
-        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",
-        "prompt": "Enable API server (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_KEY": {
-        "description": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it.",
-        "prompt": "API server auth key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_PORT": {
-        "description": "Port for the API server (default: 8642).",
-        "prompt": "API server port",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_HOST": {
-        "description": "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still required even on loopback binds.",
-        "prompt": "API server host",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_MODEL_NAME": {
-        "description": "Model name advertised on /v1/models. Defaults to the profile name (or 'son-of-anton' for the default profile). Useful for multi-user setups with OpenWebUI.",
-        "prompt": "API server model name",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_PROXY_URL": {
-        "description": "URL of a remote Son of Anton API server to forward messages to (proxy mode). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Use for Docker E2EE containers that relay to a host agent. Also configurable via gateway.proxy_url in config.yaml.",
-        "prompt": "Remote Son of Anton API server URL (e.g. http://192.168.1.100:8642)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_PROXY_KEY": {
-        "description": "Bearer token for authenticating with the remote Son of Anton API server (proxy mode). Must match the API_SERVER_KEY on the remote host.",
-        "prompt": "Remote API server auth key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "WEBHOOK_ENABLED": {
-        "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
-        "prompt": "Enable webhooks (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "WEBHOOK_PORT": {
-        "description": "Port for the webhook HTTP server (default: 8644).",
-        "prompt": "Webhook port",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "WEBHOOK_SECRET": {
-        "description": "Global HMAC secret for webhook signature validation (overridable per route in config.yaml).",
-        "prompt": "Webhook secret",
-        "url": None,
-        "password": True,
         "category": "messaging",
     },
 

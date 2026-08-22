@@ -4224,7 +4224,7 @@ def _refresh_windows_gateway_launchers() -> None:
     The Scheduled Task / Startup-folder launchers (``gateway.cmd`` +
     ``gateway.vbs``) are persistence artifacts written once at install time —
     ``son-of-anton update`` never touched them, so installs created before the
-    hidden-console rework (aa2ae36c3f) kept launching the gateway through
+    hidden-console rework kept launching the gateway through
     ``pythonw.exe`` forever: every descendant spawn flashed a conhost
     (#54220/#56747) and, since #70344, the console-less gateway died at
     startup with ``RuntimeError: sys.stderr is None`` (#71671).
@@ -6514,19 +6514,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     except (ProcessLookupError, PermissionError):
                         pass
                 # Wait for the old process to fully exit before the watcher
-                # spawns the new gateway.  Telegram holds the previous
-                # getUpdates long-poll session open on its servers for up to
-                # ~30s after the client disconnects.  If the new gateway
-                # connects before that window expires it receives a 409
-                # Conflict, which _handle_polling_conflict() recovers from
-                # via back-off retries — but a brief wait here reduces the
-                # chance of hitting that path at all, especially on fast
-                # machines where the watcher loop restarts in < 1s.
+                # spawns the new gateway.  Messaging platforms can hold the
+                # previous session open on their servers for a short window
+                # after the client disconnects; if the new gateway connects
+                # before that window expires it may conflict, which the
+                # adapter's retry logic recovers from via back-off retries —
+                # but a brief wait here reduces the chance of hitting that
+                # path at all, especially on fast machines where the watcher
+                # loop restarts in < 1s.
                 # We wait up to 5s for the process to exit (the OS-level
-                # close, not the Telegram server-side expiry), then let the
-                # watcher take over.  The Telegram adapter's retry logic
-                # handles any remaining 409s if the server session is still
-                # live when the new gateway polls.
+                # close), then let the watcher take over.
                 _wait_for_gateway_exit(timeout=5.0, force_after=None)
                 killed_pids.add(pid)
                 if restart_mode == "external-supervisor":

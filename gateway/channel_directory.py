@@ -169,7 +169,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     # process. Historical session origins for disabled/decommissioned platforms
     # must not be resurrected into the active send-target directory (stale
     # targets make send_message route to platforms that can no longer deliver).
-    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    _SKIP_SESSION_DISCOVERY = frozenset({"local"})
     adapter_platform_names = {getattr(p, "value", str(p)) for p in adapters}
     for plat in Platform:
         plat_name = plat.value
@@ -557,7 +557,6 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     Matching strategy (case-insensitive, first match wins):
     - Discord: "bot-home", "#bot-home", "GuildName/bot-home"
-    - Telegram: display name or group name
     - Slack: "engineering", "#engineering"
     """
     directory = load_directory()
@@ -653,6 +652,6 @@ def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> 
             lines.append("")
 
     lines.append('Use these as the "target" parameter when sending.')
-    lines.append('Bare platform name (e.g. "telegram") sends to home channel.')
+    lines.append('Bare platform name (e.g. "discord") sends to home channel.')
 
     return "\n".join(lines)

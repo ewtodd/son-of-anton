@@ -18,8 +18,7 @@ def _add_compat_platform_flag(parser: argparse.ArgumentParser) -> None:
     """Accept stale `gateway <verb> --platform X` docs without advertising it.
 
     Gateway service lifecycle commands operate on the gateway process, not a
-    single messaging adapter.  Photon briefly printed a per-platform start
-    command during setup; keep that command parseable so users following the
+    single messaging adapter.  Keep the flag parseable so users following the
     old hint don't get blocked by argparse before the gateway can start.
     """
     parser.add_argument(
@@ -39,7 +38,7 @@ def build_gateway_parser(
     gateway_parser = subparsers.add_parser(
         "gateway",
         help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)",
+        description="Manage the messaging gateway (Discord, Slack, Signal)",
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
