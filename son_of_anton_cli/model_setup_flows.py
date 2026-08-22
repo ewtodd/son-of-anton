@@ -624,7 +624,6 @@ def _model_flow_named_custom(config, provider_info):
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (deepseek, openai-api, plugin profiles)."""
-    from son_of_anton_cli.main import _prompt_api_key
     from son_of_anton_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -640,89 +639,22 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     from son_of_anton_cli.models import (
         _PROVIDER_MODELS,
         fetch_api_models,
-        opencode_model_api_mode,
-        normalize_opencode_model_id,
     )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # OpenCode Free is keyless — the tier is served anonymously and any
-    # unrecognized bearer 401s, so there is no key to prompt for.
-    if provider_id == "opencode-free":
-        print("  OpenCode Free is keyless — no API key or account needed.")
-        existing_key = ""
-    else:
-        # Check / prompt for API key
-        existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
-
-        existing_key, abort = _prompt_api_key(
-            pconfig,
-            existing_key,
-            provider_id=provider_id,
-            existing_source=existing_source,
-        )
-        if abort:
-            return
-
-    # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
-    # are exhausted in a handful of agent turns, so refuse to wire up the
-    # provider with a free-tier key. Probe is best-effort; network or auth
-    # errors fall through without blocking.
-    if provider_id == "gemini" and existing_key:
-        try:
-            from agent.gemini_native_adapter import probe_gemini_tier
-        except Exception:
-            probe_gemini_tier = None
-        if probe_gemini_tier is not None:
-            print("  Checking Gemini API tier...")
-            probe_base = (
-                (get_env_value(base_url_env) if base_url_env else "")
-                or os.getenv(base_url_env or "", "")
-                or pconfig.inference_base_url
-            )
-            tier = probe_gemini_tier(existing_key, probe_base)
-            if tier == "free":
-                print()
-                print(
-                    "❌ This Google API key is on the free tier "
-                    "(<= 250 requests/day for gemini-2.5-flash)."
-                )
-                print(
-                    "   Son of Anton typically makes 3-10 API calls per user turn "
-                    "(tool iterations + auxiliary tasks),"
-                )
-                print(
-                    "   so the free tier is exhausted after a handful of "
-                    "messages and cannot sustain"
-                )
-                print("   an agent session.")
-                print()
-                print(
-                    "   To use Gemini with Son of Anton, enable billing on your "
-                    "Google Cloud project and regenerate"
-                )
-                print(
-                    "   the key in a billing-enabled project: "
-                    "https://aistudio.google.com/apikey"
-                )
-                print()
-                print(
-                    "   Alternatives with workable free usage: DeepSeek, "
-                    "OpenRouter (free models), Groq, Nous."
-                )
-                print()
-                print("Not saving Gemini as the default provider.")
-                return
-            if tier == "paid":
-                print("  Tier check: paid ✓")
-            else:
-                # "unknown" -- network issue, auth problem, unexpected response.
-                # Don't block; the runtime 429 handler will surface free-tier
-                # guidance if the key turns out to be free tier.
-                print("  Tier check: could not verify (proceeding anyway).")
-            print()
+    # Check / prompt for API key
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
+    existing_key, abort = _prompt_api_key(
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
+    )
+    if abort:
+        return
 
     # Optional base URL override.
     # Precedence: env var → config.yaml model.base_url → registry default.
@@ -741,169 +673,76 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
     effective_base = current_base or pconfig.inference_base_url
 
-    if provider_id == "zai":
-        # Z.AI has four official endpoints (Global, China, Coding Plan
-        # Global, Coding Plan China) with separate billing paths.  Present
-        # a picker instead of a plain text input so users can explicitly
-        # choose the endpoint that matches their key type.
-        chosen_base = _select_zai_endpoint(effective_base)
-        if chosen_base and chosen_base != effective_base and base_url_env:
-            save_env_value(base_url_env, chosen_base)
-        effective_base = chosen_base
-    else:
-        try:
-            override = line_input(f"Base URL [{effective_base}]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            override = ""
-        if override and base_url_env:
-            if not override.startswith(("http://", "https://")):
-                print(
-                    "  Invalid URL — must start with http:// or https://. Keeping current value."
-                )
-            else:
-                save_env_value(base_url_env, override)
-                effective_base = override
+    try:
+        override = line_input(f"Base URL [{effective_base}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        override = ""
+    if override and base_url_env:
+        if not override.startswith(("http://", "https://")):
+            print(
+                "  Invalid URL — must start with http:// or https://. Keeping current value."
+            )
+        else:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
-    #
-    # LM Studio: live /api/v1/models probe (no models.dev catalog).
-    # Ollama Cloud: merged discovery (live API + models.dev + disk cache).
-    if provider_id == "lmstudio":
-        from son_of_anton_cli.auth import AuthError
-        from son_of_anton_cli.models import fetch_lmstudio_models
+    curated = _PROVIDER_MODELS.get(provider_id, [])
 
-        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        try:
-            model_list = fetch_lmstudio_models(
-                api_key=api_key_for_probe, base_url=effective_base
-            )
-        except AuthError as exc:
-            print(f"  LM Studio rejected the request: {exc}")
-            print("  Set LM_API_KEY (or update it) to match the server's bearer token.")
-            model_list = []
-        if model_list:
-            print(f"  Found {len(model_list)} model(s) from LM Studio")
-    elif provider_id == "ollama-cloud":
-        from son_of_anton_cli.models import fetch_ollama_cloud_models
+    # Try models.dev first — returns tool-capable models, filtered for noise
+    mdev_models: list = []
+    try:
+        from agent.models_dev import list_agentic_models
 
-        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        # During setup, force a live refresh so the picker reflects newly
-        # released models (e.g. deepseek v4 flash, kimi k2.6) the moment
-        # the user enters their key — not an hour later when the disk
-        # cache TTL expires.
-        model_list = fetch_ollama_cloud_models(
-            api_key=api_key_for_probe,
-            base_url=effective_base,
-            force_refresh=True,
+        mdev_models = list_agentic_models(provider_id)
+    except Exception:
+        pass
+
+    if mdev_models:
+        # Merge models.dev with curated list so newly added models
+        # (not yet in models.dev) still appear in the picker.
+        if curated:
+            seen = {m.lower() for m in mdev_models}
+            merged = list(mdev_models)
+            for m in curated:
+                if m.lower() not in seen:
+                    merged.append(m)
+                    seen.add(m.lower())
+            model_list = merged
+        else:
+            model_list = mdev_models
+        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+    elif curated and len(curated) >= 8:
+        # Curated list is substantial — use it directly, skip live probe
+        model_list = curated
+        print(
+            f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
         )
-        if model_list:
-            print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
-    elif provider_id == "novita":
-        from son_of_anton_cli.models import fetch_api_models
-
-        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-        curated = _PROVIDER_MODELS.get(provider_id, [])
+    else:
+        api_key_for_probe = existing_key or (
+            get_env_value(key_env) if key_env else ""
+        )
         live_models = fetch_api_models(api_key_for_probe, effective_base)
-        if live_models:
+        if live_models and len(live_models) >= len(curated):
             model_list = live_models
             print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
         else:
-            mdev_models: list = []
-            try:
-                from agent.models_dev import list_agentic_models
-
-                mdev_models = list_agentic_models(provider_id)
-            except Exception:
-                pass
-            if mdev_models:
-                seen = {m.lower() for m in mdev_models}
-                model_list = list(mdev_models)
-                for m in curated:
-                    if m.lower() not in seen:
-                        model_list.append(m)
-                        seen.add(m.lower())
-                print(f"  Found {len(model_list)} model(s) from models.dev registry")
-            else:
-                model_list = curated
-                if model_list:
-                    print(
-                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
-                    )
-    elif provider_id == "opencode-free":
-        # Keyless free tier: the curated list is synced against anonymous
-        # live probes (models.dev's cost.input==0 filter lags reality —
-        # e.g. deepseek-v4-flash-free stayed "free" there after its promo
-        # ended and the relay started 401ing it keyless).
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
-        if model_list:
-            print(
-                f'  Showing {len(model_list)} keyless free models — use "Enter custom model name" for others.'
-            )
-    else:
-        curated = _PROVIDER_MODELS.get(provider_id, [])
-
-        # Try models.dev first — returns tool-capable models, filtered for noise
-        mdev_models: list = []
-        try:
-            from agent.models_dev import list_agentic_models
-
-            mdev_models = list_agentic_models(provider_id)
-        except Exception:
-            pass
-
-        if mdev_models:
-            # Merge models.dev with curated list so newly added models
-            # (not yet in models.dev) still appear in the picker.
-            if curated:
-                seen = {m.lower() for m in mdev_models}
-                merged = list(mdev_models)
-                for m in curated:
-                    if m.lower() not in seen:
-                        merged.append(m)
-                        seen.add(m.lower())
-                model_list = merged
-            else:
-                model_list = mdev_models
-            print(f"  Found {len(model_list)} model(s) from models.dev registry")
-        elif curated and len(curated) >= 8:
-            # Curated list is substantial — use it directly, skip live probe
             model_list = curated
-            print(
-                f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
-            )
-        else:
-            api_key_for_probe = existing_key or (
-                get_env_value(key_env) if key_env else ""
-            )
-            live_models = fetch_api_models(api_key_for_probe, effective_base)
-            if live_models and len(live_models) >= len(curated):
-                model_list = live_models
-                print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
-            else:
-                model_list = curated
-                if model_list:
-                    print(
-                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
-                    )
-            # else: no defaults either, will fall through to raw input
-
-    if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
-        model_list = [
-            normalize_opencode_model_id(provider_id, mid) for mid in model_list
-        ]
-        current_model = normalize_opencode_model_id(provider_id, current_model)
-        model_list = list(dict.fromkeys(mid for mid in model_list if mid))
+            if model_list:
+                print(
+                    f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                )
+        # else: no defaults either, will fall through to raw input
 
     if model_list:
-        # Per-model pricing, when the provider supports it (fireworks via the
-        # models.dev disk cache, novita/deepinfra via their cached /models
-        # endpoints). get_pricing_for_provider() is memoized in-process and
-        # returns {} for providers without pricing — never a blocking fetch
-        # beyond the catalog lookup that already happened above.
+        # Per-model pricing, when the provider supports it (via the models.dev
+        # disk cache or cached /models endpoints). get_pricing_for_provider()
+        # is memoized in-process and returns {} for providers without pricing
+        # — never a blocking fetch beyond the catalog lookup above.
         pricing: dict = {}
         try:
             from son_of_anton_cli.models import get_pricing_for_provider
@@ -926,12 +765,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
-            selected = normalize_opencode_model_id(provider_id, selected)
-
         _save_model_choice(selected)
 
-        # Update config with provider, base URL, and provider-specific API mode
+        # Update config with provider, base URL, and API mode
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -940,14 +776,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         clear_model_endpoint_credentials(model, clear_api_mode=False)
-        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
-            model["api_mode"] = opencode_model_api_mode(provider_id, selected)
-        else:
-            model.pop("api_mode", None)
+        model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via {pconfig.name})")
     else:
         print("No change.")
-

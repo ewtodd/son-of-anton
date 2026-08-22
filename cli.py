@@ -15964,25 +15964,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
-        # Skill sync — best-effort periodic pull, piggy-backing on the
-        # curator tick. Inert unless the access gate is open and a sync base
-        # URL is configured; swallows all errors so it never blocks startup.
-        try:
-            from tools.skills_sync_client import maybe_pull_skills
-            maybe_pull_skills()
-        except Exception:
-            pass
-
-        # Org-shared skills — pull the organisation's approved set into the
-        # read-only mirror. Gated on real org membership: resolve_org_identity
-        # requires an org role on the token, which is only issued for
-        # multi-member organisations, so a solo account never reaches the
-        # network here. Fail-quiet, exactly like the personal pull above.
-        try:
-            from tools.skills_sync_client import maybe_pull_org_skills
-            maybe_pull_org_skills()
-        except Exception:
-            pass
         _skills_for_line = self.preloaded_skills or list(
             getattr(self, "_preload_skills_requested", []) or []
         )

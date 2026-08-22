@@ -28018,23 +28018,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
-            # Skill Sync — best-effort periodic pull on the same cadence.
-            # Inert unless the access gate is open and a sync base URL is
-            # configured; never raises.
-            try:
-                from tools.skills_sync_client import maybe_pull_skills
-                maybe_pull_skills()
-            except Exception as e:
-                logger.debug("Sync pull tick error: %s", e)
-
-            # Org-shared skills. Gated on real org membership (the token must
-            # carry an org role), so a solo account never reaches the network.
-            try:
-                from tools.skills_sync_client import maybe_pull_org_skills
-                maybe_pull_org_skills()
-            except Exception as e:
-                logger.debug("Org sync pull tick error: %s", e)
-
         # Stale-session auto-archive — a live timer, so gateways that stay up
         # for weeks keep sweeping on schedule (the startup hook fires once).
         # maybe_auto_archive() is gated by sessions.min_interval_hours in
@@ -28611,13 +28594,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _lc_exc:
         logger.debug("Lifecycle ledger startup record failed: %s", _lc_exc)
 
-    try:
-        from son_of_anton_cli.nous_auth_keepalive import start_nous_auth_keepalive
-
-        start_nous_auth_keepalive()
-    except Exception as exc:
-        logger.debug("Nous auth keepalive did not start: %s", exc)
-
     _ensure_windows_gateway_venv_imports()
 
     # MCP tool discovery — run in an executor so the asyncio event loop
@@ -28770,13 +28746,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Wait for shutdown
     await runner.wait_for_shutdown()
-
-    try:
-        from son_of_anton_cli.nous_auth_keepalive import stop_nous_auth_keepalive
-
-        stop_nous_auth_keepalive()
-    except Exception:
-        pass
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:

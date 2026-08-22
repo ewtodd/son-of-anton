@@ -794,8 +794,8 @@ def lookup_models_dev_context(
     # live API returns bare names.  Without this, kimi-k2.6 misses the
     # kimi-k2.6:cloud entry and falls through to stale OpenRouter metadata
     # reporting 32768 — tripping the 64k minimum-context guard.
-    # The suffix-stripping in fetch_ollama_cloud_models() handles the
-    # model-picker UX; this handles the context-length lookup path.
+    # The picker uses the same suffix-stripping; this handles the
+    # context-length lookup path.
     for suffix in (":cloud", "-cloud"):
         suffixed_key = model + suffix
         entry = models.get(suffixed_key)

@@ -80,70 +80,7 @@ def _custom_provider_ssl_context(base_url: str):
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
-OPENROUTER_MODELS: list[tuple[str, str]] = [
-    # Anthropic
-    ("anthropic/claude-fable-5",               ""),
-    ("anthropic/claude-opus-5",                ""),
-    ("anthropic/claude-opus-5-fast",           "2x price, higher output speed"),
-    ("anthropic/claude-opus-4.8",              ""),
-    ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
-    ("anthropic/claude-sonnet-5",              ""),
-    ("anthropic/claude-haiku-4.5",             ""),
-    # OpenAI
-    ("openai/gpt-5.6-sol",                     ""),
-    ("openai/gpt-5.6-sol-pro",                 ""),
-    ("openai/gpt-5.6-terra",                   ""),
-    ("openai/gpt-5.6-terra-pro",               ""),
-    ("openai/gpt-5.6-luna",                    ""),
-    ("openai/gpt-5.6-luna-pro",                ""),
-    ("openai/gpt-5.5",                         ""),
-    ("openai/gpt-5.5-pro",                     ""),
-    ("openai/gpt-5.4-mini",                    ""),
-    # Google
-    ("google/gemini-3.1-pro-preview",          ""),
-    ("google/gemini-3.7-flash",                ""),
-    # xAI
-    ("x-ai/grok-4.6",                          ""),
-    # DeepSeek
-    ("deepseek/deepseek-v4-pro",               ""),
-    ("deepseek/deepseek-v4-pro-0813",          "dated snapshot of v4-pro"),
-    ("deepseek/deepseek-v4-flash",             ""),
-    ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
-    # Qwen
-    ("qwen/qwen3.8-max",                       ""),
-    # MoonshotAI
-    ("moonshotai/kimi-k3",                     "recommended"),
-    # MiniMax
-    ("minimax/minimax-m3",                     ""),
-    # Z-AI
-    ("z-ai/glm-5.2",                           "default"),
-    ("z-ai/glm-5.1",                           ""),
-    # Xiaomi
-    ("xiaomi/mimo-v2.5-pro",                   ""),
-    # Tencent
-    ("tencent/hy3",                            ""),
-    # StepFun
-    ("stepfun/step-3.7-flash",                 ""),
-    # NVIDIA
-    ("nvidia/nemotron-3-super-120b-a12b",      ""),
-    # Meta
-    ("meta/muse-spark-1.2",                    ""),
-    # Sakana
-    ("sakana/fugu-ultra",                      ""),
-    # OpenRouter routers
-    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
-    # Free tier
-    ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
-    ("openrouter/elephant-alpha",              "free"),
-    ("z-ai/glm-5.2:free",                      "free"),
-    ("poolside/laguna-s-2.1:free",             "free"),
-    ("poolside/laguna-xs-2.1:free",            "free"),
-    ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("nvidia/nemotron-3.5-lightning:free",     "free"),
-]
 
-_openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
 # Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
@@ -1967,95 +1904,6 @@ def clamp_reasoning_effort_to_supported(
     return _clamp_effort(effort, supported_efforts)
 
 
-def fetch_openrouter_models(
-    timeout: float = 8.0,
-    *,
-    force_refresh: bool = False,
-) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    global _openrouter_catalog_cache
-
-    if _openrouter_catalog_cache is not None and not force_refresh:
-        return list(_openrouter_catalog_cache)
-
-    # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
-    # snapshot when the manifest is unreachable. Both are curated lists that
-    # drive the picker; the OpenRouter live /v1/models filter (tool support,
-    # free pricing) is applied on top either way.
-    try:
-        from son_of_anton_cli.model_catalog import get_curated_openrouter_models
-        remote = get_curated_openrouter_models()
-    except Exception:
-        remote = None
-    fallback = list(remote) if remote else list(OPENROUTER_MODELS)
-    preferred_ids = [mid for mid, _ in fallback]
-
-    try:
-        req = urllib.request.Request(
-            _OPENROUTER_CATALOG_URL,
-            headers={"Accept": "application/json"},
-        )
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception:
-        return list(_openrouter_catalog_cache or fallback)
-
-    live_items = payload.get("data", [])
-    if not isinstance(live_items, list):
-        return list(_openrouter_catalog_cache or fallback)
-
-    live_by_id: dict[str, dict[str, Any]] = {}
-    for item in live_items:
-        if not isinstance(item, dict):
-            continue
-        mid = str(item.get("id") or "").strip()
-        if not mid:
-            continue
-        live_by_id[mid] = item
-
-    # Free warm-up for the reasoning-capability cache: this is the same payload
-    # _fetch_openrouter_reasoning_caps would fetch, so parse it once here and
-    # hot-path callers (openrouter_model_reasoning_capabilities) never need
-    # their own HTTP round-trip.
-    global _openrouter_reasoning_caps_cache
-    seeded = _seed_reasoning_caps(_OPENROUTER_CATALOG_URL, live_items)
-    if _openrouter_reasoning_caps_cache is None and seeded is not None:
-        _openrouter_reasoning_caps_cache = seeded
-
-    curated: list[tuple[str, str]] = []
-    silent_default = get_preferred_silent_default_model("openrouter")
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
-            continue
-        # Hide models that don't advertise tool-calling support — son-of-anton
-        # requires it and surfacing them leads to immediate runtime failures
-        # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
-            continue
-        if preferred_id == silent_default:
-            # Keep the silent-default badge through the live refresh so the
-            # picker shows which model Son of Anton lands on when none is selected.
-            desc = "default"
-        else:
-            desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
-
-    if not curated:
-        return list(_openrouter_catalog_cache or fallback)
-
-    first_id, first_desc = curated[0]
-    if not first_desc:
-        curated[0] = (first_id, "recommended")
-    _openrouter_catalog_cache = curated
-    return list(curated)
-
-
-def model_ids(*, force_refresh: bool = False) -> list[str]:
-    """Return just the OpenRouter model-id strings."""
-    return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
-
-
 def get_curated_nous_model_ids() -> list[str]:
     """Return the curated Nous Portal model-id list.
 
@@ -3221,10 +3069,8 @@ def curated_models_for_provider(
     is unreachable.
     """
     normalized = normalize_provider(provider)
-    if normalized == "openrouter":
-        return fetch_openrouter_models(force_refresh=force_refresh)
 
-    # Try live API first (Codex, Nous, etc. all support /models)
+    # Try live API first
     live = provider_model_ids(normalized)
     if live:
         return [(m, "") for m in live]
@@ -3440,7 +3286,6 @@ def detect_provider_for_model(
     Priority:
     0. Bare provider name → switch to that provider's default model
     1. Direct provider static catalog match
-    2. OpenRouter catalog match
     """
     name = (model_name or "").strip()
     if not name:
@@ -3451,44 +3296,6 @@ def detect_provider_for_model(
         return static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         return None
-
-    # --- Step 2: check OpenRouter catalog ---
-    # First try exact match (handles provider/model format)
-    or_slug = _find_openrouter_slug(name)
-    if or_slug:
-        if current_provider != "openrouter":
-            return ("openrouter", or_slug)
-        # Already on openrouter, just return the resolved slug
-        if or_slug != name:
-            return ("openrouter", or_slug)
-        return None  # already on openrouter with matching name
-
-    return None
-
-
-def _find_openrouter_slug(model_name: str) -> Optional[str]:
-    """Find the full OpenRouter model slug for a bare or partial model name.
-
-    Handles:
-    - Exact match: ``anthropic/claude-opus-4.6`` → as-is
-    - Bare name: ``deepseek-chat`` → ``deepseek/deepseek-chat``
-    - Bare name: ``claude-opus-4.6`` → ``anthropic/claude-opus-4.6``
-    """
-    name_lower = model_name.strip().lower()
-    if not name_lower:
-        return None
-
-    # Exact match (already has provider/ prefix)
-    for mid in model_ids():
-        if name_lower == mid.lower():
-            return mid
-
-    # Try matching just the model part (after the /)
-    for mid in model_ids():
-        if "/" in mid:
-            _, model_part = mid.split("/", 1)
-            if name_lower == model_part.lower():
-                return mid
 
     return None
 
@@ -3933,10 +3740,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         # speech, and embedding models. The tagged catalog helper is the only
         # safe source for the chat picker, including its empty/failure result.
         return _fetch_deepinfra_models(force_refresh=force_refresh) or []
-    if normalized == "ollama-cloud":
-        live = fetch_ollama_cloud_models(force_refresh=force_refresh)
-        if live:
-            return live
     if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
@@ -6082,117 +5885,6 @@ def _strip_ollama_cloud_suffix(model_id: str) -> str:
         if model_id.endswith(suffix):
             return model_id[: -len(suffix)]
     return model_id
-
-
-def _ollama_cloud_cache_path() -> Path:
-    """Return the path for the Ollama Cloud model cache."""
-    from son_of_anton_constants import get_son_of_anton_home
-    return get_son_of_anton_home() / "ollama_cloud_models_cache.json"
-
-
-def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
-    """Load cached Ollama Cloud models from disk.
-
-    Args:
-        ignore_ttl: If True, return data even if the TTL has expired (stale fallback).
-    """
-    try:
-        cache_path = _ollama_cloud_cache_path()
-        if not cache_path.exists():
-            return None
-        with open(cache_path, encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return None
-        models = data.get("models")
-        if not (isinstance(models, list) and models):
-            return None
-        if not ignore_ttl:
-            cached_at = data.get("cached_at", 0)
-            if (time.time() - cached_at) > _OLLAMA_CLOUD_CACHE_TTL:
-                return None  # stale
-        return data
-    except Exception:
-        pass
-    return None
-
-
-def _save_ollama_cloud_cache(models: list[str]) -> None:
-    """Persist the merged Ollama Cloud model list to disk."""
-    try:
-        from utils import atomic_json_write
-        cache_path = _ollama_cloud_cache_path()
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
-    except Exception:
-        pass
-
-
-def fetch_ollama_cloud_models(
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    *,
-    force_refresh: bool = False,
-) -> list[str]:
-    """Fetch Ollama Cloud models by merging live API + models.dev, with disk cache.
-
-    Resolution order:
-      1. Disk cache (if fresh, < 1 hour, and not force_refresh)
-      2. Live ``/v1/models`` endpoint (primary — freshest source)
-      3. models.dev registry (secondary — fills gaps for unlisted models)
-      4. Merge: live models first, then models.dev additions (deduped)
-
-    Returns a list of model IDs (never None — empty list on total failure).
-    """
-    # 1. Check disk cache
-    if not force_refresh:
-        cached = _load_ollama_cloud_cache()
-        if cached is not None:
-            return cached["models"]
-
-    # 2. Live API probe
-    if not api_key:
-        api_key = os.getenv("OLLAMA_API_KEY", "")
-    if not base_url:
-        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
-
-    live_models: list[str] = []
-    if api_key:
-        result = fetch_api_models(api_key, base_url, timeout=8.0)
-        if result:
-            live_models = result
-
-    # 3. models.dev registry
-    mdev_models: list[str] = []
-    try:
-        from agent.models_dev import list_agentic_models
-        mdev_models = list_agentic_models("ollama-cloud")
-    except Exception:
-        pass
-
-    # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
-    if live_models or mdev_models:
-        seen: set[str] = set()
-        merged: list[str] = []
-        for m in live_models:
-            if m and m not in seen:
-                seen.add(m)
-                merged.append(m)
-        for m in mdev_models:
-            normalized = _strip_ollama_cloud_suffix(m)
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                merged.append(normalized)
-        if merged:
-            _save_ollama_cloud_cache(merged)
-            return merged
-
-    # Total failure — return stale cache if available (ignore TTL)
-    stale = _load_ollama_cloud_cache(ignore_ttl=True)
-    if stale is not None:
-        return stale["models"]
-
-    return []
 
 
 def validate_requested_model(
