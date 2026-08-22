@@ -1,0 +1,46 @@
+name: cobalt_calibration
+problem: |
+  Calibrate a high-purity germanium detector with a 60Co source.
+
+  The digitized spectrum contains two full-energy peaks from the 60Co decay:
+  1173.2 keV and 1332.5 keV, recorded with a detector whose energy
+  calibration is unknown.
+
+  Task:
+  1. Generate a synthetic spectrum: two Gaussian peaks with centroids
+     1173.2 and 1332.5 keV, sigma 5 keV each, areas 100000 and 110000
+     counts, sitting on a flat background of 2 counts per channel, on a
+     4096-channel energy axis with 0.5 keV per channel. Save the histogram
+     (ROOT TH1D in spectrum.root if ROOT is available, otherwise a CSV
+     with energy,counts columns in spectrum.csv).
+  2. Fit both peaks (Gaussian + constant background).
+  3. Write the extracted values to RESULTS.txt, one `key = value` line each:
+     peak1_energy, peak1_sigma, peak1_area, peak2_energy, peak2_sigma,
+     peak2_area.
+  Run your analysis code, check that the fit converged, and iterate until
+  the residuals look flat. Record the final values in RESULTS.txt.
+checks:
+  - id: peak1_energy
+    key: peak1_energy
+    expected: 1173.2
+    tolerance: 2.0
+  - id: peak1_sigma
+    key: peak1_sigma
+    expected: 5.0
+    tolerance: 1.0
+  - id: peak1_area
+    key: peak1_area
+    expected: 100000.0
+    tolerance: 10000.0
+  - id: peak2_energy
+    key: peak2_energy
+    expected: 1332.5
+    tolerance: 2.0
+  - id: peak2_sigma
+    key: peak2_sigma
+    expected: 5.0
+    tolerance: 1.0
+  - id: peak2_area
+    key: peak2_area
+    expected: 110000.0
+    tolerance: 10000.0

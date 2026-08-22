@@ -1,0 +1,118 @@
+# PhysicsIntern default configuration
+# This is the single source of truth for all default values.
+# Do NOT hardcode defaults in Python — they are read from this file.
+
+model: ""
+verify_model: ""
+max_iterations: 40
+max_tokens: 8192
+critic_every_n: 4
+sympy_timeout_seconds: 60
+max_tool_rounds: 10
+progress_check_interval: 4
+computation_token_alert: 150000
+tool_output_limit: 10000
+stall_threshold: 2
+# Max consecutive non-VERIFIED verdicts on same claim before stall escalation
+stall_recompute_limit: 2
+# Max consecutive termination blocks before auto-abandoning remaining WHs
+max_termination_retries: 3
+min_er_for_completion: 3
+api_retry_max: 10
+api_retry_initial_delay: 10.0
+api_retry_max_delay: 60.0
+api_timeout: 2400.0
+
+# --- Budget hints (orchestrator context) ---
+# Iterations remaining before orchestrator injects BUDGET SYNTHESIS banner
+budget_synthesis_margin: 3
+
+# --- Orchestrator context ---
+# Number of EVIDENCE_LOG tail entries fed to orchestrator context
+orchestrator_comp_log_tail: 5
+
+# --- Prior failure enrichment ---
+# Max chars of prior failure excerpt pasted into compute task body
+prior_failure_excerpt_chars: 3000
+
+# --- Critique auto-expiry ---
+# Iterations before MEDIUM/LOW critiques auto-expire (HIGH never expire; 0 disables)
+auto_expire_iterations: 3
+
+# --- Open RQ cap ---
+# Max open research questions at a time. Forces the orchestrator to resolve
+# existing RQs (promote to WH or abandon) before creating new ones.
+max_open_rqs: 1
+
+# --- Evidence pile-up cap ---
+# Max non-refuted evidence items on an RQ before dispatch tools are blocked.
+# Forces the orchestrator to promote (add_hypothesis) or abandon the RQ.
+rq_evidence_cap: 3
+
+# --- Refuted retry cap ---
+# Max times a WH can be refuted before dispatch to it is blocked (forces abandon).
+max_refuted_retries: 2
+
+# --- One-shot parse retry ---
+# Max continuation retries for one-shot agents on missing/invalid JSON output.
+# Applies only to JSON parse failures — truncation retries are governed by
+# max_tokens_retries below.
+parse_retries: 2
+
+# --- Max-tokens continuation retry ---
+# Max continuation attempts when a response is truncated because it hit its
+# output token limit. Applied uniformly in call_llm, call_llm_continuation,
+# run_agent_loop (per round), and the one_shot / rsa runners. The helper
+# resends the visible-text portion of the truncated response as an assistant
+# turn and asks the model to continue from where it stopped.
+max_tokens_retries: 2
+
+# --- Reasoning compaction ---
+# Number of "continue" attempts when reasoning fills the entire output
+# budget without producing visible answer text ("reasoning starved").
+# Each attempt feeds the reasoning back as context and lets the model
+# keep thinking with a fresh budget. After all continue attempts are
+# exhausted, one final "force answer" attempt tells the model to stop
+# reasoning and produce its answer.  Total calls = retries + 1.
+max_compaction_retries: 2
+
+# --- Per-agent max output tokens ---
+# Override the model-level max_output_tokens for specific agents. Agents
+# not listed here use the model-level default. Useful for capping agents
+# that don't need deep reasoning (e.g. orchestrator, formatter) so they
+# fail fast instead of burning 15 min on a reasoning loop.
+agent_max_tokens:
+  orchestrator: 16384
+  formatter: 16384
+  computer: 65536
+  reviewer: 65536
+  deep_critic: 65536
+  planner: 65536
+  adjudicator: 65536
+
+# --- Pipeline retry ---
+# Max retries for mandatory pipeline stages (surveyor, planner).
+# These stages run before the main loop — if retries are exhausted,
+# the entire run aborts.
+pipeline_retry_max: 2
+
+# --- Soft-exit triggers (0 = disabled) ---
+# When any of the following gates fire, the loop finishes its current
+# iteration but does not start a new one; a forced formatter then writes
+# ANSWER.md as a best-effort answer (status: partially_complete).
+#
+# Wall-clock budget for this run() invocation, in seconds. On resume the
+# clock restarts from zero (cumulative wall-time across resumes is not
+# tracked).
+max_wall_seconds: 0
+# Cumulative output tokens across all agents for the whole workspace
+# (survives resume via MetricsTracker.load()).
+max_total_output_tokens: 0
+# Cumulative estimated cost in USD, computed from input_cost/output_cost
+# in models.yaml.
+max_cost_usd: 0.0
+
+# --- Periodic best-guess snapshot ---
+# Every N iterations, run the forced formatter and write BEST_GUESS.md
+# (separate from ANSWER.md, never read by agents). 0 = disabled.
+best_guess_every_n: 10

@@ -387,6 +387,15 @@ DEFAULT_CONFIG = {
         "researcher_model": "",
     },
 
+    # Physics modes (physics_intern): the single-agent Autophysicist loop and
+    # the nine-agent research pipeline. They share the main agent's model
+    # configuration; override the endpoint here for a dedicated server.
+    "physics": {
+        "model": "",
+        "base_url": "",
+        "api_key_env": "",
+    },
+
     "terminal": {
         "backend": "local",
         # Remote-backend graceful degradation: when a connection-class

@@ -6532,6 +6532,31 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
+def _run_physics_mode_sync(mode: str, problem_text: str) -> str:
+    """Run one physics/research mode run synchronously (worker-thread body)."""
+    from pathlib import Path as _Path
+
+    if mode == "physics":
+        from physics_intern.autophysicist.runner import run_autophysicist
+        workspace = run_autophysicist(
+            problem_text=problem_text,
+            problem_name="session",
+        )
+    else:
+        from physics_intern.engine import PhysicsIntern
+        engine = PhysicsIntern(problem_text)
+        engine.run()
+        workspace = engine.workspace.root
+
+    lines = [f"{mode} run complete. Workspace: {workspace}"]
+    for name in ("ANSWER.md", "FORMAL_EVAL.md"):
+        report = _Path(workspace) / name
+        if report.exists():
+            lines.append("")
+            lines.append(report.read_text().strip())
+    return "\n".join(lines)
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -17926,6 +17951,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         override = getattr(self, "_session_mode_overrides", {}).get(session_key)
         return resolve_mode(override, text)
 
+    async def _run_physics_mode_turn(self, event, source, session_key, mode: str):
+        """Run a physics/research mode turn and deliver the result to the chat.
+
+        The loops are synchronous and long-running; they execute in a worker
+        thread while the turn waits, then the answer and formal evaluation
+        are sent back to the source chat.
+        """
+        problem_text = (event.text or "").strip()
+        if not problem_text:
+            return None
+
+        adapter = self._adapter_for_source(source)
+        if adapter is not None:
+            try:
+                await adapter.send(
+                    str(source.chat_id),
+                    f"Starting {mode} mode run — I'll report back when it finishes.",
+                )
+            except Exception:
+                logger.debug("physics ack send failed", exc_info=True)
+
+        logger.info("physics mode=%s session=%s start", mode, session_key)
+        try:
+            result_text = await asyncio.to_thread(
+                _run_physics_mode_sync, mode, problem_text
+            )
+        except Exception as exc:  # noqa: BLE001 — deliver failure to the chat
+            logger.exception("physics mode run failed")
+            result_text = f"{mode} mode run failed: {exc}"
+
+        if adapter is not None:
+            try:
+                await adapter.send(str(source.chat_id), result_text)
+            except Exception:
+                logger.debug("physics result send failed", exc_info=True)
+        return result_text
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -18034,18 +18096,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Build session context
         context = build_session_context(source, self.config, session_entry)
 
-        # Resolve the agent mode for this turn (router classification unless
-        # the session has a /mode pin). The physics/research loops land in a
-        # later release; until then the resolved mode is recorded and the
-        # standard loop runs.
+        # Resolve the agent mode for this turn. physics/research dispatch to
+        # their own loops (the ported physics-intern modes); standard falls
+        # through to the normal agent machinery below.
         _agent_mode = self._resolve_session_agent_mode(
             session_key, event.text or ""
         )
         if _agent_mode != "standard":
-            logger.info(
-                "router: turn classified as mode=%s (session=%s)",
-                _agent_mode,
-                session_key,
+            return await self._run_physics_mode_turn(
+                event, source, session_key, _agent_mode
             )
         
         # Set session context variables for tools (task-local, concurrency-safe)

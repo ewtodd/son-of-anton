@@ -11014,6 +11014,62 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
             self._close_model_picker()
 
+    def _run_physics_mode(self, message: str) -> Optional[str]:
+        """Run the Autophysicist loop on *message* and return its answer."""
+        from pathlib import Path as _Path
+
+        problem_def = None
+        problem_text = message
+        problem_name = "session"
+
+        # If the message names a problem.yaml on disk, run that spec so the
+        # formal evaluation has numeric checks to score against.
+        _candidate = _Path(message.strip())
+        if _candidate.is_file() and _candidate.suffix in (".yaml", ".yml"):
+            import yaml as _yaml
+            with open(_candidate) as _fh:
+                _loaded = _yaml.safe_load(_fh)
+            if isinstance(_loaded, dict) and "problem" in _loaded:
+                problem_def = _loaded
+                problem_text = str(_loaded.get("problem") or message)
+                problem_name = str(_loaded.get("name") or _candidate.stem)
+
+        from physics_intern.autophysicist.runner import run_autophysicist
+        workspace = run_autophysicist(
+            problem_text=problem_text,
+            problem_def=problem_def,
+            problem_name=problem_name,
+        )
+
+        lines = [f"Physics run complete. Workspace: {workspace}"]
+        answer_path = workspace / "ANSWER.md"
+        if answer_path.exists():
+            lines.append("")
+            lines.append(answer_path.read_text().strip())
+        eval_path = workspace / "FORMAL_EVAL.md"
+        if eval_path.exists():
+            lines.append("")
+            lines.append(eval_path.read_text().strip())
+        return "\n".join(lines)
+
+    def _run_research_mode(self, message: str) -> Optional[str]:
+        """Run the nine-agent critical self-research pipeline on *message*."""
+        from physics_intern.engine import PhysicsIntern
+
+        engine = PhysicsIntern(message.strip())
+        engine.run()
+
+        lines = [f"Research run complete. Workspace: {engine.workspace.root}"]
+        answer_path = engine.workspace.root / "ANSWER.md"
+        if answer_path.exists():
+            lines.append("")
+            lines.append(answer_path.read_text().strip())
+        eval_path = engine.workspace.root / "FORMAL_EVAL.md"
+        if eval_path.exists():
+            lines.append("")
+            lines.append(eval_path.read_text().strip())
+        return "\n".join(lines)
+
     def _handle_mode_command(self, cmd_original: str) -> None:
         """Handle /mode — pin the session agent mode.
 
@@ -14915,9 +14971,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not self._ensure_runtime_credentials():
             return None
 
-        # Resolve the agent mode for this turn. The physics/research loops
-        # land in a later release; until then a classified non-standard mode
-        # prints a one-time notice and the standard loop runs.
+        # Resolve the agent mode for this turn. physics/research dispatch to
+        # their own loops (the ported physics-intern modes); standard uses the
+        # normal agent loop below.
         try:
             from son_of_anton_cli.router import resolve_mode
             _router_cfg = (self.config or {}).get("router") or {}
@@ -14925,14 +14981,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _resolved_mode = resolve_mode(
                     getattr(self, "_agent_mode", None), message
                 )
-                if _resolved_mode != "standard":
-                    print(
-                        f"(._.) Router selected {_resolved_mode!r} mode — "
-                        f"the {_resolved_mode} loop lands in a later release; "
-                        "running the standard loop."
-                    )
-        except Exception:
-            pass
+                if _resolved_mode == "physics":
+                    return self._run_physics_mode(message)
+                if _resolved_mode == "research":
+                    return self._run_research_mode(message)
+        except Exception as _mode_exc:
+            print(f"(._.) Mode dispatch failed, falling back to the standard loop: {_mode_exc}")
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:

@@ -1,0 +1,36 @@
+name: bromine_halflife
+problem: |
+  Measure the half-life of 78mBr by decay curve fitting.
+
+  A source of 78mBr (true half-life 119.2 seconds) was counted in
+  consecutive 5-second time bins. The data obey
+
+      N(t) = N0 * exp(-t / tau) + B
+
+  with N0 = 50000 counts in the first bin, tau = 172.0 seconds (the
+  half-life divided by ln(2)), and a constant background B = 200 counts
+  per bin. Poisson noise is applied per bin.
+
+  Task:
+  1. Generate the decay data for t = 0 to 600 s in 5 s bins (write it to
+     decay.csv with columns t,counts, and also to decay.root as a TGraph
+     if ROOT is available).
+  2. Fit N(t) = N0 * exp(-t / tau) + B (three free parameters).
+  3. Write to RESULTS.txt, one `key = value` line each:
+     tau_fit, halflife_s, N0_fit, B_fit
+     where halflife_s = tau_fit * ln(2).
+  Run the fit, examine the covariance matrix and chi2, and iterate if the
+  fit is poor. Record the final values in RESULTS.txt.
+checks:
+  - id: halflife
+    key: halflife_s
+    expected: 119.2
+    tolerance: 4.0
+  - id: tau
+    key: tau_fit
+    expected: 172.0
+    tolerance: 6.0
+  - id: background
+    key: B_fit
+    expected: 200.0
+    tolerance: 30.0
