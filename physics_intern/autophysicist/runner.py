@@ -30,7 +30,7 @@ import yaml  # noqa: E402
 
 def load_problem(path: Path) -> tuple[dict, str, str]:
     """Read a problem YAML file into (definition, text, answer template)."""
-    problem_def = yaml.safe_load(path.read_text())
+    problem_def = yaml.safe_load(path.read_text(encoding="utf-8"))
     problem_text = problem_def.get("problem", "")
     answer_template = problem_def.get("answer_template", "")
     return problem_def, problem_text, answer_template
@@ -237,7 +237,7 @@ def _run_formal_verification(workspace_root: Path, problem_path: Path) -> None:
         return
 
     try:
-        with open(problem_yaml) as f:
+        with open(problem_yaml, encoding="utf-8") as f:
             problem_def = yaml.safe_load(f)
     except Exception as exc:
         console.print(
@@ -356,7 +356,7 @@ def run_autophysicist(
         if problem_def is not None:
             problem_data = dict(problem_def)
             problem_data["name"] = problem_data.get("name") or problem_name
-            with open(workspace_root / "problem.yaml", "w") as f:
+            with open(workspace_root / "problem.yaml", "w", encoding="utf-8") as f:
                 yaml.dump(problem_data, f, default_flow_style=False, sort_keys=False)
         subprocess.run(
             ["git", "add", "-A"],

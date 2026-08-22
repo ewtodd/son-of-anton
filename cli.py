@@ -10831,7 +10831,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _candidate = _Path(message.strip())
         if _candidate.is_file() and _candidate.suffix in (".yaml", ".yml"):
             import yaml as _yaml
-            with open(_candidate) as _fh:
+            with open(_candidate, encoding="utf-8") as _fh:
                 _loaded = _yaml.safe_load(_fh)
             if isinstance(_loaded, dict) and "problem" in _loaded:
                 problem_def = _loaded

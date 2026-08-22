@@ -133,7 +133,7 @@ Claims use ## ER-NNN (established, verified) or ## WH-NNN (working hypothesis, p
     def append_file(self, filename: str, content: str):
         """Append content to a workspace file."""
         path = self.root / filename
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(content)
 
     def read_file_tail(self, filename: str, n_entries: int = 5) -> str:
@@ -198,7 +198,7 @@ def log_scaffold_event(
             "event": event,
             "detail": detail,
         }
-        with open(Path(workspace_dir) / "EVENT_LOG.jsonl", "a") as f:
+        with open(Path(workspace_dir) / "EVENT_LOG.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass
@@ -239,7 +239,7 @@ def log_llm_call(
             "answer_tokens": answer_tokens,
             "round": round,
         }
-        with open(Path(workspace_dir) / "EVENT_LOG.jsonl", "a") as f:
+        with open(Path(workspace_dir) / "EVENT_LOG.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass

@@ -18,7 +18,7 @@ import yaml
 def _load_package_defaults() -> dict:
     """Load defaults from the config.default.yaml shipped with the package."""
     path = Path(__file__).parent.parent / "config.default.yaml"
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not data or not isinstance(data, dict):
         raise RuntimeError(f"Failed to load package defaults from {path}")
@@ -260,7 +260,7 @@ def _resolve_model(model_key: str) -> dict | None:
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             registry = yaml.safe_load(f)
         if not registry or not isinstance(registry, dict):
             return None
@@ -299,7 +299,7 @@ def _resolve_model(model_key: str) -> dict | None:
 
 def load_config_yaml(path: Path) -> dict:
     """Load config from a YAML file, filtering to allowed fields."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not data or not isinstance(data, dict):
         return {}

@@ -37,7 +37,7 @@ class PermanentMemory:
         """Append an iteration-tagged entry. Return confirmation message."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         entry = f"\n## Iteration {iteration} — {timestamp}\n\n{content.strip()}\n"
-        with open(self._path, "a") as f:
+        with open(self._path, "a", encoding="utf-8") as f:
             f.write(entry)
         return f"Written to permanent memory (iteration {iteration}, {len(content)} chars)."
 
@@ -70,7 +70,7 @@ class Scratchpad:
         """Append an iteration-tagged entry. Return confirmation message."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         entry = f"\n## Iteration {iteration} — {timestamp}\n\n{content.strip()}\n"
-        with open(self._path, "a") as f:
+        with open(self._path, "a", encoding="utf-8") as f:
             f.write(entry)
         self._entry_count += 1
         visible = min(self._entry_count, self._window_size)

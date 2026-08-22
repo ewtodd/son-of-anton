@@ -10,6 +10,7 @@
       devShells.default = pkgs.mkShell {
         packages = [
           pkgs.uv
+          pkgs.pre-commit
           package
         ]
         ++ package.passthru.devDeps;

@@ -1,0 +1,25 @@
+# Pre-commit hooks for son-of-anton.
+#
+# Install inside the dev shell (one time):
+#   nix develop -c pre-commit install
+#
+# The hooks run the repo's existing ruff posture (PLW1514 only) and the
+# fork's small pytest contract suite. There is deliberately no CI — these
+# are local, fast gates (the suite runs in <1s).
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (PLW1514)
+        entry: ruff check
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pytest-suite
+        name: pytest fork contract suite
+        entry: scripts/run_tests.sh
+        language: system
+        pass_filenames: false
+        always_run: true

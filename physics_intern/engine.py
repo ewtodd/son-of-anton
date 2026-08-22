@@ -137,7 +137,7 @@ class PhysicsIntern:
                 f"No problem.yaml in {workspace_path} — cannot resume "
                 f"(workspace predates the resume feature?)"
             )
-        with open(problem_yaml_path) as f:
+        with open(problem_yaml_path, encoding="utf-8") as f:
             problem_def = _yaml.safe_load(f)
         problem_meta = {
             "steps": problem_def.get("steps", []),
@@ -560,7 +560,7 @@ class PhysicsIntern:
             return
 
         try:
-            with open(problem_path) as f:
+            with open(problem_path, encoding="utf-8") as f:
                 problem_def = yaml.safe_load(f)
         except Exception as exc:
             console.print(

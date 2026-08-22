@@ -644,9 +644,21 @@ scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test
 ```
 
 The suite is deliberately small — it covers the fork's load-bearing contracts (router
-classification, physics-mode imports/checks, config merge, profiles, slash-command
-registry invariants, tool registration). Tests for removed features were pruned with the
+classification, provider-catalog invariants, physics-mode imports/endpoint resolution/
+formal evaluation, config merge, profile isolation, slash-command registry invariants,
+core-tool registration, skin fallback). Tests for removed features were pruned with the
 features. Add tests when fixing a bug or adding a feature, not as snapshots of current data.
+
+### Pre-commit hooks
+
+`.pre-commit-config.yaml` wires the local gates (no CI by design — they are fast):
+
+```bash
+nix develop -c pre-commit install   # one time
+```
+
+- `ruff check` — the repo's single enabled rule (PLW1514, explicit `encoding=`)
+- `scripts/run_tests.sh` — the full contract suite (<1s)
 
 ### Don't write change-detector tests
 
