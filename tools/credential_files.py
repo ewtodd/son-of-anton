@@ -1,6 +1,6 @@
 """File passthrough registry for remote terminal backends.
 
-Remote backends (Docker, Modal, SSH) create sandboxes with no host files.
+Remote backends (e.g. SSH) create sandboxes with no host files.
 This module ensures that credential files, skill directories, and host-side
 cache directories (documents, images, audio, screenshots) are mounted or
 synced into those sandboxes so the agent can access them.
@@ -15,7 +15,7 @@ reference files the host side created (e.g. ``unzip`` an uploaded archive).
 Remote backends call :func:`get_credential_file_mounts`,
 :func:`get_skills_directory_mount` / :func:`iter_skills_files`, and
 :func:`get_cache_directory_mounts` / :func:`iter_cache_files` at sandbox
-creation time and before each command (for resync on Modal).
+creation time and before each command (for resync).
 """
 
 from __future__ import annotations
@@ -351,8 +351,7 @@ def iter_skills_files(
 
     Includes both the local skills dir and any external dirs configured via
     skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
-    that upload files individually (Daytona, Modal) rather than mounting a
-    directory.
+    that upload files individually rather than mounting a directory.
     """
     result: List[Dict[str, str]] = []
 
@@ -439,8 +438,8 @@ def get_cache_directory_mounts(
 ) -> List[Dict[str, str]]:
     """Return mount entries for each cache directory that exists on disk.
 
-    Used by Docker to create bind mounts.  Each entry has ``host_path`` and
-    ``container_path`` keys.  The host path is resolved via
+    Used by backends that bind-mount cache directories.  Each entry has
+    ``host_path`` and ``container_path`` keys.  The host path is resolved via
     ``get_son_of_anton_dir()`` for backward compatibility with old directory layouts.
     """
     from son_of_anton_constants import get_son_of_anton_dir
@@ -449,11 +448,10 @@ def get_cache_directory_mounts(
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_son_of_anton_dir(new_subpath, old_name)
         if not host_dir.is_dir():
-            # Create missing staging dirs instead of skipping them: Docker
-            # snapshots this mount list at container CREATION, so a dir that
-            # appears later (first desktop attachment, first clipboard image)
-            # would dangle for the whole life of a persistent container
-            # (#76577). An empty bind-mounted dir costs nothing; a missing
+            # Create missing staging dirs instead of skipping them: a
+            # directory that appears later (first desktop attachment, first
+            # clipboard image) would otherwise dangle at sync time
+            # (#76577). An empty mounted dir costs nothing; a missing
             # mount costs the feature. get_son_of_anton_dir() already resolved
             # new-vs-legacy layout, so creating its answer cannot shadow a
             # populated legacy dir.
@@ -478,8 +476,8 @@ def map_cache_path_to_container(
 
     Returns the POSIX container path when *host_path* lives under one of the
     auto-mounted cache directories, otherwise ``None``.  Backend-agnostic: the
-    caller decides which ``container_base`` applies (Docker ``/root/.son-of-anton``,
-    SSH ``<remote_home>/.son-of-anton``, etc.) and whether translation is wanted.
+    caller decides which ``container_base`` applies (SSH ``<remote_home>/.son-of-anton``,
+    etc.) and whether translation is wanted.
     Always joins with ``posixpath`` because container/remote paths are POSIX
     regardless of the host OS.
     """
@@ -498,23 +496,13 @@ def from_agent_visible_cache_path(
     container_path: str,
     container_base: str = "/root/.son-of-anton",
 ) -> str:
-    """Translate a sandbox/container cache path back to its host path.
+    """Translate a sandbox/remote cache path back to its host path.
 
-    Inverse of :func:`to_agent_visible_cache_path`. Returns the input unchanged
-    when the active backend is not Docker, or when the path is not under any
-    auto-mounted cache directory — the caller then treats a still-container
-    path as "no host file" and falls back to an in-container read.
+    Inverse of :func:`to_agent_visible_cache_path`. Returns the input
+    unchanged — local and SSH backends have no container-side cache mirror,
+    so there is nothing to translate; the caller then treats a still-remote
+    path as "no host file" and falls back to an in-sandbox read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
-        return container_path
-
-    path = Path(container_path)
-    for mount in get_cache_directory_mounts(container_base=container_base):
-        try:
-            rel = path.relative_to(mount["container_path"])
-        except ValueError:
-            continue
-        return str(Path(mount["host_path"]) / rel)
     return container_path
 
 
@@ -532,27 +520,18 @@ def to_agent_visible_cache_path(
     tools/image_generation_tool.py, the proven heuristics for where each
     backend's Son of Anton cache lands):
 
-    * docker / modal — bind-mounted (docker) or per-file-synced (modal) at
-      ``/root/.son-of-anton`` (the *container_base* default).
-    * ssh / daytona / vercel_sandbox — file-synced under the remote user's
-      home; ``~/.son-of-anton`` is shell-expanded by the remote shell, so tool
-      commands resolve it regardless of the actual remote home. Previously
-      these backends synced the bytes but still rendered the dangling host
-      path (#76577 gap).
-    * singularity — NOT translated: Apptainer auto-binds the host home, so
-      the host path is directly readable and translation would dangle
-      (cache dirs are not remapped into that sandbox).
+    * ssh — file-synced under the remote user's home; ``~/.son-of-anton`` is
+      shell-expanded by the remote shell, so tool commands resolve it
+      regardless of the actual remote home.
 
     Backend is identified by TERMINAL_ENV (same env var
     tools/terminal_tool.py reads in _get_environment_config).
     """
     backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
-    if backend in ("docker", "modal"):
-        pass  # /root/.son-of-anton default
-    elif backend in ("ssh", "daytona", "vercel_sandbox"):
+    if backend == "ssh":
         container_base = "~/.son-of-anton"
     else:
-        return host_path  # local, singularity, unknown: host path is correct
+        return host_path  # local / unknown: host path is correct
 
     mapped = map_cache_path_to_container(host_path, container_base=container_base)
     return mapped if mapped is not None else host_path
@@ -563,8 +542,9 @@ def iter_cache_files(
 ) -> List[Dict[str, str]]:
     """Return individual (host_path, container_path) entries for cache files.
 
-    Used by Modal to upload files individually and resync before each command.
-    Skips symlinks.  The container paths use the new ``cache/<subdir>`` layout.
+    Used by backends that upload files individually and resync before each
+    command.  Skips symlinks.  The container paths use the new ``cache/<subdir>``
+    layout.
     """
     from son_of_anton_constants import get_son_of_anton_dir
 

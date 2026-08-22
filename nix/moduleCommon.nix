@@ -492,68 +492,7 @@ let
       restartSec = mkOption {
         type = types.int;
         default = 5;
-        description = "The systemd RestartSec= value. Darwin does not use this option.";
-      };
-
-      # ── The backend: `son-of-anton serve` or `son-of-anton dashboard` ──────────────
-      # `son-of-anton serve` and `son-of-anton dashboard` are the same entry point,
-      # son_of_anton_cli.main:cmd_dashboard, with one flag of difference. serve runs
-      # without a user interface. dashboard also serves the web application.
-      # Both give the /api/ws and /api/pty sockets that Son of Anton Desktop
-      # connects to. They are one process, and you can run only one of them.
-      # Thus this option is an enum and not two booleans.
-      #
-      # The backend does not run the messaging gateway. web_server.py only
-      # controls an external gateway, with `son-of-anton gateway restart`. It does
-      # not contain a gateway.
-      backend = {
-        mode = mkOption {
-          type = types.enum [
-            "none"
-            "serve"
-            "dashboard"
-          ];
-          default = "none";
-          description = ''
-            The backend process to run with the messaging gateway.
-
-            - "none"      — no backend
-            - "serve"     — the backend without a user interface. It gives
-                            the /api/ws and /api/pty sockets that Son of Anton
-                            Desktop connects to.
-            - "dashboard" — all that "serve" gives, and the browser admin
-                            panel on the same port
-
-            "dashboard" contains all of "serve".
-          '';
-        };
-
-        host = mkOption {
-          type = types.str;
-          default = "127.0.0.1";
-          description = ''
-            The address that the backend binds to.
-
-            An address other than loopback starts the authentication gate of
-            the dashboard. You must then configure credentials, or a client
-            cannot connect. The server also refuses each request with a Host
-            header that is different from the address that the server bound
-            to. This is a defence against DNS rebinding. Bind to the name or
-            the address that your clients use.
-          '';
-        };
-
-        port = mkOption {
-          type = types.port;
-          default = 9119;
-          description = "The port for the backend.";
-        };
-
-        extraArgs = mkOption {
-          type = types.listOf types.str;
-          default = [ ];
-          description = "More command-line arguments for the backend command.";
-        };
+        description = "The systemd RestartSec= value.";
       };
     };
 
@@ -783,27 +722,6 @@ let
     ]
     ++ cfg.extraArgs;
 
-  backendArgv =
-    cfg:
-    [
-      "${effectivePackage cfg}/bin/son-of-anton"
-      cfg.backend.mode
-      "--host"
-      cfg.backend.host
-      "--port"
-      (toString cfg.backend.port)
-      # CAUTION: A service must not try to open a browser when it starts.
-      "--no-open"
-    ]
-    ++ cfg.backend.extraArgs;
-
-  backendDescription =
-    cfg:
-    if cfg.backend.mode == "dashboard" then
-      "Son of Anton Agent web dashboard and desktop backend"
-    else
-      "Son of Anton Agent backend for Son of Anton Desktop";
-
   # The environment that each Son of Anton process needs, from either module.
   #
   # managedSystem gives the value of SON_OF_ANTON_MANAGED. The CLI reads that
@@ -895,8 +813,6 @@ let
 in
 {
   inherit
-    backendArgv
-    backendDescription
     deepConfigType
     effectivePackage
     gatewayArgv

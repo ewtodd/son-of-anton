@@ -204,7 +204,7 @@ DEFAULT_CONFIG = {
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP
         # 668 enforcement without uv).  Costs zero tokens when the env is
         # clean (probe emits nothing).  Skipped for remote terminal backends
-        # (docker/modal/ssh — they have their own probe).  Set False to
+        # (ssh — it has its own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless a
@@ -389,10 +389,9 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
-        "modal_mode": "auto",
         # Remote-backend graceful degradation: when a connection-class
-        # infrastructure failure occurs (SSH host unreachable, Docker daemon
-        # down), "warn" (default) returns a structured degraded tool result
+        # infrastructure failure occurs (SSH host unreachable), "warn"
+        # (default) returns a structured degraded tool result
         # with a reason + retry hint so the model can act on it; "fail"
         # preserves the historical error + traceback behavior.
         "degraded_mode": "warn",
@@ -449,56 +448,6 @@ DEFAULT_CONFIG = {
         # this off if your rc files misbehave when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "docker_forward_env": [],
-        # Explicit environment variables to set inside Docker containers.
-        # Unlike docker_forward_env (which reads values from the host process),
-        # docker_env lets you specify exact key-value pairs — useful when Son of Anton
-        # runs as a systemd service without access to the user's shell environment.
-        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
-        "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Vercel Sandbox runtime (vercel_sandbox backend only).
-        # Supported: node24, node22, python3.13.
-        "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
-        "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
-        # Docker volume mounts — share host directories with the container.
-        # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example:
-        # ["/home/user/projects:/workspace/projects",
-        #  "/home/user/.son-of-anton/cache/documents:/output"]
-        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
-        # the host-visible path in MEDIA:, not the container path.
-        "docker_volumes": [],
-        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
-        # Default off because passing host directories into a sandbox weakens isolation.
-        "docker_mount_cwd_to_workspace": False,
-        # Opt-in egress lockdown for Docker terminal sessions. When false,
-        # Docker runs with --network=none so commands cannot reach the network.
-        "docker_network": True,
-        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
-        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently
-        # breaks Chromium/Playwright and PyTorch DataLoader workers; tmpfs is
-        # lazily allocated so the higher ceiling costs nothing until used.
-        # Set to "" (or "0") to omit the flag and use Docker's default.
-        "docker_shm_size": "1g",
-        # Explicit opt-in: run the Docker container as the host user's uid:gid
-        # (via `--user`).  When enabled, files written into bind-mounted dirs
-        # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
-        # are owned by your host user instead of root, which avoids needing
-        # `sudo chown` after container runs. Default off to preserve behavior
-        # for images whose entrypoints expect to start as root (e.g. the
-        # bundled Son of Anton image, which drops to the `son-of-anton` user via
-        # s6-setuidgid inside each supervised service).
-        # When on, SETUID/SETGID caps are omitted from the container since
-        # no privilege drop is needed.
-        "docker_run_as_host_user": False,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in
@@ -2785,8 +2734,8 @@ DEFAULT_CONFIG = {
     # =========================================================================
     # Egress credential-injection proxy (iron-proxy)
     # =========================================================================
-    # When enabled, outbound traffic from remote terminal sandboxes (Docker
-    # today; Modal/SSH in follow-ups) is routed through a managed iron-proxy
+    # When enabled, outbound traffic from remote terminal sandboxes (SSH)
+    # is routed through a managed iron-proxy
     # subprocess.  The sandbox sees opaque proxy tokens; iron-proxy swaps in
     # real API credentials at the egress boundary.  Compromising the sandbox
     # leaks tokens that only work behind the configured trusted proxy boundary
@@ -2795,7 +2744,7 @@ DEFAULT_CONFIG = {
     # Configure with `son-of-anton egress setup`.  Disabled by default — the rest of
     # Son of Anton works exactly as before with `enabled: false`.
     "proxy": {
-        # Master switch.  When false, iron-proxy is never started, no docker
+        # Master switch.  When false, iron-proxy is never started, no sandbox
         # mounts are added, no binaries are auto-installed — feature is a
         # complete no-op.
         "enabled": False,
@@ -2812,9 +2761,9 @@ DEFAULT_CONFIG = {
         #                rotation in the Bitwarden web app propagates without
         #                touching .env (requires `secrets.bitwarden.enabled`).
         "credential_source": "env",
-        # When true, the Docker backend refuses to start a sandbox if the
-        # proxy is enabled but not running.  False = fall back to direct
-        # outbound with real credentials in the sandbox (the legacy posture).
+        # When true, a sandbox refuses to start if the proxy is enabled but
+        # not running.  False = fall back to direct outbound with real
+        # credentials in the sandbox (the legacy posture).
         "enforce_on_docker": True,
         # NOTE: ``fail_on_uncovered_providers`` was removed.  It gated a
         # refuse-start when Anthropic / Azure OpenAI / Gemini env vars were

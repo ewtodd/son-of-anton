@@ -439,10 +439,7 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # box off.
 #
 # Hardline only applies to environments that can actually damage the host
-# (local, ssh, container-host cron).  Containerized backends (docker,
-# singularity, modal, daytona) already bypass the dangerous-command layer
-# because nothing they do can touch the host, so we leave that behavior
-# alone.
+# (local, ssh, container-host cron).
 #
 # The list is deliberately tiny — only things with no recovery path:
 # filesystem destruction rooted at /, raw block device overwrites, kernel
@@ -3714,20 +3711,6 @@ def _run_approval_gate(
     return {"approved": True, "message": None}
 
 
-def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
-    """Return True when the backend is isolated enough to skip dangerous-command prompts.
-
-    Isolated container backends sandbox the agent away from the host, so their
-    commands can't damage real files/services and we skip the approval layer.
-    Docker is the exception once host paths are bind-mounted into the container:
-    at that point a command like ``rm -rf /workspace`` reaches host files, so it
-    must go through the normal approval flow.
-    """
-    if env_type == "docker":
-        return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
-
-
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -3738,17 +3721,14 @@ def check_dangerous_command(command: str, env_type: str,
 
     Args:
         command: The shell command to check.
-        env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
+        env_type: Terminal backend type ('local', 'ssh', etc.).
         approval_callback: Optional CLI callback for interactive prompts.
-        has_host_access: True when a Docker sandbox bind-mounts host paths,
-            so its commands can reach the host and must not skip approval.
+        has_host_access: Accepted for compatibility with legacy callers;
+            container backends were removed, so it is always False.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
-
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
     # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
     # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
@@ -4363,15 +4343,9 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
 
-    ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
-    such a session is no longer isolated, so it goes through the normal flow
-    instead of the container fast-path.
+    ``has_host_access`` is accepted for compatibility with legacy callers;
+    container backends were removed, so it is always False.
     """
-    # Skip isolated container backends for both checks. Docker stops skipping
-    # once host paths are bind-mounted into the sandbox.
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
-
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
     # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
@@ -5041,15 +5015,8 @@ def check_execute_code_guard(code: str, env_type: str,
         "approval is one-shot for this run."
     )
 
-    # Isolated backends already sandbox the child — matches the container skip
-    # in check_all_command_guards / check_dangerous_command. Docker stops
-    # skipping once host paths are bind-mounted into the sandbox; vercel_sandbox
-    # has no host-bind concept so it stays always-skipped.
-    if env_type == "vercel_sandbox":
-        return {"approved": True, "message": None}
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
-
+    # All terminal backends run the script with the same approval surface as
+    # a terminal() command, so no backend-specific skip applies here.
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":

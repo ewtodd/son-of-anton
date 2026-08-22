@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox).
+across all terminal backends (local, ssh).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -881,7 +881,7 @@ class ShellFileOperations(FileOperations):
     File operations implemented via shell commands.
     
     Works with ANY terminal backend that has execute(command, cwd) method.
-    This includes local, docker, singularity, ssh, modal, and daytona environments.
+    This includes local and ssh environments.
     """
     
     def __init__(self, terminal_env, cwd: str = None):
@@ -911,7 +911,7 @@ class ShellFileOperations(FileOperations):
         self.env = terminal_env
         # Determine cwd from various possible sources.
         # IMPORTANT: do NOT fall back to os.getcwd() -- that's the HOST's local
-        # path which doesn't exist inside container/cloud backends (modal, docker).
+        # path which doesn't exist on a remote backend.
         # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
@@ -1846,7 +1846,7 @@ class ShellFileOperations(FileOperations):
         """Cross-platform delete that handles files and (with recursive=True)
         directory trees. Always preferred over emitting ``rm -rf`` /
         ``Remove-Item -Recurse`` directly so the same tool call works on
-        every backend (local / docker / ssh / Windows).
+        every backend (local / ssh / Windows).
         """
         return self._python_delete(path, recursive=recursive)
 
@@ -1872,7 +1872,7 @@ class ShellFileOperations(FileOperations):
             "            print('is a directory: ' + str(p), file=sys.stderr); sys.exit(2)\n"
             "    else:\n"
             # NOTE: avoid ``unlink(missing_ok=True)`` — that kwarg lands in
-            # Python 3.8 and the remote interpreter (docker/ssh) may still
+            # Python 3.8 and the remote interpreter (ssh) may still
             # be 3.7 on older distros. The FileNotFoundError handler below
             # covers the same case and works back to 3.4.
             "        p.unlink()\n"
@@ -2566,10 +2566,9 @@ class ShellFileOperations(FileOperations):
         """Return True iff this FileOperations is wired to a local backend.
 
         LSP servers run on the host process — they need access to the
-        files they're linting.  Remote/sandboxed backends (Docker,
-        Modal, SSH, Daytona) keep files inside the sandbox where the
-        host-side LSP server can't reach them, so we skip the LSP
-        path for those entirely.
+        files they're linting.  Remote backends (e.g. SSH) keep files on the
+        remote host where the host-side LSP server can't reach them, so we
+        skip the LSP path for those entirely.
         """
         env = getattr(self, "env", None)
         if env is None:
@@ -2673,8 +2672,8 @@ class ShellFileOperations(FileOperations):
         Best-effort.  Silent on every failure path — LSP is an
         enrichment layer and must never break a write.
 
-        Skipped entirely on non-local backends (Docker, Modal, SSH,
-        etc.) — the server can't see files inside the sandbox.
+        Skipped entirely on non-local backends (SSH,
+        etc.) — the server can't see files on the remote host.
         """
         if not self._lsp_local_only():
             return
@@ -2714,7 +2713,7 @@ class ShellFileOperations(FileOperations):
         — the calling tier already returned a clean syntax result, so
         ``""`` here just means "no extra info to add".
 
-        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        Skipped entirely on non-local backends (SSH,
         etc.) — same reasoning as ``_snapshot_lsp_baseline``.
         """
         if not self._lsp_local_only():

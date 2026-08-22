@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 import shutil
-import importlib.util
 from pathlib import Path
 
 from son_of_anton_cli.config import (
@@ -33,7 +32,6 @@ load_son_of_anton_dotenv(son_of_anton_home=_env_path.parent, project_env=PROJECT
 
 from son_of_anton_cli.colors import Colors, color
 from son_of_anton_cli.models import _SON_OF_ANTON_USER_AGENT
-from son_of_anton_cli.vercel_auth import describe_vercel_auth
 from son_of_anton_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -934,7 +932,6 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
-        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         # OpenCode Go has no shared /models endpoint; skip the health check.
@@ -950,7 +947,7 @@ def _build_apikey_providers_list() -> list:
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
-        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
+        "MiniMax (China)": "minimax-cn",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
     }
@@ -2069,7 +2066,7 @@ def run_doctor(args):
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
-    # Docker (optional)
+    # Docker (optional external tool)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
         from son_of_anton_constants import is_container as _is_container
@@ -2078,41 +2075,17 @@ def run_doctor(args):
         running_in_container = False
 
     if running_in_container:
-        # Inside our container the Docker terminal backend is not
-        # configured by default (Docker-in-Docker isn't set up); the
-        # local backend is the intended one. Skip the noisy "docker
-        # not found" warning. If the user has explicitly chosen
-        # TERMINAL_ENV=docker inside the container they likely mounted
-        # /var/run/docker.sock, so fall through to the normal check.
-        if terminal_env != "docker":
-            check_info(
-                "Running inside a container — using local terminal backend "
-                "(docker-in-docker is not configured by default)"
-            )
-            # Skip to next section; Docker isn't relevant here.
-            terminal_env = "local"
-    if terminal_env == "docker":
-        if _safe_which("docker"):
-            # Check if docker daemon is running
-            try:
-                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
-            except subprocess.TimeoutExpired:
-                result = None
-            if result is not None and result.returncode == 0:
-                check_ok("docker", "(daemon running)")
-            else:
-                _fail_and_issue("docker daemon not running", "", "Start Docker daemon", issues)
-        else:
-            _fail_and_issue(
-                "docker not found",
-                "(required for TERMINAL_ENV=docker)",
-                "Install Docker or change TERMINAL_ENV",
-                issues,
-            )
-    elif _safe_which("docker"):
+        # Inside our container the terminal tool runs against the local
+        # filesystem (Docker-in-Docker isn't configured by default); skip
+        # the noisy "docker not found" warning.
+        check_info(
+            "Running inside a container — using local terminal backend"
+        )
+        terminal_env = "local"
+    if _safe_which("docker"):
         check_ok("docker", "(optional)")
     elif _is_termux():
-        check_info("Docker backend is not available inside Termux (expected on Android)")
+        check_info("docker is not available inside Termux (expected on Android)")
     elif running_in_container:
         pass  # already explained above
     else:
@@ -2153,91 +2126,6 @@ def run_doctor(args):
                 "Set TERMINAL_SSH_HOST in .env",
                 issues,
             )
-    
-    # Daytona (if using daytona backend)
-    if terminal_env == "daytona":
-        daytona_key = os.getenv("DAYTONA_API_KEY")
-        if daytona_key:
-            check_ok("Daytona API key", "(configured)")
-        else:
-            _fail_and_issue(
-                "DAYTONA_API_KEY not set",
-                "(required for TERMINAL_ENV=daytona)",
-                "Set DAYTONA_API_KEY environment variable",
-                issues,
-            )
-        try:
-            from daytona import Daytona  # noqa: F401 — SDK presence check
-            check_ok("daytona SDK", "(installed)")
-        except ImportError:
-            _fail_and_issue(
-                "daytona SDK not installed",
-                "(pip install daytona)",
-                "Install daytona SDK: pip install daytona",
-                issues,
-            )
-
-    # Vercel Sandbox (if using vercel_sandbox backend)
-    if terminal_env == "vercel_sandbox":
-        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
-        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
-        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
-            check_ok("Vercel runtime", f"({runtime})")
-        else:
-            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-            _fail_and_issue(
-                "Vercel runtime unsupported",
-                f"({runtime}; use {supported})",
-                f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}",
-                issues,
-            )
-
-        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in {"", "0", "51200"}:
-            check_ok("Vercel disk setting", "(uses platform default)")
-        else:
-            _fail_and_issue(
-                "Vercel custom disk unsupported",
-                "(reset terminal.container_disk to 51200)",
-                "Vercel Sandbox does not support custom container_disk; use the shared default 51200",
-                issues,
-            )
-
-        if importlib.util.find_spec("vercel") is not None:
-            check_ok("vercel SDK", "(installed)")
-        else:
-            _fail_and_issue(
-                "vercel SDK not installed",
-                "(pip install 'son-of-anton[vercel]')",
-                "Install the Vercel optional dependency: pip install 'son-of-anton[vercel]'",
-                issues,
-            )
-
-        auth_status = describe_vercel_auth()
-        if auth_status.ok:
-            check_ok("Vercel auth", f"({auth_status.label})")
-        elif auth_status.label.startswith("partial"):
-            _fail_and_issue(
-                "Vercel auth incomplete",
-                f"({auth_status.label})",
-                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together",
-                issues,
-            )
-        else:
-            _fail_and_issue(
-                "Vercel auth not configured",
-                f"({auth_status.label})",
-                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID",
-                issues,
-            )
-        for line in auth_status.detail_lines:
-            check_info(f"Vercel auth {line}")
-
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
-        if persistent:
-            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
-        else:
-            check_info("Vercel persistence: ephemeral filesystem")
 
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):

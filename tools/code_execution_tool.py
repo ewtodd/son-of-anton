@@ -16,7 +16,7 @@ Architecture (two transports):
   **Remote backends (file-based RPC):**
   1. Parent generates `son_of_anton_tools.py` with file-based RPC stubs
   2. Parent ships both files to the remote environment
-  3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/etc.)
+  3. Script runs inside the terminal backend (SSH/local)
   4. Tool calls are written as request files; a polling thread on the parent
      reads them via env.execute(), dispatches, and writes response files
   5. The script polls for response files and continues
@@ -306,7 +306,6 @@ def check_sandbox_requirements() -> bool:
 
     try:
         from tools.terminal_tool import (
-            _check_vercel_sandbox_requirements,
             _get_env_config,
         )
 
@@ -314,9 +313,6 @@ def check_sandbox_requirements() -> bool:
     except Exception:
         logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
         return False
-
-    if config.get("env_type") == "vercel_sandbox":
-        return _check_vercel_sandbox_requirements(config)
 
     return True
 
@@ -792,7 +788,7 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id, _resolve_task_host_cwd,
+        _resolve_container_task_id,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -819,31 +815,9 @@ def _get_or_create_env(task_id: str):
         env_type = config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
 
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
+        image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
-
-        container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "vercel_runtime": config.get("vercel_runtime", ""),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_network": config.get("docker_network", True),
-            }
 
         ssh_config = None
         if env_type == "ssh":
@@ -869,10 +843,10 @@ def _get_or_create_env(task_id: str):
             cwd=cwd,
             timeout=config["timeout"],
             ssh_config=ssh_config,
-            container_config=container_config,
+            container_config=None,
             local_config=local_config,
             task_id=effective_task_id,
-            host_cwd=_resolve_task_host_cwd(config, task_id),
+            host_cwd=None,
         )
 
         with _env_lock:
@@ -889,7 +863,7 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     """Write *content* to *remote_path* on the remote environment.
 
     Uses ``echo … | base64 -d`` rather than stdin piping because some
-    backends (Modal) don't reliably deliver stdin_data to chained
+    backends don't reliably deliver stdin_data to chained
     commands.  Base64 output is shell-safe ([A-Za-z0-9+/=]) so single
     quotes are fine.
     """
@@ -1037,7 +1011,7 @@ def _rpc_poll_loop(
                     })
 
                 # Write response atomically (tmp + rename).
-                # Use echo piping (not stdin_data) because Modal doesn't
+                # Use echo piping (not stdin_data) because some backends don't
                 # reliably deliver stdin to chained commands.
                 encoded_result = base64.b64encode(
                     tool_result.encode("utf-8")
@@ -1287,7 +1261,7 @@ def execute_code(
         )
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    from tools.terminal_tool import _get_env_config
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]
 
@@ -1295,12 +1269,9 @@ def execute_code(
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
     # here before either dispatch path spawns it. Runs synchronously in the
     # caller (tool-executor) thread, which holds the session context (#30882).
-    # A Docker sandbox with host bind mounts is no longer isolated, so its
-    # script does not get the container fast-path.
     from tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(
         code, env_type,
-        has_host_access=_docker_has_host_access(_env_config),
     )
     if not _guard.get("approved", False):
         return json.dumps({

@@ -1,9 +1,11 @@
 # nix/homeManagerModules.nix — the Home Manager module for son-of-anton
 #
-# This module is the user-level equivalent of nixosModules.default. Son of Anton is
-# an agent for one person. The credentials, the memory, the sessions and the
-# cron jobs all belong to that person. Thus a user-level module is correct on
-# each distribution, and not only on NixOS.
+# This module is the user-level equivalent of nixosModules.default. Son of
+# Anton is an agent for one person. The credentials, the memory, the sessions
+# and the cron jobs all belong to that person. Thus a user-level module is
+# correct on each distribution, and not only on NixOS. It is also the natural
+# fit for per-account isolation: each account (work/play) runs its own
+# gateway under its own systemd user service with its own SON_OF_ANTON_HOME.
 #
 # `services.son-of-anton` is the same option set on both modules. All of the
 # options except the system-level ones come from nix/moduleCommon.nix, so an
@@ -11,11 +13,9 @@
 # necessary parts are different:
 #
 #   removed   user, group, createUser  — Home Manager runs as the user
-#   removed   container.*              — it needs root and the Docker socket
 #   removed   UMask 0007               — that mode shares state with a UNIX
 #                                        group, but this state has one user
-#   changed   systemd.services         -> systemd.user.services or
-#                                        launchd.agents
+#   changed   systemd.services         -> systemd.user.services
 #   changed   system.activationScripts -> home.activation
 #   changed   addToSystemPackages      -> installPackage and
 #                                        home.sessionVariables
@@ -26,7 +26,7 @@
 #   services.son-of-anton = {
 #     enable = true;
 #     gateway.enable = true;
-#     settings.model.default = "anthropic/claude-sonnet-4";
+#     settings.model.default = "...";
 #     environmentFiles = [ config.sops.secrets."son-of-anton/env".path ];
 #   };
 #
@@ -53,8 +53,6 @@
       effectivePackage = common.effectivePackage cfg;
       son-of-anton = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-      inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
-
       processEnvironment = common.processEnvironment {
         inherit (cfg) son-of-antonHome;
         # The CLI reads this value and names it when it refuses a
@@ -63,7 +61,6 @@
       };
       unitPath = lib.makeBinPath (common.processPath { inherit pkgs cfg; });
 
-      # The systemd unit that the gateway and the backend both start from.
       mkUnit =
         {
           description,
@@ -92,33 +89,6 @@
             UMask = "0077";
             NoNewPrivileges = true;
             PrivateTmp = true;
-          };
-        };
-
-      mkAgent =
-        { argv, logName }:
-        {
-          enable = true;
-          config = {
-            Label = "org.nix-community.home.${logName}";
-            ProgramArguments = argv;
-            EnvironmentVariables = processEnvironment // {
-              PATH = "${unitPath}:/usr/bin:/bin:/usr/sbin:/sbin";
-            };
-            WorkingDirectory = cfg.workingDirectory;
-            RunAtLoad = true;
-            KeepAlive =
-              if cfg.restart == "always" then
-                true
-              else
-                {
-                  SuccessfulExit = false;
-                  Crashed = true;
-                };
-            ThrottleInterval = cfg.restartSec;
-            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/${logName}.log";
-            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/${logName}.err.log";
-            ProcessType = "Background";
           };
         };
 
@@ -165,7 +135,7 @@
             '';
           };
 
-          gateway.enable = lib.mkEnableOption "the messaging gateway service (Telegram, Discord, Slack, ...)";
+          gateway.enable = lib.mkEnableOption "the messaging gateway service (Discord, Slack, Signal)";
         };
 
       config = lib.mkIf cfg.enable (
@@ -226,33 +196,11 @@
                 );
           }
 
-          # ── Linux: systemd user services ───────────────────────────────
-          (lib.mkIf (isLinux && cfg.gateway.enable) {
+          # ── Linux: systemd user service ────────────────────────────────
+          (lib.mkIf cfg.gateway.enable {
             systemd.user.services.son-of-anton = mkUnit {
               description = "Son of Anton Agent Gateway";
               argv = common.gatewayArgv cfg;
-            };
-          })
-
-          (lib.mkIf (isLinux && cfg.backend.mode != "none") {
-            systemd.user.services.son-of-anton-backend = mkUnit {
-              description = common.backendDescription cfg;
-              argv = common.backendArgv cfg;
-            };
-          })
-
-          # ── Darwin: launchd agents ─────────────────────────────────────
-          (lib.mkIf (isDarwin && cfg.gateway.enable) {
-            launchd.agents.son-of-anton = mkAgent {
-              argv = common.gatewayArgv cfg;
-              logName = "son-of-anton";
-            };
-          })
-
-          (lib.mkIf (isDarwin && cfg.backend.mode != "none") {
-            launchd.agents.son-of-anton-backend = mkAgent {
-              argv = common.backendArgv cfg;
-              logName = "son-of-anton-backend";
             };
           })
         ]

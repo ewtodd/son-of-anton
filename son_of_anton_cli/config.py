@@ -953,7 +953,6 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
-    11: ["TERMINAL_MODAL_MODE"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -3442,34 +3441,14 @@ def write_platform_config_field(
 
 TERMINAL_CONFIG_ENV_MAP = {
     "backend": "TERMINAL_ENV",
-    "modal_mode": "TERMINAL_MODAL_MODE",
     "degraded_mode": "TERMINAL_DEGRADED_MODE",
     "cwd": "TERMINAL_CWD",
     "timeout": "TERMINAL_TIMEOUT",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-    "docker_image": "TERMINAL_DOCKER_IMAGE",
-    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-    "modal_image": "TERMINAL_MODAL_IMAGE",
-    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
     "ssh_key": "TERMINAL_SSH_KEY",
-    "container_cpu": "TERMINAL_CONTAINER_CPU",
-    "container_memory": "TERMINAL_CONTAINER_MEMORY",
-    "container_disk": "TERMINAL_CONTAINER_DISK",
-    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-    "docker_env": "TERMINAL_DOCKER_ENV",
-    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-    "docker_network": "TERMINAL_DOCKER_NETWORK",
-    "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-    "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
-    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-    "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-    "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
 }
@@ -4651,22 +4630,7 @@ def show_config():
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
     
-    if terminal.get('backend') == 'docker':
-        print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
-    elif terminal.get('backend') == 'singularity':
-        print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
-    elif terminal.get('backend') == 'modal':
-        print(f"  Modal image:  {terminal.get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
-        modal_token = get_env_value('MODAL_TOKEN_ID')
-        print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
-    elif terminal.get('backend') == 'daytona':
-        print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
-        daytona_key = get_env_value('DAYTONA_API_KEY')
-        print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
-    elif terminal.get('backend') == 'vercel_sandbox':
-        print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
-        print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
-    elif terminal.get('backend') == 'ssh':
+    if terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
@@ -5726,7 +5690,7 @@ def config_command(args):
             print()
             print("Examples:")
             print("  son-of-anton config set model anthropic/claude-sonnet-4")
-            print("  son-of-anton config set terminal.backend docker")
+            print("  son-of-anton config set terminal.backend ssh")
             print("  son-of-anton config set OPENROUTER_API_KEY sk-or-...")
             print()
             print("  --force: skip the unknown-key notice for unrecognized keys,")

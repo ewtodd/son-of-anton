@@ -169,7 +169,6 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
@@ -194,14 +193,6 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
                 return "local"
             if "ssh" in name:
                 return "ssh"
-            if "docker" in name:
-                return "docker"
-            if "singularity" in name:
-                return "singularity"
-            if "modal" in name:
-                return "modal"
-            if "daytona" in name:
-                return "daytona"
         cfg = _get_env_config()
         return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
     except Exception:
@@ -209,12 +200,7 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
-    try:
-        from tools.terminal_tool import _CONTAINER_BACKENDS
-        container_backends = _CONTAINER_BACKENDS
-    except Exception:
-        container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
-    return _terminal_env_type_for_task(task_id) in container_backends
+    return False
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
@@ -222,7 +208,7 @@ def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosix
 
     Container backends use paths that are meaningful inside the sandbox. Calling
     ``Path.resolve()`` on the host can dereference a host-side symlink such as
-    ``/workspace`` and rewrite the path before Docker sees it.
+    ``/workspace`` and rewrite the path before the sandbox sees it.
     """
     return PurePosixPath(posixpath.normpath(str(path)))
 
@@ -1020,43 +1006,18 @@ def _check_approval_required_write(paths: list[str],
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
-    """Return the container-side Son of Anton mirror prefix for Docker file tools."""
-    try:
-        from tools.terminal_tool import (
-            _active_environments,
-            _env_lock,
-            _get_env_config,
-            _resolve_container_task_id,
-        )
+    """Return the container-side Son of Anton mirror prefix for file tools.
 
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        return None
-
-    try:
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-
-        if env is not None:
-            if env.__class__.__name__ == "DockerEnvironment" and bool(
-                getattr(env, "_persistent", False)
-            ):
-                return "/root/.son-of-anton"
-            return None
-
-        config = _get_env_config()
-    except Exception:
-        return None
-
-    if config.get("env_type") == "docker" and config.get("container_persistent", True):
-        return "/root/.son-of-anton"
+    Container backends were removed, so there is no container-side mirror
+    anymore and this always returns ``None``.
+    """
     return None
 
 
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a soft-guard warning when ``filepath`` lands in another Son of Anton
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
-    state, or the Docker container's sandbox mirror of Son of Anton state.
+    state, or a container's sandbox mirror of Son of Anton state.
 
     Three detectors run in order:
 
@@ -1064,12 +1025,12 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
       ``skills/plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
       ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` mirror created by a
-      non-local terminal backend (Docker, Daytona, etc.), where the host
-      Son of Anton process never reads the mirror and the authoritative file is
-      left untouched.
-    * container-mirror (#32049 follow-up) — writes from inside a Docker
-      container whose bind-mounted home strips the ``sandboxes/`` prefix, so
-      the agent sees a plain ``/root/.son-of-anton/…`` path.
+      non-local terminal backend, where the host Son of Anton process never
+      reads the mirror and the authoritative file is left untouched.
+    * container-mirror (#32049 follow-up) — writes from inside a container
+      whose bind-mounted home strips the ``sandboxes/`` prefix, so the agent
+      sees a plain ``/root/.son-of-anton/…`` path. Container backends were
+      removed, so this detector is inert for current backends.
 
     Returns ``None`` when the write is in-scope or outside Son of Anton scope.
     All detectors are soft guards — the agent can override any by
@@ -1400,15 +1361,15 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
 
     Respects the TERMINAL_ENV setting -- if the task_id doesn't have an
-    environment yet, creates one using the configured backend (local, docker,
-    modal, etc.) rather than always defaulting to local.
+    environment yet, creates one using the configured backend (local, ssh,
+    etc.) rather than always defaulting to local.
 
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
 
     Note: subagent task_ids are collapsed to "default" via
     ``_resolve_container_task_id`` so delegate_task children share the
-    parent's container and its cached file_ops. RL/benchmark task_ids with
+    parent's sandbox and its cached file_ops. RL/benchmark task_ids with
     a registered env override keep their isolation.
     """
     from tools.terminal_tool import (
@@ -1417,9 +1378,6 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
-        _resolve_task_host_cwd,
-        _is_unusable_container_cwd,
-        _CONTAINER_BACKENDS,
     )
     import time
 
@@ -1484,16 +1442,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             env_type = config["env_type"]
             overrides = resolve_task_overrides(raw_task_id)
 
-            if env_type == "docker":
-                image = overrides.get("docker_image") or config["docker_image"]
-            elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
-            elif env_type == "modal":
-                image = overrides.get("modal_image") or config["modal_image"]
-            elif env_type == "daytona":
-                image = overrides.get("daytona_image") or config["daytona_image"]
-            else:
-                image = ""
+            image = ""
 
             try:
                 from tools.terminal_tool import get_session_cwd
@@ -1501,42 +1450,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             except Exception:
                 recorded_cwd = None
             cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-            # Re-apply the container cwd guard that _get_env_config() already
-            # ran on config["cwd"] (see #50636).  A per-task cwd override
-            # registered by the gateway/TUI/ACP for workspace tracking is a
-            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
-            # C:\\Users\\<me>). On a container backend that reaches
-            # ``docker run -w <host-path>`` and the container starts in a
-            # directory that doesn't exist inside the sandbox, so search_files
-            # and friends silently return empty results (#54447).  Sanitize it
-            # back to the already-validated config["cwd"] so the override can't
-            # bypass the guard.  Valid in-container override paths (RL/benchmark
-            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
-            # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-                if cwd != config["cwd"]:
-                    logger.info(
-                        "Ignoring host/relative cwd override %r for %s backend "
-                        "(won't exist in sandbox). Using %r instead.",
-                        cwd, env_type, config["cwd"],
-                    )
-                cwd = config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
-
-            container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                    "docker_network": config.get("docker_network", True),
-                }
 
             ssh_config = None
             if env_type == "ssh":
@@ -1560,10 +1474,10 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 cwd=cwd,
                 timeout=config["timeout"],
                 ssh_config=ssh_config,
-                container_config=container_config,
+                container_config=None,
                 local_config=local_config,
                 task_id=task_id,
-                host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+                host_cwd=None,
             )
 
             with _env_lock:
