@@ -1344,31 +1344,6 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
-        # Petdex animated mascot (https://github.com/crafter-station/petdex).
-        # A purely cosmetic sprite that reacts to agent activity across the
-        # CLI, TUI, and desktop app. Manage with `son-of-anton pets`. Disabled until
-        # a pet is installed + selected (no effect on prompt caching — this is
-        # a display concern only).
-        "pet": {
-            "enabled": False,
-            # Active pet slug; resolved against installed pets in
-            # get_son_of_anton_home()/pets/. Empty → first installed pet.
-            "slug": "",
-            # Terminal render protocol for CLI/TUI:
-            #   auto  — detect kitty/iTerm2/sixel, else unicode half-blocks
-            #   kitty | iterm | sixel | unicode | off
-            "render_mode": "auto",
-            # Master size scalar (relative to native 192×208 frames). One knob
-            # shrinks every surface: the desktop canvas scales its pixels by it
-            # and the CLI/TUI derive their terminal column width from it. The
-            # half-block fallback clamps to a legibility floor (it can't shrink
-            # as far as true-pixel kitty/GUI without turning to mush).
-            "scale": 0.33,
-            # Hard override for terminal column width. 0 = auto (derive from
-            # scale); set a positive int only to pin the half-block/kitty width
-            # independently of scale.
-            "unicode_cols": 0,
-        },
     },
 
     "privacy": {
@@ -1557,14 +1532,14 @@ DEFAULT_CONFIG = {
         # before the agent sees it.  Lets skill authors reference bundled
         # scripts without the agent having to join paths.
         "template_vars": True,
-        # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
+        # Pre-execute inline shell one-liners written as !`cmd` in SKILL.md
         # body.  Their stdout is inlined into the skill message before the
         # agent reads it, so skills can inject dynamic context (dates, git
         # state, detected tool versions, …).  Off by default because any
         # content from the skill author runs on the host without approval;
         # only enable for skill sources you trust.
         "inline_shell": False,
-        # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
+        # Timeout (seconds) for each !`cmd` one-liner when inline_shell is on.
         "inline_shell_timeout": 10,
         # Run the keyword/pattern security scanner on skills the agent
         # writes via skill_manage (create/edit/patch).  Off by default

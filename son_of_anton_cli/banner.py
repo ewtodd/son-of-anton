@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ANSI building blocks for conversation display
 # =========================================================================
 
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold
+_GOLD = "\033[1;33m"  # bold yellow — kitty palette drives the hue
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -67,25 +67,20 @@ def _skin_color(key: str, fallback: str) -> str:
 
 from son_of_anton_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-SON_OF_ANTON_AGENT_LOGO = """[bold #FFD700]███████╗    ██████╗   ███╗   ██╗   ██████╗   ███████╗ [/]
-[bold #FFD700]██╔════╝   ██╔═══██╗  ████╗  ██║  ██╔═══██╗  ██╔════╝ [/]
-[bold #FFBF00]███████╗   ██║   ██║  ██╔██╗ ██║  ██║   ██║  █████╗   [/]
-[bold #FFBF00]╚════██║   ██║   ██║  ██║╚██╗██║  ██║   ██║  ██╔══╝   [/]
-[bold #CD7F32]███████║   ╚██████╔╝  ██║ ╚████║  ╚██████╔╝  ██║      [/]
-[bold #CD7F32]╚══════╝    ╚═════╝   ╚═╝  ╚═══╝   ╚═════╝   ╚═╝      [/]
-[bold #FFD700] █████╗    ███╗   ██╗  ████████╗   ██████╗   ███╗   ██╗[/]
-[bold #FFD700]██╔══██╗   ████╗  ██║  ╚══██╔══╝  ██╔═══██╗  ████╗  ██║[/]
-[bold #FFBF00]███████║   ██╔██╗ ██║     ██║     ██║   ██║  ██╔██╗ ██║[/]
-[bold #FFBF00]██╔══██║   ██║╚██╗██║     ██║     ██║   ██║  ██║╚██╗██║[/]
-[bold #CD7F32]██║  ██║   ██║ ╚████║     ██║     ╚██████╔╝  ██║ ╚████║[/]
-[bold #CD7F32]╚═╝  ╚═╝   ╚═╝  ╚═══╝     ╚═╝      ╚═════╝   ╚═╝  ╚═══╝ [/]"""
+SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗       █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
+██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝      ██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
+███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗        ███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
+╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝        ██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
+███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║           ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
+╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝           ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
 
 
-SON_OF_ANTON_CADUCEUS = """[#CD7F32]        ◈        [/]
-[#FFBF00]      ◈   ◈      [/]
-[#FFD700]    ◈   ◉   ◈    [/]
-[#FFBF00]      ◈   ◈      [/]
-[#CD7F32]        ◈        [/]"""
+
+SON_OF_ANTON_CADUCEUS = """        ◈        
+      ◈   ◈      
+    ◈   ◉   ◈    
+      ◈   ◈      
+        ◈        """
 
 
 
@@ -694,16 +689,16 @@ def _format_update_notice(behind: int) -> str:
     if behind > 0:
         commits_word = "commit" if behind == 1 else "commits"
         return (
-            f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-            f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
+            f"[bold yellow]⚠ {behind} {commits_word} behind"
+            f"[dim yellow] — run [bold]{recommended_update_command()} to update"
         )
     # UPDATE_AVAILABLE_NO_COUNT: nix-built son-of-anton; we know an update
     # exists but not by how much, and we don't know how the user
     # installed it (nix run, profile, system flake, home-manager).
     managed_cmd = get_managed_update_command()
-    line = "[bold yellow]⚠ update available[/]"
+    line = "[bold yellow]⚠ update available"
     if managed_cmd:
-        line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
+        line += f"[dim yellow] — run [bold]{managed_cmd}"
     return line
 
 
@@ -1001,17 +996,17 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             agg_label = ""
         if len(preset_name) > 28:
             preset_name = preset_name[:25] + "..."
-        agg_str = f" [dim {dim}]·[/] [dim {dim}]agg {agg_label}[/]" if agg_label else ""
-        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        agg_str = f" [dim {dim}]· [dim {dim}]agg {agg_label}" if agg_label else ""
+        ctx_str = f" [dim {dim}]· [dim {dim}]{_format_context_length(context_length)} context" if context_length else ""
+        left_lines.append(f"[{accent}]MoA: {preset_name}{agg_str}{ctx_str} [dim {dim}]· [dim {dim}]Nous Research")
     else:
         if not (model or "").strip() or (model or "").strip().lower() == "unknown":
             # Unconfigured install: say so in red instead of a blank/"unknown"
             # slug — this is the single clearest place to tell the user what
             # is wrong and how to fix it.
             left_lines.append(
-                f"[bold red]no model configured[/] "
-                f"[dim {dim}]— run /model or son-of-anton setup[/]"
+                f"[bold red]no model configured "
+                f"[dim {dim}]— run /model or son-of-anton setup"
             )
         else:
             model_short = model.split("/")[-1] if "/" in model else model
@@ -1019,17 +1014,17 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 model_short = model_short[:-5]
             if len(model_short) > 28:
                 model_short = model_short[:25] + "..."
-            ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+            ctx_str = f" [dim {dim}]· [dim {dim}]{_format_context_length(context_length)} context" if context_length else ""
+            left_lines.append(f"[{accent}]{model_short}{ctx_str} [dim {dim}]· [dim {dim}]Nous Research")
 
     if os.getenv("SON_OF_ANTON_YOLO_MODE"):
-        left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
-    left_lines.append(f"[dim {dim}]{cwd}[/]")
+        left_lines.append(f"[bold red]⚠ YOLO mode [dim {dim}]— all approval prompts bypassed")
+    left_lines.append(f"[dim {dim}]{cwd}")
     if session_id:
-        left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
+        left_lines.append(f"[dim {session_color}]Session: {session_id}")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools[/]"]
+    right_lines = [f"[bold {accent}]Available Tools"]
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:
@@ -1055,11 +1050,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         colored_names = []
         for name in sorted(tool_names):
             if name in disabled_tools:
-                colored_names.append(f"[red]{name}[/]")
+                colored_names.append(f"[red]{name}")
             elif name in lazy_tools:
-                colored_names.append(f"[yellow]{name}[/]")
+                colored_names.append(f"[yellow]{name}")
             else:
-                colored_names.append(f"[{text}]{name}[/]")
+                colored_names.append(f"[{text}]{name}")
 
         tools_str = ", ".join(colored_names)
         if len(", ".join(sorted(tool_names))) > 45:
@@ -1074,19 +1069,19 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             colored_names = []
             for name in short_names:
                 if name == "...":
-                    colored_names.append("[dim]...[/]")
+                    colored_names.append("[dim]...")
                 elif name in disabled_tools:
-                    colored_names.append(f"[red]{name}[/]")
+                    colored_names.append(f"[red]{name}")
                 elif name in lazy_tools:
-                    colored_names.append(f"[yellow]{name}[/]")
+                    colored_names.append(f"[yellow]{name}")
                 else:
-                    colored_names.append(f"[{text}]{name}[/]")
+                    colored_names.append(f"[{text}]{name}")
             tools_str = ", ".join(colored_names)
 
-        right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
+        right_lines.append(f"[dim {dim}]{toolset}: {tools_str}")
 
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
+        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)")
 
     # MCP Servers section (only if configured). Probe cheaply first: the
     # full get_mcp_status() path resolves portable plugin MCP servers,
@@ -1115,37 +1110,37 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     if mcp_status:
         right_lines.append("")
-        right_lines.append(f"[bold {accent}]MCP Servers[/]")
+        right_lines.append(f"[bold {accent}]MCP Servers")
         for srv in mcp_status:
             status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
-                    f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                    f"[dim {dim}]{srv['name']} [{text}]({srv['transport']}) "
+                    f"[dim {dim}]— [{text}]{srv['tools']} tool(s)"
                 )
             elif srv.get("disabled") or status == "disabled":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[dim {dim}]— disabled[/]"
+                    f"[dim {dim}]{srv['name']} [dim]({srv['transport']}) "
+                    f"[dim {dim}]— disabled"
                 )
             elif status == "connecting":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[yellow]— connecting[/]"
+                    f"[dim {dim}]{srv['name']} [dim]({srv['transport']}) "
+                    f"[yellow]— connecting"
                 )
             elif status == "configured":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[dim {dim}]— configured[/]"
+                    f"[dim {dim}]{srv['name']} [dim]({srv['transport']}) "
+                    f"[dim {dim}]— configured"
                 )
             else:
                 right_lines.append(
-                    f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[red]— failed[/]"
+                    f"[red]{srv['name']} [dim]({srv['transport']}) "
+                    f"[red]— failed"
                 )
 
     right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
+    right_lines.append(f"[bold {accent}]Available Skills")
     # The skills catalog is only reachable when the `skills` toolset is enabled
     # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
     # Slate install — the agent literally cannot load any skill, so advertising
@@ -1165,7 +1160,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
 
     if not _skills_enabled:
-        right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
+        right_lines.append(f"[dim {dim}]Skills toolset disabled")
     elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
@@ -1187,9 +1182,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 parts.append(name)
                 length += _needed
             skills_str = ", ".join(parts)
-            right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
+            right_lines.append(f"[dim {dim}]{category}: [{text}]{skills_str}")
     else:
-        right_lines.append(f"[dim {dim}]No skills installed[/]")
+        right_lines.append(f"[dim {dim}]No skills installed")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
@@ -1205,8 +1200,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from son_of_anton_cli.config import load_config as _load_cfg
         if get_current_runtime(_load_cfg()) == "codex_app_server":
             right_lines.append(
-                f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
-                f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
+                f"[bold {accent}]Runtime: [{text}]codex app-server "
+                f"[dim {dim}](terminal/file ops/MCP run inside codex)"
             )
     except Exception:
         pass
@@ -1215,11 +1210,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from son_of_anton_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
-            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+            right_lines.append(f"[bold {accent}]Profile: [{text}]{_profile_name}")
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
-    right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
+    right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}")
 
     # Update check — use prefetched result if available. NEVER block the
     # banner on it: the prefetch does git/network work that rarely finishes
@@ -1240,15 +1235,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)
 
-    title_color = _skin_color("banner_title", "#FFD700")
+    title_color = _skin_color("banner_title", "bold yellow")
     border_color = _skin_color("banner_border", "#CD7F32")
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:
         _tag, _url = release_info
-        title_markup = f"[bold {title_color}][link={_url}]{version_label}[/link][/]"
+        title_markup = f"[bold {title_color}][link={_url}]{version_label}"
     else:
-        title_markup = f"[bold {title_color}]{version_label}[/]"
+        title_markup = f"[bold {title_color}]{version_label}"
     outer_panel = Panel(
         layout_table,
         title=title_markup,

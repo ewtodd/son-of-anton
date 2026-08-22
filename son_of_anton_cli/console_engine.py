@@ -1082,13 +1082,7 @@ class SonOfAntonConsoleEngine:
                     ("rollback",),
                 },
             ),
-            "pets": (
-                "son_of_anton_cli.pets",
-                "register_cli",
-                None,
-                [("list",), ("install",), ("select",), ("show",), ("off",), ("scale",), ("remove",), ("doctor",)],
-                {("install",), ("select",), ("off",), ("scale",), ("remove",)},
-            ),
+
         }
         for root, (module, register, handler_name, paths, mutating) in registered.items():
             summaries = _registered_summaries(root, module, register)

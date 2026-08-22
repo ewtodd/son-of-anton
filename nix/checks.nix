@@ -174,10 +174,30 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         venv-imports = pkgs.runCommand "son-of-anton-venv-imports" { } ''
           set -euo pipefail
           export HOME=$TMPDIR
+          # Plugins ship outside the wheel (bundled dir + env var), matching
+          # the wrapped binary's runtime resolution.
+          export PYTHONPATH="${son-of-anton}/share/son-of-anton"
+          export SON_OF_ANTON_BUNDLED_PLUGINS="${son-of-anton}/share/son-of-anton/plugins"
+          export SON_OF_ANTON_BUNDLED_SKILLS="${son-of-anton}/share/son-of-anton/skills"
           ${sonOfAntonVenv}/bin/python3 -c "
-import son_of_anton_cli.config
+import cli
 import run_agent
+import model_tools
 import gateway.run
+import tui_gateway.server
+import cron.scheduler
+import son_of_anton_cli.main
+import son_of_anton_cli.cli_commands_mixin
+import son_of_anton_cli.commands
+import tools.terminal_tool
+import tools.approval
+import agent.system_prompt
+import agent.prompt_builder
+import plugins.platforms.discord.adapter
+import plugins.platforms.slack.adapter
+import gateway.platforms.signal
+import physics_intern.engine
+import physics_intern.autophysicist.runner
 print('imports ok')
 " || (echo "FAIL: core modules do not import from the sealed venv"; exit 1)
           echo "PASS: core modules import from the sealed venv"

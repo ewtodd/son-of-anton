@@ -2,7 +2,6 @@
 
 import random
 
-
 # ---------------------------------------------------------------------------
 # Tip corpus — one-liners covering slash commands, CLI flags, config,
 # keybindings, tools, gateway, skills, profiles, and workflow tricks.
@@ -375,11 +374,6 @@ TIPS = [
     "SON_OF_ANTON_TUI_THEME=light|dark|<hex> forces the TUI theme on terminals that don't set COLORFGBG.",
     'Ctrl+G or Ctrl+X Ctrl+E in the TUI opens the input buffer in $EDITOR for long multi-line prompts.',
     'The TUI renders LaTeX inline — $E=mc^2$ becomes Unicode math instead of raw TeX.',
-    'son-of-anton dashboard launches a local web UI at 127.0.0.1:9119 — zero data leaves localhost.',
-    'son-of-anton dashboard embeds the full Son of Anton TUI in your browser via xterm.js and a WebSocket PTY.',
-    'Drop a YAML in ~/.son-of-anton/dashboard-themes/ with two palette colors to reskin the entire dashboard.',
-    'Dashboard plugins are drop-in: manifest.json + JS bundle in ~/.son-of-anton/dashboard-plugins/ — no npm build required.',
-    'layoutVariant: cockpit in a dashboard theme adds a 260px left rail that plugins can populate via the sidebar slot.',
 
     # --- Env Vars & Config Gates ---
     "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
@@ -428,7 +422,6 @@ TIPS = [
     "son-of-anton chat --source tool tags programmatic chats so they don't clutter son-of-anton sessions list.",
     'son-of-anton dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'son-of-anton sessions rename <ID> "new title" renames any past session; son-of-anton sessions delete <ID> removes one.',
-    'son-of-anton import restores a full Son of Anton backup zip; session JSON/JSONL exports import from the dashboard Sessions page.',
     'son-of-anton fallback manages the fallback_model chain interactively — no hand-editing config.yaml.',
     'son-of-anton pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
     'son-of-anton setup walks first-time users through provider, keys, and platform wiring in one interactive flow.',
@@ -466,9 +459,7 @@ TIPS = [
 
     # --- Misc ---
     'API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups.',
-    'Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.son-of-anton/dashboard-plugins/.',
 ]
-
 
 def get_random_tip(exclude_recent: int = 0) -> str:
     """Return a random tip string.
@@ -478,7 +469,6 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
 
 # ---------------------------------------------------------------------------
 # Composer placeholders — short, task-oriented example prompts shown in the
@@ -500,7 +490,6 @@ COMPOSER_PLACEHOLDERS = [
     "Set a reminder or schedule a recurring task",
     "Type / to browse commands, or Ctrl+P for the palette",
 ]
-
 
 def get_random_composer_placeholder() -> str:
     """Return a rotating task-oriented placeholder for the empty composer."""

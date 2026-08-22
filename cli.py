@@ -4623,26 +4623,21 @@ class ChatConsole:
         yield self
 
 # ASCII Art - SON_OF_ANTON wordmark (block letters, ~50 char terminal)
-SON_OF_ANTON_AGENT_LOGO = """[bold #FFD700]███████╗    ██████╗   ███╗   ██╗   ██████╗   ███████╗ [/]
-[bold #FFD700]██╔════╝   ██╔═══██╗  ████╗  ██║  ██╔═══██╗  ██╔════╝ [/]
-[bold #FFBF00]███████╗   ██║   ██║  ██╔██╗ ██║  ██║   ██║  █████╗   [/]
-[bold #FFBF00]╚════██║   ██║   ██║  ██║╚██╗██║  ██║   ██║  ██╔══╝   [/]
-[bold #CD7F32]███████║   ╚██████╔╝  ██║ ╚████║  ╚██████╔╝  ██║      [/]
-[bold #CD7F32]╚══════╝    ╚═════╝   ╚═╝  ╚═══╝   ╚═════╝   ╚═╝      [/]
-[bold #FFD700] █████╗    ███╗   ██╗  ████████╗   ██████╗   ███╗   ██╗[/]
-[bold #FFD700]██╔══██╗   ████╗  ██║  ╚══██╔══╝  ██╔═══██╗  ████╗  ██║[/]
-[bold #FFBF00]███████║   ██╔██╗ ██║     ██║     ██║   ██║  ██╔██╗ ██║[/]
-[bold #FFBF00]██╔══██║   ██║╚██╗██║     ██║     ██║   ██║  ██║╚██╗██║[/]
-[bold #CD7F32]██║  ██║   ██║ ╚████║     ██║     ╚██████╔╝  ██║ ╚████║[/]
-[bold #CD7F32]╚═╝  ╚═╝   ╚═╝  ╚═══╝     ╚═╝      ╚═════╝   ╚═╝  ╚═══╝ [/]"""
+SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗       █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
+██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝      ██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
+███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗        ███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
+╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝        ██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
+███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║           ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
+╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝           ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
+
 
 
 # ASCII Art - Son of Anton nucleus (compact, fits in left panel)
-SON_OF_ANTON_CADUCEUS = """[#CD7F32]        ◈        [/]
-[#FFBF00]      ◈   ◈      [/]
-[#FFD700]    ◈   ◉   ◈    [/]
-[#FFBF00]      ◈   ◈      [/]
-[#CD7F32]        ◈        [/]"""
+SON_OF_ANTON_CADUCEUS = """        ◈        
+      ◈   ◈      
+    ◈   ◉   ◈    
+      ◈   ◈      
+        ◈        """
 
 
 
@@ -4677,7 +4672,7 @@ def _build_compact_banner() -> str:
 
     w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
+        return f"\n[{title_color}]{tiny_line} [dim {dim_color}]- Nous Research\n"
 
     inner = w - 2  # inside the box border
     bar = "═" * w
@@ -4688,10 +4683,10 @@ def _build_compact_banner() -> str:
     line2 = version_line[:content_width].ljust(content_width)
 
     return (
-        f"\n[bold {border_color}]╔{bar}╗[/]\n"
-        f"[bold {border_color}]║[/] [{title_color}]{line1}[/] [bold {border_color}]║[/]\n"
-        f"[bold {border_color}]║[/] [dim {dim_color}]{line2}[/] [bold {border_color}]║[/]\n"
-        f"[bold {border_color}]╚{bar}╝[/]\n"
+        f"\n[bold {border_color}]╔{bar}╗\n"
+        f"[bold {border_color}]║ [{title_color}]{line1} [bold {border_color}]║\n"
+        f"[bold {border_color}]║ [dim {dim_color}]{line2} [bold {border_color}]║\n"
+        f"[bold {border_color}]╚{bar}╝\n"
     )
 
 
@@ -5173,7 +5168,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
-                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
+                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}")
         
         # Filesystem checkpoints: CLI flag > config
         cp_cfg = CLI_CONFIG.get("checkpoints", {})
@@ -5301,7 +5296,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Console()` with UnboundLocalError.
                 Console(stderr=True).print(
                     "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] to disk and "
+                    "this conversation will [bold]NOT be saved to disk and "
                     "cannot be resumed later. Searching past sessions is also disabled.\n"
                     f"  Reason: {e}\n"
                     "  Fix the state.db store (e.g. `son-of-anton update` to rebuild the venv) to restore persistence."
@@ -5497,7 +5492,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if stderr:
                 print(message, file=sys.stderr)
             else:
-                self._console_print(f"[bold red]{message}[/]")
+                self._console_print(f"[bold red]{message}")
             return False
         self._active_session_lease = lease
         try:
@@ -7185,7 +7180,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if normalized_model and normalized_model != current_model:
                     if not self._model_is_default:
                         self._console_print(
-                            f"[yellow]⚠️  Normalized model '{current_model}' to '{normalized_model}' for {resolved_provider}.[/]"
+                            f"[yellow]⚠️  Normalized model '{current_model}' to '{normalized_model}' for {resolved_provider}."
                         )
                     self.model = normalized_model
                     current_model = normalized_model
@@ -7201,7 +7196,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if canonical and canonical != current_model:
                     if not self._model_is_default:
                         self._console_print(
-                            f"[yellow]⚠️  Normalized Copilot model '{current_model}' to '{canonical}'.[/]"
+                            f"[yellow]⚠️  Normalized Copilot model '{current_model}' to '{canonical}'."
                         )
                     self.model = canonical
                     current_model = canonical
@@ -7225,7 +7220,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if canonical and canonical != current_model:
                     if not self._model_is_default:
                         self._console_print(
-                            f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; using '{canonical}' for {resolved_provider}.[/]"
+                            f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; using '{canonical}' for {resolved_provider}."
                         )
                     self.model = canonical
                     current_model = canonical
@@ -7248,7 +7243,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not self._model_is_default:
                 self._console_print(
                     f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
-                    f"using '{slug}' for OpenAI Codex.[/]"
+                    f"using '{slug}' for OpenAI Codex."
                 )
             self.model = slug
             current_model = slug
@@ -7425,12 +7420,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _format_submitted_user_message_preview(self, user_input: str) -> str:
         """Format the submitted user-message scrollback preview."""
         ts_suffix = (
-            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
+            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             if getattr(self, "show_timestamps", False) else ""
         )
         lines = user_input.split("\n")
         if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+            return f"[bold {_accent_hex()}]● [bold]{_escape(user_input)}{ts_suffix}"
 
         first_lines = int(getattr(self, "user_message_preview_first_lines", 2))
         last_lines = int(getattr(self, "user_message_preview_last_lines", 2))
@@ -7447,15 +7442,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             tail = []
 
         preview_lines = [
-            f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"
+            f"[bold {_accent_hex()}]● [bold]{_escape(head[0])}{ts_suffix}"
         ]
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+        preview_lines.extend(f"[bold]{_escape(line)}" for line in head[1:])
 
         if hidden_middle_count > 0:
             noun = "line" if hidden_middle_count == 1 else "lines"
-            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
+            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})")
 
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        preview_lines.extend(f"[bold]{_escape(line)}" for line in tail)
         return "\n".join(preview_lines)
 
     def _expand_paste_references(self, text: str | None) -> str:
@@ -7479,12 +7474,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}")
         text = str(user_input or "")
         if "\n" in text:
             ChatConsole().print(self._format_submitted_user_message_preview(text))
         else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+            ChatConsole().print(f"[bold {_accent_hex()}]● [bold]{_escape(text)}")
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -8299,10 +8294,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._console_print()
             self._console_print(
                 f"[yellow]⚠️  Context length is only {ctx_len:,} tokens — "
-                f"this is likely too low for agent use with tools.[/]"
+                f"this is likely too low for agent use with tools."
             )
             self._console_print(
-                f"[dim]   Son of Anton needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
+                f"[dim]   Son of Anton needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix."
             )
             base_url = getattr(self, "base_url", "") or ""
             from urllib.parse import urlparse as _urlparse
@@ -8314,15 +8309,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _host = base_url_hostname(base_url)
             if _port == 11434 or "ollama" in _host:
                 self._console_print(
-                    f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve[/]"
+                    f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve"
                 )
             elif _port == 1234:
                 self._console_print(
-                    "[dim]   LM Studio fix: Set context length in model settings → reload model[/]"
+                    "[dim]   LM Studio fix: Set context length in model settings → reload model"
                 )
             else:
                 self._console_print(
-                    "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting[/]"
+                    "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting"
                 )
 
         # Warn if the configured model is a Nous Son of Anton LLM (not agentic)
@@ -8333,14 +8328,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._console_print()
             self._console_print(
                 "[bold yellow]⚠  Nous Research Son of Anton 3 & 4 models are NOT agentic and are not "
-                "designed for use with Son of Anton Agent.[/]"
+                "designed for use with Son of Anton Agent."
             )
             self._console_print(
                 "[dim]   They lack tool-calling capabilities required for agent workflows. "
-                "Consider using an agentic model (Claude, GPT, Gemini, DeepSeek, etc.).[/]"
+                "Consider using an agentic model (Claude, GPT, Gemini, DeepSeek, etc.)."
             )
             self._console_print(
-                "[dim]   Switch with: /model sonnet  or  /model gpt5[/]"
+                "[dim]   Switch with: /model sonnet  or  /model gpt5"
             )
 
         # Project-local skills: one-line status. Trusted → show count;
@@ -8359,7 +8354,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 if _n:
                     self._console_print(
-                        f"[dim]◆ {_n} project skill(s) loaded from this repo[/]"
+                        f"[dim]◆ {_n} project skill(s) loaded from this repo"
                     )
             else:
                 _untrusted = get_untrusted_project_skills_root()
@@ -8367,7 +8362,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _root, _n = _untrusted
                     self._console_print(
                         f"[yellow]◆ {_n} project skill(s) found in {_root} but not "
-                        f"loaded — run `son-of-anton skills trust` to enable them.[/]"
+                        f"loaded — run `son-of-anton skills trust` to enable them."
                     )
         except Exception:
             logger.debug("project skills banner notice failed", exc_info=True)
@@ -8893,13 +8888,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             
             if api_key_missing:
                 self._console_print()
-                self._console_print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
+                self._console_print("[yellow]⚠️  Some tools disabled (missing API keys):")
                 for item in api_key_missing:
                     tools_str = ", ".join(item["tools"][:2])  # Show first 2 tools
                     if len(item["tools"]) > 2:
                         tools_str += f", +{len(item['tools'])-2} more"
-                    self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
-                self._console_print("[dim]   Run 'son-of-anton setup' to configure[/]")
+                    self._console_print(f"   [dim]• {item['name']} [dim italic]({', '.join(item['missing_vars'])})")
+                self._console_print("[dim]   Run 'son-of-anton setup' to configure")
         except Exception:
             pass  # Don't crash on import errors
     
@@ -8920,9 +8915,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Get API status indicator
         if self.api_key:
-            api_indicator = "[green bold]●[/]"
+            api_indicator = "[green bold]●"
         else:
-            api_indicator = "[red bold]●[/]"
+            api_indicator = "[red bold]●"
 
         # Build status line with proper markup — skin-aware colors
         try:
@@ -8935,15 +8930,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             separator_color, accent_color, label_color = "#B8860B", "#FFBF00", "cyan"
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = f" [dim {separator_color}]· [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}"
 
-        provider_info = f" [dim {separator_color}]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = f" [dim {separator_color}]· [dim]provider: {self.provider}"
         if self._provider_source:
-            provider_info += f" [dim {separator_color}]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += f" [dim {separator_color}]· [dim]auth: {self._provider_source}"
 
         self._console_print(
-            f"  {api_indicator} [{accent_color}]{model_short}[/] "
-            f"[dim {separator_color}]·[/] [bold {label_color}]{tool_status}[/]"
+            f"  {api_indicator} [{accent_color}]{model_short} "
+            f"[dim {separator_color}]· [bold {label_color}]{tool_status}"
             f"{toolsets_info}{provider_info}"
         )
 
@@ -9083,7 +9078,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
             for cmd, info in sorted(skill_commands.items()):
                 ChatConsole().print(
-                    f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
+                    f"    [bold {_accent_hex()}]{cmd:<22} [dim]- {_escape(info['description'])}"
                 )
             _cprint("")
             return
@@ -9109,7 +9104,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if query and query not in cmd.lower() and query not in desc.lower():
                 return False
             ChatConsole().print(
-                f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}"
+                f"    [bold {_accent_hex()}]{cmd:<15} [dim]- {_escape(desc)}"
             )
             return True
 
@@ -9163,7 +9158,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} (matching '{arg}'):")
                 for cmd, info in matched_skills:
                     ChatConsole().print(
-                        f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
+                        f"    [bold {_accent_hex()}]{cmd:<22} [dim]- {_escape(info['description'])}"
                     )
         elif skill_commands:
             _cprint(
@@ -9178,8 +9173,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 skill_count = len(info.get("skills", []))
                 desc = info.get("description") or f"Load {skill_count} skills"
                 ChatConsole().print(
-                    f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] "
-                    f"{_escape(desc)} [dim]({skill_count} skills)[/]"
+                    f"    [bold {_accent_hex()}]{cmd:<22} [dim]- "
+                    f"{_escape(desc)} [dim]({skill_count} skills)"
                 )
 
         quick_commands = self.config.get("quick_commands", {})
@@ -9188,7 +9183,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             for name, qcmd in sorted(quick_commands.items()):
                 desc = qcmd.get("description", qcmd.get("type", ""))
                 ChatConsole().print(
-                    f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
+                    f"    [bold {_accent_hex()}]{('/' + name):<22} [dim]- {_escape(desc)}"
                 )
 
         if query:
@@ -11619,7 +11614,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not command:
             # Bare `!` — show what the feature does instead of running an
             # empty shell or sending "!" to the model.
-            self._console_print(f"[dim]{USAGE_HINT}[/]")
+            self._console_print(f"[dim]{USAGE_HINT}")
             return True
 
         approval = check_bang_approval(command)
@@ -11627,7 +11622,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             message = approval.get("message") or (
                 f"Command denied: {approval.get('description', 'flagged as dangerous')}"
             )
-            self._console_print(f"[bold red]{_escape(str(message))}[/]")
+            self._console_print(f"[bold red]{_escape(str(message))}")
             return True
 
         cwd = resolve_bang_cwd(getattr(self, "session_id", None))
@@ -11637,7 +11632,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             writer=lambda line: self._console_print(_rich_text_from_ansi(line)),
         )
         if exit_code:
-            self._console_print(f"[dim]! exited {exit_code}[/]")
+            self._console_print(f"[dim]! exited {exit_code}")
         return True
 
     @staticmethod
@@ -11845,7 +11840,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
                     except Exception:
                         _tip_color = "#B8860B"
-                    cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                    cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}")
                 except Exception:
                     pass
             else:
@@ -11860,7 +11855,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
                     except Exception:
                         _tip_color = "#B8860B"
-                    self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                    self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}")
                 except Exception:
                     pass
         elif canonical == "history":
@@ -12260,13 +12255,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 output = redact_sensitive_text(output)
                                 self._console_print(_rich_text_from_ansi(output))
                             else:
-                                self._console_print("[dim]Command returned no output[/]")
+                                self._console_print("[dim]Command returned no output")
                         except subprocess.TimeoutExpired:
-                            self._console_print("[bold red]Quick command timed out (30s)[/]")
+                            self._console_print("[bold red]Quick command timed out (30s)")
                         except Exception as e:
-                            self._console_print(f"[bold red]Quick command error: {e}[/]")
+                            self._console_print(f"[bold red]Quick command error: {e}")
                     else:
-                        self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                        self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -12275,9 +12270,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         aliased_command = f"{target} {user_args}".strip()
                         return self.process_command(aliased_command)
                     else:
-                        self._console_print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
+                        self._console_print(f"[bold red]Quick command '{base_cmd}' has no target defined")
                 else:
-                    self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from son_of_anton_cli.plugins import (
@@ -12311,13 +12306,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
                     if missing:
                         ChatConsole().print(
-                            f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                            f"[yellow]Skipped missing skills: {', '.join(missing)}"
                         )
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
                     ChatConsole().print(
-                        f"[bold red]Failed to load bundle for {base_cmd}[/]"
+                        f"[bold red]Failed to load bundle for {base_cmd}"
                     )
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:
@@ -12344,13 +12339,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         )
                         if missing:
                             ChatConsole().print(
-                                f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                                f"[yellow]Skipped missing skills: {', '.join(missing)}"
                             )
                         if hasattr(self, '_pending_input'):
                             self._pending_input.put(msg)
                     else:
                         ChatConsole().print(
-                            f"[bold red]Failed to load stacked skills for {base_cmd}[/]"
+                            f"[bold red]Failed to load stacked skills for {base_cmd}"
                         )
                     return True
                 user_instruction = rest
@@ -12363,7 +12358,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
-                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
+                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}")
             else:
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against both built-in COMMANDS and installed skill commands so
@@ -15133,7 +15128,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             with persist_lock:
                 _stage_user_message()
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}")
         print(flush=True)
         
         try:
@@ -15501,7 +15496,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]{label}[/]",
+                        title=f"[{_resp_color} bold]{label}",
                         title_align="left",
                         border_style=_resp_color,
                         style=_resp_text,
@@ -15519,23 +15514,23 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _prov_label = _bb.get("provider_label") or "your provider"
                     if _bb.get("is_nous"):
                         _cta_lines = [
-                            "Run [bold]/topup[/] to add credits, or "
-                            "[bold]/subscription[/] to change plan.",
+                            "Run [bold]/topup to add credits, or "
+                            "[bold]/subscription to change plan.",
                         ]
                     else:
                         _url = _bb.get("billing_url")
                         _cta_lines = [
                             f"Add credits with {_prov_label}"
-                            + (f": [bold]{_url}[/]" if _url else ".")
+                            + (f": [bold]{_url}" if _url else ".")
                         ]
                     _cta_lines.append(
                         "Or switch providers with "
-                        "[bold]/model <model> --provider <provider>[/]."
+                        "[bold]/model <model> --provider <provider>."
                     )
                     try:
                         ChatConsole().print(Panel(
                             "\n".join(_cta_lines),
-                            title="[#CD7F32 bold]⚡ Out of credits[/]",
+                            title="[#CD7F32 bold]⚡ Out of credits",
                             title_align="left",
                             border_style="#CD7F32",
                             box=rich_box.HORIZONTALS,
@@ -16072,7 +16067,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             _welcome_text = "Welcome to Son of Anton Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
-        self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        self._console_print(f"[{_welcome_color}]{_welcome_text}")
 
         # Warm the /model picker's provider-models cache off-thread during this
         # idle window (banner shown, user about to type). The no-args picker
@@ -16115,11 +16110,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _redact_raw = os.getenv("SON_OF_ANTON_REDACT_SECRETS", "true")
             if _redact_raw.lower() not in {"1", "true", "yes", "on"}:
                 self._console_print(
-                    "[bold red]⚠  Secret redaction is DISABLED[/] "
+                    "[bold red]⚠  Secret redaction is DISABLED "
                     f"(SON_OF_ANTON_REDACT_SECRETS={_redact_raw}). "
                     "API keys and tokens may appear verbatim in chat output, "
                     "session JSONs, and logs. Set "
-                    "[cyan]security.redact_secrets: true[/] in config.yaml "
+                    "[cyan]security.redact_secrets: true in config.yaml "
                     "to re-enable."
                 )
         except Exception:
@@ -16140,7 +16135,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
                 except Exception:
                     _resid_color = "#B8860B"
-                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}[/]")
+                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}")
                 try:
                     from son_of_anton_cli.config import get_config_path as _get_cfg_path_resid
                     mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
@@ -16156,7 +16151,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _tip_color = _welcome_skin.get_color("banner_dim", "#B8860B")
             except Exception:
                 _tip_color = "#B8860B"
-            self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+            self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}")
         except Exception:
             pass  # Tips are non-critical — never break startup
 
@@ -16169,7 +16164,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             maybe_run_curator(
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(
-                    f"[dim #6b7684]💾 {msg}[/]"
+                    f"[dim #6b7684]💾 {msg}"
                 ),
             )
         except Exception:
@@ -16203,7 +16198,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # to the loaded set except for typo'd names, which warn later.
             skills_label = ", ".join(_skills_for_line)
             self._console_print(
-                f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
+                f"[bold {_accent_hex()}]Activated skills: {skills_label}"
             )
             self._startup_skills_line_shown = True
         self._console_print()
@@ -19646,7 +19641,7 @@ def main(
                 # invocations are fast.
                 _query_label = query or ("[image attached]" if single_query_images else "")
                 if _query_label:
-                    cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+                    cli.console.print(f"[bold blue]Query: {_query_label}")
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
