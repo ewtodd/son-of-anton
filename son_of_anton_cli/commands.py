@@ -196,7 +196,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[list|delete <id>|edit <id>]",
                subcommands=("list", "delete", "edit")),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
-               aliases=("q",), args_hint="<prompt>",
+               args_hint="<prompt>",
                busy_policy="dispatch", busy_handler="queue"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
@@ -241,6 +241,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
+    CommandDef("mode", "Set the agent mode: auto, standard, physics, or research", "Configuration",
+               args_hint="[auto|standard|physics|research]", busy_policy="reject", busy_handler="mode"),
+    CommandDef("perm", "Set the permission mode: default, ask, lockdown, or yolo", "Configuration",
+               args_hint="[default|ask|lockdown|yolo]", busy_policy="reject", busy_handler="perm"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]",
@@ -369,7 +373,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
-               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
+               cli_only=True, aliases=("exit", "q"), args_hint="[--delete]"),
 ]
 
 
@@ -393,9 +397,10 @@ _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias to its CommandDef.
 
-    Accepts names with or without the leading slash.
+    Accepts names with or without the leading slash (``/help`` or ``help``),
+    and the vi-style colon prefix (``:q``, ``:help``).
     """
-    return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+    return _COMMAND_LOOKUP.get(name.lower().lstrip("/:"))
 
 
 def _build_description(cmd: CommandDef) -> str:
@@ -441,7 +446,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
         "compress", "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
-        "background", "bg", "btw", "agents", "tasks", "queue", "q", "steer",
+        "background", "bg", "btw", "agents", "tasks", "queue", "steer",
         "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
         "journey", "learning", "memory-graph",
     ),

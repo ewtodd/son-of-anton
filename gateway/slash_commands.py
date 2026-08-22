@@ -1560,6 +1560,66 @@ class GatewaySlashCommandsMixin:
         )
         return reply.text
 
+    async def _handle_mode_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /mode — pin the session agent mode.
+
+        ``auto`` re-enables per-request router classification; the other
+        modes pin the session. The physics/research loops land in a later
+        release — until then a pinned non-standard mode prints a notice and
+        runs the standard loop.
+        """
+        from son_of_anton_cli.router import AGENT_MODES
+
+        raw = event.get_command_args().strip().lower()
+        if raw and raw not in AGENT_MODES:
+            return f"❌ Unknown mode {raw!r} — use /mode auto|standard|physics|research."
+        session_key = self._session_key_for_source(event.source)
+        if not hasattr(self, "_session_mode_overrides"):
+            self._session_mode_overrides = {}
+        new_mode = raw or "auto"
+        if new_mode == "auto":
+            self._session_mode_overrides.pop(session_key, None)
+            return (
+                "Mode routing re-enabled (auto). "
+                "The router picks the mode per request."
+            )
+        self._session_mode_overrides[session_key] = new_mode
+        return f"Agent mode set to {new_mode} for this session."
+
+    async def _handle_perm_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /perm — set the permission mode (default|ask|lockdown|yolo).
+
+        Maps onto the approval machinery (approvals.mode +
+        security.lockdown in config.yaml):
+
+          default  — smart approvals (the out-of-the-box behaviour)
+          ask      — manual approval for every dangerous command
+          lockdown — manual approval + every command requires a human
+          yolo     — skip dangerous-command approvals entirely
+        """
+        from son_of_anton_cli.config import set_config_value
+
+        valid_modes = ("default", "ask", "lockdown", "yolo")
+        raw = event.get_command_args().strip().lower()
+        if not raw:
+            return "Usage: /perm default|ask|lockdown|yolo"
+        if raw not in valid_modes:
+            return f"❌ Unknown permission mode {raw!r} — use /perm default|ask|lockdown|yolo."
+
+        if raw == "default":
+            set_config_value("approvals.mode", "smart")
+            set_config_value("security.lockdown", "false")
+        elif raw == "ask":
+            set_config_value("approvals.mode", "manual")
+            set_config_value("security.lockdown", "false")
+        elif raw == "lockdown":
+            set_config_value("approvals.mode", "manual")
+            set_config_value("security.lockdown", "true")
+        else:
+            set_config_value("approvals.mode", "off")
+            set_config_value("security.lockdown", "false")
+        return f"Permission mode set to {raw}."
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
 
@@ -1571,6 +1631,7 @@ class GatewaySlashCommandsMixin:
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model auto                         — clear the session pin, re-enable routing
         """
         from gateway.run import _son_of_anton_home, _load_gateway_config
         from son_of_anton_cli.model_switch import (
@@ -1601,6 +1662,21 @@ class GatewaySlashCommandsMixin:
         if request.errors:
             # Gateway decoration: "❌ " prefix over the canonical error copy.
             return f"❌ {request.error_messages()[0]}"
+
+        # /model auto — drop the session pin and re-enable router selection.
+        if model_input and model_input.lower() == "auto":
+            session_key = self._session_key_for_source(source)
+            self._session_model_overrides.pop(session_key, None)
+            try:
+                await self.async_session_store.set_model_override(session_key, None)
+            except Exception:
+                logger.debug(
+                    "Failed to clear persisted model override", exc_info=True
+                )
+            return (
+                "Model routing re-enabled (auto). "
+                "The router picks the model per request."
+            )
         persist_global = resolve_persist_behavior(
             is_global_flag,
             is_session,

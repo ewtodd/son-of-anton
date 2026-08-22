@@ -4730,14 +4730,14 @@ def _build_compact_banner() -> str:
 def _looks_like_slash_command(text: str) -> bool:
     """Return True if *text* looks like a slash command, not a file path.
 
-    Slash commands are ``/help``, ``/model gpt-4``, ``/q``, etc.
+    Slash commands are ``/help``, ``/model gpt-4``, ``:q``, etc.
     File paths like ``/Users/ironin/file.md:45-46 can you fix this?``
     also start with ``/`` but contain additional ``/`` characters in
     the first whitespace-delimited word.  This helper distinguishes
     the two so that pasted paths are sent to the agent instead of
     triggering "Unknown command".
     """
-    if not text or not text.startswith("/"):
+    if not text or (not text.startswith("/") and not text.startswith(":")):
         return False
     first_word = text.split()[0]
     # After stripping the leading /, a command name has no slashes.
@@ -5373,6 +5373,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
         self._agent_running = False
+        self._agent_mode: Optional[str] = None  # /mode pin; None or "auto" = classify
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
@@ -11040,6 +11041,76 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
             self._close_model_picker()
 
+    def _handle_mode_command(self, cmd_original: str) -> None:
+        """Handle /mode — pin the session agent mode.
+
+        ``auto`` re-enables per-request router classification; the other
+        modes pin the session. The physics/research loops land in a later
+        release — until then a pinned non-standard mode prints a notice and
+        runs the standard loop.
+        """
+        from son_of_anton_cli.router import AGENT_MODES
+
+        parts = cmd_original.split(None, 1)
+        raw = parts[1].strip().lower() if len(parts) > 1 else ""
+        if raw and raw not in AGENT_MODES:
+            print(f"(._.) Unknown mode {raw!r} — use /mode auto|standard|physics|research.")
+            return
+        self._agent_mode = raw or "auto"
+        if self._agent_mode == "auto":
+            print("(._.) Mode routing re-enabled (auto).")
+        else:
+            print(f"(._.) Agent mode set to {self._agent_mode} for this session.")
+
+    def _handle_perm_command(self, cmd_original: str) -> None:
+        """Handle /perm — set the session permission mode.
+
+        Maps onto the existing approval machinery (approvals.mode +
+        security.lockdown in config.yaml):
+
+          default  — smart approvals (the out-of-the-box behaviour)
+          ask      — manual approval for every dangerous command
+          lockdown — manual approval + every command/write requires a human
+          yolo     — skip dangerous-command approvals entirely
+        """
+        valid_modes = ("default", "ask", "lockdown", "yolo")
+        parts = cmd_original.split(None, 1)
+        raw = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        approvals = (self.config or {}).get("approvals", {})
+        security = (self.config or {}).get("security", {})
+        current_mode = approvals.get("mode", "smart")
+        current_lockdown = security.get("lockdown", False)
+
+        if not raw:
+            if current_lockdown:
+                label = "lockdown"
+            elif current_mode == "off":
+                label = "yolo"
+            elif current_mode == "manual":
+                label = "ask"
+            else:
+                label = "default"
+            print(f"(._.) Permission mode: {label} — /perm default|ask|lockdown|yolo")
+            return
+        if raw not in valid_modes:
+            print(f"(._.) Unknown permission mode {raw!r} — use /perm default|ask|lockdown|yolo.")
+            return
+
+        if raw == "default":
+            save_config_value("approvals.mode", "smart")
+            save_config_value("security.lockdown", False)
+        elif raw == "ask":
+            save_config_value("approvals.mode", "manual")
+            save_config_value("security.lockdown", False)
+        elif raw == "lockdown":
+            save_config_value("approvals.mode", "manual")
+            save_config_value("security.lockdown", True)
+        else:
+            save_config_value("approvals.mode", "off")
+            save_config_value("security.lockdown", False)
+        print(f"(._.) Permission mode set to {raw}.")
+
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.
 
@@ -11051,6 +11122,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model auto                         — clear the session pin, re-enable routing
 
         Persistence defaults to off (``model.persist_switch_by_default`` in
         config.yaml, default False — switches are session-scoped). Use
@@ -11066,6 +11138,19 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Parse args from the original command
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
+
+        # /model auto — drop the session pin and fall back to router/model config.
+        if raw_args.lower() == "auto":
+            self.requested_provider = None
+            self.provider = None
+            self.model = None
+            self.api_key = None
+            self.base_url = None
+            self.api_mode = None
+            self.agent = None
+            self._pending_model_switch_note = None
+            print("(._.) Model routing re-enabled (auto). The router picks the model per request.")
+            return
 
         # Parse --provider, --global, --session, --once, and --refresh flags
         # via the shared single-owner parser (son_of_anton_cli.model_switch).
@@ -11397,7 +11482,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         try:
             from son_of_anton_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = text.split(None, 1)[0].lower().lstrip('/:')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "model")
         except Exception:
@@ -11421,7 +11506,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         try:
             from son_of_anton_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = text.split(None, 1)[0].lower().lstrip('/:')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "steer")
         except Exception:
@@ -11452,7 +11537,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         try:
             from son_of_anton_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = text.split(None, 1)[0].lower().lstrip('/:')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "background")
         except Exception:
@@ -11615,7 +11700,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Resolve aliases via central registry so adding an alias is a one-line
         # change in son_of_anton_cli/commands.py instead of touching every dispatch site.
         from son_of_anton_cli.commands import resolve_command as _resolve_cmd
-        _base_word = cmd_lower.split()[0].lstrip("/")
+        _base_word = cmd_lower.split()[0].lstrip("/:")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
 
@@ -11830,6 +11915,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "mode":
+            self._handle_mode_command(cmd_original)
+        elif canonical == "perm":
+            self._handle_perm_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
 
@@ -14852,6 +14941,25 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
+
+        # Resolve the agent mode for this turn. The physics/research loops
+        # land in a later release; until then a classified non-standard mode
+        # prints a one-time notice and the standard loop runs.
+        try:
+            from son_of_anton_cli.router import resolve_mode
+            _router_cfg = (self.config or {}).get("router") or {}
+            if _router_cfg.get("enabled", True):
+                _resolved_mode = resolve_mode(
+                    getattr(self, "_agent_mode", None), message
+                )
+                if _resolved_mode != "standard":
+                    print(
+                        f"(._.) Router selected {_resolved_mode!r} mode — "
+                        f"the {_resolved_mode} loop lands in a later release; "
+                        "running the standard loop."
+                    )
+        except Exception:
+            pass
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:

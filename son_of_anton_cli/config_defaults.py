@@ -372,6 +372,21 @@ DEFAULT_CONFIG = {
         "reasoning_echo": False,
     },
 
+    # Request router (temple-style): classifies each message into an agent
+    # mode (standard / physics / research) and a model slot (simple / default /
+    # complex). mode=auto classifies per message; a session /mode pin wins.
+    # Empty model slots fall back to the normal model resolution chain.
+    "router": {
+        "enabled": True,
+        "mode": "auto",
+        "simple_model": "",
+        "default_model": "",
+        "planner_model": "",
+        "executor_model": "",
+        "reviewer_model": "",
+        "researcher_model": "",
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
@@ -1924,6 +1939,10 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Lockdown permission mode (temple-style): every terminal command and
+        # every file write outside the session directory requires explicit
+        # human approval, regardless of approvals.mode. Toggle with /perm.
+        "lockdown": False,
         # Persisted acknowledgement for unattended model overrides whose tier
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.

@@ -16683,6 +16683,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "mode":
+            return await self._handle_mode_command(event)
+
+        if canonical == "perm":
+            return await self._handle_perm_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
@@ -17905,6 +17911,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 pass
         return source
 
+    def _resolve_session_agent_mode(self, session_key: str, text: str) -> str:
+        """Resolve the agent mode for one turn.
+
+        A session ``/mode`` pin wins; otherwise (and when the pin is
+        ``auto``) the router classifies the message. Falls back to
+        ``standard`` when routing is disabled in config.
+        """
+        from son_of_anton_cli.router import resolve_mode
+
+        router_cfg = (self.config or {}).get("router") or {}
+        if not router_cfg.get("enabled", True):
+            return "standard"
+        override = getattr(self, "_session_mode_overrides", {}).get(session_key)
+        return resolve_mode(override, text)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -18012,6 +18033,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
+
+        # Resolve the agent mode for this turn (router classification unless
+        # the session has a /mode pin). The physics/research loops land in a
+        # later release; until then the resolved mode is recorded and the
+        # standard loop runs.
+        _agent_mode = self._resolve_session_agent_mode(
+            session_key, event.text or ""
+        )
+        if _agent_mode != "standard":
+            logger.info(
+                "router: turn classified as mode=%s (session=%s)",
+                _agent_mode,
+                session_key,
+            )
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)

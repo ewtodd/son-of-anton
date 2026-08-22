@@ -3190,6 +3190,20 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(mode)
 
 
+def _is_lockdown_enabled() -> bool:
+    """Return whether the lockdown permission mode is active.
+
+    ``security.lockdown`` in config.yaml (set via /perm lockdown) forces
+    every terminal command through the human approval flow.
+    """
+    try:
+        from son_of_anton_cli.config import load_config_readonly as _load_cfg
+        _sec = (_load_cfg() or {}).get("security", {}) or {}
+        return bool(_sec.get("lockdown", False))
+    except Exception:
+        return False
+
+
 def is_approval_bypass_active_for_session(session_key: str) -> bool:
     """Return whether one exact session bypasses Son of Anton approval prompts.
 
@@ -4387,13 +4401,20 @@ def check_all_command_guards(command: str, env_type: str,
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
 
+    # Lockdown permission mode (security.lockdown): overrides yolo and
+    # mode=off — every command requires human approval. Set via /perm lockdown.
+    lockdown = _is_lockdown_enabled()
+    if lockdown:
+        approval_mode = "manual"
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
-    approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+    if not lockdown and (
+        _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off"
+    ):
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    if not lockdown and _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
@@ -4599,6 +4620,13 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
+
+    if lockdown:
+        warnings.append((
+            "lockdown",
+            "lockdown permission mode is active — every command requires approval",
+            False,
+        ))
 
     session_key = get_current_session_key()
 
