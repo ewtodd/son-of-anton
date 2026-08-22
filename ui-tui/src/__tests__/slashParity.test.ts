@@ -111,13 +111,16 @@ describe('slash parity matrix', () => {
     }
   })
 
-  it('/q alias resolves to queue, not quit (#31983)', () => {
-    // Regression for #31983: the TUI `quit` command used to carry alias `q`,
-    // which collided with the Python-side `/queue` alias. TUI-local commands
-    // dispatch before the backend, so `/q` resolved to /quit (session.die)
-    // instead of queueing a prompt.
-    const cmd = findSlashCommand('q')
-    expect(cmd, '/q must resolve to a command').toBeDefined()
-    expect(cmd!.name).toBe('queue')
+  it('/q alias resolves to quit, matching the CLI contract', () => {
+    // The fork fixed hermes' q→queue aliasing in the CLI (`/q` and `:q` quit,
+    // `queue` is its own command). The TUI mirrors that: `/q` must quit, and
+    // `/queue` must stay queueing.
+    const qCmd = findSlashCommand('q')
+    expect(qCmd, '/q must resolve to a command').toBeDefined()
+    expect(qCmd!.name).toBe('quit')
+
+    const queueCmd = findSlashCommand('queue')
+    expect(queueCmd, '/queue must resolve to a command').toBeDefined()
+    expect(queueCmd!.name).toBe('queue')
   })
 })

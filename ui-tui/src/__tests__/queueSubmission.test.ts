@@ -14,11 +14,7 @@ describe('/queue collapsed paste submission', () => {
     })
   })
 
-  it('supports the /q alias and rejects an empty queue command', () => {
-    expect(queueItemFromSlash('/q [[ payload ]]', '/q complete payload')).toEqual({
-      display: '[[ payload ]]',
-      text: 'complete payload'
-    })
+  it('rejects an empty queue command', () => {
     expect(queueItemFromSlash('/queue', '/queue')).toBeUndefined()
   })
 

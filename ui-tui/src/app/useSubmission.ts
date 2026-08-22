@@ -12,6 +12,7 @@ import type { Msg } from '../types.js'
 
 import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
+import { findSlashCommand } from './slash/registry.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -240,14 +241,26 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const toHistory = submission.text
       const queuePayload = expandPasteTokens(submissionTokens)(full)
 
-      if (looksLikeSlashCommand(full)) {
+      const isCommand =
+        looksLikeSlashCommand(full) ||
+        // Mirror the classic CLI: a colon prefix invokes commands too
+        // (`:q` quits, `:queue` queues). Only treat `:name` as a command
+        // when it resolves locally — anything else is sent to the agent as
+        // ordinary chat text.
+        (() => {
+          const colonMatch = /^:([a-z0-9_-]+)(?:\s|$)/i.exec(full)
+
+          return colonMatch !== null && findSlashCommand(colonMatch[1]) !== undefined
+        })()
+
+      if (isCommand) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
         composerActions.pushHistory(toHistory)
 
         const parsed = parseSlashCommand(full)
 
         const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(full, queuePayload) : undefined
+          parsed.name === 'queue' ? queueItemFromSlash(full, queuePayload) : undefined
 
         if (queued) {
           composerActions.enqueue(queued.text, queued.display)

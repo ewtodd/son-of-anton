@@ -125,7 +125,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['exit'],
+    aliases: ['exit', 'q'],
     help: 'exit son-of-anton',
     name: 'quit',
     run: (_arg, ctx) => {
@@ -669,7 +669,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['q'],
     help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {
