@@ -4648,7 +4648,7 @@ class ChatConsole:
         self._inner = Console(
             file=self._buffer,
             force_terminal=True,
-            color_system="truecolor",
+            color_system="standard",
             highlight=False,
         )
 
@@ -4708,7 +4708,7 @@ def _build_compact_banner() -> str:
 
     skin_name = getattr(_skin, "name", "default") if _skin else "default"
     border_color = _skin.get_color("banner_border", "bold yellow") if _skin else "bold yellow"
-    title_color = _skin.get_color("banner_title", "yellow") if _skin else "yellow"
+    title_color = _skin.get_color("banner_title", "bold yellow") if _skin else "bold yellow"
     dim_color = _skin.get_color("banner_dim", "dim yellow") if _skin else "dim yellow"
 
     if skin_name == "default":
@@ -4729,7 +4729,7 @@ def _build_compact_banner() -> str:
 
     w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return f"\n[{title_color}]{tiny_line} [dim {dim_color}]- Nous Research\n"
+        return f"\n[{title_color}]{tiny_line} [{dim_color}]- Nous Research\n"
 
     inner = w - 2  # inside the box border
     bar = "═" * w
@@ -4740,10 +4740,10 @@ def _build_compact_banner() -> str:
     line2 = version_line[:content_width].ljust(content_width)
 
     return (
-        f"\n[bold {border_color}]╔{bar}╗\n"
-        f"[bold {border_color}]║ [{title_color}]{line1} [bold {border_color}]║\n"
-        f"[bold {border_color}]║ [dim {dim_color}]{line2} [bold {border_color}]║\n"
-        f"[bold {border_color}]╚{bar}╝\n"
+        f"\n[{border_color}]╔{bar}╗\n"
+        f"[{border_color}]║ [{title_color}]{line1} [{border_color}]║\n"
+        f"[{border_color}]║ [{dim_color}]{line2} [{border_color}]║\n"
+        f"[{border_color}]╚{bar}╝\n"
     )
 
 
@@ -8695,7 +8695,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         console = Console(
             file=buf,
             force_terminal=True,
-            color_system="truecolor",
+            color_system="standard",
             highlight=False,
             width=width,
         )
@@ -8981,15 +8981,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             separator_color, accent_color, label_color = "dim yellow", "yellow", "cyan"
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim {separator_color}]· [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}"
+            toolsets_info = f" [{separator_color}]· [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}"
 
-        provider_info = f" [dim {separator_color}]· [dim]provider: {self.provider}"
+        provider_info = f" [{separator_color}]· [dim]provider: {self.provider}"
         if self._provider_source:
-            provider_info += f" [dim {separator_color}]· [dim]auth: {self._provider_source}"
+            provider_info += f" [{separator_color}]· [dim]auth: {self._provider_source}"
 
         self._console_print(
             f"  {api_indicator} [{accent_color}]{model_short} "
-            f"[dim {separator_color}]· [bold {label_color}]{tool_status}"
+            f"[{separator_color}]· [{label_color}]{tool_status}"
             f"{toolsets_info}{provider_info}"
         )
 
@@ -11891,7 +11891,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
                     except Exception:
                         _tip_color = "dim yellow"
-                    cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}")
+                    cc.print(f"[{_tip_color}]✦ Tip: {_tip}")
                 except Exception:
                     pass
             else:
@@ -11906,7 +11906,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
                     except Exception:
                         _tip_color = "dim yellow"
-                    self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}")
+                    self._console_print(f"[{_tip_color}]✦ Tip: {_tip}")
                 except Exception:
                     pass
         elif canonical == "history":
@@ -16202,7 +16202,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _tip_color = _welcome_skin.get_color("banner_dim", "dim yellow")
             except Exception:
                 _tip_color = "dim yellow"
-            self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}")
+            self._console_print(f"[{_tip_color}]✦ Tip: {_tip}")
         except Exception:
             pass  # Tips are non-critical — never break startup
 

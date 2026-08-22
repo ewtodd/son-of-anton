@@ -238,8 +238,7 @@ class CLIAgentSetupMixin:
 
         _cprint("")
         _cprint("⚛ No inference provider is configured yet — let's fix that.")
-        _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
-                "no API key needed) and a model.")
+        _cprint("  You'll pick a provider — a local llama-swap/vLLM endpoint or the DeepSeek API — and a model.")
         try:
             answer = input("  Set up a provider now? [Y/n]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):

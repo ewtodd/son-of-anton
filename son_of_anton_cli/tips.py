@@ -29,8 +29,6 @@ TIPS = [
     "/personality pirate sets a fun personality — 14 built-in options from kawaii to shakespeare.",
     "/skin changes the CLI theme — try ares, mono, slate, poseidon, or charizard.",
     "/statusbar toggles a persistent bar showing model, tokens, context fill %, cost, and duration.",
-    "/tools disable browser temporarily removes browser tools for the current session.",
-    "/browser connect attaches browser tools to your running Chromium-family browser via CDP.",
     "/plugins lists installed plugins and their status.",
     "/cron manages scheduled tasks — set up recurring prompts with delivery to any platform.",
     "/reload-mcp hot-reloads MCP server configuration without restarting.",
@@ -116,7 +114,6 @@ TIPS = [
     "Set approvals.mode: smart to let an LLM auto-approve safe commands and auto-deny dangerous ones.",
     "Set fallback_model in config.yaml to automatically fail over to a backup provider.",
     "Set privacy.redact_pii: true to hash user IDs and phone numbers before sending to the LLM.",
-    "Set browser.record_sessions: true to auto-record browser sessions as WebM videos.",
     "Set worktree: true in config.yaml to always create a git worktree (same as son-of-anton -w).",
     "Set security.website_blocklist.enabled: true to block specific domains from web tools.",
     "Set cron.wrap_response: false to deliver raw agent output without the cron header/footer.",
@@ -135,17 +132,12 @@ TIPS = [
     "patch supports V4A format for bulk multi-file edits in a single call.",
     "read_file suggests similar filenames when a file isn't found.",
     "read_file auto-deduplicates — re-reading an unchanged file returns a lightweight stub.",
-    "browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.",
-    "browser_console can evaluate JavaScript expressions in the page context.",
-    "image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.",
-    "text_to_speech converts text to audio — plays as voice bubbles on supported platforms.",
-    "send_message can reach any connected messaging platform from within a session.",
     "The todo tool helps the agent track complex multi-step tasks during a session.",
     "session_search performs full-text search across ALL past conversations.",
     "The agent automatically saves preferences, corrections, and environment facts to memory.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",
-    "The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.",
+    "The terminal tool supports local and SSH backends.",
 
     # --- Profiles ---
     "Each profile gets its own config, API keys, memory, sessions, skills, and cron jobs.",
@@ -183,16 +175,10 @@ TIPS = [
     "Cron jobs run in completely fresh agent sessions — prompts must be self-contained.",
 
     # --- Voice ---
-    "Voice mode works with zero API keys if faster-whisper is installed (free local speech-to-text).",
-    "Five TTS providers available: Edge TTS (free), ElevenLabs, OpenAI, NeuTTS (free local), MiniMax.",
-    "/voice on enables voice mode in the CLI. Ctrl+B toggles push-to-talk recording.",
-    "Streaming TTS plays sentences as they generate — you don't wait for the full response.",
-    "Voice messages on Discord and Slack are auto-transcribed.",
 
     # --- Gateway & Messaging ---
     "Son of Anton runs on Discord, Slack, Signal, and more messaging platforms.",
     "son-of-anton gateway install sets it up as a system service that starts on boot.",
-    "Discord voice channel mode: the bot joins VC, transcribes speech, and talks back.",
     "group_sessions_per_user: true gives each person their own session in group chats.",
     "/sethome marks a chat as the home channel for cron job deliveries.",
     "The gateway supports inactivity-based timeouts — active agents can run indefinitely.",
@@ -215,19 +201,12 @@ TIPS = [
     "Context files are capped at 20,000 characters with smart head/tail truncation.",
 
     # --- Browser ---
-    "Five browser providers: local Chromium, Browserbase, Browser Use, Camofox, and Firecrawl.",
-    "Camofox is an anti-detection browser — Firefox fork with C++ fingerprint spoofing.",
-    "browser_navigate returns a page snapshot automatically — no need to call browser_snapshot after.",
-    "browser_vision with annotate=true overlays numbered labels on interactive elements.",
 
     # --- MCP ---
-    "son-of-anton mcp opens an interactive picker of Nous-approved MCPs you can install in one keystroke.",
-    "son-of-anton mcp catalog lists Nous-approved MCP servers shipped with the repo.",
     "son-of-anton mcp install <name> installs a catalog entry, prompts for credentials, and lets you pick which of its tools to enable.",
     "MCP servers are configured in config.yaml — both stdio and HTTP transports supported.",
     "Per-server tool filtering: tools.include whitelists and tools.exclude blacklists specific tools.",
     "MCP servers auto-generate toolsets at runtime — son-of-anton tools can toggle them per platform.",
-    "MCP OAuth support: auth: oauth enables browser-based authorization with PKCE.",
 
     # --- Checkpoints & Rollback ---
     "Checkpoints have zero overhead when no files are modified — enabled by default.",
@@ -257,7 +236,6 @@ TIPS = [
     "Custom providers: save named endpoints in config.yaml under custom_providers.",
     "SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.",
     "credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.",
-    "son-of-anton auth add nous or son-of-anton auth add openai-codex sets up OAuth-based providers.",
     "The API server supports both Chat Completions and Responses API with server-side state.",
     "tool_preview_length: 0 in config shows full file paths in the spinner's activity feed.",
     "son-of-anton status --deep runs deeper diagnostic checks across all components.",
@@ -297,8 +275,6 @@ TIPS = [
     "Container mode: place .container-mode in SON_OF_ANTON_HOME and the host CLI auto-execs into the container.",
     "Ctrl+C has 5 priority tiers: cancel recording → cancel prompts → cancel picker → interrupt agent → exit.",
     "Every interrupt during an agent run is logged to ~/.son-of-anton/interrupt_debug.log with timestamps.",
-    "BROWSER_CDP_URL connects browser tools to any running Chromium-family browser — accepts WebSocket, HTTP, or host:port.",
-    "BROWSERBASE_ADVANCED_STEALTH=true enables advanced anti-detection with custom Chromium (Scale Plan).",
     "The CLI auto-switches to compact mode in terminals narrower than 80 columns.",
     "Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).",
     "Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.",
@@ -309,14 +285,11 @@ TIPS = [
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
     "Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.",
     "context.engine in config.yaml can be set to a plugin name for alternative context management strategies.",
-    "Browser page snapshots over 15,000 characters are truncated or auto-summarized; the full snapshot is saved to cache/web for read_file paging.",
     "The compressor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM runs.",
     "When compression fails, further attempts are paused for 10 minutes to avoid API hammering.",
     "Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.",
-    "Audio level visualization shows ▁▂▃▄▅▆▇ bars during voice recording based on microphone RMS levels.",
     "Profile names cannot collide with existing PATH binaries — 'son-of-anton profile create ls' would be rejected.",
     "son-of-anton profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).",
-    "The voice record key is configurable via voice.record_key in config.yaml — not just Ctrl+B.",
     ".cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.",
     "Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.",
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
@@ -329,7 +302,6 @@ TIPS = [
     "SON_OF_ANTON_DEV=1 bypasses container mode detection for local development.",
     "Each MCP server gets its own toolset (mcp-servername) that can be toggled independently via son-of-anton tools.",
     "MCP ${ENV_VAR} placeholders in config are resolved at server spawn — including vars from ~/.son-of-anton/.env.",
-    "Skills from trusted repos (NousResearch) get a 'trusted' security level; community skills get extra scanning.",
     "The skills quarantine at ~/.son-of-anton/skills/.hub/quarantine/ holds skills pending security review.",
 
     # --- Advanced Slash Commands ---
@@ -344,7 +316,6 @@ TIPS = [
     '/topic in Discord DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
     '/approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.',
     '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
-    '/kanban boards switch <slug> changes the active multi-project Kanban board from inside chat.',
     '/reload reloads ~/.son-of-anton/.env into the running session — pick up new API keys without restarting.',
 
     # --- Cron (no-agent & scripts) ---
@@ -365,7 +336,6 @@ TIPS = [
     # --- Credential Pools & Routing ---
     'son-of-anton auth reset <provider> clears all cooldowns and exhaustion flags on a credential pool.',
     'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.',
-    'use_gateway: true per-tool routes web, image, tts, or browser through your Nous subscription — no extra keys.',
     'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.',
     'provider_routing.require_parameters: true only routes to providers that support every param in your request.',
 
@@ -385,8 +355,6 @@ TIPS = [
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
 
     # --- TTS ---
-    'tts.provider: piper runs 44-language local TTS on CPU — voices auto-download to ~/.son-of-anton/cache/piper-voices/.',
-    'tts.providers.<name>.type: command wires any CLI TTS engine with {input_path} and {output_path} placeholders.',
 
     # --- API Server & Proxy ---
     'API_SERVER_ENABLED=true runs an OpenAI-compatible endpoint alongside the gateway for Open WebUI and LibreChat.',
@@ -409,7 +377,6 @@ TIPS = [
     '/platforms shows gateway and messaging-platform connection status right from inside chat.',
     '/commands paginates the full slash-command + installed-skill list — useful on platforms without tab completion.',
     '/toolsets lists every available toolset so you know what -t/--toolsets accepts.',
-    '/voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts.',
     '/reload-skills re-scans ~/.son-of-anton/skills/ so drop-in skills appear without restarting the session.',
     '/indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs.',
     '/debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too.',
@@ -445,8 +412,6 @@ TIPS = [
     'SON_OF_ANTON_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.',
 
     # --- Auxiliary Tasks & Image Generation ---
-    'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.',
-    'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
     'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
 
     # --- Security ---

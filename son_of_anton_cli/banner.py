@@ -977,49 +977,26 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         _bskin = None
         _hero = SON_OF_ANTON_CADUCEUS
     left_lines = ["", _hero, ""]
-    if (provider or "").strip().lower() == "moa":
-        # MoA virtual provider: ``model`` is a preset name. Show the preset and
-        # its aggregator so the banner is meaningful instead of a bare slug.
-        preset_name = model
-        agg_label = ""
-        try:
-            from son_of_anton_cli.config import load_config
-            from son_of_anton_cli.moa_config import normalize_moa_config
-
-            _moa = normalize_moa_config(load_config().get("moa") or {})
-            _preset = _moa.get("presets", {}).get(preset_name)
-            if _preset:
-                _agg = _preset.get("aggregator") or {}
-                _am = str(_agg.get("model") or "")
-                agg_label = _am.split("/")[-1] if "/" in _am else _am
-        except Exception:
-            agg_label = ""
-        if len(preset_name) > 28:
-            preset_name = preset_name[:25] + "..."
-        agg_str = f" [dim {dim}]· [dim {dim}]agg {agg_label}" if agg_label else ""
-        ctx_str = f" [dim {dim}]· [dim {dim}]{_format_context_length(context_length)} context" if context_length else ""
-        left_lines.append(f"[{accent}]MoA: {preset_name}{agg_str}{ctx_str} [dim {dim}]· [dim {dim}]Nous Research")
+    if not (model or "").strip() or (model or "").strip().lower() == "unknown":
+        # Unconfigured install: say so in red instead of a blank/"unknown"
+        # slug — this is the single clearest place to tell the user what
+        # is wrong and how to fix it.
+        left_lines.append(
+            f"[bold red]no model configured "
+            f"[{dim}]— run /model or son-of-anton setup"
+        )
     else:
-        if not (model or "").strip() or (model or "").strip().lower() == "unknown":
-            # Unconfigured install: say so in red instead of a blank/"unknown"
-            # slug — this is the single clearest place to tell the user what
-            # is wrong and how to fix it.
-            left_lines.append(
-                f"[bold red]no model configured "
-                f"[dim {dim}]— run /model or son-of-anton setup"
-            )
-        else:
-            model_short = model.split("/")[-1] if "/" in model else model
-            if model_short.endswith(".gguf"):
-                model_short = model_short[:-5]
-            if len(model_short) > 28:
-                model_short = model_short[:25] + "..."
-            ctx_str = f" [dim {dim}]· [dim {dim}]{_format_context_length(context_length)} context" if context_length else ""
-            left_lines.append(f"[{accent}]{model_short}{ctx_str} [dim {dim}]· [dim {dim}]Nous Research")
+        model_short = model.split("/")[-1] if "/" in model else model
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
+        if len(model_short) > 28:
+            model_short = model_short[:25] + "..."
+        ctx_str = f" [{dim}]· [{dim}]{_format_context_length(context_length)} context" if context_length else ""
+        left_lines.append(f"[{accent}]{model_short}{ctx_str} [{dim}]· [{dim}]")
 
     if os.getenv("SON_OF_ANTON_YOLO_MODE"):
-        left_lines.append(f"[bold red]⚠ YOLO mode [dim {dim}]— all approval prompts bypassed")
-    left_lines.append(f"[dim {dim}]{cwd}")
+        left_lines.append(f"[bold red]⚠ YOLO mode [{dim}]— all approval prompts bypassed")
+    left_lines.append(f"[{dim}]{cwd}")
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}")
     left_content = "\n".join(left_lines)
@@ -1078,10 +1055,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     colored_names.append(f"[{text}]{name}")
             tools_str = ", ".join(colored_names)
 
-        right_lines.append(f"[dim {dim}]{toolset}: {tools_str}")
+        right_lines.append(f"[{dim}]{toolset}: {tools_str}")
 
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)")
+        right_lines.append(f"[{dim}](and {remaining_toolsets} more toolsets...)")
 
     # MCP Servers section (only if configured). Probe cheaply first: the
     # full get_mcp_status() path resolves portable plugin MCP servers,
@@ -1115,23 +1092,23 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']} [{text}]({srv['transport']}) "
-                    f"[dim {dim}]— [{text}]{srv['tools']} tool(s)"
+                    f"[{dim}]{srv['name']} [{text}]({srv['transport']}) "
+                    f"[{dim}]— [{text}]{srv['tools']} tool(s)"
                 )
             elif srv.get("disabled") or status == "disabled":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']} [dim]({srv['transport']}) "
-                    f"[dim {dim}]— disabled"
+                    f"[{dim}]{srv['name']} [dim]({srv['transport']}) "
+                    f"[{dim}]— disabled"
                 )
             elif status == "connecting":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']} [dim]({srv['transport']}) "
+                    f"[{dim}]{srv['name']} [dim]({srv['transport']}) "
                     f"[yellow]— connecting"
                 )
             elif status == "configured":
                 right_lines.append(
-                    f"[dim {dim}]{srv['name']} [dim]({srv['transport']}) "
-                    f"[dim {dim}]— configured"
+                    f"[{dim}]{srv['name']} [dim]({srv['transport']}) "
+                    f"[{dim}]— configured"
                 )
             else:
                 right_lines.append(
@@ -1160,7 +1137,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
 
     if not _skills_enabled:
-        right_lines.append(f"[dim {dim}]Skills toolset disabled")
+        right_lines.append(f"[{dim}]Skills toolset disabled")
     elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
@@ -1182,9 +1159,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 parts.append(name)
                 length += _needed
             skills_str = ", ".join(parts)
-            right_lines.append(f"[dim {dim}]{category}: [{text}]{skills_str}")
+            right_lines.append(f"[{dim}]{category}: [{text}]{skills_str}")
     else:
-        right_lines.append(f"[dim {dim}]No skills installed")
+        right_lines.append(f"[{dim}]No skills installed")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
@@ -1201,7 +1178,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         if get_current_runtime(_load_cfg()) == "codex_app_server":
             right_lines.append(
                 f"[bold {accent}]Runtime: [{text}]codex app-server "
-                f"[dim {dim}](terminal/file ops/MCP run inside codex)"
+                f"[{dim}](terminal/file ops/MCP run inside codex)"
             )
     except Exception:
         pass
@@ -1214,7 +1191,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
-    right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}")
+    right_lines.append(f"[{dim}]{' · '.join(summary_parts)}")
 
     # Update check — use prefetched result if available. NEVER block the
     # banner on it: the prefetch does git/network work that rarely finishes
@@ -1241,9 +1218,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     release_info = get_latest_release_tag()
     if release_info:
         _tag, _url = release_info
-        title_markup = f"[bold {title_color}][link={_url}]{version_label}"
+        title_markup = f"[{title_color}][link={_url}]{version_label}"
     else:
-        title_markup = f"[bold {title_color}]{version_label}"
+        title_markup = f"[{title_color}]{version_label}"
     outer_panel = Panel(
         layout_table,
         title=title_markup,

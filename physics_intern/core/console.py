@@ -40,7 +40,7 @@ class LoggingConsole(Console):
             file=self._log_file,
             force_terminal=True,
             width=120,
-            color_system="truecolor",
+            color_system="standard",
         )
         atexit.register(self._close_log)
 
