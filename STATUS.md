@@ -1,8 +1,9 @@
 # Son of Anton — Status & Handoff
 
 Written 2026-08-22 after the fork/build-out session, updated 2026-08-22 after
-the Phase 7 cleanup pass. Everything below is the state as of commit
-`fc5e9eba` on `main` (pushed to `github.com:ewtodd/son-of-anton`).
+the Phase 7 cleanup pass and the deep-Nous cleanup layers. Everything below
+is the state as of commit `da4b4100` on `main` (pushed to
+`github.com:ewtodd/son-of-anton`).
 
 ---
 
@@ -117,30 +118,56 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
    chat). Now `/q`, `:q`, `/exit` quit and `/queue` queues, matching the CLI.
    Vitest 1703 pass + tsc clean.
 
+### Deep-Nous cleanup layers (this session, `40a24437` + `da4b4100`)
+
+- **Layer 1** (`40a24437`): gateway enroll (relay connector), debug share
+  --nous, nous_auth_keepalive, `son-of-anton sync` org skills-sync +
+  skills_sync_client + org-mirror resolution in skill_utils/prompt_builder/
+  skills_tool + org write-guards/auto-propose in skill_manager_tool + sync
+  opt-in flags, OPENROUTER_MODELS/fetch_openrouter_models/openrouter slug
+  detection/fetch_ollama_cloud_models + scripts/build_model_catalog.py, the
+  cron.chronos config section. `_model_flow_api_key_provider` rewritten
+  generic (also fixed a latent NameError on `_select_zai_endpoint`).
+  Bundled-skills sync (`tools/skills_sync.py`) is local and stays.
+- **Layer 2** (`da4b4100`): /subscription + /topup (CLI, gateway, TUI RPCs),
+  cli_billing_mixin, billing/subscription/usage views, nous_billing,
+  credits_tracker + account_usage and every call site (run_agent,
+  conversation_loop, agent_init, tui_gateway, cli_agent_setup_mixin),
+  nous_subscription + the managed tool gateway (tools_config rows, firecrawl
+  gateway path, tool_backend_helpers helpers, system-prompt subscription
+  block), and the Nous 401/entitlement retry paths. /usage keeps its session
+  token/rate-limit display; /insights stays (local analytics).
+
 ---
 
 ## Current state / known loose ends
 
 - **User's home skills are stale**: `~/.son-of-anton/skills/` still holds the
   pre-prune 78 skills. One-time: `rm -rf ~/.son-of-anton/skills` (then
-  optionally `son-of-anton setup` to install the bundled 43).
-- **Deep Nous modules remain inert** (follow-up pass): `nous_account.py`,
-  `nous_subscription.py`, `nous_auth_keepalive.py`, `nous_billing.py`,
-  `cli_billing_mixin.py`, `diagnostics_upload.py`, `gateway_enroll.py`,
-  `plugin_index.py`, skills-sync identity checks, and the iron-proxy's
-  `nous_portal.py` adapter. All fail closed without Nous auth; the provider
-  catalog no longer reaches them. Remove them in one coordinated pass.
-- **Curated-model data leftovers**: `models.py` still carries
-  `OPENROUTER_MODELS` / `fetch_openrouter_models` / `fetch_ollama_cloud_models`
-  / `fetch_lmstudio_models` / `get_curated_nous_model_ids` and
-  `scripts/build_model_catalog.py` consumes them. Unreachable from the pruned
-  picker; remove with the deep-Nous pass.
-- **doctor.py** still probes a few removed providers (Nous auth row,
-  connectivity checks) and `runtime_provider.py` keeps openrouter host-guards
-  as defense-in-depth. Triage with the deep-Nous pass.
-- **chronos config section** (`cron.chronos`, NAS-managed cron) points at
-  portal.nousresearch.com — optional external-scheduler infra, inert by
-  default. Remove or repoint with the deep-Nous pass.
+   optionally `son-of-anton setup` to install the bundled 43).
+- **Remaining deep-Nous tail** (one final pass, all credential-gated dead
+  paths — nothing user-visible reaches them):
+  - `nous_account.py` + `agent/portal_tags.py` + `agent/aux_accounting.py`
+  - auth.py's Nous OAuth flow: portal device-code login, invoke-JWT checks,
+    `resolve_nous_runtime_credentials`, `step_up_nous_billing_scope`, and the
+    nous model-fetch block (`get_curated_nous_model_ids` callers)
+  - `agent/auxiliary_client.py`'s Nous branch (`auxiliary_is_nous`,
+    `_NOUS_MODEL`, pool resolution, `_nous_extra_body`)
+  - models.py Nous-curated helpers: `check_nous_free_tier`,
+    `fetch_nous_recommended_models`, `get_curated_nous_model_ids`,
+    `partition_nous_models_by_tier`, `union_with_portal_*`
+  - lmstudio runtime-load cluster (`_ensure_lmstudio_runtime_loaded` +
+    models.py `ensure_lmstudio_model_loaded`/`fetch_lmstudio_models`) and
+    the opencode api-mode helpers in model_switch/runtime_provider/cli
+  - the iron-proxy's `nous_portal.py` adapter (kept deliberately — the proxy
+    is retained and this is its only OAuth upstream; fails closed without
+    legacy auth.json state)
+  - doctor.py's removed-provider connectivity probes
+  Excising these without E2E coverage of the aux/auth chains is riskier than
+  leaving inert gated code — do it with a live smoke test in hand.
+- **doctor.py** keeps a few removed-provider probes (Nous auth row,
+  connectivity checks); `runtime_provider.py` keeps openrouter host-guards as
+  defense-in-depth. Triage with the final pass above.
 - **No live LLM end-to-end run yet**: physics/research modes verified by
   imports + unit checks + checker pass/fail cases, not against a real
   llama-swap/DeepSeek endpoint.
@@ -150,17 +177,18 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
   prompt tuning is a follow-up.
 - **TUI theming**: `ui-tui/src/theme.ts` still has its own hex color-mix
   engine — converting it to terminal-theme-driven is a bigger JS refactor,
-  not started.
+  not started. The TUI also still ships `topup.ts` / `subscription.ts` slash
+  commands whose Python RPCs are gone — remove them with the TUI theming pass.
 - **TUI-side `:q`**: fixed this session (item 6 above).
 
 ## What's left
 
-1. **Deep-Nous cleanup pass** — remove the inert Nous modules + curated-model
-   leftovers listed above, then re-verify with the contract suite.
+1. **Final deep-Nous pass** — the tail above, once a live smoke test of the
+   aux/auth chains exists to catch regressions.
 2. **Live smoke test** of the physics modes against the user's endpoints
    (needs their config).
-3. **TUI theming decision** — keep the hex engine or port terminal-theme
-   colors; no action taken yet.
+3. **TUI follow-up** — remove topup/subscription commands; theming decision
+   (keep the hex engine or port terminal-theme colors).
 4. **README** stays in sync with the above.
 
 ## Operational notes

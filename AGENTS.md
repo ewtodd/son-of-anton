@@ -688,7 +688,10 @@ platform as data can stay unmarked.
   repos directly.
 - **The agent name:** the GitHub account is `son-of-anton-bot`; never create a DeepSeek
   co-author trailer.
-- **Known loose ends** (tracked in `STATUS.md`): deep Nous modules (`nous_account.py`,
-  `nous_subscription.py`, billing, skills-sync identity, proxy Nous adapter) remain inert
-  after the provider prune; the TUI theme engine is not yet terminal-theme-driven; physics
-  runs are synchronous turns.
+- **Known loose ends** (tracked in `STATUS.md`): a small deep-Nous tail
+  (auth.py's Nous OAuth flow, the `auxiliary_client.py` Nous branch,
+  `nous_account.py`/`portal_tags.py`, Nous-curated model helpers, the proxy's
+  `nous_portal.py` adapter) remains inert after the cleanup layers — it is
+  credential-gated dead code, to be excised with a live smoke test in hand;
+  the TUI theme engine is not yet terminal-theme-driven; physics runs are
+  synchronous turns.
