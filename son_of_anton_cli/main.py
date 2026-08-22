@@ -2815,7 +2815,7 @@ def _launch_tui(
         from son_of_anton_cli.relaunch import relaunch
 
         print()
-        print("⚕ Launching update...")
+        print("⚛ Launching update...")
         print()
         relaunch(["update"], preserve_inherited=False)
 
