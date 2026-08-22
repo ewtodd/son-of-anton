@@ -2869,7 +2869,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
+_ACCENT_ANSI_DEFAULT = "\033[1;33m"  # bold yellow on the terminal palette
 _BOLD = "\033[1m"
 _RST = "\033[0m"
 _STREAM_PAD = ""  # No indent for streamed response text — leading whitespace pollutes
@@ -2879,22 +2879,79 @@ _STREAM_PARTIAL_PREVIEW_LEN = 60  # tail of an unfinished logical line mirrored
 # into the spinner while streaming (TTFT perception without hard-wrapping)
 
 
-def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
-    """Convert a hex color like '#268bd2' to a true-color ANSI escape.
+# The 16 legacy ANSI colors (SGR 30-37 / 90-97) as sRGB, used to snap stray
+# hex values from custom skins onto the terminal's palette. The user's theme
+# (kitty, Terminal.app, ...) decides how those codes render, so hardcoded
+# true-color values never override it.
+_ANSI16_RGB: dict[int, tuple[int, int, int]] = {
+    30: (0, 0, 0), 31: (205, 49, 49), 32: (13, 188, 121),
+    33: (229, 229, 16), 34: (36, 114, 200), 35: (188, 63, 188),
+    36: (17, 168, 205), 37: (229, 229, 229),
+    90: (102, 102, 102), 91: (241, 76, 76), 92: (59, 231, 97),
+    93: (235, 241, 84), 94: (84, 144, 240), 95: (241, 132, 232),
+    96: (61, 217, 238), 97: (255, 255, 255),
+}
 
-    Auto-remaps known dark-mode-tuned colors to readable light-mode
-    equivalents when running on a light terminal (see
-    _maybe_remap_for_light_mode + _LIGHT_MODE_REMAP).
+_ANSI_NAMED: dict[str, int] = {
+    "black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 34,
+    "magenta": 35, "cyan": 36, "white": 37, "default": 39,
+    "bright_black": 90, "bright_red": 91, "bright_green": 92,
+    "bright_yellow": 93, "bright_blue": 94, "bright_magenta": 95,
+    "bright_cyan": 96, "bright_white": 97,
+}
+
+
+def _nearest_ansi16(r: int, g: int, b: int) -> int:
+    """Return the SGR code of the legacy-16 color nearest to an sRGB triple."""
+    best_code = 37
+    best_dist: float | None = None
+    for code, (cr, cg, cb) in _ANSI16_RGB.items():
+        dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_code = code
+    return best_code
+
+
+def _hex_to_ansi(color: str, *, bold: bool = False) -> str:
+    """Convert a skin color to an ANSI escape on the terminal's palette.
+
+    Named ANSI colors (``"yellow"``, ``"bold yellow"``, ``"dim yellow"``,
+    ``"default"``, ...) pass straight through so the terminal theme — not a
+    hardcoded true-color value — decides how they render. Hex values from
+    custom skins snap to the nearest legacy-16 color for the same reason.
     """
-    hex_color = _maybe_remap_for_light_mode(hex_color)
-    try:
-        r = int(hex_color[1:3], 16)
-        g = int(hex_color[3:5], 16)
-        b = int(hex_color[5:7], 16)
-        prefix = "1;" if bold else ""
-        return f"\033[{prefix}38;2;{r};{g};{b}m"
-    except (ValueError, IndexError):
-        return _ACCENT_ANSI_DEFAULT if bold else "\033[38;2;184;134;11m"
+    if not color:
+        color = "default"
+    tokens = str(color).strip().split()
+    code = None
+    extra_bold = False
+    dim = False
+    for token in tokens:
+        if token == "bold":
+            extra_bold = True
+        elif token == "dim":
+            dim = True
+        elif token in _ANSI_NAMED:
+            code = _ANSI_NAMED[token]
+    if code is None and tokens and tokens[0].startswith("#"):
+        hex_color = _maybe_remap_for_light_mode(tokens[0])
+        try:
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            code = _nearest_ansi16(r, g, b)
+        except (ValueError, IndexError):
+            code = None
+    if code is None:
+        code = 33  # yellow — the historical accent
+    attrs = []
+    if bold or extra_bold:
+        attrs.append("1")
+    if dim:
+        attrs.append("2")
+    attrs.append(str(code))
+    return f"\033[{';'.join(attrs)}m"
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -3262,7 +3319,7 @@ class _SkinAwareAnsi:
     force re-resolution after a ``/skin`` switch.
     """
 
-    def __init__(self, skin_key: str, fallback_hex: str = "#FFD700", *, bold: bool = False):
+    def __init__(self, skin_key: str, fallback_hex: str = "bold yellow", *, bold: bool = False):
         self._skin_key = skin_key
         self._fallback_hex = fallback_hex
         self._bold = bold
@@ -3291,7 +3348,7 @@ class _SkinAwareAnsi:
         self._cached = None
 
 
-_ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
+_ACCENT = _SkinAwareAnsi("response_border", "bold yellow", bold=True)
 # Use ANSI dim+italic attributes (\x1b[2;3m) instead of a hardcoded
 # hex color so dim/thinking text inherits the terminal's default
 # foreground color and stays readable in both light and dark
@@ -3322,9 +3379,9 @@ def _accent_hex() -> str:
     """Return the active skin accent color for legacy CLI output lines."""
     try:
         from son_of_anton_cli.skin_engine import get_active_skin
-        return get_active_skin().get_color("ui_accent", "#FFBF00")
+        return get_active_skin().get_color("ui_accent", "yellow")
     except Exception:
-        return "#FFBF00"
+        return "yellow"
 
 
 def _rich_text_from_ansi(text: str) -> _RichText:
@@ -4650,9 +4707,9 @@ def _build_compact_banner() -> str:
         _skin = None
 
     skin_name = getattr(_skin, "name", "default") if _skin else "default"
-    border_color = _skin.get_color("banner_border", "#FFD700") if _skin else "#FFD700"
-    title_color = _skin.get_color("banner_title", "#FFBF00") if _skin else "#FFBF00"
-    dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
+    border_color = _skin.get_color("banner_border", "bold yellow") if _skin else "bold yellow"
+    title_color = _skin.get_color("banner_title", "yellow") if _skin else "yellow"
+    dim_color = _skin.get_color("banner_dim", "dim yellow") if _skin else "dim yellow"
 
     if skin_name == "default":
         line1 = "⚛ SON OF ANTON - AI Agent Framework"
@@ -7707,19 +7764,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from son_of_anton_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚛ Son of Anton")
-                _text_hex = _skin.get_color("banner_text", "#FFF8DC")
+                _text_hex = _skin.get_color("banner_text", "default")
             except Exception:
                 label = "⚛ Son of Anton"
-                _text_hex = "#FFF8DC"
-            # Build a true-color ANSI escape for the response text color
-            # so streamed content matches the Rich Panel appearance.
-            try:
-                _r = int(_text_hex[1:3], 16)
-                _g = int(_text_hex[3:5], 16)
-                _b = int(_text_hex[5:7], 16)
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
+                _text_hex = "default"
+            # Build a palette-respecting ANSI escape for the response text
+            # color so streamed content matches the Rich Panel appearance.
+            self._stream_text_ansi = _hex_to_ansi(_text_hex)
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             w = self._scrollback_box_width()
@@ -8923,11 +8974,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             from son_of_anton_cli.skin_engine import get_active_skin
             skin = get_active_skin()
-            separator_color = skin.get_color("banner_dim", "#B8860B")
-            accent_color = skin.get_color("ui_accent", "#FFBF00")
-            label_color = skin.get_color("ui_label", "#DAA520")
+            separator_color = skin.get_color("banner_dim", "dim yellow")
+            accent_color = skin.get_color("ui_accent", "yellow")
+            label_color = skin.get_color("ui_label", "yellow")
         except Exception:
-            separator_color, accent_color, label_color = "#B8860B", "#FFBF00", "cyan"
+            separator_color, accent_color, label_color = "dim yellow", "yellow", "cyan"
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
             toolsets_info = f" [dim {separator_color}]· [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}"
@@ -11837,9 +11888,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _tip = get_random_tip()
                     try:
                         from son_of_anton_cli.skin_engine import get_active_skin
-                        _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                        _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
                     except Exception:
-                        _tip_color = "#B8860B"
+                        _tip_color = "dim yellow"
                     cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}")
                 except Exception:
                     pass
@@ -11852,9 +11903,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _tip = get_random_tip()
                     try:
                         from son_of_anton_cli.skin_engine import get_active_skin
-                        _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                        _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
                     except Exception:
-                        _tip_color = "#B8860B"
+                        _tip_color = "dim yellow"
                     self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}")
                 except Exception:
                     pass
@@ -15475,12 +15526,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     from son_of_anton_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚛ Son of Anton")
-                    _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                    _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "yellow"))
+                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "default"))
                 except Exception:
                     label = "⚛ Son of Anton"
-                    _resp_color = _maybe_remap_for_light_mode("#CD7F32")
-                    _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+                    _resp_color = _maybe_remap_for_light_mode("yellow")
+                    _resp_text = _maybe_remap_for_light_mode("default")
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -15530,9 +15581,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     try:
                         ChatConsole().print(Panel(
                             "\n".join(_cta_lines),
-                            title="[#CD7F32 bold]⚡ Out of credits",
+                            title="[yellow bold]⚡ Out of credits",
                             title_align="left",
-                            border_style="#CD7F32",
+                            border_style="yellow",
                             box=rich_box.HORIZONTALS,
                             padding=(1, 4),
                             width=self._scrollback_box_width(),
@@ -16063,10 +16114,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from son_of_anton_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
             _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Son of Anton Agent! Type your message or /help for commands.")
-            _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
+            _welcome_color = _welcome_skin.get_color("banner_text", "default")
         except Exception:
             _welcome_text = "Welcome to Son of Anton Agent! Type your message or /help for commands."
-            _welcome_color = "#FFF8DC"
+            _welcome_color = "default"
         self._console_print(f"[{_welcome_color}]{_welcome_text}")
 
         # Warm the /model picker's provider-models cache off-thread during this
@@ -16132,9 +16183,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
             if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
                 try:
-                    _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+                    _resid_color = _welcome_skin.get_color("banner_dim", "dim yellow")
                 except Exception:
-                    _resid_color = "#B8860B"
+                    _resid_color = "dim yellow"
                 self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}")
                 try:
                     from son_of_anton_cli.config import get_config_path as _get_cfg_path_resid
@@ -16148,9 +16199,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from son_of_anton_cli.tips import get_random_tip
             _tip = get_random_tip()
             try:
-                _tip_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+                _tip_color = _welcome_skin.get_color("banner_dim", "dim yellow")
             except Exception:
-                _tip_color = "#B8860B"
+                _tip_color = "dim yellow"
             self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}")
         except Exception:
             pass  # Tips are non-critical — never break startup
@@ -16164,7 +16215,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             maybe_run_curator(
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(
-                    f"[dim #6b7684]💾 {msg}"
+                    f"[dim dim default]💾 {msg}"
                 ),
             )
         except Exception:
@@ -18449,45 +18500,45 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'prompt': '',
             'prompt-working': '#888888 italic',
             'hint': '#888888 italic',
-            'status-bar': 'bg:#1a1a2e #C0C0C0',
-            'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',
-            'status-bar-dim': 'bg:#1a1a2e #8B8682',
-            'status-bar-good': 'bg:#1a1a2e #8FBC8F bold',
-            'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
-            'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
-            'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
-            'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
-            'status-bar-session-title': 'bg:#FFD700 #1a1a2e bold',
+            'status-bar': 'bg:default default',
+            'status-bar-strong': 'bg:default bold yellow bold',
+            'status-bar-dim': 'bg:default default',
+            'status-bar-good': 'bg:default green bold',
+            'status-bar-warn': 'bg:default bold yellow bold',
+            'status-bar-bad': 'bg:default red bold',
+            'status-bar-critical': 'bg:default bold red bold',
+            'status-bar-yolo': 'bg:default #FF4444 bold',
+            'status-bar-session-title': 'bg:bold yellow default bold',
             # Bronze horizontal rules around the input area
-            'input-rule': '#CD7F32',
+            'input-rule': 'yellow',
             # Clipboard image attachment badges
             'image-badge': '#87CEEB bold',
-            'completion-menu': 'bg:#1a1a2e #FFF8DC',
-            'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
-            'completion-menu.completion.current': 'bg:#333355 #FFD700',
-            'completion-menu.meta.completion': 'bg:#1a1a2e #888888',
-            'completion-menu.meta.completion.current': 'bg:#333355 #FFBF00',
+            'completion-menu': 'bg:default default',
+            'completion-menu.completion': 'bg:default default',
+            'completion-menu.completion.current': 'bg:default bold yellow',
+            'completion-menu.meta.completion': 'bg:default #888888',
+            'completion-menu.meta.completion.current': 'bg:default yellow',
             # Clarify question panel
-            'clarify-border': '#CD7F32',
-            'clarify-title': '#FFD700 bold',
-            'clarify-question': '#FFF8DC bold',
+            'clarify-border': 'yellow',
+            'clarify-title': 'bold yellow bold',
+            'clarify-question': 'default bold',
             'clarify-choice': '#AAAAAA',
-            'clarify-selected': '#FFD700 bold',
-            'clarify-active-other': '#FFD700 italic',
+            'clarify-selected': 'bold yellow bold',
+            'clarify-active-other': 'bold yellow italic',
             'clarify-answer': '#98FB98',
-            'clarify-countdown': '#CD7F32',
+            'clarify-countdown': 'yellow',
             # Sudo password panel
-            'sudo-prompt': '#FF6B6B bold',
-            'sudo-border': '#CD7F32',
-            'sudo-title': '#FF6B6B bold',
-            'sudo-text': '#FFF8DC',
+            'sudo-prompt': 'bold red bold',
+            'sudo-border': 'yellow',
+            'sudo-title': 'bold red bold',
+            'sudo-text': 'default',
             # Dangerous command approval panel
-            'approval-border': '#CD7F32',
-            'approval-title': '#FF8C00 bold',
-            'approval-desc': '#FFF8DC bold',
+            'approval-border': 'yellow',
+            'approval-title': 'red bold',
+            'approval-desc': 'default bold',
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
-            'approval-selected': '#FFD700 bold',
+            'approval-selected': 'bold yellow bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
 

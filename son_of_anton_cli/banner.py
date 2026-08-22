@@ -963,10 +963,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     layout_table.add_column("right", justify="left")
 
     # Resolve skin colors once for the entire banner
-    accent = _skin_color("banner_accent", "#FFBF00")
-    dim = _skin_color("banner_dim", "#B8860B")
-    text = _skin_color("banner_text", "#FFF8DC")
-    session_color = _skin_color("session_border", "#8B8682")
+    accent = _skin_color("banner_accent", "yellow")
+    dim = _skin_color("banner_dim", "dim yellow")
+    text = _skin_color("banner_text", "default")
+    session_color = _skin_color("session_border", "default")
 
     # Use skin's custom caduceus art if provided
     try:
@@ -1236,7 +1236,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     layout_table.add_row(left_content, right_content)
 
     title_color = _skin_color("banner_title", "bold yellow")
-    border_color = _skin_color("banner_border", "#CD7F32")
+    border_color = _skin_color("banner_border", "yellow")
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:

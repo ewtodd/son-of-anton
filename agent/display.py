@@ -41,6 +41,65 @@ def _display_url(value: Any) -> str:
 # failure.  We cache after first resolution for performance.
 _diff_colors_cached: dict[str, str] | None = None
 
+# The legacy-16 ANSI palette as sRGB, for snapping stray hex skin values
+# onto the terminal's theme-controlled colors.
+_ANSI16_RGB: dict[int, tuple[int, int, int]] = {
+    30: (0, 0, 0), 31: (205, 49, 49), 32: (13, 188, 121),
+    33: (229, 229, 16), 34: (36, 114, 200), 35: (188, 63, 188),
+    36: (17, 168, 205), 37: (229, 229, 229),
+    90: (102, 102, 102), 91: (241, 76, 76), 92: (59, 231, 97),
+    93: (235, 241, 84), 94: (84, 144, 240), 95: (241, 132, 232),
+    96: (61, 217, 238), 97: (255, 255, 255),
+}
+
+_ANSI_NAMED: dict[str, int] = {
+    "black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 34,
+    "magenta": 35, "cyan": 36, "white": 37, "default": 39,
+    "bright_black": 90, "bright_red": 91, "bright_green": 92,
+    "bright_yellow": 93, "bright_blue": 94, "bright_magenta": 95,
+    "bright_cyan": 96, "bright_white": 97,
+}
+
+
+def _to_ansi_escape(color: str, *, bold: bool = False) -> str:
+    """Build a foreground ANSI escape on the terminal's palette.
+
+    Named ANSI colors pass through; hex values from custom skins snap to
+    the nearest legacy-16 color so the terminal theme decides the rendering.
+    """
+    tokens = (color or "default").strip().split()
+    code = None
+    extra_bold = bold
+    dim = False
+    for token in tokens:
+        if token == "bold":
+            extra_bold = True
+        elif token == "dim":
+            dim = True
+        elif token in _ANSI_NAMED:
+            code = _ANSI_NAMED[token]
+    if code is None and tokens and tokens[0].startswith("#"):
+        try:
+            r, g, b = int(tokens[0][1:3], 16), int(tokens[0][3:5], 16), int(tokens[0][5:7], 16)
+            best = min(
+                _ANSI16_RGB,
+                key=lambda c: (r - _ANSI16_RGB[c][0]) ** 2
+                + (g - _ANSI16_RGB[c][1]) ** 2
+                + (b - _ANSI16_RGB[c][2]) ** 2,
+            )
+            code = best
+        except (ValueError, IndexError):
+            code = None
+    if code is None:
+        code = 39
+    attrs = []
+    if extra_bold:
+        attrs.append("1")
+    if dim:
+        attrs.append("2")
+    attrs.append(str(code))
+    return f"\033[{';'.join(attrs)}m"
+
 
 def _diff_ansi() -> dict[str, str]:
     """Return ANSI escapes for diff display, resolved from the active skin."""
@@ -48,38 +107,20 @@ def _diff_ansi() -> dict[str, str]:
     if _diff_colors_cached is not None:
         return _diff_colors_cached
 
-    # Defaults that work on dark terminals
-    dim = "\033[38;2;150;150;150m"
-    file_c = "\033[38;2;180;160;255m"
-    hunk = "\033[38;2;120;120;140m"
-    minus = "\033[38;2;255;255;255;48;2;120;20;20m"
-    plus = "\033[38;2;255;255;255;48;2;20;90;20m"
+    # Defaults on the terminal palette — kitty/the user's theme decides hue.
+    dim = "\033[90m"      # gray
+    file_c = "\033[95m"   # lavender -> bright magenta
+    hunk = "\033[90m"     # gray-blue -> gray
+    minus = "\033[97;41m" # white on dark red
+    plus = "\033[97;42m"  # white on dark green
 
     try:
         from son_of_anton_cli.skin_engine import get_active_skin
         skin = get_active_skin()
 
-        def _hex_fg(key: str, fallback_rgb: tuple[int, int, int]) -> str:
-            h = skin.get_color(key, "")
-            if h and len(h) == 7 and h[0] == "#":
-                r, g, b = int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
-                return f"\033[38;2;{r};{g};{b}m"
-            r, g, b = fallback_rgb
-            return f"\033[38;2;{r};{g};{b}m"
-
-        dim = _hex_fg("banner_dim", (150, 150, 150))
-        file_c = _hex_fg("session_label", (180, 160, 255))
-        hunk = _hex_fg("session_border", (120, 120, 140))
-        # minus/plus use background colors — derive from ui_error/ui_ok
-        err_h = skin.get_color("ui_error", "#ef5350")
-        ok_h = skin.get_color("ui_ok", "#4caf50")
-        if err_h and len(err_h) == 7:
-            er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
-            # Use a dark tinted version as background
-            minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
-        if ok_h and len(ok_h) == 7:
-            or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
-            plus = f"\033[38;2;255;255;255;48;2;{max(or_//4,10)};{max(og//2,20)};{max(ob//4,10)}m"
+        dim = _to_ansi_escape(skin.get_color("banner_dim", "")) or dim
+        file_c = _to_ansi_escape(skin.get_color("session_label", "")) or file_c
+        hunk = _to_ansi_escape(skin.get_color("session_border", "")) or hunk
     except Exception:
         pass
 
