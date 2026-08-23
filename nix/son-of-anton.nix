@@ -94,6 +94,11 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  bundledLocales = lib.cleanSourceWith {
+    src = ../locales;
+    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
+  };
+
   runtimeDeps = [
     ripgrep
     git
@@ -133,11 +138,13 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/share/son-of-anton $out/bin
     ln -s ${bundledSkills} $out/share/son-of-anton/skills
     ln -s ${bundledPlugins} $out/share/son-of-anton/plugins
+    ln -s ${bundledLocales} $out/share/son-of-anton/locales
 
     makeWrapper ${sonOfAntonVenv}/bin/son-of-anton $out/bin/son-of-anton \
       --suffix PATH : "${runtimePath}" \
       --set SON_OF_ANTON_BUNDLED_SKILLS $out/share/son-of-anton/skills \
       --set SON_OF_ANTON_BUNDLED_PLUGINS $out/share/son-of-anton/plugins \
+      --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
       --set-default SON_OF_ANTON_BIN $out/bin/son-of-anton \
       --set SON_OF_ANTON_PYTHON ${sonOfAntonVenv}/bin/python3 \
     ${

@@ -71,3 +71,21 @@ def test_labels_do_not_carry_upstream_copy() -> None:
     label = get_label("deepseek")
     assert "nous" not in label.lower()
     assert "openrouter" not in label.lower()
+
+
+def test_custom_providers_dict_form_normalizes() -> None:
+    # The keyed dict form (custom_providers.custom.base_url = ...) is the
+    # shape the fork's examples and declarative configs use; the runtime
+    # resolution must normalize it (gateway live-bug regression).
+    from son_of_anton_cli.config import get_compatible_custom_providers
+
+    providers = get_compatible_custom_providers(
+        {
+            "custom_providers": {
+                "custom": {"base_url": "http://127.0.0.1:8080/v1"},
+            },
+        }
+    )
+    assert len(providers) == 1
+    assert providers[0]["name"] == "custom"
+    assert providers[0]["base_url"] == "http://127.0.0.1:8080/v1"

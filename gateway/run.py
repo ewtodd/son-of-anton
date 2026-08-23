@@ -17942,7 +17942,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """
         from son_of_anton_cli.router import resolve_mode
 
-        router_cfg = (self.config or {}).get("router") or {}
+        router_cfg: dict = {}
+        try:
+            from son_of_anton_cli.config import load_config
+
+            _cfg = load_config() or {}
+            _router = _cfg.get("router")
+            if isinstance(_router, dict):
+                router_cfg = _router
+        except Exception:
+            router_cfg = {}
         if not router_cfg.get("enabled", True):
             return "standard"
         override = getattr(self, "_session_mode_overrides", {}).get(session_key)

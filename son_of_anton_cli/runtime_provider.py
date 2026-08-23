@@ -805,16 +805,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     _lift_max_output_tokens(entry, result)
                     return result
 
-    # Fall back to custom_providers: list (legacy format)
-    custom_providers = config.get("custom_providers")
-    if isinstance(custom_providers, dict):
-        logger.warning(
-            "custom_providers in config.yaml is a dict, not a list. "
-            "Each entry must be prefixed with '-' in YAML. "
-            "Run 'son-of-anton doctor' for details."
-        )
-        return None
-
+    # Fall back to custom_providers (list or keyed-dict form — both are
+    # normalized by get_compatible_custom_providers).
     custom_providers = get_compatible_custom_providers(config)
     if not custom_providers:
         return None

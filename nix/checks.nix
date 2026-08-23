@@ -165,9 +165,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             || (echo "FAIL: bundled skills missing"; exit 1)
           test -d ${son-of-anton}/share/son-of-anton/plugins \
             || (echo "FAIL: bundled plugins missing"; exit 1)
+          test -d ${son-of-anton}/share/son-of-anton/locales \
+            || (echo "FAIL: bundled locales missing"; exit 1)
           ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "gateway" \
             || (echo "FAIL: gateway subcommand missing"; exit 1)
-          echo "PASS: bundled skills + plugins present, binary works"
+          echo "PASS: bundled skills + plugins + locales present, binary works"
           mkdir -p $out
         '';
 
