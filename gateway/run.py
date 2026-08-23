@@ -15706,6 +15706,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
 
+    def _pinned_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the pinned profile for this source's chat, or None.
+
+        Only active when ``gateway.multiplex_profiles`` is on; the pin is a
+        per-chat ``/profile <name>`` switch persisted in the gateway home.
+        Pins pointing at profiles this gateway no longer serves are ignored.
+        """
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return None
+        try:
+            from gateway.profile_pins import load_pins, resolve_pin
+
+            cache = getattr(self, "_profile_pins_cache", None)
+            if cache is None or cache[0] != get_son_of_anton_home():
+                home = get_son_of_anton_home()
+                cache = (home, load_pins(home))
+                self._profile_pins_cache = cache
+            served = {
+                name for name, _ in _multiplex_profile_homes(config)
+            } | {"default"}
+            return resolve_pin(
+                cache[1],
+                str(getattr(source, "platform", "") or ""),
+                str(getattr(source, "chat_id", "") or ""),
+                served,
+            )
+        except Exception:
+            logger.debug("profile pin lookup failed", exc_info=True)
+            return None
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -15753,6 +15784,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 source.profile = self._profile_name_for_source(source)
             except ProfileRouteRejected:
                 source.profile_route_rejected = True
+
+        # Command-driven profile switch: /profile <name> pins this chat to a
+        # profile. Routes (above) win; the pin is the fallback for chats with
+        # no matching route.
+        if (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            and not getattr(source, "profile", None)
+            and getattr(source, "profile_route_rejected", False) is not True
+        ):
+            source.profile = self._pinned_profile_for_source(source) or None
 
         # SessionSource owns a strict boolean marker. Require the literal value
         # so duck-typed test/internal sources with dynamic attributes are not
@@ -26088,6 +26129,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 name = self._profile_name_for_source(source)
                 if name:
                     explicit_profile = name  # Routing explicitly set this profile
+            if not name:
+                # Per-chat /profile pin — the command-driven alternative to
+                # routes for senders who own more than one profile.
+                name = self._pinned_profile_for_source(source) or ""
             if not name:
                 name = get_active_profile_name() or "default"
             

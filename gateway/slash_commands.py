@@ -341,20 +341,16 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show the profile serving this source and its home.
+        """Handle /profile — show the profile serving this source, or switch it.
 
-        On a multiplexed gateway the process-level active profile is always
-        the multiplexer's own (usually ``default``), so reporting it would
-        answer "default" in every chat regardless of which profile actually
-        serves the room/channel (``source.profile`` — stamped by the
-        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
-        profile map). When ``multiplex_profiles`` is on, report the stamped
-        profile and, like the scoped /reset banner (#59003), resolve the
-        displayed home under that profile's runtime scope. When multiplexing
-        is off (the default) the stamp is ignored — mirroring the gating in
-        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
-        reports the active profile and default home, byte-identical to before.
+        ``/profile`` (no args) reports the profile this chat resolves to and
+        its home. On a multiplexed gateway, ``/profile <name>`` pins this chat
+        to that profile for every subsequent message (persisted across
+        restarts); ``/profile default`` clears the pin and returns the chat
+        to the default profile. Switching requires
+        ``gateway.multiplex_profiles`` and a served profile name.
         """
+        from son_of_anton_cli.profiles import normalize_profile_name
         from son_of_anton_constants import display_son_of_anton_home
         from son_of_anton_cli.slash_exec import CommandContext, execute_command
 
@@ -362,11 +358,53 @@ class GatewaySlashCommandsMixin:
             getattr(self, "config", None), "multiplex_profiles", False
         )
         source = getattr(event, "source", None)
+        raw = event.get_command_args().strip().lower()
 
+        # ── Switch path ──────────────────────────────────────────────────
+        if raw:
+            if not multiplexed:
+                return t("gateway.profile.multiplex_off")
+            from gateway.run import _multiplex_profile_homes
+
+            served = {name for name, _ in _multiplex_profile_homes(self.config)}
+            target = "default" if raw == "default" else normalize_profile_name(raw)
+            if target != "default" and target not in served:
+                return t(
+                    "gateway.profile.unknown",
+                    profile=raw,
+                    served=", ".join(sorted(served | {"default"})) or "default",
+                )
+            if not source or not getattr(source, "chat_id", None):
+                return t("gateway.profile.no_source")
+
+            from gateway.profile_pins import load_pins, pin_key, save_pins
+            from son_of_anton_constants import get_son_of_anton_home
+
+            home = get_son_of_anton_home()
+            pins = load_pins(home)
+            key = pin_key(
+                str(getattr(source, "platform", "") or ""),
+                str(getattr(source, "chat_id", "") or ""),
+            )
+            if target == "default":
+                pins.pop(key, None)
+                save_pins(home, pins)
+                self._profile_pins_cache = (home, pins)
+                return t("gateway.profile.reset")
+            pins[key] = target
+            save_pins(home, pins)
+            self._profile_pins_cache = (home, pins)
+            return t("gateway.profile.switched", profile=target)
+
+        # ── Report path ──────────────────────────────────────────────────
         profile_name = ""
         display = ""
         if multiplexed:
             profile_name = (getattr(source, "profile", "") or "").strip()
+            if not profile_name:
+                profile_name = (
+                    self._pinned_profile_for_source(source) or ""
+                )
             try:
                 from gateway.run import _profile_runtime_scope
 
