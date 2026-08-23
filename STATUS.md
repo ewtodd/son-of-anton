@@ -168,9 +168,18 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
 - **doctor.py** keeps a few removed-provider probes (Nous auth row,
   connectivity checks); `runtime_provider.py` keeps openrouter host-guards as
   defense-in-depth. Triage with the final pass above.
-- **No live LLM end-to-end run yet**: physics/research modes verified by
-  imports + unit checks + checker pass/fail cases, not against a real
-  llama-swap/DeepSeek endpoint.
+- **Physics mode live-smoke-tested** (this session, `012bd9df`) against
+  llama-swap (`qwen3.6-35b-a3b` @ `http://10.0.0.5:8080/v1`). The run solved
+  bromine_halflife end-to-end (workspace → RESULTS.txt → FORMAL_EVAL.md,
+  3/3 PASS with halflife 119.279s vs 119.2 true on the first solve). The
+  smoke test surfaced and fixed four vendored-wiring bugs: Config raised for
+  unregistered models (models.yaml was dropped), build_config dropped the
+  `overrides` kwarg, compute scripts ran in `computations/` so RESULTS.txt
+  missed the evaluator's read path, and `render_formal_evaluation` imported
+  the removed `verification.core` subpackage. Regression tests added.
+- **Research mode is NOT yet live-smoke-tested** — the nine-agent pipeline
+  runs the same fixed Config/endpoint layer, but hasn't been driven against
+  a real endpoint.
 - **Physics runs are synchronous turns** — a session blocks until the run
   finishes; the priority queue is the eventual fix.
 - **Research pipeline prompts are theory-era text** — experimental-language
@@ -183,10 +192,10 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
 
 ## What's left
 
-1. **Final deep-Nous pass** — the tail above, once a live smoke test of the
-   aux/auth chains exists to catch regressions.
-2. **Live smoke test** of the physics modes against the user's endpoints
-   (needs their config).
+1. **Final deep-Nous pass** — the tail above. The physics smoke path now
+   exists as the regression net, but it doesn't exercise the aux/auth
+   chains; add a quick standard-mode + auxiliary-call smoke before excising.
+2. **Research-mode live smoke test** — same llama-swap endpoint.
 3. **TUI follow-up** — remove topup/subscription commands; theming decision
    (keep the hex engine or port terminal-theme colors).
 4. **README** stays in sync with the above.
@@ -198,6 +207,12 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
 - Verify: `nix flake check` (package + modules + venv import sweep), full-tree compile via `/tmp/opencode/compile_all.py` (path points at `/home/e-play/Software/son-of-anton`), import sweep via `/tmp/opencode/import_sweep.py` (run inside the sealed venv)
 - Python tests: `nix develop -c scripts/run_tests.sh` (52 tests, <1s); hooks: `nix develop -c pre-commit install`
 - TUI tests: `ui-tui/` — `npm run build:ink && npm test` (node via `nix shell nixpkgs#nodejs_22`)
+- **Physics smoke test repro** (needs the llama-swap host up):
+  temp `SON_OF_ANTON_HOME` with config.yaml → `model: qwen3.6-35b-a3b`,
+  `provider: custom`, `custom_providers.custom.base_url: http://10.0.0.5:8080/v1`,
+  `physics.model/base_url` set; run `/tmp/opencode/smoke/run_phys.py` in the
+  sealed venv with a `python` shim on PATH (compute scripts shell out to
+  bare `python`).
 - Python for ad-hoc checks: `/nix/store/sgr5qv39ji4gddv37jw1iw069gqxa0x2-python3-3.12.14/bin/python3.12` (bare) or the sealed venv's `bin/python3` (has deps)
 - uv (for lock regen): `nix shell nixpkgs#uv -c env UV_PYTHON=/nix/store/sgr5qv39ji4gddv37jw1iw069gqxa0x2-python3-3.12.14/bin/python3.12 uv lock`
 - The agent name: the user renamed the GitHub account to `son-of-anton-bot`; do not create a DeepSeek co-author trailer (no such account exists)
