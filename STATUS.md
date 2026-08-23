@@ -2,7 +2,7 @@
 
 Written 2026-08-22 after the fork/build-out session; updated 2026-08-23 after
 the Phase 7 + deep-Nous cleanup layers and the live deployment-and-testing
-round. Everything below is the state as of commit `bcf72b1e` on `main`
+round. Everything below is the state as of commit `0f3ee9f0` on `main`
 (pushed to `github.com:ewtodd/son-of-anton`).
 
 ---
@@ -189,6 +189,11 @@ NameErrors or sealed-venv import gaps.
 - **Emoji strip** (`bcf72b1e`): ~340 decorative glyphs removed from
   user-facing gateway chat replies (i18n catalog + command/reply strings).
   Logs and the CLI spinner keep theirs.
+- **Profile HOME** (`0f3ee9f0`): terminal subprocesses kept the service
+  user's HOME, so `~` in a profile pointed at `/var/lib/son-of-anton` — the
+  model anchored to the wrong README exactly because of this. New
+  `terminal.home_mode = "cwd"` makes subprocess HOME resolve to the
+  command's working directory (each profile's cwd is its user's home).
 
 ---
 
@@ -198,12 +203,14 @@ NameErrors or sealed-venv import gaps.
   under the `son-of-anton` user; litellm on oracle (`10.0.0.6:4000`, pinned
   to nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
   `expression` dependency); llama-swap on son-of-anton; SearXNG on oracle;
-  signal-cli in HTTP mode on mu with `--send-read-receipts` (typing
-  indicators off). Two multiplex profiles, `play` → `/home/e-play` and
-  `work` → `/home/e-work`, switchable per chat with `/profile`. Scoped
-  filesystem grants: home dirs r-x, recursive rwx ACLs only on each
-  profile's `allowedPaths` (project dirs), `.ssh`/`.gnupg`/dotdirs stay
-  private; `SIGNAL_ALLOWED_USERS` pinned to Ethan's number.
+  signal-cli in HTTP mode on mu with `--send-read-receipts` (read receipts
+  work; the 👀/✅ emoji reaction set is disabled via
+  `SIGNAL_REACTIONS=false`; typing indicators off). Two multiplex profiles,
+  `play` → `/home/e-play` and `work` → `/home/e-work`, switchable per chat
+  with `/profile`; subprocess HOME follows the cwd (`terminal.home_mode =
+  "cwd"`). Scoped filesystem grants: home dirs r-x, recursive rwx ACLs only
+  on each profile's `allowedPaths` (project dirs), `.ssh`/`.gnupg`/dotdirs
+  stay private; `SIGNAL_ALLOWED_USERS` pinned to Ethan's number.
 - **User's home skills are stale**: `~/.son-of-anton/skills/` still holds the
   pre-prune 78 skills. One-time: `rm -rf ~/.son-of-anton/skills` (then
    optionally `son-of-anton setup` to install the bundled 43).
