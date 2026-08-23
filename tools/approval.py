@@ -4378,6 +4378,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Lockdown permission mode (security.lockdown): overrides yolo and
     # mode=off — every command requires human approval. Set via /perm lockdown.
     lockdown = _is_lockdown_enabled()
+    approval_mode = _get_approval_mode()
     if lockdown:
         approval_mode = "manual"
 
