@@ -1,9 +1,10 @@
 # Son of Anton — Status & Handoff
 
 Written 2026-08-22 after the fork/build-out session; updated 2026-08-23 after
-the Phase 7 + deep-Nous cleanup layers and the live deployment-and-testing
-round. Everything below is the state as of commit `0f3ee9f0` on `main`
-(pushed to `github.com:ewtodd/son-of-anton`).
+the Phase 7 + deep-Nous cleanup layers, the live deployment-and-testing
+round, and the UI hygiene round (cwd contract, rebrand tail, emoji strip,
+status-bar theming). Everything below is the state as of commit `0f3ee9f0`
+on `main` (pushed to `github.com:ewtodd/son-of-anton`).
 
 ---
 
@@ -197,9 +198,64 @@ NameErrors or sealed-venv import gaps.
 
 ---
 
-## Current state / known loose ends
+### UI hygiene round (2026-08-23, this session — interactive CLI/TUI report)
 
-- **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
+The user ran an interactive session and filed five problems: the session's
+cwd didn't match the spawn directory, qwen served garbage (model-side, not
+the repo), the agent still self-identified with Nous Research, emoji
+replacement was broken (raw ANSI leak on the update notice + glyphs making
+it through), and the bottom status bar was hardcoded yellow instead of
+following the terminal theme. Fixes:
+
+- **Cwd contract** — the TUI's `_launch_configured_cwd()` honored
+  `terminal.cwd` from config even for the local backend; the classic CLI
+  already forces the spawn directory there. Now backend-aware
+  (`utils.is_local_terminal_backend`): local = `os.getcwd()`, non-local
+  (ssh/docker) keeps the config value. Root cause of the report: an ambient
+  `SON_OF_ANTON_HOME=/var/lib/son-of-anton/.son-of-anton` in the user's
+  graphical session (exported in the shell that launched niri, then imported
+  into the systemd user manager) pointed the TUI at the gateway service's
+  config (`terminal.cwd: /var/lib/son-of-anton/workspace`). `/etc/nixos`
+  does NOT export it (`addToSystemPackages` stays false by design). The code
+  now defends against the polluted env, but the env itself should be unset
+  (and e-play's own `~/.son-of-anton` has no config.yaml, so `setup` is
+  needed after unsetting).
+- **Rebrand tail** — dropped "by Nous Research" from `DEFAULT_AGENT_IDENTITY`,
+  `SON_OF_ANTON_AGENT_HELP_GUIDANCE`, `DEFAULT_SOUL_MD`, the compact-banner
+  footer, and the TUI branding (`TAG_*` + the model-suffix); the dead docs
+  URL `son-of-anton.nousresearch.com` now points at the fork's repo; the
+  `son-of-anton` SKILL.md provider claim corrected to the fork's real
+  surface (deepseek, openai-api, custom local endpoints — not "any
+  provider... and 20+ others"); the gateway's seeded `SOUL.md` (exact old
+  template, zero customization) upgraded in place.
+- **Update-notice leak** — the deferred notice printed Rich-rendered ANSI
+  from a daemon thread straight to stdout, which prompt_toolkit's
+  `patch_stdout` mangles into literal escape garbage (the `?[1;33m` the
+  user saw). It now renders Rich markup → 16-color ANSI →
+  `_format_update_notice_ansi`, delivered through `_cprint` (thread-safe,
+  ANSI-parsed) via a new `deferred_print` callback on `build_welcome_banner`.
+- **Emoji strip extended** — new shared `utils.strip_decorative_glyphs`
+  (strips emoji blocks, dingbats ✓✗✦✨, misc symbols ⚠⚡⛔, clocks ⏱⏲⏳, VS16;
+  keeps the ⚛ brand mark, geometric shapes ◈◉░, kaomoji, arrows). Wired at
+  the print funnels — `_cprint` (with `strip=False` for streamed model
+  content: glyph stripping is for UI chrome, never the agent's own words),
+  `_console_print`, `AIAgent._safe_print`, `_emit_status`/`_emit_warning`,
+  gateway tool-progress chrome, delegate spinners, `display._wrap` — plus
+  the remaining static strings in the status bar, tips, onboarding,
+  conversation_loop, and banner. Gateway reply catalogs were already clean.
+- **Status-bar theming** — prompt_toolkit style strings now snap to the
+  ANSI-16 palette (`skin_engine.snap_pt_style_to_theme`: fixed RGB names →
+  `ansi*`, hexes → nearest palette color), so the status bar, menus, and
+  prompt chrome follow the terminal theme like the rest of the CLI instead
+  of hardcoded true-color yellow/navy. Skin overrides added for
+  `status-bar-session-title` and `status-bar-yolo` (previously hardcoded in
+  the CLI's base style).
+
+Tests: Python suite now 80 tests (glyph-strip + backend helpers, skin
+snapping contracts, identity no-Nous invariant); TUI 1703 pass + tsc clean;
+`nix flake check` green.
+
+## Current state / known loose ends- **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
   under the `son-of-anton` user; litellm on oracle (`10.0.0.6:4000`, pinned
   to nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
   `expression` dependency); llama-swap on son-of-anton; SearXNG on oracle;

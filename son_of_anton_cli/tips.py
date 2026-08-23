@@ -406,7 +406,7 @@ TIPS = [
     'SON_OF_ANTON_STREAM_RETRIES (default 3) controls mid-stream reconnect attempts on transient network errors.',
 
     # --- Gateway Behavior Env Vars ---
-    'SON_OF_ANTON_GATEWAY_BUSY_ACK_ENABLED=false silences the ⚡/⏳/⏩ ack messages when a user messages a busy agent.',
+    'SON_OF_ANTON_GATEWAY_BUSY_ACK_ENABLED=false silences the ack messages when a user messages a busy agent.',
     'SON_OF_ANTON_AGENT_NOTIFY_INTERVAL (default 180s) sets how often the gateway pings with progress on long turns.',
     'SON_OF_ANTON_RESTART_DRAIN_TIMEOUT (default 900s) caps how long /restart waits for in-flight runs before forcing.',
     'SON_OF_ANTON_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.',

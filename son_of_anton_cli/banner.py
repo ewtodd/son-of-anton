@@ -689,27 +689,57 @@ def _format_update_notice(behind: int) -> str:
     if behind > 0:
         commits_word = "commit" if behind == 1 else "commits"
         return (
-            f"[bold yellow]⚠ {behind} {commits_word} behind"
+            f"[bold yellow]{behind} {commits_word} behind"
             f"[dim yellow] — run [bold]{recommended_update_command()} to update"
         )
     # UPDATE_AVAILABLE_NO_COUNT: nix-built son-of-anton; we know an update
     # exists but not by how much, and we don't know how the user
     # installed it (nix run, profile, system flake, home-manager).
     managed_cmd = get_managed_update_command()
-    line = "[bold yellow]⚠ update available"
+    line = "[bold yellow]update available"
     if managed_cmd:
         line += f"[dim yellow] — run [bold]{managed_cmd}"
     return line
 
 
+def _format_update_notice_ansi(behind: int) -> str:
+    """Render the update notice as raw ANSI (16-color palette) text.
+
+    Used by surfaces that print through prompt_toolkit's ANSI parser
+    (the CLI's ``_cprint``): Rich markup written directly to stdout from a
+    background thread bypasses ``patch_stdout`` and leaks literal escape
+    codes. Rendering to a palette-ANSI string first lets the caller route
+    the notice through the same safe print path as every other line.
+    """
+    from io import StringIO
+
+    from rich.console import Console as _AnsiConsole
+
+    buf = StringIO()
+    ansi_console = _AnsiConsole(
+        file=buf,
+        color_system="standard",
+        force_terminal=True,
+        markup=True,
+        highlight=False,
+    )
+    ansi_console.print(_format_update_notice(behind))
+    return buf.getvalue().rstrip("\n")
+
+
 _deferred_update_notice_started = False
 
 
-def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
+def _defer_update_notice(console: "Console", max_wait: float = 30.0, print_fn=None) -> None:
     """Print the update warning once the prefetched check completes.
 
     Used when the banner rendered before the update prefetch finished so
     startup never blocks on git/network. Prints at most once per process.
+
+    ``print_fn``, when given, receives a palette-ANSI string instead of the
+    console printing Rich markup itself — the CLI passes its ``_cprint`` so
+    a background-thread write goes through prompt_toolkit's renderer rather
+    than leaking raw escape codes past ``patch_stdout``.
     """
     global _deferred_update_notice_started
     if _deferred_update_notice_started:
@@ -723,7 +753,10 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            if print_fn is not None:
+                print_fn(_format_update_notice_ansi(behind))
+            else:
+                console.print(_format_update_notice(behind))
         except Exception:
             pass  # never break the session over an update notice
 
@@ -923,7 +956,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          context_length: int = None,
                          provider: str = None,
                          availability: Dict[str, Any] = None,
-                         skills_by_category: Dict[str, List[str]] = None):
+                         skills_by_category: Dict[str, List[str]] = None,
+                         deferred_print=None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -995,7 +1029,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         left_lines.append(f"[{accent}]{model_short}{ctx_str} [{dim}]· [{dim}]")
 
     if os.getenv("SON_OF_ANTON_YOLO_MODE"):
-        left_lines.append(f"[bold red]⚠ YOLO mode [{dim}]— all approval prompts bypassed")
+        left_lines.append(f"[bold red]YOLO mode [{dim}]— all approval prompts bypassed")
     left_lines.append(f"[{dim}]{cwd}")
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}")
@@ -1203,7 +1237,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     try:
         behind = get_update_result(timeout=0.05)
         if behind is None and not _update_check_done.is_set():
-            _defer_update_notice(console)
+            _defer_update_notice(console, print_fn=deferred_print)
         elif behind is not None and behind != 0:
             right_lines.append(_format_update_notice(behind))
     except Exception:

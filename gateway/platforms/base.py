@@ -23,7 +23,7 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, strip_decorative_glyphs
 
 logger = logging.getLogger(__name__)
 
@@ -3195,7 +3195,8 @@ class BasePlatformAdapter(ABC):
             return None
 
         from agent.display import get_tool_emoji
-        emoji = get_tool_emoji(event.tool_name, default="⚙️")
+        emoji = strip_decorative_glyphs(get_tool_emoji(event.tool_name, default="⚙️"))
+        prefix = f"{emoji} " if emoji else ""
 
         if mode == "verbose":
             if event.args:
@@ -3203,10 +3204,10 @@ class BasePlatformAdapter(ABC):
                 args_str = json.dumps(event.args, ensure_ascii=False, default=str)
                 if preview_max_len > 0 and len(args_str) > preview_max_len:
                     args_str = args_str[:preview_max_len - 3] + "..."
-                return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
+                return f"{prefix}{event.tool_name}({list(event.args.keys())})\n{args_str}"
             if event.preview:
-                return f"{emoji} {event.tool_name}: \"{event.preview}\""
-            return f"{emoji} {event.tool_name}..."
+                return f"{prefix}{event.tool_name}: \"{event.preview}\""
+            return f"{prefix}{event.tool_name}..."
 
         # "all" / "new": short preview, capped (default 40 to keep gateway
         # progress bubbles compact — they persist as permanent messages).
@@ -3222,8 +3223,8 @@ class BasePlatformAdapter(ABC):
                 max_len=cap,
             )
             rendered = self.format_tool_preview(prepared)
-            return f"{emoji} {event.tool_name}: \"{rendered}\""
-        return f"{emoji} {event.tool_name}..."
+            return f"{prefix}{event.tool_name}: \"{rendered}\""
+        return f"{prefix}{event.tool_name}..."
 
     def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Apply platform-native formatting to a compact tool preview.

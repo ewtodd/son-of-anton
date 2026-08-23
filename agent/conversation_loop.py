@@ -744,7 +744,7 @@ def _print_billing_or_entitlement_guidance(
     if not message:
         return False
     for line in message.splitlines():
-        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+        agent._vprint(f"{agent.log_prefix}   {line}", force=True)
     return True
 
 
@@ -3525,7 +3525,7 @@ def run_conversation(
                         else "The model returned no explanation."
                     )
                     _refusal_response = (
-                        "⚠️  The model declined to respond to this request "
+                        "The model declined to respond to this request "
                         "(safety refusal — not a Son of Anton/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
                         f"{_CONTENT_POLICY_RECOVERY_HINT}"
@@ -3617,7 +3617,7 @@ def run_conversation(
                         # CLI (response box) and gateway (chat message) both
                         # display it naturally instead of a suppressed error.
                         _exhaust_response = (
-                            "⚠️ **Thinking Budget Exhausted**\n\n"
+                            "**Thinking Budget Exhausted**\n\n"
                             "The model used all its output tokens on reasoning "
                             "and had none left for the actual response.\n\n"
                             "To fix this:\n"
@@ -3669,7 +3669,7 @@ def run_conversation(
                             force=True,
                         )
                         _rep_response = (
-                            "⚠️ **Response Stopped — Repetition Detected**\n\n"
+                            "**Response Stopped — Repetition Detected**\n\n"
                             "The model fell into a repetition loop while "
                             "writing this response, so continuing would only "
                             "produce more repeated text. The partial response "
@@ -4753,11 +4753,11 @@ def run_conversation(
                     from agent.anthropic_adapter import _is_oauth_token
                     from agent.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
-                        print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
+                        agent._safe_print(f"{agent.log_prefix}Anthropic credentials refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info
                     key = agent._anthropic_api_key
-                    print(f"{agent.log_prefix}🔐 Anthropic 401 — authentication failed.")
+                    agent._safe_print(f"{agent.log_prefix}Anthropic 401 — authentication failed.")
                     if is_token_provider(key):
                         # Azure Foundry Entra ID — the bearer token is
                         # minted per-request by an httpx event hook on a
@@ -6506,7 +6506,7 @@ def run_conversation(
         # the `response` variable is still None. Break out cleanly.
         if response is None:
             _turn_exit_reason = "all_retries_exhausted_no_response"
-            print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            agent._safe_print(f"{agent.log_prefix}All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
             break
 
@@ -6811,7 +6811,7 @@ def run_conversation(
                     if tc.function.name not in agent.valid_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                            agent._safe_print(f"{agent.log_prefix}Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
@@ -8168,7 +8168,7 @@ def run_conversation(
 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
-                    agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+                    agent._safe_print(f"Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
             
         except Exception as e:
@@ -8203,7 +8203,7 @@ def run_conversation(
             else:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:
-                print(f"❌ {error_msg}")
+                print(f"Error: {error_msg}")
             except (OSError, ValueError):
                 logger.error(error_msg)
 

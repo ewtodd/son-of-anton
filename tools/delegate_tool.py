@@ -43,7 +43,7 @@ from agent.interrupt_compat import request_hard_interrupt
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import base_url_hostname, is_truthy_value
+from utils import base_url_hostname, is_truthy_value, strip_decorative_glyphs
 
 
 # Tools that children must never have access to
@@ -1509,8 +1509,8 @@ def _build_child_progress_callback(
             )
             from agent.display import get_tool_emoji
 
-            emoji = get_tool_emoji(tool_name or "")
-            line = f" {prefix}├─ {emoji} {tool_name}"
+            emoji = strip_decorative_glyphs(get_tool_emoji(tool_name or ""))
+            line = f" {prefix}├─ " + (f"{emoji} " if emoji else "") + str(tool_name)
             if short:
                 line += f'  "{short}"'
             try:

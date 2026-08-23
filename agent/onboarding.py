@@ -41,26 +41,26 @@ def busy_input_hint_gateway(mode: str) -> str:
     """
     if mode == "queue":
         return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
+            "First-time tip — I queued your message instead of interrupting. "
             "Send `/busy interrupt` to make new messages stop the current task "
             "immediately, or `/busy status` to check. This notice won't appear again."
         )
     if mode == "steer":
         return (
-            "💡 First-time tip — I steered your message into the current run; "
+            "First-time tip — I steered your message into the current run; "
             "it will arrive after the next tool call instead of interrupting. "
             "Send `/busy interrupt` or `/busy queue` to change this, or "
             "`/busy status` to check. This notice won't appear again."
         )
     if mode == "redirect":
         return (
-            "💡 First-time tip — I redirected the current run using your message. "
+            "First-time tip — I redirected the current run using your message. "
             "Completed work stays in context, and `/stop` still cancels the task. "
             "Send `/busy queue` to wait for a separate turn, or `/busy status` "
             "to check. This notice won't appear again."
         )
     return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
+        "First-time tip — I just interrupted my current task to answer you. "
         "Send `/busy queue` to queue follow-ups for after the current task instead, "
         "`/busy steer` to inject them mid-run without interrupting, or "
         "`/busy status` to check. This notice won't appear again."
@@ -96,7 +96,7 @@ def busy_input_hint_cli(mode: str) -> str:
 
 def tool_progress_hint_gateway() -> str:
     return (
-        "💡 First-time tip — that tool took a while and I'm streaming every step. "
+        "First-time tip — that tool took a while and I'm streaming every step. "
         "If the progress messages feel noisy, send `/verbose` to cycle modes "
         "(all → new → off). This notice won't appear again."
     )

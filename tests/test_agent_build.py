@@ -36,3 +36,24 @@ def test_agent_builds_cleanly(son_of_anton_home) -> None:
     )
     assert agent.provider == "custom"
     assert agent.model == "qwen3.6-35b-a3b"
+
+
+def test_identity_strings_do_not_claim_nous() -> None:
+    """The agent's self-identity must not associate the fork with Nous.
+
+    The rebrand removed the upstream vendor from the runtime identity: the
+    seeded SOUL.md, the default agent identity, and the self-help guidance.
+    The docs reference must point at the fork's own repo, not the dead
+    upstream docs domain.
+    """
+    from agent.prompt_builder import (
+        DEFAULT_AGENT_IDENTITY,
+        SON_OF_ANTON_AGENT_HELP_GUIDANCE,
+    )
+    from son_of_anton_cli.default_soul import DEFAULT_SOUL_MD
+
+    for text in (DEFAULT_AGENT_IDENTITY, SON_OF_ANTON_AGENT_HELP_GUIDANCE, DEFAULT_SOUL_MD):
+        assert "Nous" not in text, text
+        assert "Son of Anton Agent" in text
+    assert "github.com/ewtodd/son-of-anton" in SON_OF_ANTON_AGENT_HELP_GUIDANCE
+    assert "nousresearch.com" not in SON_OF_ANTON_AGENT_HELP_GUIDANCE

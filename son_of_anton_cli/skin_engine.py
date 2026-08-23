@@ -195,6 +195,109 @@ class SkinConfig:
 
 
 # =============================================================================
+# ANSI-16 palette snapping (prompt_toolkit chrome)
+# =============================================================================
+#
+# prompt_toolkit resolves bare color names ("yellow", "red", ...) to FIXED RGB
+# values and hex tokens to true color — both bypass the terminal emulator's
+# theme. The CLI's prompt_toolkit chrome (status bar, menus, prompt) must
+# follow the terminal theme like the rest of the CLI, so style strings are
+# rewritten onto the legacy-16 *palette* names (ansi*), which prompt_toolkit
+# resolves through the terminal.
+
+# The 16 legacy ANSI colors (SGR 30-37 / 90-97) as sRGB, used to snap stray
+# hex values onto the terminal's palette.
+_ANSI16_RGB: dict[int, tuple[int, int, int]] = {
+    30: (0, 0, 0), 31: (205, 49, 49), 32: (13, 188, 121),
+    33: (229, 229, 16), 34: (36, 114, 200), 35: (188, 63, 188),
+    36: (17, 168, 205), 37: (229, 229, 229),
+    90: (102, 102, 102), 91: (241, 76, 76), 92: (59, 231, 97),
+    93: (235, 241, 84), 94: (84, 144, 240), 95: (241, 132, 232),
+    96: (61, 217, 238), 97: (255, 255, 255),
+}
+
+_PT_FIXED_RGB_TO_ANSI: dict[str, str] = {
+    "black": "ansiblack",
+    "red": "ansired",
+    "green": "ansigreen",
+    "yellow": "ansiyellow",
+    "blue": "ansiblue",
+    "magenta": "ansimagenta",
+    "cyan": "ansicyan",
+    "white": "ansiwhite",
+}
+
+_ANSI16_TO_PT_NAME: dict[int, str] = {
+    30: "ansiblack",
+    31: "ansired",
+    32: "ansigreen",
+    33: "ansiyellow",
+    34: "ansiblue",
+    35: "ansimagenta",
+    36: "ansicyan",
+    37: "ansigray",
+    90: "ansibrightblack",
+    91: "ansibrightred",
+    92: "ansibrightgreen",
+    93: "ansibrightyellow",
+    94: "ansibrightblue",
+    95: "ansibrightmagenta",
+    96: "ansibrightcyan",
+    97: "ansiwhite",
+}
+
+
+def nearest_ansi16(r: int, g: int, b: int) -> int:
+    """Return the SGR code of the legacy-16 color nearest to an sRGB triple."""
+    best_code = 37
+    best_dist: float | None = None
+    for code, (cr, cg, cb) in _ANSI16_RGB.items():
+        dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_code = code
+    return best_code
+
+
+def _pt_hex_to_ansi_name(hex_token: str) -> str:
+    """Snap a ``#RRGGBB`` token to the nearest legacy-16 prompt_toolkit name."""
+    try:
+        r = int(hex_token[1:3], 16)
+        g = int(hex_token[3:5], 16)
+        b = int(hex_token[5:7], 16)
+        return _ANSI16_TO_PT_NAME[nearest_ansi16(r, g, b)]
+    except (ValueError, IndexError, KeyError):
+        return "ansiyellow"
+
+
+def snap_pt_style_to_theme(style_str: str) -> str:
+    """Rewrite one prompt_toolkit style string onto the ANSI palette.
+
+    Fixed RGB names ("yellow", ...) become their ``ansi*`` palette
+    equivalents and hex tokens (bare or ``bg:``/``fg:``) snap to the nearest
+    legacy-16 color, so the terminal theme — not a hardcoded true-color
+    value — decides how the chrome renders. Attributes (bold/dim/italic)
+    and ``default`` pass through untouched.
+    """
+    if not style_str:
+        return style_str
+    out: list[str] = []
+    for token in str(style_str).split():
+        lower = token.lower()
+        if lower in _PT_FIXED_RGB_TO_ANSI:
+            out.append(_PT_FIXED_RGB_TO_ANSI[lower])
+        elif lower.startswith("bg:#") and len(lower) >= 7:
+            out.append("bg:" + _pt_hex_to_ansi_name(lower[3:]))
+        elif lower.startswith("fg:#") and len(lower) >= 7:
+            out.append("fg:" + _pt_hex_to_ansi_name(lower[3:]))
+        elif lower.startswith("#") and len(lower) >= 7:
+            out.append(_pt_hex_to_ansi_name(lower[:7]))
+        else:
+            out.append(token)
+    return " ".join(out)
+
+
+# =============================================================================
 # Built-in skin definitions
 # =============================================================================
 
@@ -1039,6 +1142,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "status-bar-warn": f"bg:{status_bg} {status_warn} bold",
         "status-bar-bad": f"bg:{status_bg} {status_bad} bold",
         "status-bar-critical": f"bg:{status_bg} {status_critical} bold",
+        # Far-right session-title badge and the YOLO flag: previously
+        # hardcoded in the CLI's base style (bg:yellow / bold red), so
+        # skins could not drive them at all.
+        "status-bar-session-title": f"bg:{input_rule} default bold",
+        "status-bar-yolo": f"{error} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
         "completion-menu": f"bg:{menu_bg} {text}",

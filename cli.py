@@ -216,7 +216,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
 from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-from utils import base_url_host_matches, base_url_hostname, fast_safe_load
+from utils import base_url_host_matches, base_url_hostname, fast_safe_load, strip_decorative_glyphs
 
 _son_of_anton_home = get_son_of_anton_home()
 _project_env = Path(__file__).parent / '.env'
@@ -2950,6 +2950,12 @@ def _hex_to_ansi(color: str, *, bold: bool = False) -> str:
     return f"\033[{';'.join(attrs)}m"
 
 
+# prompt_toolkit chrome (status bar, menus, prompt) follows the terminal
+# theme: its style strings are snapped onto the ANSI-16 palette by the skin
+# engine, the shared home for theme logic (see skin_engine.py).
+from son_of_anton_cli.skin_engine import snap_pt_style_to_theme as _snap_pt_style_to_theme
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Light/dark terminal mode detection.
 #
@@ -3603,7 +3609,7 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
-def _cprint(text: str):
+def _cprint(text: str, strip: bool = True):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
@@ -3612,13 +3618,20 @@ def _cprint(text: str):
 
     When called from a background thread while a prompt_toolkit
     ``Application`` is running (the common case for the self-improvement
-    background review's ``💾 …`` summary, curator summaries, and other
+    background review's summary, curator summaries, and other
     bg-thread emissions), a direct ``_pt_print`` races with the input
     area's redraw and the line can end up visually buried behind the
     prompt.  Route those cases through ``run_in_terminal`` via
     ``loop.call_soon_threadsafe``, which pauses the input area, prints
     the line above it, and redraws the prompt cleanly.
+
+    Decorative emoji glyphs are stripped here, the single funnel for the
+    CLI's ANSI-colored output. Streamed MODEL CONTENT (the agent's own
+    words) passes through untouched via ``strip=False`` — glyph stripping
+    is for UI chrome, never for user/model message text.
     """
+    if strip:
+        text = strip_decorative_glyphs(text or "")
     _record_output_history(text)
 
     try:
@@ -3997,19 +4010,19 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
 
     if width < 52:
         if len(attached_images) == 1:
-            return f"[📎 {_trunc(attached_images[0].name, 20)}]"
-        return f"[📎 {len(attached_images)} images attached]"
+            return f"[{_trunc(attached_images[0].name, 20)}]"
+        return f"[{len(attached_images)} images attached]"
 
     if width < 80:
         if len(attached_images) == 1:
-            return f"[📎 {_trunc(attached_images[0].name, 32)}]"
+            return f"[{_trunc(attached_images[0].name, 32)}]"
         first = _trunc(attached_images[0].name, 20)
         extra = len(attached_images) - 1
-        return f"[📎 {first}] [+{extra}]"
+        return f"[{first}] [+{extra}]"
 
     base = image_counter - len(attached_images) + 1
     return " ".join(
-        f"[📎 Image #{base + i}]"
+        f"[Image #{base + i}]"
         for i in range(len(attached_images))
     )
 
@@ -4725,7 +4738,7 @@ def _build_compact_banner() -> str:
 
     w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return f"\n[{title_color}]{tiny_line} [{dim_color}]- Nous Research\n"
+        return f"\n[{title_color}]{tiny_line}\n"
 
     inner = w - 2  # inside the box border
     bar = "═" * w
@@ -5348,7 +5361,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # the whole __init__ body and break the earlier `self.console =
                 # Console()` with UnboundLocalError.
                 Console(stderr=True).print(
-                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                    "[bold yellow]Session store unavailable[/bold yellow] — "
                     "this conversation will [bold]NOT be saved to disk and "
                     "cannot be resumed later. Searching past sessions is also disabled.\n"
                     f"  Reason: {e}\n"
@@ -6088,13 +6101,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             59s → 1m → 1m 1s → ... → 1m 59s → 2m → 2m 1s → ...
             59m 59s → 1h → 1h 0m 1s → ...
             23h 59m 59s → 1d → 1d 0h 1m → ...
-
-        Emoji prefix: ⏱ when turn is live, ⏲ when frozen or fresh start.
-        Uses width-1 (no variation selector) glyphs so the status bar stays
-        aligned in monospace terminals.
         """
         if prompt_start_time is None and prompt_duration == 0.0:
-            return "⏲ 0s"
+            return "0s"
         elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
         elapsed = max(0.0, elapsed)
 
@@ -6114,8 +6123,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             time_str = f"{int(elapsed)}s"
 
-        emoji = "⏱" if live else "⏲"
-        return f"{emoji} {time_str}"
+        return time_str
 
     @staticmethod
     def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
@@ -6123,12 +6131,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         Returns an empty string while a turn is live (the per-prompt elapsed
         timer covers that case) or before the first turn has completed.
-        Compact read-out: ``✓ 42s`` / ``✓ 3m`` / ``✓ 1h 12m``.
+        Compact read-out: ``idle 42s`` / ``idle 3m`` / ``idle 1h 12m``.
         """
         if turn_live or last_finished_at is None:
             return ""
         idle = max(0.0, time.time() - last_finished_at)
-        return f"✓ {format_duration_compact(idle)}"
+        return f"idle {format_duration_compact(idle)}"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
@@ -6648,7 +6656,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if focus_label:
                     text += f" · {focus_label}"
                 if yolo_active:
-                    text += " · ⚠ YOLO"
+                    text += " · YOLO"
                 return self._right_align_status_title(text, session_title, width)
             if width < 76:
                 parts = [f"⚛ {snapshot['model_short']}", percent_label]
@@ -6656,23 +6664,23 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     parts.insert(0, battery_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
-                    parts.append(f"🗜️ {compressions}")
+                    parts.append(f"{compressions} compressed")
                 bg_count = snapshot.get("active_background_tasks", 0)
                 if bg_count:
-                    parts.append(f"▶ {bg_count}")
+                    parts.append(f"bg {bg_count}")
                 bg_proc_count = snapshot.get("active_background_processes", 0)
                 if bg_proc_count:
-                    parts.append(f"⚙ {bg_proc_count}")
+                    parts.append(f"proc {bg_proc_count}")
                 bg_subagent_count = snapshot.get("active_background_subagents", 0)
                 if bg_subagent_count:
-                    parts.append(f"⛓ {bg_subagent_count}")
+                    parts.append(f"sub {bg_subagent_count}")
                 if goal_segment:
                     parts.append(goal_segment)
                 parts.append(duration_label)
                 if focus_label:
                     parts.append(focus_label)
                 if yolo_active:
-                    parts.append("⚠ YOLO")
+                    parts.append("YOLO")
                 return self._right_align_status_title(" · ".join(parts), session_title, width)
 
             if snapshot["context_length"]:
@@ -6687,16 +6695,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if battery_label:
                 parts.insert(0, battery_label)
             if compressions:
-                parts.append(f"🗜️ {compressions}")
+                parts.append(f"{compressions} compressed")
             bg_count = snapshot.get("active_background_tasks", 0)
             if bg_count:
-                parts.append(f"▶ {bg_count}")
+                parts.append(f"bg {bg_count}")
             bg_proc_count = snapshot.get("active_background_processes", 0)
             if bg_proc_count:
-                parts.append(f"⚙ {bg_proc_count}")
+                parts.append(f"proc {bg_proc_count}")
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
-                parts.append(f"⛓ {bg_subagent_count}")
+                parts.append(f"sub {bg_subagent_count}")
             if goal_segment:
                 parts.append(goal_segment)
             parts.append(duration_label)
@@ -6709,7 +6717,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if focus_label:
                 parts.append(focus_label)
             if yolo_active:
-                parts.append("⚠ YOLO")
+                parts.append("YOLO")
             return self._right_align_status_title(" │ ".join(parts), session_title, width)
         except Exception:
             return f"⚛ {self.model if getattr(self, 'model', None) else 'Son of Anton'}"
@@ -6748,7 +6756,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     frags.append(("class:status-bar-strong", focus_label))
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
-                    frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    frags.append(("class:status-bar-yolo", "YOLO"))
                 frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
@@ -6766,16 +6774,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                        frags.append((self._compression_count_style(compressions), f"{compressions} compressed"))
                     if bg_count:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
+                        frags.append(("class:status-bar-strong", f"bg {bg_count}"))
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                        frags.append(("class:status-bar-strong", f"proc {bg_proc_count}"))
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                        frags.append(("class:status-bar-strong", f"sub {bg_subagent_count}"))
                     if goal_segment:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", goal_segment))
@@ -6788,7 +6796,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         frags.append(("class:status-bar-strong", focus_label))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                        frags.append(("class:status-bar-yolo", "YOLO"))
                     frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
@@ -6815,16 +6823,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                        frags.append((self._compression_count_style(compressions), f"{compressions} compressed"))
                     if bg_count:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
+                        frags.append(("class:status-bar-strong", f"bg {bg_count}"))
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                        frags.append(("class:status-bar-strong", f"proc {bg_proc_count}"))
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                        frags.append(("class:status-bar-strong", f"sub {bg_subagent_count}"))
                     if goal_segment:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", goal_segment))
@@ -6849,7 +6857,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         frags.append(("class:status-bar-strong", focus_label))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                        frags.append(("class:status-bar-yolo", "YOLO"))
                     frags.append(("class:status-bar", " "))
 
             # Stash indicator (📌 N) — appended after all width tiers so the
@@ -6921,7 +6929,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         W = max(12, min(width - 4, 80))
 
         n = len(stash_list)
-        hdr_prefix_str = f"╭─ 📌 Stash ({n} item{'s' if n != 1 else ''}) "
+        hdr_prefix_str = f"╭─ Stash ({n} item{'s' if n != 1 else ''}) "
         HDR_SUFFIX = " Ctrl+S ─╮"
         FTR_PREFIX = "╰"
         FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
@@ -6930,10 +6938,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Drop to compact affordances rather than letting the frame bleed past
         # the right edge (which is what made the panel look broken).
         if cw(hdr_prefix_str) + cw(HDR_SUFFIX) > W:
-            hdr_prefix_str = f"╭─ 📌 {n} "
+            hdr_prefix_str = f"╭─ {n} "
             HDR_SUFFIX = "─╮"
         if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
-            FTR_SUFFIX = " ↑↓ ⏎ D Esc ─╯"
+            FTR_SUFFIX = " ↑↓ Enter D Esc ─╯"
         if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
             FTR_SUFFIX = "─╯"
 
@@ -7537,7 +7545,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _tc = getattr(self, "_stream_text_ansi", "")
 
         def _emit_one(printed_line: str) -> None:
-            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}", strip=False)
 
         def _flush_table_buf() -> None:
             buf = self._stream_table_buf
@@ -7648,11 +7656,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
-                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
+                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}", strip=False)
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}", strip=False)
             self._stream_buf = ""
 
         # Close the response box
@@ -7715,7 +7723,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"⏳ {status}")
+            print(f"{status}")
             yield
         finally:
             self._command_running = False
@@ -8018,6 +8026,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     provider=self.provider,
                     availability=snapshot["availability"],
                     skills_by_category=snapshot.get("skills_by_category"),
+                    deferred_print=_cprint,
                 )
 
                 def _refresh_banner_snapshot() -> None:
@@ -8064,6 +8073,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     context_length=ctx_len,
                     provider=self.provider,
                     availability=availability,
+                    deferred_print=_cprint,
                 )
                 try:
                     tmap = {
@@ -8201,7 +8211,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return  # Already where the session lived — nothing to announce.
 
         if not os.path.isdir(recorded):
-            msg = f"⚠ Session's working directory is gone: {recorded} — staying in {current or '.'}"
+            msg = f"Session's working directory is gone: {recorded} — staying in {current or '.'}"
             if quiet:
                 print(msg, file=sys.stderr)
             else:
@@ -8211,7 +8221,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             os.chdir(recorded)
         except OSError as e:
-            msg = f"⚠ Could not enter session's working directory {recorded}: {e}"
+            msg = f"Could not enter session's working directory {recorded}: {e}"
             if quiet:
                 print(msg, file=sys.stderr)
             else:
@@ -8259,7 +8269,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if is_session_yolo_enabled(session_key):
             return
         enable_session_yolo(session_key)
-        msg = "⚡ YOLO mode restored from session — all commands auto-approved. /yolo to turn off."
+        msg = "YOLO mode restored from session — all commands auto-approved. /yolo to turn off."
         if quiet:
             print(msg, file=sys.stderr)
         else:
@@ -10670,7 +10680,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
 
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {_display_new}")
+        _cprint(f"  Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
@@ -11207,7 +11217,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {_display_new}")
+        _cprint(f"  Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
@@ -11380,7 +11390,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _console_print(self, *args, **kwargs):
         """Print through the active command-safe console."""
-        self._output_console().print(*args, **kwargs)
+        cleaned_args = tuple(
+            strip_decorative_glyphs(arg) if isinstance(arg, str) else arg
+            for arg in args
+        )
+        self._output_console().print(*cleaned_args, **kwargs)
 
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
@@ -11461,7 +11475,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         print()
         print("+" + "-" * 60 + "+")
-        print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
+        print("|" + " " * 15 + "(◠‿◠) Gateway Status" + " " * 17 + "|")
         print("+" + "-" * 60 + "+")
         print()
         
@@ -11483,7 +11497,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if pconfig and pconfig.enabled:
                     home = config.get_home_channel(platform)
                     home_str = f" → {home.name}" if home else ""
-                    print(f"    ✓ {name:<12} Enabled{home_str}")
+                    print(f"    {name:<13} Enabled{home_str}")
                 else:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
             
@@ -11634,8 +11648,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         session_id=self.session_id,
                         context_length=ctx_len,
                         provider=self.provider,
+                        deferred_print=_cprint,
                     )
-                _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                _cprint("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:
                     from son_of_anton_cli.tips import get_random_tip
@@ -11645,12 +11660,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
                     except Exception:
                         _tip_color = "dim yellow"
-                    cc.print(f"[{_tip_color}]✦ Tip: {_tip}")
+                    cc.print(f"[{_tip_color}]Tip: {_tip}")
                 except Exception:
                     pass
             else:
                 self.show_banner()
-                print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                print("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:
                     from son_of_anton_cli.tips import get_random_tip
@@ -11660,7 +11675,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
                     except Exception:
                         _tip_color = "dim yellow"
-                    self._console_print(f"[{_tip_color}]✦ Tip: {_tip}")
+                    self._console_print(f"[{_tip_color}]Tip: {_tip}")
                 except Exception:
                     pass
         elif canonical == "history":
@@ -11930,7 +11945,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     print(f"User plugins ({len(user_entries)}):")
                     for name, version, _desc, source, _dir, key in sorted(user_entries):
                         state = _plugin_status(name, enabled, disabled, key=key)
-                        glyph = {"enabled": "✓", "disabled": "✗"}.get(state, "○")
+                        glyph = {"enabled": "+", "disabled": "-"}.get(state, "o")
                         ver = f" v{version}" if version else ""
                         info = loaded.get(name) or {}
                         bits = []
@@ -12150,7 +12165,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
                 if msg:
                     skill_name = skill_commands[base_cmd]["name"]
-                    print(f"\n⚡ Loading skill: {skill_name}")
+                    print(f"\nLoading skill: {skill_name}")
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
@@ -12948,7 +12963,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 approx_tokens,
             )
             for line in report["lines"]:
-                print(f"🗜️  {line}")
+                print(f"  {line}")
             return
 
         original_count = len(self.conversation_history)
@@ -12985,14 +13000,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     tools=_tools,
                 )
                 if partial:
-                    print(f"🗜️  Summarizing up to here: compressing {len(head)} of "
+                    print(f"Summarizing up to here: compressing {len(head)} of "
                           f"{original_count} messages (~{approx_tokens:,} tokens), "
                           f"keeping last {keep_last} exchange(s) verbatim...")
                 elif focus_topic:
-                    print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
+                    print(f"Compressing {original_count} messages (~{approx_tokens:,} tokens), "
                           f"focus: \"{focus_topic}\"...")
                 else:
-                    print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
+                    print(f"Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
                 # Pass None as system_message so _compress_context rebuilds
                 # the system prompt from scratch via _build_system_prompt(None).
@@ -13084,9 +13099,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     or summary.get("fallback_used")
                     or summary.get("refused_would_grow")
                 ):
-                    icon = "⚠️"
+                    icon = "!"
                 else:
-                    icon = "🗜️" if summary["noop"] else "✅"
+                    icon = "-" if summary["noop"] else "ok"
                 print(f"  {icon} {summary['headline']}")
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
@@ -13097,7 +13112,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self.agent,
                     committed=False,
                 )
-                print(f"  ❌ Compression failed: {e}")
+                print(f"  Compression failed: {e}")
 
 
 
@@ -13152,7 +13167,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         model = payload.get("model") or self.model
         print()
-        print(f"  🧠 Context Usage — {model}")
+        print(f"  Context Usage — {model}")
         print()
         for line in render_context_breakdown_lines(payload, details=details, grid=True):
             print(f"  {line}")
@@ -13202,7 +13217,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         msg_count = len(self.conversation_history)
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
-        print("  📊 Session Token Usage")
+        print("  Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
         print(f"  Input tokens:              {input_tokens:>10,}")
@@ -13362,10 +13377,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # They can apply the new settings on their own terms with
             # /reload-mcp — which we explicitly warn may invalidate the cache.
             print()
-            print("🔄 MCP server config changed — reload skipped (auto-reload disabled).")
+            print("MCP server config changed — reload skipped (auto-reload disabled).")
             print("   New settings are NOT applied yet. To apply them now, run:")
             print("     /reload-mcp")
-            print("   ⚠️  Note: /reload-mcp rebuilds the tool set and invalidates the")
+            print("   Note: /reload-mcp rebuilds the tool set and invalidates the")
             print("   provider prompt cache (next message re-sends full input tokens).")
             return
 
@@ -13373,7 +13388,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).
         print()
-        print("🔄 MCP server config changed — reloading connections...")
+        print("MCP server config changed — reloading connections...")
         _reload_thread = threading.Thread(
             target=self._reload_mcp, daemon=True
         )
@@ -13484,28 +13499,28 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             ("cancel", "Cancel", "keep current conversation"),
         ]
         raw = self._prompt_text_input_modal(
-            title=f"⚠️  /{command} — destroys conversation state",
+            title=f"/{command} — destroys conversation state",
             detail=detail,
             choices=choices,
         )
         if raw is None:
-            print(f"🟡 /{command} cancelled (no input).")
+            print(f"/{command} cancelled (no input).")
             return None
         choice = self._normalize_slash_confirm_choice(raw, choices)
         if choice is None:
-            print(f"🟡 Unrecognized choice '{raw}'. /{command} cancelled.")
+            print(f"Unrecognized choice '{raw}'. /{command} cancelled.")
             return None
 
         if choice == "cancel":
-            print(f"🟡 /{command} cancelled. Conversation unchanged.")
+            print(f"/{command} cancelled. Conversation unchanged.")
             return None
 
         if choice == "always":
             if save_config_value("approvals.destructive_slash_confirm", False):
-                print("🔒 Future /clear, /new, /reset, and /undo will run without confirmation.")
+                print("Future /clear, /new, /reset, and /undo will run without confirmation.")
                 print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
             else:
-                print("⚠️  Couldn't persist opt-out — proceeding once.")
+                print("Couldn't persist opt-out — proceeding once.")
 
         return choice
 
@@ -13545,7 +13560,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             ("cancel", "Cancel", "leave MCP tools unchanged"),
         ]
         raw = self._prompt_text_input_modal(
-            title="⚠️  /reload-mcp — Prompt cache invalidation warning",
+            title="/reload-mcp — Prompt cache invalidation warning",
             detail=(
                 "Reloading MCP servers rebuilds the tool set for this session and\n"
                 "invalidates the provider prompt cache. The next message will\n"
@@ -13555,23 +13570,23 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             choices=choices,
         )
         if raw is None:
-            print("🟡 /reload-mcp cancelled (no input).")
+            print("/reload-mcp cancelled (no input).")
             return
         choice = self._normalize_slash_confirm_choice(raw, choices)
         if choice is None:
-            print(f"🟡 Unrecognized choice '{raw}'. /reload-mcp cancelled.")
+            print(f"Unrecognized choice '{raw}'. /reload-mcp cancelled.")
             return
 
         if choice == "cancel":
-            print("🟡 /reload-mcp cancelled. MCP tools unchanged.")
+            print("/reload-mcp cancelled. MCP tools unchanged.")
             return
 
         if choice == "always":
             if save_config_value("approvals.mcp_reload_confirm", False):
-                print("🔒 Future /reload-mcp calls will run without confirmation.")
+                print("Future /reload-mcp calls will run without confirmation.")
                 print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
             else:
-                print("⚠️  Couldn't persist opt-out — reloading once.")
+                print("Couldn't persist opt-out — reloading once.")
 
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_mcp()
@@ -13590,7 +13605,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 old_servers = set(_servers.keys())
 
             if not self._command_running:
-                print("🔄 Reloading MCP servers...")
+                print("Reloading MCP servers...")
 
             # Shutdown existing connections
             shutdown_mcp_servers()
@@ -13607,15 +13622,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             reconnected = connected_servers & old_servers
 
             if reconnected:
-                print(f"  ♻️  Reconnected: {', '.join(sorted(reconnected))}")
+                print(f"  Reconnected: {', '.join(sorted(reconnected))}")
             if added:
-                print(f"  ➕ Added: {', '.join(sorted(added))}")
+                print(f"  Added: {', '.join(sorted(added))}")
             if removed:
-                print(f"  ➖ Removed: {', '.join(sorted(removed))}")
+                print(f"  Removed: {', '.join(sorted(removed))}")
             if not connected_servers:
                 print("  No MCP servers connected.")
             else:
-                print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+                print(f"  {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
 
             # Refresh the agent's tool list so the model can call new tools.
             # Route through the shared helper so this CLI /reload-mcp path stays
@@ -13675,10 +13690,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     pass  # Best-effort
 
-            print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+            print(f"  Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
 
         except Exception as e:
-            print(f"  ❌ MCP reload failed: {e}")
+            print(f"  MCP reload failed: {e}")
 
     def _reload_skills(self) -> None:
         """Reload skills: rescan ~/.son-of-anton/skills/ and queue a note for the
@@ -13697,7 +13712,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from agent.skill_commands import reload_skills, get_skill_commands
 
             if not self._command_running:
-                print("🔄 Reloading skills...")
+                print("Reloading skills...")
 
             result = reload_skills()
 
@@ -13712,7 +13727,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if not added and not removed:
                 print("  No new skills detected.")
-                print(f"  📚 {total} skill(s) available")
+                print(f"  {total} skill(s) available")
                 return
 
             def _fmt_line(item: dict) -> str:
@@ -13721,14 +13736,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return f"    - {nm}: {desc}" if desc else f"    - {nm}"
 
             if added:
-                print("  ➕ Added Skills:")
+                print("  Added Skills:")
                 for item in added:
                     print(f"  {_fmt_line(item)}")
             if removed:
-                print("  ➖ Removed Skills:")
+                print("  Removed Skills:")
                 for item in removed:
                     print(f"  {_fmt_line(item)}")
-            print(f"  📚 {total} skill(s) available")
+            print(f"  {total} skill(s) available")
 
             # Queue a one-shot note for the NEXT user turn. The CLI's agent
             # loop prepends ``_pending_skills_reload_note`` (if set) to the
@@ -13756,7 +13771,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._pending_skills_reload_note = "\n".join(sections)
 
         except Exception as e:
-            print(f"  ❌ Skills reload failed: {e}")
+            print(f"  Skills reload failed: {e}")
 
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)
@@ -13774,9 +13789,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._stream_box_opened = False
         self._close_reasoning_box()
 
-        from agent.display import get_tool_emoji
-        emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        _cprint(f"  ┊ preparing {tool_name}…")
 
     # ====================================================================
     # Tool progress callback
@@ -13870,14 +13883,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(function_name)
             label = preview or function_name
             from agent.display import get_tool_preview_max_len
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{emoji} {label}"
+            self._spinner_text = label
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
@@ -14322,7 +14333,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         "deny": "denied",
                     }
                     self._persist_prompt_summary(
-                        "⚠", "Approval", command,
+                        "!", "Approval", command,
                         _outcome_labels.get(result, str(result)),
                     )
                     return result
@@ -14340,7 +14351,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._paint_now()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             self._persist_prompt_summary(
-                "⚠", "Approval", command, "timed out (no response)",
+                "!", "Approval", command, "timed out (no response)",
             )
             return "timeout"
 
@@ -14426,7 +14437,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        title = "⚠️  Dangerous Command"
+        title = "Dangerous Command"
         cmd_display = command
         choice_labels = {
             "once": "Allow once",
@@ -14993,7 +15004,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                     pass
                                 interrupt_msg = None
                                 continue
-                            print("\n⚡ New message detected, interrupting...")
+                            print("\nNew message detected, interrupting...")
                             self.agent.interrupt(interrupt_msg)
                             # Clear any active overlay states the interrupted agent
                             # left behind.  approval/clarify/sudo/secret prompts gate
@@ -15240,7 +15251,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     try:
                         ChatConsole().print(Panel(
                             "\n".join(_cta_lines),
-                            title="[yellow bold]⚡ Out of credits",
+                            title="[yellow bold]Out of credits",
                             title_align="left",
                             border_style="yellow",
                             box=rich_box.HORIZONTALS,
@@ -15306,9 +15317,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 n = len(all_parts)
                 preview = combined[:50] + ("..." if len(combined) > 50 else "")
                 if n > 1:
-                    print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
+                    print(f"\nSending {n} messages after interrupt: '{preview}'")
                 else:
-                    print(f"\n⚡ Sending after interrupt: '{preview}'")
+                    print(f"\nSending after interrupt: '{preview}'")
                 self._pending_input.put(combined)
 
             # If a /steer was left over (agent finished before another tool
@@ -15316,7 +15327,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _leftover_steer = result.get("pending_steer") if result else None
             if _leftover_steer and hasattr(self, '_pending_input'):
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+                print(f"\nDelivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
 
             return response
@@ -15575,15 +15586,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return [(style, f"{icon} {state_suffix}")]
 
         if self._sudo_state:
-            return _state_fragment("class:sudo-prompt", "🔐")
+            return _state_fragment("class:sudo-prompt", "sudo")
         if self._secret_state:
-            return _state_fragment("class:sudo-prompt", "🔑")
+            return _state_fragment("class:sudo-prompt", "secret")
         if self._approval_state:
-            return _state_fragment("class:prompt-working", "⚠")
+            return _state_fragment("class:prompt-working", "!")
         if getattr(self, "_slash_confirm_state", None):
-            return _state_fragment("class:prompt-working", "⚠")
+            return _state_fragment("class:prompt-working", "!")
         if self._clarify_freetext:
-            return _state_fragment("class:clarify-selected", "✎")
+            return _state_fragment("class:clarify-selected", "?")
         if self._clarify_state:
             return _state_fragment("class:prompt-working", "?")
         if self._command_running:
@@ -15637,6 +15648,17 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         for t in tokens
                     )
                 style_dict = {k: _remap_value(v or "") for k, v in style_dict.items()}
+        except Exception:
+            pass
+        # Snap every color token onto the terminal's ANSI palette so the
+        # status bar, menus, and prompt chrome follow the terminal theme
+        # like the rest of the CLI. Without this, prompt_toolkit's "yellow"
+        # names and hex tokens render as fixed true color, ignoring the
+        # user's kitty/terminal palette.
+        try:
+            style_dict = {
+                k: _snap_pt_style_to_theme(v or "") for k, v in style_dict.items()
+            }
         except Exception:
             pass
         return style_dict
@@ -15860,7 +15882,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _tip_color = _welcome_skin.get_color("banner_dim", "dim yellow")
             except Exception:
                 _tip_color = "dim yellow"
-            self._console_print(f"[{_tip_color}]✦ Tip: {_tip}")
+            self._console_print(f"[{_tip_color}]Tip: {_tip}")
         except Exception:
             pass  # Tips are non-critical — never break startup
 
@@ -16885,13 +16907,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if self._agent_running and self.agent:
                 if now - self._last_ctrl_c_time < 2.0:
-                    print("\n⚡ Force exiting...")
+                    print("\nForce exiting...")
                     self._should_exit = True
                     event.app.exit()
                     return
                 
                 self._last_ctrl_c_time = now
-                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+                print("\nInterrupting agent... (press Ctrl+C again to force exit)")
                 request_hard_interrupt(self.agent)
             # If there's text or images, clear them (like bash).
             # If everything is already empty, exit.
@@ -16952,7 +16974,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return
 
             if self._agent_running and self.agent:
-                print("\n⚡ Interrupting agent...")
+                print("\nInterrupting agent...")
                 request_hard_interrupt(self.agent)
             elif event.app.current_buffer.text or self._attached_images:
                 event.app.current_buffer.reset()
@@ -17791,7 +17813,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             state = cli_ref._sudo_state
             if not state:
                 return []
-            title = '🔐 Sudo Password Required'
+            title = 'Sudo Password Required'
             body = 'Enter password below (hidden), or press Enter to skip'
             box_width = _panel_box_width(title, [body])
             lines = []
@@ -17817,7 +17839,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not state:
                 return []
 
-            title = '🔑 Skill Setup Required'
+            title = 'Skill Setup Required'
             prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
             metadata = state.get("metadata") or {}
             help_text = metadata.get("help")
@@ -17879,7 +17901,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return []
             stage = state.get("stage", "provider")
             if stage == "provider":
-                title = "⚙ Model Picker — Select Provider"
+                title = "Model Picker — Select Provider"
                 choices = []
                 _providers = state.get("providers")
                 for p in _providers if isinstance(_providers, list) else []:
@@ -17893,7 +17915,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
-                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                title = f"Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
                 # Fuzzy filter: narrow the concrete model list by the typed
                 # query. Selection still resolves to a real entry (see the
                 # filtered_pairs index mapping in the selection handler), so
@@ -17965,7 +17987,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             state["_visible_count"] = len(rows)
             _query = state.get("filter", "") or ""
             total = len(state.get("entries") or [])
-            title = "⚙ Command Palette"
+            title = "Command Palette"
             if _query:
                 hint = f"Filter: {_query}▏  ({len(rows)}/{total} match — Enter inserts, Esc cancels)"
             else:

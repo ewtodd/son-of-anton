@@ -4,6 +4,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -18,6 +19,49 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+# Decorative glyphs removed from user-facing display strings (CLI notices,
+# status bar, tool feed, gateway chat replies). Coverage: emoji blocks,
+# misc symbols (⚠ ⚡ ⛔), dingbats (✓ ✗ ✦ ✨), clocks and misc technical
+# (⏱ ⏲ ⏳), and emoji variation selectors. Kept deliberately: the ⚛ brand
+# mark, geometric shapes (◈ ◉ ░ — logo art and progress bars), kaomoji
+# faces, and arrows (→), which carry structure rather than decoration.
+_DECORATIVE_GLYPH_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\u2300-\u23FF\u2600-\u269A\u269C-\u26FF"
+    "\u2700-\u27BF\uFE0F]+"
+)
+
+
+def strip_decorative_glyphs(text: str) -> str:
+    """Remove decorative emoji/symbol glyphs from *text*.
+
+    Runs of stripped glyphs collapse to nothing; surrounding whitespace is
+    left to the caller's original layout. Safe on plain ASCII (returns the
+    string unchanged) and never raises.
+    """
+    if not text:
+        return text
+    try:
+        return _DECORATIVE_GLYPH_RE.sub("", text)
+    except Exception:
+        return text
+
+
+def is_local_terminal_backend(terminal_cfg: Any) -> bool:
+    """True when a ``terminal:`` config block names the local backend.
+
+    Unset / empty / ``"local"`` all mean local (the default) — the working
+    directory contract for local terminals is the process's own directory,
+    so ``terminal.cwd`` must not redirect it. Accepts both the documented
+    ``backend`` key and the legacy ``env_type`` alias.
+    """
+    if not isinstance(terminal_cfg, dict):
+        return True
+    backend = str(
+        terminal_cfg.get("backend") or terminal_cfg.get("env_type") or ""
+    ).strip().lower()
+    return not backend or backend == "local"
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:

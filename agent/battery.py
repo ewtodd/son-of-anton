@@ -120,12 +120,12 @@ def battery_category(status: BatteryStatus) -> str:
 
 
 def battery_glyph(status: BatteryStatus) -> str:
-    """Return the leading glyph: a bolt while charging, else a battery."""
-    return "\u26a1" if status.charging else "\U0001f50b"  # ⚡ / 🔋
+    """Return the leading marker: "charge" while charging, else "bat"."""
+    return "charge" if status.charging else "bat"
 
 
 def format_battery(status: BatteryStatus) -> str:
-    """Return a compact label like ``🔋 82%`` / ``⚡ 82%`` (empty if N/A)."""
+    """Return a compact label like ``bat 82%`` / ``charge 82%`` (empty if N/A)."""
     if not status.available or status.percent is None:
         return ""
     return f"{battery_glyph(status)} {status.percent}%"

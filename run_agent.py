@@ -218,7 +218,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, strip_decorative_glyphs
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -896,10 +896,17 @@ class AIAgent:
         ``print``) so callers such as the CLI can inject a renderer that
         handles ANSI escape sequences properly (e.g. prompt_toolkit's
         ``print_formatted_text(ANSI(...))``) without touching this method.
+
+        Every user-visible line is scrubbed of decorative emoji glyphs here,
+        the single funnel for agent-loop prints.
         """
         try:
             fn = self._print_fn or print
-            fn(*args, **kwargs)
+            cleaned_args = tuple(
+                strip_decorative_glyphs(arg) if isinstance(arg, str) else arg
+                for arg in args
+            )
+            fn(*cleaned_args, **kwargs)
         except (OSError, ValueError):
             pass
 
@@ -973,6 +980,7 @@ class AIAgent:
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
         """
+        message = strip_decorative_glyphs(message or "")
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
@@ -990,6 +998,7 @@ class AIAgent:
         such as auxiliary compression or memory flushes where the main turn can
         continue but the user needs to know something important failed.
         """
+        message = strip_decorative_glyphs(message or "")
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:

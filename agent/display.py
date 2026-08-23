@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from utils import safe_json_loads
+from utils import safe_json_loads, strip_decorative_glyphs
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
@@ -1454,11 +1454,12 @@ def _get_cute_tool_message(
 
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""
+        line = strip_decorative_glyphs(line)
         if skin_prefix != "┊":
             line = line.replace("┊", skin_prefix, 1)
         if not is_failure:
             return line
-        return f"{line}{failure_suffix}"
+        return f"{line}{strip_decorative_glyphs(failure_suffix)}"
 
     if tool_name == "web_search":
         return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")

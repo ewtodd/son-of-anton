@@ -32,7 +32,7 @@ from son_of_anton_constants import (
     set_son_of_anton_home_override,
 )
 from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-from utils import is_truthy_value
+from utils import is_local_terminal_backend, is_truthy_value
 from tools.environments.local import son_of_anton_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from agent.skill_commands import describe_skill_invocation
@@ -1580,11 +1580,21 @@ def _launch_configured_cwd() -> str | None:
     starting in ``os.getcwd()`` instead of the configured ``terminal.cwd``.
     Read config directly so changing ``terminal.cwd`` affects new in-memory
     TUI sessions too.
+
+    Only NON-LOCAL terminal backends honor ``terminal.cwd``. The local
+    backend's contract (same as the classic CLI) is that the agent works in
+    the directory the user launched the app from — ``os.getcwd()`` — so a
+    config value (or an ambient SON_OF_ANTON_HOME pointing at another
+    install's config) must not hijack a local session's workspace.
     """
     try:
-        return _configured_cwd_from_cfg(_load_cfg())
+        cfg = _load_cfg() or {}
+        terminal_cfg = cfg.get("terminal") if isinstance(cfg, dict) else None
+        if not is_local_terminal_backend(terminal_cfg):
+            return _configured_cwd_from_cfg(cfg)
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _default_session_cwd() -> str:
