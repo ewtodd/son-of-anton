@@ -84,12 +84,18 @@ def _find_git_root(start: Path) -> Optional[Path]:
     """Walk *start* and its parents looking for a ``.git`` directory.
 
     Returns the directory containing ``.git``, or ``None`` if we hit the
-    filesystem root without finding one.
+    filesystem root without finding one. Unreadable directories (EACCES,
+    e.g. another user's 0700 home along the walk) abort the search
+    gracefully instead of raising — a context-file scan must never take
+    down the turn.
     """
     current = start.resolve()
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
+        try:
+            if (parent / ".git").exists():
+                return parent
+        except OSError:
+            return None
     return None
 
 
@@ -113,8 +119,11 @@ def _find_son_of_anton_md(cwd: Path) -> Optional[Path]:
     for directory in search_dirs:
         for name in _SON_OF_ANTON_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
-                return candidate
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
         if stop_at and directory == stop_at:
             break
     return None
@@ -2172,7 +2181,10 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     for directory in _agents_md_directory_chain(cwd_resolved):
         for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
             candidate = directory / name
-            if not candidate.exists():
+            try:
+                if not candidate.exists():
+                    continue
+            except OSError:
                 continue
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
@@ -2233,7 +2245,11 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
+    try:
+        _cursorrules_present = cursorrules_file.exists()
+    except OSError:
+        _cursorrules_present = False
+    if _cursorrules_present:
         try:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
@@ -2243,7 +2259,11 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
             logger.debug("Could not read .cursorrules: %s", e)
 
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
+    try:
+        _cursor_rules_dir_present = cursor_rules_dir.exists() and cursor_rules_dir.is_dir()
+    except OSError:
+        _cursor_rules_dir_present = False
+    if _cursor_rules_dir_present:
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
             try:

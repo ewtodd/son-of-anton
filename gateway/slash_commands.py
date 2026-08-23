@@ -1437,7 +1437,7 @@ class GatewaySlashCommandsMixin:
                     return f"{platform.value} is already paused."
                 self._pause_failed_platform(platform, reason="paused via /platform pause")
                 return (
-                    f"✓ {platform.value} paused. "
+                    f"{platform.value} paused. "
                     f"Resume with `/platform resume {platform.value}` or "
                     f"`son-of-anton gateway restart` to reset."
                 )
@@ -1453,7 +1453,7 @@ class GatewaySlashCommandsMixin:
                     f"no resume needed."
                 )
             self._resume_paused_platform(platform)
-            return f"✓ {platform.value} resumed — retrying on next watcher tick."
+            return f"{platform.value} resumed — retrying on next watcher tick."
 
         return (
             "Usage: /platform <list|pause|resume> [name]\n"
@@ -1613,7 +1613,7 @@ class GatewaySlashCommandsMixin:
 
         raw = event.get_command_args().strip().lower()
         if raw and raw not in AGENT_MODES:
-            return f"❌ Unknown mode {raw!r} — use /mode auto|standard|physics|research."
+            return f"Unknown mode {raw!r} — use /mode auto|standard|physics|research."
         session_key = self._session_key_for_source(event.source)
         if not hasattr(self, "_session_mode_overrides"):
             self._session_mode_overrides = {}
@@ -1645,7 +1645,7 @@ class GatewaySlashCommandsMixin:
         if not raw:
             return "Usage: /perm default|ask|lockdown|yolo"
         if raw not in valid_modes:
-            return f"❌ Unknown permission mode {raw!r} — use /perm default|ask|lockdown|yolo."
+            return f"Unknown permission mode {raw!r} — use /perm default|ask|lockdown|yolo."
 
         if raw == "default":
             set_config_value("approvals.mode", "smart")
@@ -1701,8 +1701,8 @@ class GatewaySlashCommandsMixin:
         is_session = request.is_session
         one_turn = request.is_once
         if request.errors:
-            # Gateway decoration: "❌ " prefix over the canonical error copy.
-            return f"❌ {request.error_messages()[0]}"
+            # Return the canonical error copy unchanged.
+            return request.error_messages()[0]
 
         # /model auto — drop the session pin and re-enable router selection.
         if model_input and model_input.lower() == "auto":
@@ -2431,7 +2431,7 @@ class GatewaySlashCommandsMixin:
             async def _on_cost_confirm(choice: str) -> str:
                 if choice == "cancel":
                     return (
-                        f"🟡 Model switch cancelled. Current model unchanged "
+                        f"Model switch cancelled. Current model unchanged "
                         f"({current_model or 'unknown'})."
                     )
                 # "once" and "always" both proceed — there is no persistent
@@ -2445,7 +2445,7 @@ class GatewaySlashCommandsMixin:
                 command="model",
                 title=_cost_warning.title,
                 message=(
-                    f"⚠️ **{_cost_warning.title}**\n\n{_cost_warning.message}\n\n"
+                    f"**{_cost_warning.title}**\n\n{_cost_warning.message}\n\n"
                     f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),
@@ -2471,13 +2471,13 @@ class GatewaySlashCommandsMixin:
         raw_args = event.get_command_args().strip() if event else ""
         new_value, errors = crs.parse_args(raw_args)
         if errors:
-            return "❌ " + "\n❌ ".join(errors)
+            return "\n".join(errors)
 
         # Load + persist via the same helpers used for /model and /yolo
         try:
             from son_of_anton_cli.config import load_config, save_config
         except Exception as exc:
-            return f"❌ Could not load config: {exc}"
+            return f"Could not load config: {exc}"
         cfg = load_config()
 
         result = crs.apply(
@@ -2496,8 +2496,7 @@ class GatewaySlashCommandsMixin:
                 logger.debug("could not evict cached agent after codex-runtime change",
                              exc_info=True)
 
-        prefix = "✓" if result.success else "✗"
-        return f"{prefix} {result.message}"
+        return result.message
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality.
@@ -2528,7 +2527,7 @@ class GatewaySlashCommandsMixin:
             lines = [t("gateway.personality.header")]
             lines.append(t("gateway.personality.none_option"))
             for name, prompt in personalities.items():
-                marker = " ✓" if name == current else ""
+                marker = ""
                 lines.append(
                     t(
                         "gateway.personality.item",
@@ -2707,12 +2706,12 @@ class GatewaySlashCommandsMixin:
             except (RuntimeError, ValueError) as exc:
                 return f"/goal wait: {exc}"
             rtxt = f" ({reason})" if reason else ""
-            return f"⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits."
+            return f"Goal parked on pid {pid}{rtxt}. Loop pauses until it exits."
 
         # /goal unwait — clear the wait barrier.
         if lower == "unwait":
             if mgr.stop_waiting():
-                return "▶ Wait barrier cleared — goal loop resumes."
+                return "Wait barrier cleared — goal loop resumes."
             return "No wait barrier set."
 
         # /goal gate ... — manage deterministic quality gates.
@@ -2728,7 +2727,7 @@ class GatewaySlashCommandsMixin:
                 except (RuntimeError, ValueError) as exc:
                     return f"/goal gate add: {exc}"
                 return (
-                    f"⚿ Gate added: $ {gate.command} "
+                    f"Gate added: $ {gate.command} "
                     f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
                     f"It must pass before the goal can complete."
                 )
@@ -2738,13 +2737,13 @@ class GatewaySlashCommandsMixin:
                     removed = mgr.remove_gate(int(idx_text))
                 except (RuntimeError, ValueError, IndexError) as exc:
                     return f"/goal gate remove: {exc}"
-                return f"✓ Gate removed: $ {removed}"
+                return f"Gate removed: $ {removed}"
             if gate_lower == "clear":
                 try:
                     prev = mgr.clear_gates()
                 except RuntimeError as exc:
                     return f"/goal gate clear: {exc}"
-                return f"✓ Cleared {prev} gate{'s' if prev != 1 else ''}."
+                return f"Cleared {prev} gate{'s' if prev != 1 else ''}."
             return "Usage: /goal gate [list | add <command> | remove <N> | clear]"
 
         # /goal draft <objective> → draft a structured completion contract,
@@ -2830,7 +2829,7 @@ class GatewaySlashCommandsMixin:
 
         if lower == "pause":
             state = mgr.pause()
-            return f"⏸ Heartbeat paused: {state.prompt}" if state else "No heartbeat set."
+            return f"Heartbeat paused: {state.prompt}" if state else "No heartbeat set."
 
         if lower == "resume":
             state = mgr.resume()
@@ -2838,13 +2837,13 @@ class GatewaySlashCommandsMixin:
                 return "No heartbeat to resume."
             if quick_key and event.source is not None:
                 self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
-            return f"▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}"
+            return f"Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}"
 
         if lower in {"clear", "stop", "off"}:
             had = mgr.clear()
             if quick_key:
                 self._unregister_heartbeat_watch(quick_key)
-            return "✓ Heartbeat cleared." if had else "No heartbeat set."
+            return "Heartbeat cleared." if had else "No heartbeat set."
 
         # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
         tokens = args.split(None, 2)
@@ -2874,7 +2873,7 @@ class GatewaySlashCommandsMixin:
         if quick_key and event.source is not None:
             self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
         return (
-            f"♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"
+            f"Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"
             "Fires as a normal turn whenever this session is idle and the interval has "
             "elapsed. Lives while the gateway runs — use `son-of-anton cron` for durable schedules."
         )
@@ -2919,7 +2918,7 @@ class GatewaySlashCommandsMixin:
             return f"/refine failed to start: {exc}"
         tail = f" (focus: {args})" if args else ""
         return (
-            f"⚗ Reviewing this conversation in the background{tail} — "
+            f"Reviewing this conversation in the background{tail} — "
             f"any memory/skill updates will be reported when done."
         )
 
@@ -2956,7 +2955,7 @@ class GatewaySlashCommandsMixin:
                 removed = mgr.remove_subgoal(idx)
             except (IndexError, RuntimeError) as exc:
                 return f"/subgoal remove: {exc}"
-            return f"✓ Removed subgoal {idx}: {removed}"
+            return f"Removed subgoal {idx}: {removed}"
 
         if verb == "clear":
             try:
@@ -2964,7 +2963,7 @@ class GatewaySlashCommandsMixin:
             except RuntimeError as exc:
                 return f"/subgoal clear: {exc}"
             if prev:
-                return f"✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}."
+                return f"Cleared {prev} subgoal{'s' if prev != 1 else ''}."
             return "No subgoals to clear."
 
         try:
@@ -2972,7 +2971,7 @@ class GatewaySlashCommandsMixin:
         except (ValueError, RuntimeError) as exc:
             return f"/subgoal: {exc}"
         idx = len(mgr.state.subgoals) if mgr.state else 0
-        return f"✓ Added subgoal {idx}: {text}"
+        return f"Added subgoal {idx}: {text}"
 
     async def _get_loop_manager_for_event(self, event: "MessageEvent"):
         """Return a LoopManager bound to the session for this gateway event.
@@ -4070,7 +4069,7 @@ class GatewaySlashCommandsMixin:
             report = summarize_compress_preview(
                 _pv_msgs, partial, keep_last, focus_topic, approx_tokens
             )
-            lines = [f"🗜️ {line}" for line in report["lines"]]
+            lines = list(report["lines"])
             if _aggressive:
                 lines.append(_agg_note)
             return "\n".join(lines)
@@ -4343,7 +4342,7 @@ class GatewaySlashCommandsMixin:
                 await self._cleanup_agent_resources_off_loop(
                     tmp_agent, context="manual compression"
                 )
-            lines = [f"🗜️ {summary['headline']}"]
+            lines = [summary["headline"]]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
             lines.append(summary["token_line"])
@@ -5521,7 +5520,7 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.update.platform_not_messaging")
 
         if is_managed():
-            return f"✗ {format_managed_message('update Son of Anton Agent')}"
+            return format_managed_message('update Son of Anton Agent')
 
         project_root = Path(__file__).parent.parent.resolve()
         git_dir = project_root / '.git'
