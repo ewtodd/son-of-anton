@@ -1,9 +1,9 @@
 # Son of Anton — Status & Handoff
 
-Written 2026-08-22 after the fork/build-out session, updated 2026-08-22 after
-the Phase 7 cleanup pass and the deep-Nous cleanup layers. Everything below
-is the state as of commit `da4b4100` on `main` (pushed to
-`github.com:ewtodd/son-of-anton`).
+Written 2026-08-22 after the fork/build-out session; updated 2026-08-23 after
+the Phase 7 + deep-Nous cleanup layers and the live deployment-and-testing
+round. Everything below is the state as of commit `bcf72b1e` on `main`
+(pushed to `github.com:ewtodd/son-of-anton`).
 
 ---
 
@@ -138,10 +138,72 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
   block), and the Nous 401/entitlement retry paths. /usage keeps its session
   token/rate-limit display; /insights stays (local analytics).
 
+### Live deployment round (2026-08-23, `ebf39135` → `bcf72b1e`)
+
+The gateway went live on e-desktop (NixOS system service) serving Signal via
+the mu signal-cli HTTP daemon, routing through litellm on oracle →
+llama-swap on son-of-anton. Every turn-class bug below was found by the live
+bot, not by the suite — compile and import sweeps can't see function-body
+NameErrors or sealed-venv import gaps.
+
+- **Physics smoke fixes** (`012bd9df`): Config fallback for unregistered
+  models (models.yaml dropped), `build_config(overrides=)` kwarg, compute
+  sandbox cwd (RESULTS.txt at the workspace root), and the
+  `verification.core` import in `render_formal_evaluation`.
+- **Gateway router config** (`aa8bf7e3`): `_resolve_session_agent_mode`
+  called `.get()` on a GatewayConfig object — AttributeError on every turn.
+  Now reads `router:` through the canonical config loader.
+- **dict-form custom_providers** (`aa8bf7e3` + `ebf39135`): the runtime
+  rejected the keyed-dict form the fork's own examples emit; normalized in
+  `get_compatible_custom_providers` and accepted in config validation.
+- **i18n restored** (`aa8bf7e3`): the locale prune deleted the catalogs but
+  left `agent/i18n` + call sites, so gateway strings rendered raw dotted
+  keys. `locales/en.yaml` restored from upstream at the fork commit,
+  rebranded, shipped via `SON_OF_ANTON_BUNDLED_LOCALES`.
+- **Sealed-venv plugins import** (`0cadb4fd`): the runtime wrapper never put
+  the bundled share dir on PYTHONPATH, so top-level `import plugins` failed
+  in the sealed venv (web tools, memory, cron providers). Wrapper now
+  prefixes PYTHONPATH; the venv-imports check imports the web providers
+  directly so the gap can't regress.
+- **Credits-removal stragglers** (`0cadb4fd` + `ebf39135`): two orphaned
+  calls into the deleted credits subsystem — `agent._credits_latch =
+  new_credits_latch()` in init_agent (agent build NameError) and
+  `agent._capture_credits(response)` in the streaming path (first-LLM-call
+  AttributeError). An agent-build regression test now guards this class.
+- **Approval guard UnboundLocalError** (`27204186`): `approval_mode` was
+  only assigned under lockdown, so every terminal call crashed in
+  `check_all_command_guards`. Initialized from `approvals.mode`.
+- **`/profile <name>` per-chat switch** (`e8ce246d`): a multiplexed gateway
+  can pin a chat to a profile with a command (persisted in
+  `profile_pins.json`), so one Signal number serves both accounts without
+  group routes. Resolution: explicit routes > chat pin > default.
+- **Shared-account adapter dedupe** (`571a88e7`): all three profiles
+  connected to the same Signal daemon, so every inbound message got three
+  replies. `_adapter_credential_fingerprint` now covers URL+account
+  platforms; the first profile owns the adapter and the rest are skipped.
+  Bare `/profile` reports the chat's profile instead of listing all.
+- **EACCES-hardened context scans** (`bcf72b1e`): with cwd = the user's
+  0700 home, `_find_git_root` raised PermissionError mid system-prompt
+  build. Git-root discovery, the AGENTS.md chain, and .cursorrules now
+  treat unreadable dirs as "not found".
+- **Emoji strip** (`bcf72b1e`): ~340 decorative glyphs removed from
+  user-facing gateway chat replies (i18n catalog + command/reply strings).
+  Logs and the CLI spinner keep theirs.
+
 ---
 
 ## Current state / known loose ends
 
+- **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
+  under the `son-of-anton` user; litellm on oracle (`10.0.0.6:4000`, pinned
+  to nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
+  `expression` dependency); llama-swap on son-of-anton; SearXNG on oracle;
+  signal-cli in HTTP mode on mu with `--send-read-receipts` (typing
+  indicators off). Two multiplex profiles, `play` → `/home/e-play` and
+  `work` → `/home/e-work`, switchable per chat with `/profile`. Scoped
+  filesystem grants: home dirs r-x, recursive rwx ACLs only on each
+  profile's `allowedPaths` (project dirs), `.ssh`/`.gnupg`/dotdirs stay
+  private; `SIGNAL_ALLOWED_USERS` pinned to Ethan's number.
 - **User's home skills are stale**: `~/.son-of-anton/skills/` still holds the
   pre-prune 78 skills. One-time: `rm -rf ~/.son-of-anton/skills` (then
    optionally `son-of-anton setup` to install the bundled 43).
@@ -163,20 +225,18 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
     is retained and this is its only OAuth upstream; fails closed without
     legacy auth.json state)
   - doctor.py's removed-provider connectivity probes
-  Excising these without E2E coverage of the aux/auth chains is riskier than
-  leaving inert gated code — do it with a live smoke test in hand.
+  The live gateway now exercises the standard loop end-to-end, so this pass
+  can proceed with a real smoke net in hand.
 - **doctor.py** keeps a few removed-provider probes (Nous auth row,
   connectivity checks); `runtime_provider.py` keeps openrouter host-guards as
   defense-in-depth. Triage with the final pass above.
-- **Physics mode live-smoke-tested** (this session, `012bd9df`) against
-  llama-swap (`qwen3.6-35b-a3b` @ `http://10.0.0.5:8080/v1`). The run solved
+- **Physics mode live-smoke-tested** (`012bd9df`) against llama-swap
+  (`qwen3.6-35b-a3b` @ `http://10.0.0.5:8080/v1`). The run solved
   bromine_halflife end-to-end (workspace → RESULTS.txt → FORMAL_EVAL.md,
-  3/3 PASS with halflife 119.279s vs 119.2 true on the first solve). The
-  smoke test surfaced and fixed four vendored-wiring bugs: Config raised for
-  unregistered models (models.yaml was dropped), build_config dropped the
-  `overrides` kwarg, compute scripts ran in `computations/` so RESULTS.txt
-  missed the evaluator's read path, and `render_formal_evaluation` imported
-  the removed `verification.core` subpackage. Regression tests added.
+  3/3 PASS with halflife 119.279s vs 119.2 true on the first solve).
+- **Standard mode live-tested via Signal** — the full loop (pairing, home
+  channel, /reset, /profile switching, agent turns through litellm) works;
+  the bot answered real questions after the fix round above.
 - **Research mode is NOT yet live-smoke-tested** — the nine-agent pipeline
   runs the same fixed Config/endpoint layer, but hasn't been driven against
   a real endpoint.
@@ -188,14 +248,13 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
   engine — converting it to terminal-theme-driven is a bigger JS refactor,
   not started. The TUI also still ships `topup.ts` / `subscription.ts` slash
   commands whose Python RPCs are gone — remove them with the TUI theming pass.
-- **TUI-side `:q`**: fixed this session (item 6 above).
+- **TUI-side `:q`**: fixed (item 6 above).
 
 ## What's left
 
-1. **Final deep-Nous pass** — the tail above. The physics smoke path now
-   exists as the regression net, but it doesn't exercise the aux/auth
-   chains; add a quick standard-mode + auxiliary-call smoke before excising.
-2. **Research-mode live smoke test** — same llama-swap endpoint.
+1. **Final deep-Nous pass** — the tail above; the live gateway now provides
+   the standard-loop smoke net, so this can proceed.
+2. **Research-mode live smoke test** — same litellm/llama-swap chain.
 3. **TUI follow-up** — remove topup/subscription commands; theming decision
    (keep the hex engine or port terminal-theme colors).
 4. **README** stays in sync with the above.
@@ -205,8 +264,12 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
 - Commits: author `son-of-anton-bot <307402699+son-of-anton-bot@users.noreply.github.com>`, trailer `Co-authored-by: Ethan Todd <30243637+ewtodd@users.noreply.github.com>` (repo git config already set)
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
 - Verify: `nix flake check` (package + modules + venv import sweep), full-tree compile via `/tmp/opencode/compile_all.py` (path points at `/home/e-play/Software/son-of-anton`), import sweep via `/tmp/opencode/import_sweep.py` (run inside the sealed venv)
-- Python tests: `nix develop -c scripts/run_tests.sh` (52 tests, <1s); hooks: `nix develop -c pre-commit install`
+- Python tests: `nix develop -c scripts/run_tests.sh` (67 tests, <1s); hooks: `nix develop -c pre-commit install`
 - TUI tests: `ui-tui/` — `npm run build:ink && npm test` (node via `nix shell nixpkgs#nodejs_22`)
+- **Deployment**: the gateway lives in the user's `/etc/nixos` repo (host
+  `e-desktop`), input `son-of-anton` following `main` — bump with
+  `nix flake lock --update-input son-of-anton` + `nixos-rebuild switch`.
+  litellm is pinned via the `nixpkgs-litellm` input (nixpkgs `ced43465`).
 - **Physics smoke test repro** (needs the llama-swap host up):
   temp `SON_OF_ANTON_HOME` with config.yaml → `model: qwen3.6-35b-a3b`,
   `provider: custom`, `custom_providers.custom.base_url: http://10.0.0.5:8080/v1`,
