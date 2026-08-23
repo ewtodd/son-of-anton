@@ -1088,6 +1088,9 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     * ``real``: always prefer the real OS-user HOME.
     * ``profile``: use ``{SON_OF_ANTON_HOME}/home`` when it exists, preserving the
       older strict per-profile tool-config isolation.
+    * ``cwd``: use the command's working directory as HOME — the gateway-profile
+      mode, where each profile's terminal.cwd is its user's home and ``~``
+      should resolve there.
     """
     env = env or {}
     profile_home = _profile_home_path(env)
@@ -1096,9 +1099,17 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
         mode = "profile"
     if mode in {"host", "user", "real_home", "real-home"}:
         mode = "real"
+    if mode in {"cwd", "working_dir", "working-dir", "workdir"}:
+        mode = "cwd"
 
     if mode == "profile":
         return profile_home
+
+    if mode == "cwd":
+        # Injected by the terminal local backend (tools/environments/local.py)
+        # as the command's working directory at spawn time.
+        cwd = str(env.get("SON_OF_ANTON_SUBPROCESS_CWD") or "").strip()
+        return cwd or None
 
     real_home = get_real_home(env)
     current_home = str(env.get("HOME") or os.getenv("HOME", "")).strip()

@@ -430,6 +430,8 @@ DEFAULT_CONFIG = {
         #   real    — force the real OS-user HOME
         #   profile — force SON_OF_ANTON_HOME/home when it exists (old strict
         #             per-profile CLI config isolation)
+        #   cwd     — force the command's working directory as HOME (gateway
+        #             profiles whose terminal.cwd is the user's home)
         "home_mode": "auto",
         # Extra files to source in the login shell when building the
         # per-session environment snapshot.  Use this when tools like nvm,

@@ -1280,7 +1280,7 @@ def _path_env_key(run_env: dict) -> str | None:
     return None
 
 
-def _make_run_env(env: dict) -> dict:
+def _make_run_env(env: dict, cwd: str | None = None) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
         from tools.env_passthrough import (
@@ -1338,6 +1338,12 @@ def _make_run_env(env: dict) -> dict:
     _apply_windows_msys_bash_env_defaults(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
+
+    if cwd:
+        # Marker for terminal.home_mode=cwd: get_subprocess_home() uses this
+        # to point HOME at the command's working directory (gateway profiles
+        # whose terminal.cwd is the user's home).
+        run_env["SON_OF_ANTON_SUBPROCESS_CWD"] = str(cwd)
 
     return run_env
 
@@ -1792,7 +1798,7 @@ class LocalEnvironment(BaseEnvironment):
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
+        run_env = _make_run_env(self.env, str(self.cwd))
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir
