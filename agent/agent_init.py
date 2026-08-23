@@ -991,10 +991,6 @@ def init_agent(
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
 
-    # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
-
-    agent._credits_latch = new_credits_latch()
-
     # OpenRouter response cache hit counter — incremented when
     # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.
     agent._or_cache_hits: int = 0

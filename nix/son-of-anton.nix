@@ -142,6 +142,7 @@ stdenv.mkDerivation (finalAttrs: {
 
     makeWrapper ${sonOfAntonVenv}/bin/son-of-anton $out/bin/son-of-anton \
       --suffix PATH : "${runtimePath}" \
+      --prefix PYTHONPATH : "$out/share/son-of-anton" \
       --set SON_OF_ANTON_BUNDLED_SKILLS $out/share/son-of-anton/skills \
       --set SON_OF_ANTON_BUNDLED_PLUGINS $out/share/son-of-anton/plugins \
       --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
