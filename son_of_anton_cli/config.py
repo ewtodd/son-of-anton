@@ -2029,28 +2029,13 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
 
-    # ── custom_providers must be a list, not a dict ──────────────────────
+    # ── custom_providers: list or keyed-dict form are both valid ─────────
     cp = config.get("custom_providers")
     if cp is not None:
         if isinstance(cp, dict):
-            issues.append(ConfigIssue(
-                "error",
-                "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",
-                "Change to:\n"
-                "  custom_providers:\n"
-                "    - name: my-provider\n"
-                "      base_url: https://...\n"
-                "      api_key: ...",
-            ))
-            # Check if dict keys look like they should be list-entry fields
-            cp_keys = set(cp.keys()) if isinstance(cp, dict) else set()
-            suspicious = cp_keys & _CUSTOM_PROVIDER_LIKE_FIELDS
-            if suspicious:
-                issues.append(ConfigIssue(
-                    "warning",
-                    f"Root-level keys {sorted(suspicious)} look like custom_providers entry fields",
-                    "These should be indented under a '- name: ...' list entry, not at root level",
-                ))
+            # Keyed dict form (custom_providers.custom.base_url = ...) —
+            # normalized by get_compatible_custom_providers at runtime.
+            pass
         elif isinstance(cp, list):
             # Validate each entry in the list
             for i, entry in enumerate(cp):
