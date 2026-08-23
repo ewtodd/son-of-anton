@@ -14649,6 +14649,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         "its own %s credential.",
                         owner, profile_name, platform.value, platform.value,
                     )
+                    logger.warning(
+                        "[MULTIPLEX] Profile '%s' will not start a %s adapter — "
+                        "profile '%s' owns this %s credential. Inbound messages "
+                        "still reach every profile through profile pins "
+                        "(/profile <name>) and gateway.profile_routes.",
+                        profile_name, platform.value, owner, platform.value,
+                    )
                     self._update_platform_runtime_status(
                         f"{profile_name}:{platform.value}",
                         platform_state="fatal",
@@ -15094,6 +15101,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             val = getattr(config, "token", None)
             if isinstance(val, str) and val.strip():
                 token = val.strip()
+        if not token:
+            # Shared-account platforms (Signal) carry their exclusive
+            # credential as daemon URL + account instead of a token. Combine
+            # both so two profiles that genuinely use different accounts on
+            # one daemon do not collide.
+            url = getattr(adapter, "http_url", None) or ""
+            account = getattr(adapter, "account", None) or ""
+            if isinstance(url, str) and (url.strip() or account.strip()):
+                token = f"{url.strip()}|{str(account).strip()}"
         if not token:
             return None
         import hashlib

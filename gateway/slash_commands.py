@@ -405,6 +405,10 @@ class GatewaySlashCommandsMixin:
                 profile_name = (
                     self._pinned_profile_for_source(source) or ""
                 )
+            if not profile_name:
+                # Unpinned chat: report the default profile explicitly rather
+                # than listing every served profile.
+                profile_name = "default"
             try:
                 from gateway.run import _profile_runtime_scope
 
