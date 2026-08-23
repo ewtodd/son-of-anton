@@ -24,6 +24,43 @@ def test_physics_modules_import() -> None:
     importlib.import_module("physics_intern.verification.experimental")
 
 
+def test_config_builds_for_unregistered_models() -> None:
+    # The fork ships no models.yaml: Config must fall back to the package
+    # default max_tokens instead of refusing to run (smoke-test regression).
+    from physics_intern.core.config import Config
+
+    config = Config()
+    assert config.max_tokens > 0
+
+
+def test_build_config_accepts_programmatic_overrides() -> None:
+    # The Autophysicist runner passes overrides=... (smoke-test regression).
+    from physics_intern.core.config import build_config
+
+    config = build_config(None, overrides={"model": "qwen3.6-35b-a3b"})
+    assert config.model == "qwen3.6-35b-a3b"
+    assert config.max_tokens > 0
+
+
+def test_formal_evaluation_render_does_not_raise(tmp_path: Path) -> None:
+    # render_formal_evaluation imports the fork's console module
+    # (physics_intern.core.console) — this was a live ModuleNotFoundError
+    # before the smoke test (smoke-test regression).
+    from physics_intern.verification.experimental import (
+        run_formal_evaluation,
+        render_formal_evaluation,
+    )
+
+    problem = {
+        "checks": [
+            {"id": "halflife", "key": "halflife_s", "expected": 119.2, "tolerance": 4.0},
+        ],
+    }
+    (tmp_path / "RESULTS.txt").write_text("halflife_s = 120.0\n", encoding="utf-8")
+    result = run_formal_evaluation(str(tmp_path), problem)
+    render_formal_evaluation(result)  # must not raise
+
+
 def test_endpoint_explicit_physics_base_url_wins(monkeypatch) -> None:
     monkeypatch.setattr(
         "physics_intern.llm._load_agent_config",

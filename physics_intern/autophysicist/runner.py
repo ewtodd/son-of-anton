@@ -303,6 +303,19 @@ def run_autophysicist(
     and the final verification against the problem spec.
     """
     # --- Config ---
+    if not model:
+        # The CLI/gateway callers pass no model: bridge physics.model from the
+        # son-of-anton config.yaml so the Config carries the real model name
+        # (headers/logging), while the endpoint layer keeps its own
+        # base_url/model resolution order.
+        try:
+            from son_of_anton_cli.config import load_config
+
+            _cfg = load_config() or {}
+            _physics = _cfg.get("physics") or {}
+            model = str(_physics.get("model") or "").strip() or None
+        except Exception:
+            model = None
     config = build_config(None, overrides=config_overrides)
     if model:
         config.model = model

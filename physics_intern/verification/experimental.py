@@ -153,7 +153,7 @@ def run_formal_evaluation(
 
 def render_formal_evaluation(result: FormalEvalResult) -> None:
     """Print the evaluation to the console."""
-    from .core.console import console
+    from physics_intern.core.console import console
 
     if result.message:
         style = "green" if result.passed else "red"

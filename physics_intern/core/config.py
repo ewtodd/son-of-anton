@@ -32,15 +32,16 @@ DEFAULTS = _load_package_defaults()
 class Config:
     """PhysicsIntern configuration.
 
-    ``max_tokens`` is the resolved maximum output-token budget per LLM call.
-    It is *not* user-configurable — the single source of truth is the
-    ``max_output_tokens`` field of the model's entry in ``models.yaml``.
-    ``__post_init__`` populates it from there.
+    ``max_tokens`` is the maximum output-token budget per LLM call. When the
+    model is registered in ``models.yaml`` its ``max_output_tokens`` field is
+    authoritative; for unregistered models (the fork's normal case — models
+    come from ``physics.model`` in config.yaml) it falls back to the package
+    default from ``config.default.yaml``.
     """
 
     model: str = DEFAULTS["model"]
     verify_model: str = DEFAULTS["verify_model"]
-    max_tokens: int = 0  # resolved from models.yaml in __post_init__
+    max_tokens: int = 0  # resolved in __post_init__ (models.yaml or default)
     max_iterations: int = DEFAULTS["max_iterations"]
     critic_every_n: int = DEFAULTS["critic_every_n"]
     sympy_timeout_seconds: int = DEFAULTS["sympy_timeout_seconds"]
@@ -187,11 +188,11 @@ class Config:
                 )
             self.max_tokens = int(model_max)
         elif not self.max_tokens:
-            raise ValueError(
-                f"Model {self.model!r} is not registered in models.yaml and "
-                f"no max_tokens is set. Add the model to models.yaml with a "
-                f"'max_output_tokens' field."
-            )
+            # Unregistered model (models.yaml absent/empty — the fork ships
+            # without it): fall back to the package default rather than
+            # refusing to run. The endpoint layer resolves the actual model
+            # name and base URL from the son-of-anton config.yaml.
+            self.max_tokens = int(DEFAULTS["max_tokens"])
         # If model_id wasn't resolved, fall back to model (direct API id)
         if not self.model_id:
             self.model_id = self.model
@@ -312,9 +313,17 @@ def load_config_yaml(path: Path) -> dict:
     return result
 
 
-def build_config(args: Namespace) -> Config:
-    """Build Config with 3-tier precedence: CLI args > config.yaml > defaults."""
+def build_config(args: Namespace, overrides: dict | None = None) -> Config:
+    """Build Config with 3-tier precedence: overrides > CLI args > config.yaml > defaults.
+
+    *overrides* is a plain dict applied first (callers such as the
+    Autophysicist runner use it for programmatic config tweaks).
+    """
     kwargs: dict = {}
+
+    # Layer 0: programmatic overrides
+    if overrides:
+        kwargs.update(overrides)
 
     # Layer 1: YAML config (if provided)
     if getattr(args, "config", None) is not None:

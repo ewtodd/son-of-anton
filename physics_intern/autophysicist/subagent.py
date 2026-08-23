@@ -150,7 +150,10 @@ def dispatch_subagent(
         result = execute_python(
             script_path,
             timeout=sandbox_timeout,
-            cwd=str(computations_dir),
+            # Run at the workspace root: problem specs instruct the model to
+            # write artifacts (decay.csv, RESULTS.txt) relative to the
+            # workspace, and the formal evaluator reads them there.
+            cwd=str(workspace_root),
         )
 
         if result.returncode == 0 and not result.timed_out:
