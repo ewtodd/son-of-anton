@@ -2265,25 +2265,29 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
 
 
 def _scoped_key_env(name: str) -> str:
-    """Read a provider key env var through the per-profile secret scope.
+    """Read a provider key env var, scope-aware and .env-aware.
 
-    The multiplexed gateway installs a secret scope per turn; a raw
+    ``key_env`` conventionally names a credential in
+    ``~/.son-of-anton/.env``, not a process-environment variable — so a
+    bare ``os.environ`` read misses it and the picker probes custom
+    endpoints unauthenticated (or skips the probe entirely). The
+    multiplexed gateway installs a secret scope per turn; a raw
     ``os.environ`` read hands the current profile whatever key happens to be
-    in the process environment — another profile's, in a multiplexer. That is
-    the class swept in 854007d1c for the fallback/aux key reads; the picker's
-    ``key_env`` reads were not covered.
+    in the process environment — another profile's, in a multiplexer.
+    ``get_env_value`` reads the .env file first and routes the environment
+    fallback through the secret scope, so both surfaces resolve the key the
+    way every other credential read does.
 
-    Identical to ``os.getenv`` when multiplexing is off. A fail-closed
-    ``UnscopedSecretError`` (multiplexing on, no scope installed) means "no
-    credential visible for this profile here", which is exactly how the picker
-    already treats a missing key.
+    A fail-closed ``UnscopedSecretError`` (multiplexing on, no scope
+    installed) means "no credential visible for this profile here", which is
+    exactly how the picker already treats a missing key.
     """
     if not name:
         return ""
     try:
-        from agent.secret_scope import get_secret
+        from son_of_anton_cli.config import get_env_value
 
-        return (get_secret(name, "") or "").strip()
+        return (get_env_value(name) or "").strip()
     except Exception:
         return ""
 
