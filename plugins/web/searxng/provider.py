@@ -44,6 +44,20 @@ def _searxng_url() -> str:
     return (val or "").strip()
 
 
+def _searxng_search_url(base_url: str) -> str:
+    """Join the configured instance URL with SearXNG's ``/search`` endpoint.
+
+    Accepts both config forms: a bare instance root (``http://host:8888``)
+    and the full JSON endpoint path (``http://host:8888/search``).
+    Appending unconditionally produced ``/search/search`` and a 404 for the
+    latter, so an explicit endpoint is kept as-is.
+    """
+    root = (base_url or "").strip().rstrip("/")
+    if root.endswith("/search"):
+        return root
+    return f"{root}/search"
+
+
 class SearXNGWebSearchProvider(WebSearchProvider):
     """Search via a user-hosted SearXNG instance."""
 
@@ -72,6 +86,7 @@ class SearXNGWebSearchProvider(WebSearchProvider):
         base_url = _searxng_url().rstrip("/")
         if not base_url:
             return {"success": False, "error": "SEARXNG_URL is not set"}
+        search_url = _searxng_search_url(base_url)
 
         params: Dict[str, Any] = {
             "q": query,
@@ -81,7 +96,7 @@ class SearXNGWebSearchProvider(WebSearchProvider):
 
         try:
             resp = httpx.get(
-                f"{base_url}/search",
+                search_url,
                 params=params,
                 timeout=15,
                 headers={"Accept": "application/json"},
