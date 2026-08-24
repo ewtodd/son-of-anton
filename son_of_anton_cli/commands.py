@@ -592,12 +592,20 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
-def gateway_help_lines() -> list[str]:
-    """Generate gateway help text lines from the registry."""
+def gateway_help_lines(only: Optional[frozenset[str]] = None) -> list[str]:
+    """Generate gateway help text lines from the registry.
+
+    ``only`` optionally restricts the listing to the named canonical
+    commands — the gateway /help uses it to show the core set and points at
+    ``/commands`` for the full paginated catalog instead of dumping every
+    command into one message.
+    """
     overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if only is not None and cmd.name not in only:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
@@ -609,6 +617,29 @@ def gateway_help_lines() -> list[str]:
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
     return lines
+
+
+# The short default /help set on messaging platforms. The full catalog stays
+# reachable via the paginated /commands — /help must fit a phone screen, not
+# reproduce the registry. CLI-only or config-gated commands are omitted: the
+# gateway availability filter applies first anyway, so a gated command that
+# IS enabled on a deployment appears in the full /commands listing.
+GATEWAY_HELP_CORE: frozenset[str] = frozenset({
+    # Session lifecycle
+    "new", "undo", "retry", "stop", "title", "sessions",
+    # Model + routing + permissions
+    "model", "mode", "perm", "yolo",
+    # Context
+    "status", "context", "compress",
+    # Turn control while the agent is busy
+    "queue", "steer",
+    # Background + automation
+    "agents", "goal",
+    # Knowledge
+    "memory",
+    # Info
+    "usage", "profile", "whoami", "help", "commands",
+})
 
 
 def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:

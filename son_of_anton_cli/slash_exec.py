@@ -158,12 +158,18 @@ def _exec_bundles(ctx: CommandContext) -> CommandReply:
 def _exec_help(ctx: CommandContext) -> CommandReply:
     """Core gateway /help body (pre platform mention decoration)."""
     from agent.i18n import t
-    from son_of_anton_cli.commands import gateway_help_lines
+    from son_of_anton_cli.commands import GATEWAY_HELP_CORE, gateway_help_lines
 
+    full_lines = gateway_help_lines()
+    core_lines = gateway_help_lines(only=GATEWAY_HELP_CORE)
     lines = [
         t("gateway.help.header"),
-        *gateway_help_lines(),
+        *core_lines,
     ]
+    if len(full_lines) > len(core_lines):
+        lines.append(
+            t("gateway.help.more_commands", count=len(full_lines) - len(core_lines))
+        )
     try:
         from agent.skill_commands import get_skill_commands
         skill_cmds = get_skill_commands()

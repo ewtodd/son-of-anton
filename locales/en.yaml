@@ -165,6 +165,7 @@ gateway:
     header:                "**Son of Anton Commands**\n"
     skill_header:          "\n**Skill Commands** ({count} active):"
     more_use_commands:     "\n... and {count} more. Use `/commands` for the full paginated list."
+    more_commands:         "\n... and {count} more commands. Use `/commands` for the full paginated list."
 
   insights:
     invalid_days:          "Invalid --days value: {value}"

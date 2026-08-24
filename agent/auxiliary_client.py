@@ -7,24 +7,19 @@ the best available backend without duplicating fallback logic.
 Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
-  2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.son-of-anton/auth.json active provider)
-  4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  2. Custom endpoint (config.yaml model.base_url / custom_providers + key_env)
+  3. Native Anthropic
+  4. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  5. None
 
-OpenRouter fallback cost guard: ``auxiliary.free_only: true`` restricts the
-step-2 fallback to ``:free`` SKUs; ``auxiliary.openrouter_model`` overrides
-the default. A one-time WARNING is logged for non-``:free`` models.
+The removed OpenRouter and Nous Portal providers are intentionally absent
+from the fallback chain — see ``_get_provider_chain``.
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
-  2. OpenRouter
-  3. Nous Portal
-  4. Native Anthropic
-  5. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  6. None
+  2. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  3. Native Anthropic
+  4. None
 
 Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
 fallback chain: OpenAI gates this endpoint behind an undocumented,
@@ -4015,10 +4010,12 @@ def _get_provider_chain() -> List[tuple]:
     fails more often than not.  Codex is used only when the user's main
     provider *is* openai-codex (see Step 1 of ``_resolve_auto``) or when
     a caller explicitly requests it with a model.
+
+    NOTE: the removed OpenRouter and Nous Portal providers are NOT in this
+    chain — they were pruned with the provider catalog, so probing them on
+    every aux call only paid doomed lookups and logged noise.
     """
     return [
-        ("openrouter", _try_openrouter),
-        ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
         ("api-key", _resolve_api_key_provider),
     ]
@@ -5985,6 +5982,17 @@ def _resolve_auto_route(
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+            if not explicit_api_key:
+                # The runtime carries the endpoint but no key (e.g. key_env
+                # resolution lives on the config side). Recover the configured
+                # custom endpoint's credentials so aux tasks run with the same
+                # key the main model uses instead of falling into the
+                # removed-provider chain and failing.
+                _cfg_base, _cfg_key, _cfg_mode = _resolve_custom_runtime()
+                if _cfg_base and base_url_host_matches(_cfg_base, runtime_base_url):
+                    explicit_api_key = _cfg_key
+                    if not runtime_api_mode and _cfg_mode:
+                        runtime_api_mode = _cfg_mode
         elif main_provider.startswith("custom:"):
             # Named custom provider (custom_providers / providers dict entry).
             _has_named_entry = False
@@ -6073,7 +6081,8 @@ def _resolve_auto_route(
         tried.append(label)
     logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
                    "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
+                   "Configure a model in config.yaml (model.provider/model.default "
+                   "or a custom endpoint).",
                    ", ".join(tried))
     return None, None, ""
 

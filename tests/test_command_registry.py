@@ -71,3 +71,20 @@ def test_gateway_commands_derive_from_registry() -> None:
     # Every gateway-exposed command must still be a registered CommandDef.
     for name in GATEWAY_KNOWN_COMMANDS:
         assert resolve_command(name) is not None, f"gateway command {name!r} unregistered"
+
+
+def test_gateway_help_core_is_a_short_subset_of_the_catalog() -> None:
+    from son_of_anton_cli.commands import (
+        GATEWAY_HELP_CORE,
+        gateway_help_lines,
+    )
+
+    full = gateway_help_lines()
+    core = gateway_help_lines(only=GATEWAY_HELP_CORE)
+    assert core
+    # The point of the core set: /help fits one message, not four pages.
+    assert len(core) < len(full)
+    # Every core name must be a real registered command; config gating is
+    # applied uniformly by gateway_help_lines itself.
+    canonical_names = {cmd.name for cmd in COMMAND_REGISTRY}
+    assert GATEWAY_HELP_CORE <= canonical_names

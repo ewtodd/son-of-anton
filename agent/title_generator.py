@@ -536,6 +536,7 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    secret_scope=None,
 ) -> None:
     """Generate and store the model title for a session.
 
@@ -544,6 +545,11 @@ def auto_title_session(
     - the session already carries an ``llm`` or ``user`` title
     - title generation fails
     - runtime_validator returns False (model was switched)
+
+    ``secret_scope`` is the profile secret scope captured on the turn's
+    thread; it is re-installed here for the duration of this thread so the
+    auxiliary credential reads behave exactly as they would in the turn
+    itself.
 
     Never lets an exception escape: this is a daemon-thread target, and an
     escaping exception would spray a raw traceback into the user's terminal
@@ -554,6 +560,14 @@ def auto_title_session(
     ImportError repeats on every auto-title attempt until the long-running
     process restarts.
     """
+    scope_token = None
+    if secret_scope is not None:
+        try:
+            from agent.secret_scope import set_secret_scope
+
+            scope_token = set_secret_scope(secret_scope)
+        except Exception:
+            scope_token = None
     try:
         _auto_title_session(
             session_db,
@@ -578,6 +592,14 @@ def auto_title_session(
                 failure_callback("title generation", e)
             except Exception:
                 logger.debug("Auto-title failure_callback raised", exc_info=True)
+    finally:
+        if scope_token is not None:
+            try:
+                from agent.secret_scope import reset_secret_scope
+
+                reset_secret_scope(scope_token)
+            except Exception:
+                pass
 
 
 def _auto_title_session(
@@ -747,6 +769,17 @@ def maybe_auto_title(
 
     apply_instant_title(session_db, session_id, user_message, title_callback)
 
+    # The titling thread runs OUTSIDE the turn's worker scope, so capture the
+    # active profile secret scope here and let the thread re-install it —
+    # otherwise credential reads on that thread fail closed under a
+    # multiplexing gateway (UnscopedSecretError) and every title dies.
+    try:
+        from agent.secret_scope import current_secret_scope
+
+        secret_scope = current_secret_scope()
+    except Exception:
+        secret_scope = None
+
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message),
@@ -755,6 +788,7 @@ def maybe_auto_title(
             "main_runtime": main_runtime,
             "title_callback": title_callback,
             "runtime_validator": runtime_validator,
+            "secret_scope": secret_scope,
         },
         daemon=True,
         name="auto-title",

@@ -8879,7 +8879,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         skill list collapsed to one line; /help skills lists all skill
         commands; /help <query> filters commands by substring.
         """
-        from son_of_anton_cli.commands import COMMANDS_BY_CATEGORY, HELP_SESSION_SUBGROUPS
+        from son_of_anton_cli.commands import COMMANDS_BY_CATEGORY, COMMAND_REGISTRY, HELP_SESSION_SUBGROUPS
 
         arg = (arg or "").strip()
         skill_commands = _ensure_skill_commands()
@@ -8913,13 +8913,29 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"{_BOLD}|{header:^{inner_width}}|{_RST}")
         _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
+        # Aliases ride on their canonical line instead of their own rows —
+        # the alias rows roughly doubled the Session category's length.
+        _alias_of: dict[str, str] = {}
+        _alias_note: dict[str, str] = {}
+        for _cd in COMMAND_REGISTRY:
+            if not _cd.aliases:
+                continue
+            _alias_note[f"/{_cd.name}"] = (
+                " (alias: " + ", ".join(f"/{a}" for a in _cd.aliases) + ")"
+            )
+            for _a in _cd.aliases:
+                _alias_of[f"/{_a}"] = f"/{_cd.name}"
+
         def _emit(cmd: str, desc: str) -> bool:
+            if cmd in _alias_of:
+                return False
             if not self._command_available(cmd):
                 return False
             if query and query not in cmd.lower() and query not in desc.lower():
                 return False
+            note = _alias_note.get(cmd, "")
             ChatConsole().print(
-                f"    [bold {_accent_hex()}]{cmd:<15} [dim]- {_escape(desc)}"
+                f"    [bold {_accent_hex()}]{cmd:<15} [dim]- {_escape(desc + note)}"
             )
             return True
 
