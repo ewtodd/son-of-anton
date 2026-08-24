@@ -1,10 +1,12 @@
 # Son of Anton — Status & Handoff
 
-Written 2026-08-22 after the fork/build-out session; updated 2026-08-23 after
+Written 2026-08-22 after the fork/build-out session; updated 2026-08-24 after
 the Phase 7 + deep-Nous cleanup layers, the live deployment-and-testing
-round, and the UI hygiene round (cwd contract, rebrand tail, emoji strip,
-status-bar theming). Everything below is the state as of commit `0f3ee9f0`
-on `main` (pushed to `github.com:ewtodd/son-of-anton`).
+round, the UI hygiene round (cwd contract, rebrand tail, emoji strip,
+status-bar theming), and the gateway-routing round (searxng URL fix, aux
+chain prune, title scope, /help slimming, picker key_env, deployment
+defaults + supra-title titling). Everything below is the state as of commit
+`76b92591` on `main` (pushed to `github.com:ewtodd/son-of-anton`).
 
 ---
 
@@ -255,7 +257,48 @@ Tests: Python suite now 80 tests (glyph-strip + backend helpers, skin
 snapping contracts, identity no-Nous invariant); TUI 1703 pass + tsc clean;
 `nix flake check` green.
 
-## Current state / known loose ends- **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
+### Gateway routing round (2026-08-24, this session)
+
+- **SearXNG 404** (`dfcd763a`) — the provider joined `SEARXNG_URL` with
+  `/search` unconditionally, so the e-desktop config
+  (`http://10.0.0.6:8888/search`) produced `/search/search` and every
+  web_search 404'd. The join now accepts both a bare instance root and the
+  full endpoint path (contract test).
+- **Aux chain + title scope** (`e301d230`) — the aux auto-chain no longer
+  probes the removed OpenRouter/Nous providers (the "marking openrouter
+  unhealthy" / "no Nous authentication" noise on every aux call). Step 1's
+  custom endpoint now recovers the configured `custom_providers` key
+  (`key_env`) when the runtime carries a base_url but no key. The auto-title
+  daemon thread ran outside the turn's profile secret scope, so credential
+  reads failed closed under multiplexing and every gateway title died — the
+  thread now re-installs the scope captured on the turn thread.
+- **/help volume** (`e301d230`) — gateway /help shows a 23-line core set
+  (`GATEWAY_HELP_CORE`) and points at the paginated /commands for the rest
+  (was 59 lines); the CLI /help folds aliases onto their canonical line.
+- **Picker key_env** (`76b92591`) — `key_env` conventionally names a
+  credential in `~/.son-of-anton/.env`, but the picker read only the process
+  environment, so custom endpoints were probed unauthenticated and the
+  picker degraded to the single configured default. Now reads via
+  `get_env_value` (.env first, scope-aware environment fallback).
+- **Deployment** (uncommitted in `/etc/nixos`): the repo's Home Manager
+  module is wired for e-desktop's interactive accounts (`interactive.enable`)
+  — settings deep-merged into each `~/.son-of-anton/config.yaml`, `.env`
+  from the users-group litellm agenix secret, per-user `SON_OF_ANTON_HOME`
+  export (kills the ambient gateway-home hijack). Defaults: gateway →
+  `gemma-4-26B-A4B-it`, interactive → `qwen3.8-27b-coding`; the custom
+  provider declares the 7-model litellm catalog so pickers show it without a
+  live probe. Session titles route to the tiny always-resident `supra-title`
+  model on oracle through litellm (`auxiliary.title_generation`; litellm
+  gained a `supra-title` entry → `10.0.0.6:8080/v1`, oracle's llama-swap is
+  now LAN-exposed, `supra-router` removed). The llama-swap swap-matrix
+  module no longer treats same-device models as alternatives — every
+  non-solo combination may co-reside (gemma + qwen3.6 together on ROCm2,
+  qwen3.8 split across ROCm0/1, all simultaneously); VRAM at load time
+  decides swaps.
+
+## Current state / known loose ends
+
+- **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
   under the `son-of-anton` user; litellm on oracle (`10.0.0.6:4000`, pinned
   to nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
   `expression` dependency); llama-swap on son-of-anton; SearXNG on oracle;
@@ -266,7 +309,11 @@ snapping contracts, identity no-Nous invariant); TUI 1703 pass + tsc clean;
   with `/profile`; subprocess HOME follows the cwd (`terminal.home_mode =
   "cwd"`). Scoped filesystem grants: home dirs r-x, recursive rwx ACLs only
   on each profile's `allowedPaths` (project dirs), `.ssh`/`.gnupg`/dotdirs
-  stay private; `SIGNAL_ALLOWED_USERS` pinned to Ethan's number.
+  stay private; `SIGNAL_ALLOWED_USERS` pinned to Ethan's number. Gateway
+  default model is `gemma-4-26B-A4B-it`; session titles come from
+  `supra-title` on oracle via litellm. The swap matrix on son-of-anton
+  permits any non-solo co-residency (gemma/qwen3.6 on ROCm2, qwen3.8 split
+  on ROCm0/1, deepseek solo over all three).
 - **User's home skills are stale**: `~/.son-of-anton/skills/` still holds the
   pre-prune 78 skills. One-time: `rm -rf ~/.son-of-anton/skills` (then
    optionally `son-of-anton setup` to install the bundled 43).
@@ -276,8 +323,11 @@ snapping contracts, identity no-Nous invariant); TUI 1703 pass + tsc clean;
   - auth.py's Nous OAuth flow: portal device-code login, invoke-JWT checks,
     `resolve_nous_runtime_credentials`, `step_up_nous_billing_scope`, and the
     nous model-fetch block (`get_curated_nous_model_ids` callers)
-  - `agent/auxiliary_client.py`'s Nous branch (`auxiliary_is_nous`,
-    `_NOUS_MODEL`, pool resolution, `_nous_extra_body`)
+  - `agent/auxiliary_client.py`'s Nous branch: the auto-chain no longer
+    PROBES OpenRouter/Nous (`e301d230` — the runtime noise is gone), but the
+    dead functions linger for the final excise pass (`auxiliary_is_nous`,
+    `_NOUS_MODEL`, `_try_openrouter`/`_try_nous`, pool resolution,
+    `_nous_extra_body`)
   - models.py Nous-curated helpers: `check_nous_free_tier`,
     `fetch_nous_recommended_models`, `get_curated_nous_model_ids`,
     `partition_nous_models_by_tier`, `union_with_portal_*`
@@ -327,12 +377,16 @@ snapping contracts, identity no-Nous invariant); TUI 1703 pass + tsc clean;
 - Commits: author `son-of-anton-bot <307402699+son-of-anton-bot@users.noreply.github.com>`, trailer `Co-authored-by: Ethan Todd <30243637+ewtodd@users.noreply.github.com>` (repo git config already set)
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
 - Verify: `nix flake check` (package + modules + venv import sweep), full-tree compile via `/tmp/opencode/compile_all.py` (path points at `/home/e-play/Software/son-of-anton`), import sweep via `/tmp/opencode/import_sweep.py` (run inside the sealed venv)
-- Python tests: `nix develop -c scripts/run_tests.sh` (67 tests, <1s); hooks: `nix develop -c pre-commit install`
+- Python tests: `nix develop -c scripts/run_tests.sh` (86 tests, <1s); hooks: `nix develop -c pre-commit install`
 - TUI tests: `ui-tui/` — `npm run build:ink && npm test` (node via `nix shell nixpkgs#nodejs_22`)
 - **Deployment**: the gateway lives in the user's `/etc/nixos` repo (host
   `e-desktop`), input `son-of-anton` following `main` — bump with
   `nix flake lock --update-input son-of-anton` + `nixos-rebuild switch`.
   litellm is pinned via the `nixpkgs-litellm` input (nixpkgs `ced43465`).
+  The 2026-08-24 round also touches `hosts/oracle` (llama-swap LAN-exposed
+  for the litellm supra-title route) and the home-manager
+  son-of-anton module — rebuild both hosts and log out/in on e-desktop so
+  the per-user `SON_OF_ANTON_HOME` export and config.yaml apply.
 - **Physics smoke test repro** (needs the llama-swap host up):
   temp `SON_OF_ANTON_HOME` with config.yaml → `model: qwen3.6-35b-a3b`,
   `provider: custom`, `custom_providers.custom.base_url: http://10.0.0.5:8080/v1`,
