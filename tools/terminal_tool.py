@@ -1307,6 +1307,13 @@ def _get_env_config() -> Dict[str, Any]:
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
 
+    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
+        import logging as _dbg_logging
+        _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
+            "envcfg: TERMINAL_ENV=%r TERMINAL_CWD=%r default_cwd=%r getcwd=%r -> cwd=%r",
+            env_type, os.environ.get("TERMINAL_CWD"), default_cwd, _safe_getcwd(), cwd,
+        )
+
     return {
         "env_type": env_type,
         "cwd": cwd,
@@ -1999,8 +2006,19 @@ def _resolve_command_cwd(
     sanitization happens here.
     """
     if workdir:
+        if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
+            import logging as _dbg_logging
+            _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
+                "cmd: explicit workdir=%r", workdir
+            )
         return workdir
     recorded = get_session_cwd(session_key)
+    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
+        import logging as _dbg_logging
+        _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
+            "cmd: session_key=%r recorded=%r default_cwd=%r -> %r",
+            session_key, recorded, default_cwd, recorded or default_cwd,
+        )
     return recorded or default_cwd
 
 

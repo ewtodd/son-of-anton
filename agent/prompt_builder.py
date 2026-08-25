@@ -1185,6 +1185,16 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _session_cwd_override_for_diag() -> str:
+    """Return the in-session cwd override for diagnostics (may be empty)."""
+    try:
+        from agent.runtime_cwd import _session_cwd_override
+
+        return _session_cwd_override()
+    except Exception:
+        return "<unavailable>"
+
+
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
@@ -1215,7 +1225,18 @@ def build_environment_hints() -> str:
 
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
-            host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
+            _cwd_hint = resolve_agent_cwd()
+            host_lines.append(f"Current working directory: {_cwd_hint}")
+            if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
+                import logging as _dbg_logging
+                _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
+                    "prompt: TERMINAL_ENV=%r TERMINAL_CWD=%r getcwd=%r session_cwd=%r resolve=%r",
+                    os.environ.get("TERMINAL_ENV"),
+                    os.environ.get("TERMINAL_CWD"),
+                    os.getcwd(),
+                    _session_cwd_override_for_diag(),
+                    _cwd_hint,
+                )
         except OSError:
             pass
         hints.append("\n".join(host_lines))
