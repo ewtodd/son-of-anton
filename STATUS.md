@@ -296,6 +296,44 @@ snapping contracts, identity no-Nous invariant); TUI 1703 pass + tsc clean;
   qwen3.8 split across ROCm0/1, all simultaneously); VRAM at load time
   decides swaps.
 
+### Outstanding bugs (2026-08-25 — handoff notes for a fresh context)
+
+The 2026-08-24/25 rounds landed the HM per-user config on e-desktop + the
+supra-title routing on oracle (both rebuilt, flake lock at `114a8483`).
+What the user is still hitting:
+
+1. **CLI crashes on an unreadable `$SON_OF_ANTON_HOME/.env` (NOT fixed).**
+   Repro: `su e-play` from e-work's shell (plain `su` preserves the env, so
+   `SON_OF_ANTON_HOME=/home/e-work/.son-of-anton` carried over) → the HM
+   activation writes `.env` mode 0600 owned by e-work → e-play's CLI raises
+   `PermissionError: /home/e-work/.son-of-anton/.env` at
+   `son_of_anton_cli/env_loader.py:494` (`if user_env.exists():`).
+   Fix for the fresh context: `load_son_of_anton_dotenv` must treat an
+   unreadable `.env` as absent (fail-open, log a warning) instead of dying
+   with a raw traceback — a stale/cross-user `SON_OF_ANTON_HOME` must never
+   crash startup. User-side mitigation meanwhile: `su - e-play` (login
+   shell resets the env) and never export the var across accounts.
+
+2. **Working dir (fixed in code, user hasn't confirmed yet).** The
+   `terminal.cwd` bridge clobbered the local backend's launch dir
+   (`114a8483`; system prompt + terminal tool pinned to `$HOME` while the
+   banner showed the spawn dir). Verified against the DEPLOYED venv
+   (`9hcfwc13…`, the wrapper's venv): TERMINAL_CWD stays unset, terminal +
+   agent cwd = spawn dir. Requires fresh sessions (old sessions' persistent
+   shells keep their cwd) and, once, logout/login for the sessionVariables
+   export + to clear the old session-wide
+   `SON_OF_ANTON_HOME=/var/lib/son-of-anton/.son-of-anton`.
+
+3. **Titling garbage (fixed in code + infra, user hasn't confirmed).**
+   supra-title looped/truncated and the raw `{"title" : "Response Response
+   …"}` got persisted. Guards landed (`114a8483`: truncated-JSON salvage,
+   degenerate/repetition rejection) and oracle's supra-title runs greedy
+   (`--temp 0`). Existing garbage titles in `state.db` stay until retitled
+   (`/title <name>` or `/new`).
+
+The /etc/nixos changes from the round are committed there; the fork is at
+`114a8483` on `main` (pushed).
+
 ## Current state / known loose ends
 
 - **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
