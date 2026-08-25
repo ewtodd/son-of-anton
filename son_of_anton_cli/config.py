@@ -3519,8 +3519,18 @@ def apply_terminal_config_to_env(
             target.get("TERMINAL_ENV") or terminal_cfg.get("backend") or ""
         )
 
+    # The local backend's working-directory contract is the process's own
+    # launch dir (os.getcwd()), matching cli.py's bridge and the documented
+    # CLI behavior. A configured terminal.cwd is a gateway/daemon concept
+    # (messaging mode) and must NOT redirect interactive sessions or their
+    # children into it — otherwise a home-manager-written config.yaml pins
+    # every local TUI/CLI to the account's home regardless of spawn dir.
+    local_backend = (str(terminal_backend or "").strip().lower() in {"", "local"})
+
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
+            continue
+        if cfg_key == "cwd" and local_backend:
             continue
         value = terminal_cfg[cfg_key]
         if cfg_key == "cwd":

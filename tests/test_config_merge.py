@@ -84,3 +84,24 @@ def test_optional_env_vars_do_not_carry_removed_providers() -> None:
 
 def test_config_version_is_an_int() -> None:
     assert isinstance(DEFAULT_CONFIG.get("_config_version"), int)
+
+
+def test_terminal_cwd_not_bridged_for_local_backend(son_of_anton_home) -> None:
+    # The local backend's contract is the process's launch directory: a
+    # configured terminal.cwd (a gateway/daemon setting) must not redirect
+    # interactive sessions or their children.
+    from son_of_anton_cli.config import apply_terminal_config_to_env, save_config
+
+    save_config({"terminal": {"cwd": "/somewhere/else"}})
+    env: dict = {}
+    apply_terminal_config_to_env(env=env)
+    assert "TERMINAL_CWD" not in env
+
+
+def test_terminal_cwd_bridged_for_remote_backend(son_of_anton_home) -> None:
+    from son_of_anton_cli.config import apply_terminal_config_to_env, save_config
+
+    save_config({"terminal": {"backend": "ssh", "cwd": "/remote/workspace"}})
+    env: dict = {}
+    apply_terminal_config_to_env(env=env)
+    assert env["TERMINAL_CWD"] == "/remote/workspace"

@@ -303,12 +303,24 @@ def _extract_title_text(content: str) -> str:
     except (ValueError, TypeError):
         pass
     # Loose scan: a compliant object embedded in surrounding chatter.
-    match = re.search(r'"title\"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    match = re.search(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
     if match:
         try:
             return json.loads(f'"{match.group(1)}"').strip()
         except ValueError:
             return match.group(1).strip()
+    # Truncated structured output (max_tokens cut the reply mid-value, so
+    # there is no closing quote): salvage the value up to the first quote /
+    # brace / end of text. Degenerate output is rejected later — this just
+    # keeps the JSON envelope out of the candidate title.
+    match = re.search(r'"title"\s*:\s*"?((?:[^"\\{}]|\\.)*)', raw)
+    if match:
+        value = match.group(1).strip()
+        if value:
+            try:
+                return json.loads(f'"{value}"').strip()
+            except ValueError:
+                return value.strip()
     # Prose fallback. Reuse the canonical scrubber so reasoning-model output
     # (<think>…) can't leak into a title, then keep the first real line.
     try:
@@ -336,6 +348,29 @@ def _clean_title(text: str) -> Optional[str]:
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
     return title
+
+
+def _is_degenerate_title(title: str) -> bool:
+    """True for token-loop garbage, never a real session title.
+
+    A tiny title model stuck in a repetition loop emits runs of the same
+    word ("Response Response Response ..."), and a truncated structured
+    reply can leak its JSON envelope. Both must be rejected rather than
+    persisted as the visible sidebar name.
+    """
+    if any(ch in title for ch in "{}"):
+        return True
+    words = [w.lower() for w in title.split()]
+    if len(words) >= 4:
+        best = 1
+        run = 1
+        for i in range(1, len(words)):
+            run = run + 1 if words[i] == words[i - 1] else 1
+            if run > best:
+                best = run
+        if best >= 4:
+            return True
+    return False
 
 
 def generate_title(
@@ -426,6 +461,9 @@ def generate_title(
                 "Rejecting answer-shaped title output (%d words > %d)",
                 len(title.split()), _MAX_TITLE_WORDS,
             )
+            return None
+        if title is not None and _is_degenerate_title(title):
+            logger.debug("Rejecting degenerate title output: %r", title)
             return None
         return title
     except Exception as e:
