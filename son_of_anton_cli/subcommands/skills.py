@@ -199,7 +199,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         ),
     )
     skills_reset.add_argument(
-        "name", help="Skill name to reset (e.g. google-workspace)"
+        "name", help="Skill name to reset (e.g. arxiv)"
     )
     skills_reset.add_argument(
         "--restore",
@@ -239,7 +239,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         ),
     )
     skills_diff.add_argument(
-        "name", help="Skill name to diff (e.g. google-workspace)"
+        "name", help="Skill name to diff (e.g. arxiv)"
     )
 
     skills_opt_out = skills_subparsers.add_parser(

@@ -143,7 +143,7 @@ def resolve_openai_audio_api_key() -> str:
     load at boot, not the profile the current turn belongs to. A raw read here
     lets one profile's TTS reply / voice-note transcription authenticate as —
     and get billed against — a different profile's OpenAI account. Same
-    routing the WeChat send path and ``agent/vertex_adapter`` already use; see
+    routing the WeChat send path already uses; see
     ``agent/secret_scope.py``.
 
     Outside a multiplexed turn, ``OPENAI_API_KEY`` additionally falls back to

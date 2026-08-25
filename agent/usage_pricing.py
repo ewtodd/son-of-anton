@@ -1089,7 +1089,7 @@ def resolve_billing_route(
     # provider name/host onto it. Strip the "google/" vendor prefix the
     # Vertex OpenAI-compat endpoint requires so the pricing key matches.
     if (
-        provider_name in {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
+        provider_name in {"google", "gemini", "google-gemini", "google-ai-studio"}
         or base_url_host_matches(base_url or "", "aiplatform.googleapis.com")
         or base_url_host_matches(base_url or "", "generativelanguage.googleapis.com")
     ):

@@ -4725,16 +4725,6 @@ def run_conversation(
                         agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
                         continue
                 if (
-                    agent.api_mode == "chat_completions"
-                    and agent.provider == "vertex"
-                    and status_code == 401
-                    and not _retry.vertex_auth_retry_attempted
-                ):
-                    _retry.vertex_auth_retry_attempted = True
-                    if agent._try_refresh_vertex_client_credentials():
-                        agent._buffer_vprint("🔐 Vertex AI token refreshed after 401. Retrying request...")
-                        continue
-                if (
                     _is_copilot_provider(agent)
                     and status_code == 401
                     and not _retry.copilot_auth_retry_attempted

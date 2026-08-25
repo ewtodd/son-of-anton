@@ -2481,12 +2481,6 @@ def _collect_authed_provider_slugs(
         if overlay.auth_type == "aws_sdk":
             # Skip AWS SDK providers in prefetch — credential detection is heavier
             continue
-        elif overlay.auth_type == "vertex":
-            try:
-                from agent.vertex_adapter import has_vertex_credentials
-                has_creds = has_vertex_credentials()
-            except Exception:
-                pass
         elif overlay.extra_env_vars:
             has_creds = any(_scoped_key_env(ev) for ev in overlay.extra_env_vars)
         if not has_creds and overlay.auth_type == "api_key":
@@ -2891,16 +2885,6 @@ def list_authenticated_providers(
             has_creds = True
         elif overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(son_of_anton_slug)
-        elif overlay.auth_type == "vertex":
-            # Vertex authenticates via OAuth2 (service-account JSON / ADC),
-            # not an API key — mirror the aws_sdk gate above, otherwise the
-            # provider is silently hidden from the /model picker even when
-            # fully configured.
-            try:
-                from agent.vertex_adapter import has_vertex_credentials
-                has_creds = has_vertex_credentials()
-            except Exception as exc:
-                logger.debug("Vertex credential check failed: %s", exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type

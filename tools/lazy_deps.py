@@ -98,13 +98,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
-    # Google Vertex AI provider — OAuth2 token minting for the Gemini
-    # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
-    # google-auth is NOT in [all] so plain installs don't carry it.
-    "provider.vertex": (
-        "google-auth==2.55.1",
-        "pyasn1==0.6.4",
-    ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
@@ -178,17 +171,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "terminal.vercel": ("vercel==0.7.2",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
-    "skill.google_workspace": (
-        "google-api-python-client==2.194.0",
-        "google-auth==2.55.1",
-        "google-auth-oauthlib==1.3.1",
-        "google-auth-httplib2==0.3.1",
-        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
-        # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
-        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
-    ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
     # ─── Tools ─────────────────────────────────────────────────────────────

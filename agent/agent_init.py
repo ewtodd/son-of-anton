@@ -2344,14 +2344,7 @@ def init_agent(
             _configured_provider
         )
         _custom_provider_candidate = bool(_configured_provider_norm)
-        _runtime_first_provider_ids = {
-            "auto",
-            "vertex",
-            "google-vertex",
-            "vertex-ai",
-            "gcp-vertex",
-            "vertexai",
-        }
+        _runtime_first_provider_ids = {"auto"}
         if _configured_provider_norm in _runtime_first_provider_ids:
             _custom_provider_candidate = False
         elif (
