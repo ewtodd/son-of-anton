@@ -1806,6 +1806,26 @@ def cmd_chat(args):
         sys.exit(1)
 
 
+def _sync_bundled_skills_quietly() -> None:
+    """Seed ``~/.son-of-anton/skills/`` with the bundled skill library on first launch.
+
+    Called from any CLI entrypoint that the user might use as their first
+    interaction with Son of Anton — chat and gateway. The skills_sync module is
+    manifest-based and idempotent: skipped skills cost ~milliseconds, so
+    calling this repeatedly is fine.
+
+    Failures are swallowed because skills are an enhancement, not a hard
+    dependency. Son of Anton still functions without them; the user just sees an
+    empty skills library.
+    """
+    try:
+        from tools.skills_sync import sync_skills
+
+        sync_skills(quiet=True)
+    except Exception:
+        pass
+
+
 def cmd_gateway(args):
     """Gateway management commands."""
     _sync_bundled_skills_quietly()

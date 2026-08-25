@@ -57,3 +57,28 @@ def test_identity_strings_do_not_claim_nous() -> None:
         assert "Son of Anton Agent" in text
     assert "github.com/ewtodd/son-of-anton" in SON_OF_ANTON_AGENT_HELP_GUIDANCE
     assert "nousresearch.com" not in SON_OF_ANTON_AGENT_HELP_GUIDANCE
+
+
+def test_cmd_gateway_entrypoint_has_no_orphaned_calls(monkeypatch) -> None:
+    """``son-of-anton gateway`` startup must not hit a dead helper.
+
+    Deployed regressions: the TUI/Nix-only sweeps removed helpers from
+    ``son_of_anton_cli/main.py`` while ``cmd_gateway`` kept calling them, so
+    the gateway service died with ``NameError`` on every restart. Compile and
+    import sweeps cannot see function-body NameErrors — only execution can.
+    """
+    import types
+
+    import son_of_anton_cli.main as main_mod
+    from son_of_anton_cli import gateway
+
+    seen = {}
+
+    def fake_gateway_command(args) -> None:
+        seen["args"] = args
+
+    monkeypatch.setattr(gateway, "gateway_command", fake_gateway_command)
+
+    args = types.SimpleNamespace(gateway_command="run")
+    main_mod.cmd_gateway(args)
+    assert seen["args"] is args
