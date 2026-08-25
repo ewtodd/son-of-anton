@@ -1001,6 +1001,28 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "language": "",
+            # How the title model is prompted.
+            #   "chat"       — instruction system prompt + JSON-schema response.
+            #                  Correct for general instruct models.
+            #   "completion" — raw /v1/completions continuation of
+            #                  "User: <message>\nTitle: ", plain-text output,
+            #                  no system prompt. Required by small purpose-built
+            #                  title models (e.g. SupraLabs/supra-title-50M),
+            #                  which copy the few-shot examples out of the chat
+            #                  prompt instead of reading the user's message.
+            #                  Needs an explicit base_url.
+            "prompt_style": "chat",
+            # Sampling for prompt_style="completion" only. Defaults follow the
+            # supra-title model card; a 50M model loops without a repetition
+            # penalty, and greedy decoding (temperature 0) is its worst case.
+            # top_k/repeat_penalty are llama.cpp knobs sent via extra_body.
+            "completion_sampling": {
+                "temperature": 0.4,
+                "top_k": 40,
+                "top_p": 0.85,
+                "repeat_penalty": 1.2,
+                "max_tokens": 24,
+            },
         },
         "memory_query_rewrite": {
             "provider": "auto",

@@ -964,6 +964,12 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 # contract remains true on every settings surface.
 _FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
 
+# Auxiliary tasks whose output is inherently a few tokens and whose caller
+# passes a deliberate ceiling. call_llm() omits max_tokens by default (see the
+# rationale where it is applied); these tasks opt back in so the cap reaches
+# the wire instead of being silently discarded.
+_HARD_CAPPED_TASKS: frozenset = frozenset({"title_generation"})
+
 
 def _task_prefers_fast_model(task: Optional[str]) -> bool:
     """Return whether an eligible task explicitly opts into fast-model routing."""
@@ -8585,6 +8591,18 @@ def _build_call_kwargs(
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
         _is_moa = bool(task) and str(task) == "moa_reference"
+        # Bounded tasks: the "omit the cap" rule above is right for open-ended
+        # auxiliary output (compression summaries, vision descriptions), where a
+        # cap risks truncation. It is wrong for tasks whose output is a handful
+        # of tokens BY DEFINITION and whose caller passed an explicit ceiling.
+        #
+        # Titling asks for 64 tokens. Dropping that on a generic OpenAI-compatible
+        # endpoint let a small model that loops under a json_schema grammar emit
+        # 3,760 tokens of repetition per title — seconds of latency, then the
+        # answer-shaped guard in title_generator rejects it, so the session stays
+        # untitled and the next turn tries again. The endpoint honors max_tokens
+        # perfectly when it is actually sent.
+        _is_bounded_task = str(task or "") in _HARD_CAPPED_TASKS
         # Gemini's native generateContent maps max_tokens → maxOutputTokens and,
         # when it is omitted, applies a fixed 65,535-token ceiling rather than
         # "the model's full budget" (see gemini_native_adapter.build_gemini_request).
@@ -8611,6 +8629,7 @@ def _build_call_kwargs(
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
+            or _is_bounded_task
         ):
             # Use auxiliary_max_tokens_param() so models that require
             # max_completion_tokens (GPT-5 family, Copilot) get the right
@@ -9239,6 +9258,67 @@ async def _acreate_with_stream(
 
 
 @_relay_auxiliary_call
+def call_llm_text_completion(
+    *,
+    task: str,
+    prompt: str,
+    max_tokens: int = 24,
+    temperature: float = 0.4,
+    top_p: Optional[float] = None,
+    stop: Optional[List[str]] = None,
+    timeout: Optional[float] = None,
+    extra_body: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Raw ``/v1/completions`` call for models that expect a text continuation.
+
+    Every other auxiliary call in this module uses ``/v1/chat/completions``.
+    Some small, purpose-built models are not chat models at all: they are
+    trained to continue a fixed text pattern and emit bare text. Wrapping such
+    a model in a chat envelope with an instruction system prompt makes it
+    regurgitate whatever pattern dominates the prompt — for
+    ``SupraLabs/supra-title-50M`` that means copying the few-shot examples out
+    of our own title prompt verbatim.
+
+    Provider/model/base_url/api_key (including ``key_env``) resolve through the
+    same task-config path as :func:`call_llm`, so the endpoint and credentials
+    behave identically. Returns the raw completion text (never ``None``).
+
+    ``extra_body`` carries non-OpenAI sampling knobs — ``repeat_penalty`` and
+    ``top_k`` are llama.cpp parameters with no field in the OpenAI schema.
+    """
+    provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(task=task)
+    if not base_url:
+        raise ValueError(
+            f"auxiliary.{task}: prompt_style='completion' requires an explicit "
+            f"base_url (the /v1/completions route is not auto-detected)"
+        )
+
+    client = _create_openai_client(api_key=api_key or "", base_url=base_url)
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if stop:
+        kwargs["stop"] = stop
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    if extra_body:
+        kwargs["extra_body"] = dict(extra_body)
+
+    logger.debug(
+        "Auxiliary %s (completion): %s (%s) at %s", task, provider, model, base_url
+    )
+    response = client.completions.create(**kwargs)
+    try:
+        return response.choices[0].text or ""
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+
 def call_llm(
     task: str = None,
     *,

@@ -167,6 +167,78 @@ def _title_language() -> str:
         return ""
 
 
+def _title_prompt_style() -> str:
+    """Return "chat" (default) or "completion" for the title model."""
+    try:
+        from son_of_anton_cli.config import load_config_readonly
+
+        style = str(
+            ((load_config_readonly() or {}).get("auxiliary") or {})
+            .get("title_generation", {})
+            .get("prompt_style", "")
+        ).strip().lower()
+        return style if style in {"chat", "completion"} else "chat"
+    except Exception:
+        return "chat"
+
+
+def _title_completion_sampling() -> dict:
+    """Return sampling params for prompt_style="completion"."""
+    defaults = {
+        "temperature": 0.4,
+        "top_k": 40,
+        "top_p": 0.85,
+        "repeat_penalty": 1.2,
+        "max_tokens": 24,
+    }
+    try:
+        from son_of_anton_cli.config import load_config_readonly
+
+        cfg = (
+            ((load_config_readonly() or {}).get("auxiliary") or {})
+            .get("title_generation", {})
+            .get("completion_sampling")
+        )
+        if isinstance(cfg, dict):
+            defaults.update({k: v for k, v in cfg.items() if v is not None})
+    except Exception:
+        logger.debug("Failed to read title completion_sampling", exc_info=True)
+    return defaults
+
+
+def _generate_title_completion(user_snippet: str, timeout: float) -> Optional[str]:
+    """Title via a raw ``/v1/completions`` continuation.
+
+    For small purpose-built title models (supra-title and friends) that are not
+    chat models: they continue ``"User: <message>\nTitle: "`` and emit bare
+    text. The chat path's instruction prompt and JSON schema actively break
+    them — the model copies the few-shot examples instead of reading the
+    message. Format and sampling defaults come from the model card.
+    """
+    from agent.auxiliary_client import call_llm_text_completion
+
+    sampling = _title_completion_sampling()
+    # top_k / repeat_penalty are llama.cpp knobs with no OpenAI schema field.
+    extra_body = {
+        k: sampling[k]
+        for k in ("top_k", "repeat_penalty")
+        if sampling.get(k) is not None
+    }
+    text = call_llm_text_completion(
+        task="title_generation",
+        prompt=f"User: {user_snippet}\nTitle: ",
+        max_tokens=int(sampling.get("max_tokens") or 24),
+        temperature=float(sampling.get("temperature") or 0.4),
+        top_p=sampling.get("top_p"),
+        stop=["\n"],
+        timeout=timeout,
+        extra_body=extra_body or None,
+    )
+    # Plain text out — no JSON envelope to unwrap, so _extract_title_text
+    # (which hunts for {"title": ...}) is deliberately skipped.
+    return _clean_title(text)
+
+
 def _auto_title_enabled() -> bool:
     """Return whether automatic session title generation is enabled."""
     try:
@@ -435,6 +507,12 @@ def generate_title(
     ]
 
     try:
+        if _title_prompt_style() == "completion":
+            title = _generate_title_completion(user_snippet, timeout)
+            if title is not None and _is_degenerate_title(title):
+                logger.debug("Rejecting degenerate title output: %r", title)
+                return None
+            return title
         response = call_llm(
             task="title_generation",
             messages=messages,
