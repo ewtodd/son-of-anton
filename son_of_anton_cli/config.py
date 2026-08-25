@@ -336,7 +336,14 @@ def get_managed_system() -> Optional[str]:
         # An interactive shell reads the marker, because it does not see the
         # SON_OF_ANTON_MANAGED variable of the service. A marker with content
         # names the system that manages the install.
-        if managed_marker.exists():
+        try:
+            marker_exists = managed_marker.exists()
+        except PermissionError:
+            # Cross-user home (su without -): treat as not managed rather
+            # than crashing the config load with a raw traceback.
+            marker_exists = False
+            marker = ""
+        if marker_exists:
             try:
                 marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
             except OSError:
@@ -645,7 +652,15 @@ def ensure_son_of_anton_home():
     home = get_son_of_anton_home()
     key = str(home)
 
-    if key in _SON_OF_ANTON_HOME_ENSURED and home.is_dir():
+    try:
+        home_ok = home.is_dir() if key in _SON_OF_ANTON_HOME_ENSURED else False
+    except PermissionError:
+        raise RuntimeError(
+            f"SON_OF_ANTON_HOME {home} is not accessible to this user — "
+            "it may have leaked across accounts (use `su - <user>` or unset "
+            "SON_OF_ANTON_HOME)."
+        )
+    if home_ok:
         return
     # Named profiles must be created explicitly (e.g. ``son-of-anton profile create``).
     # If a stale process keeps running after the profile was renamed/deleted,

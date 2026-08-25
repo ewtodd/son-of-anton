@@ -86,3 +86,27 @@ def test_dotenv_first_load_still_seeds_terminal_values(tmp_path, monkeypatch) ->
     _load_dotenv_with_fallback(dotenv_path, override=True)
 
     assert os.environ["TERMINAL_ENV"] == "docker"
+
+
+def test_cross_user_home_guard_fails_clearly(tmp_path, monkeypatch) -> None:
+    """An untraversable SON_OF_ANTON_HOME exits with guidance, never a trace.
+
+    `su` between accounts carries the old account's SON_OF_ANTON_HOME; the
+    0700 home makes every path PermissionError. The CLI must stop with a
+    one-line diagnosis instead of a raw traceback from an arbitrary site.
+    """
+    import sys
+
+    from son_of_anton_cli import main as main_mod
+
+    home = tmp_path / "other-user-home"
+    home.mkdir()
+    os.chmod(home, 0o000)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", str(home))
+    try:
+        with pytest.raises(SystemExit) as exc:
+            main_mod._guard_son_of_anton_home_access()
+        assert exc.value.code == 1
+    finally:
+        os.chmod(home, stat.S_IRWXU)
+        monkeypatch.delenv("SON_OF_ANTON_HOME", raising=False)

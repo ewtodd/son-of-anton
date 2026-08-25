@@ -6524,8 +6524,45 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("SON_OF_ANTON_AGENT", "true")
 
 
+def _guard_son_of_anton_home_access() -> None:
+    """Fail fast with a clear message when SON_OF_ANTON_HOME is unusable.
+
+    A stale/cross-user home (plain ``su`` without ``-`` carries
+    ``SON_OF_ANTON_HOME`` from the other account) makes every home path
+    PermissionError: .env, config.yaml, .managed, plugins/, sessions. We
+    cannot run in another account's 0700 home, so instead of a raw
+    traceback from whichever module hits the wall first, one message
+    naming the actual problem and the fix. ``--help`` / ``--version`` stay
+    usable. A missing home is NOT guarded (first run; setup creates it).
+    """
+    try:
+        home = get_son_of_anton_home()
+        home.stat()
+        if not os.access(home, os.R_OK | os.X_OK):
+            raise PermissionError(f"home {home} is not readable/executable by this user")
+    except FileNotFoundError:
+        return  # first run — setup will create it
+    except PermissionError as exc:
+        if "-h" in sys.argv[1:] or "--help" in sys.argv[1:] or "--version" in sys.argv[1:]:
+            return
+        print(
+            "error: SON_OF_ANTON_HOME points at a directory this user cannot access — "
+            f"{get_son_of_anton_home()!s}\n"
+            f"  {exc}\n"
+            "This usually means the variable leaked across accounts (e.g. `su` "
+            "without `-`, or a profile export). Fix:\n"
+            "  su - <user>       # login shell resets the environment\n"
+            "  unset SON_OF_ANTON_HOME   # use this account's default home\n"
+            "  export SON_OF_ANTON_HOME=$HOME/.son-of-anton  # correct home",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main():
     """Main entry point for son-of-anton CLI."""
+    _guard_son_of_anton_home_access()
+
     # Cosmetic: make the process show up as 'son-of-anton' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()

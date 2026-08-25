@@ -4215,7 +4215,12 @@ class PluginManager:
         cap at 2 so ``<root>/a/b/c/`` is ignored.
         """
         manifests: List[PluginManifest] = []
-        if not path.is_dir():
+        try:
+            scan_dir = path.is_dir()
+        except PermissionError:
+            logger.debug("skipping unreadable plugin dir %s", path)
+            scan_dir = False
+        if not scan_dir:
             return manifests
 
         for child in sorted(path.iterdir()):
