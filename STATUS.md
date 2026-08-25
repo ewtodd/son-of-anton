@@ -324,38 +324,49 @@ What the user is still hitting:
    — the guard removes the crash-on-startup noise, it does not make a
    cross-user home a valid workspace.
 
-2. **Working dir — RESOLVED (this round). Root cause: the first agent
-   turn lazy-imports ``gateway.run`` (``agent/relay_runtime._segments_config``),
-   whose module-level config→env bridge re-bridged ``terminal.cwd``
-   (``TERMINAL_CWD=/home/e-work``) over the CLI's launch-dir contract — a ~2s
-   window between the correct startup bridging and the system prompt, invisible
-   to startup sims and the import sweep. Traced with a stack-logging
-   ``SON_OF_ANTON_DEBUG_CWD=1`` env writer; fixed by gating the gateway bridge
-   (and the placeholder cwd resolver) on ``_SON_OF_ANTON_GATEWAY``, which only
-   the gateway process sets. Regression: the debug trace stays gated for future
-   cwd-class diagnosis.
+2. **Working dir — ACTUALLY resolved 2026-08-25 (round 3). The two previous
+   "fixed" claims were both wrong; this one has a mutation-tested regression
+   test (`tests/test_cwd_contract.py`).**
 
-   History (kept for context): the ``114a8483`` local-backend guard + the
-   round-1 dotenv reload protection were correct but insufficient — neither
-   covered the gateway-bridge import.
-   The `114a8483` local-backend guard skips bridging `terminal.cwd` when the
-   backend is detected as local, and the STATUS's "verified" claim was based
-   on the same import simulation used here — which produces the correct
-   `TERMINAL_CWD` with an HM-shaped config. The user still observed
-   `pwd` → the configured home (`/home/e-work`) while the banner showed the
-   spawn dir (`/home/e-work/MUSIC`), from a fresh session, on the deployed
-   rev `114a8483`. The holes closed this round (mechanism, not a
-   confirmation):
-   - A dotenv **reload** (run_agent import, MCP reload, gateway per-turn)
-     used to overwrite `TERMINAL_ENV`/`TERMINAL_CWD`/`TERMINAL_HOME_MODE`
-     with anything `~/.son-of-anton/.env` (or a shell export) held, and the
-     reapply bridge then detected the *stale* `TERMINAL_ENV=ssh/docker` as
-     the backend — pinning the agent to the config `terminal.cwd`.
-     `_load_dotenv_with_fallback` now snapshots and restores `TERMINAL_*`
-     around `override=True` loads: a launcher that already claimed the
-     contract keeps it; the first load (legacy config-less `.env` seeds)
-     is untouched.
+   Root cause (confirmed by repro, not inference): the first agent turn
+   lazy-imports `gateway.run` (`agent/relay_runtime._segments_config`), whose
+   module-level config→env bridge re-bridges `terminal.cwd` over the CLI's
+   launch-dir contract. That much round 2 got right.
 
+   **Why round 2's fix (`50df8059`) was a no-op:** it gated the bridge on
+   `_SON_OF_ANTON_GATEWAY` — but `gateway/run.py` sets that marker *itself* at
+   line ~1918, i.e. at import, before the gate reads it at line ~2184. The
+   marker is therefore always `"1"` in **any** process that imports the module,
+   CLI included. The gate was a tautology and `TERMINAL_CWD` was still
+   clobbered. Verified: with `50df8059` checked out, a CLI-shaped import turns
+   `TERMINAL_CWD=/launch/dir` into `/home/e-work`.
+
+   **The fix:** a new marker `_SON_OF_ANTON_GATEWAY_PROC`, set by the gateway
+   *launchers* (`cli.py --gateway`, `son_of_anton_cli/gateway.py`) immediately
+   **before** they import `gateway.run`, plus `__name__ == "__main__"` for
+   `python -m gateway.run`. An incidental import can never set it.
+   `_IS_GATEWAY_PROCESS` gates both the config→env bridge and the
+   placeholder-cwd resolver.
+
+   The bridge deliberately still runs at **import** time (not from
+   `start_gateway()`): module-level consumers capture some bridged vars when
+   they are imported — `agent/redact.py` reads `SON_OF_ANTON_REDACT_SECRETS`
+   at its own import — so deferring the bridge would silently drop
+   `security.redact_secrets`. Gating on process identity keeps the gateway's
+   timing byte-for-byte as it was.
+
+   Also fixed in the same area (regressions in the uncommitted WIP refactor
+   that preceded this round): `_SkipGatewayBridge` was referenced but its
+   class definition had been deleted (`NameError` on the fail-open path); the
+   gateway's placeholder-cwd resolution block had been deleted outright
+   (`terminal.cwd: auto` left `TERMINAL_CWD` unset); `_cfg` had become a
+   function local while module-level IPv4 code still read it; and the bridge
+   call sat above `start_gateway`'s docstring, blanking `__doc__`.
+
+   History (kept for context): the `114a8483` local-backend guard and the
+   round-1 dotenv reload protection were both correct but insufficient —
+   neither covered the gateway-bridge import. `_load_dotenv_with_fallback`
+   still snapshots/restores `TERMINAL_*` around `override=True` loads.
 
 3. **Titling garbage (fixed in code + infra, user hasn't confirmed).**
    supra-title looped/truncated and the raw `{"title" : "Response Response
@@ -506,15 +517,84 @@ The /etc/nixos changes from the round are committed there; the fork is at
 - **Standard mode live-tested via Signal** — the full loop (pairing, home
   channel, /reset, /profile switching, agent turns through litellm) works;
   the bot answered real questions after the fix round above.
-- **Research mode is NOT yet live-smoke-tested** — the nine-agent pipeline
-  runs the same fixed Config/endpoint layer, but hasn't been driven against
-  a real endpoint.
+- **Research mode was destructive until 2026-08-25 (round 3) — now fixed.**
+  It had never been run, which is why nobody caught it. `Config.workspace_dir`
+  defaults to `""` → `Path(".")` → **the process cwd**, and both entry points
+  (`cli._run_research_mode`, `gateway._run_physics_mode_sync`) constructed
+  `PhysicsIntern(message)` with no config. `WorkspaceManager.init()` then ran
+  `git init` + `git add -A` + `git commit` **in the cwd** — the profile's HOME
+  under the gateway, the user's project under the CLI. Demonstrated: a routed
+  message ("derive the ...") staged `.ssh/id_ed25519` and personal documents
+  into a new repo. It also fired for real during this session's investigation,
+  committing to the repo's own `main`.
+  Fixes: `physics_intern.core.workspace.resolve_workspace_root()` returns a
+  fresh **absolute** root under `~/.son-of-anton/workspaces` (override:
+  `physics.workspace_root`); both entry points pass an explicit `config=`;
+  the autophysicist's old relative `workspaces/...` default is absolute too;
+  and `WorkspaceManager._assert_safe_workspace_root()` refuses a relative
+  path, an existing git repo, or `$HOME`/`/` as defense in depth.
+  Covered by `tests/test_physics_workspace.py`.
+  The pipeline still has **not** been driven against a real endpoint — the
+  destructive-path fix is verified, end-to-end model behaviour is not.
 - **Physics runs are synchronous turns** — a session blocks until the run
   finishes; the priority queue is the eventual fix.
 - **Research pipeline prompts are theory-era text** — experimental-language
   prompt tuning is a follow-up.
 - **TUI removed** (see above) — the classic prompt_toolkit CLI is the only
   interface now; `--tui` errors as an unknown argument.
+
+### `_SON_OF_ANTON_GATEWAY` made truthful (2026-08-25, round 3)
+
+The marker was set **unconditionally at `gateway/run.py` import**, so any
+process that imported the module — the CLI does, lazily, on its first agent
+turn — looked like a gateway to every consumer that reads it. Four consumers
+were silently mis-firing in ordinary CLI sessions:
+
+| consumer | effect when wrongly true |
+|---|---|
+| `cli.py:659` | CLI skips force-exporting its launch dir to `TERMINAL_CWD` |
+| `tools/terminal_tool.py:2236` | agent refuses `systemctl restart son-of-anton-gateway` |
+| `son_of_anton_cli/gateway.py:6207` | `son-of-anton gateway stop` refused as self-targeting |
+| `son_of_anton_cli/gateway.py:6273` | `son-of-anton gateway restart` refused as self-targeting |
+
+So after one agent turn, an ordinary CLI session could no longer stop or
+restart its own gateway. (`tools/process_registry.py` was already immune: it
+additionally requires PID-file ownership, and its docstring called out this
+exact hazard.)
+
+The assignment is now gated on `_IS_GATEWAY_PROCESS`, defined **before** it
+from `_SON_OF_ANTON_GATEWAY_PROC` (set by the launchers) — so the variable
+finally means what all five consumers already assumed: *"I am in the gateway
+process tree."* No consumer's logic changed; only the truth of the input.
+Export/inheritance semantics are unchanged, so gateway children still see it.
+
+The detached restart watcher now sheds **both** markers (it shed only
+`_SON_OF_ANTON_GATEWAY` before); otherwise it would re-mark itself as a
+gateway on importing `gateway.run` and its `gateway restart` would be refused
+silently, leaving the gateway down — the exact failure the original pop
+existed to prevent.
+
+Covered by `tests/test_cwd_contract.py` (10 tests, mutation-tested).
+
+### Test-suite blind spot (2026-08-25, round 3)
+
+Both bugs above were invisible to a 96/96-green suite, for the same reason:
+**the suite only tested things that are cheap to test in-process.**
+
+- The cwd bug is an **import-time, one-shot, cross-process** effect. It cannot
+  be observed by importing a module inside an already-running pytest process —
+  by then the marker is set and the bridge has fired. `tests/test_cwd_contract.py`
+  therefore spawns real subprocesses.
+- The research-mode bug lived on a path **nothing ever executed**. Import
+  sweeps and signature checks pass happily; only construction reveals it.
+
+Both new test files were **mutation-tested**: the fix was reverted and each
+test confirmed to fail, then restored. A regression test that has never been
+seen to fail is not evidence.
+
+Rule of thumb going forward: when a fix is about *which process* or *when in
+startup* something happens, the test must spawn that process. Everything in
+this repo's cwd/env-bridge class needs a subprocess test.
 
 ## What's left
 

@@ -245,10 +245,15 @@ def _is_supervised_gateway_process() -> bool:
     """Return whether this process is in a supervised Son of Anton gateway runtime.
 
     Both supervisor markers and ``_SON_OF_ANTON_GATEWAY`` are inherited by every
-    descendant, and importing ``gateway.run`` also sets the latter. Require
-    this process to own the live gateway PID file as well. That keeps transient
-    systemd scopes limited to the gateway itself instead of terminal children
-    or unrelated interactive CLIs in the same supervised process tree.
+    descendant. Require this process to own the live gateway PID file as well.
+    That keeps transient systemd scopes limited to the gateway itself instead
+    of terminal children in the same supervised process tree.
+
+    (``_SON_OF_ANTON_GATEWAY`` was once set by merely importing ``gateway.run``,
+    so this PID check was also the only thing keeping unrelated interactive
+    CLIs out. The marker is now set only by real gateway processes, but the
+    PID-ownership requirement stays — it is still what distinguishes the
+    gateway from its own children.)
     """
     if os.environ.get("_SON_OF_ANTON_GATEWAY") != "1":
         return False

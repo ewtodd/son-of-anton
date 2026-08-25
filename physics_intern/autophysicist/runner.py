@@ -322,18 +322,19 @@ def run_autophysicist(
 
     # --- Workspace ---
     if workspace_root is not None:
-        workspace_root = Path(workspace_root)
+        workspace_root = Path(workspace_root).expanduser().resolve()
         workspace_root.mkdir(parents=True, exist_ok=True)
         start_iteration = _read_iteration_counter(workspace_root) + 1
         fresh = False
     else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_problem = problem_name.replace("/", "-")
-        safe_model = config.model.replace("/", "-").replace(":", "-") or "default"
-        workspace_root = Path(
-            f"workspaces/{timestamp}_{safe_problem}_{safe_model}_autophysicist"
+        # Absolute, under ~/.son-of-anton/workspaces (or physics.workspace_root).
+        # The old relative "workspaces/..." resolved against the process cwd —
+        # the profile HOME under the gateway, the user's project under the CLI.
+        from physics_intern.core.workspace import resolve_workspace_root
+
+        workspace_root = resolve_workspace_root(
+            problem_name, config.model, "autophysicist"
         )
-        workspace_root.mkdir(parents=True, exist_ok=True)
         start_iteration = 1
         fresh = True
 

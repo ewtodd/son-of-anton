@@ -1,12 +1,60 @@
 """Workspace manager for PhysicsIntern file I/O and git operations."""
 
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..utils.markdown import render_frontmatter
 from .config import Config
+
+
+def resolve_workspace_root(problem_name: str, model: str, kind: str) -> Path:
+    """Return a fresh, ABSOLUTE workspace root for one physics/research run.
+
+    Never relative. A relative root resolves against the process cwd, which
+    for the gateway is the profile's home directory and for the CLI is the
+    user's project — and ``WorkspaceManager.init`` runs ``git init``,
+    ``git add -A`` and ``git commit`` inside it. A run must never be able to
+    touch a directory it did not create.
+
+    Base directory: ``physics.workspace_root`` from config.yaml when set,
+    otherwise ``~/.son-of-anton/workspaces``.
+    """
+    base = ""
+    try:
+        from son_of_anton_cli.config import load_config
+
+        base = str(((load_config() or {}).get("physics") or {}).get(
+            "workspace_root"
+        ) or "").strip()
+    except Exception:
+        base = ""
+
+    if base:
+        base_dir = Path(os.path.expanduser(base))
+    else:
+        try:
+            from son_of_anton_constants import get_son_of_anton_home
+
+            base_dir = Path(get_son_of_anton_home()) / "workspaces"
+        except Exception:
+            base_dir = Path.home() / ".son-of-anton" / "workspaces"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_problem = (problem_name or "session").replace("/", "-")[:60]
+    safe_model = (model or "default").replace("/", "-").replace(":", "-")
+    root = base_dir / f"{timestamp}_{safe_problem}_{safe_model}_{kind}"
+
+    # Collision guard: two runs inside the same second must not share a root.
+    suffix = 1
+    candidate = root
+    while candidate.exists():
+        suffix += 1
+        candidate = Path(f"{root}-{suffix}")
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate.resolve()
 
 
 class WorkspaceManager:
@@ -28,8 +76,40 @@ class WorkspaceManager:
         self.derivations_dir.mkdir(exist_ok=True)
         self.logs_dir.mkdir(exist_ok=True)
 
+    def _assert_safe_workspace_root(self) -> None:
+        """Refuse to initialize a workspace over a directory we do not own.
+
+        ``init()`` runs ``git init`` + ``git add -A`` + ``git commit`` in
+        ``self.root``. Pointed at a real directory that is a no-op at best and
+        at worst commits the user's entire home (SSH keys included) into a new
+        repository. A workspace root must therefore be absolute and must not be
+        an existing git repository or a home directory.
+        """
+        root = self.root
+        if not root.is_absolute():
+            raise ValueError(
+                f"Refusing to initialize a physics workspace at a relative path "
+                f"({root!r}). It would resolve against the process working "
+                f"directory. Pass an absolute workspace_dir — see "
+                f"physics_intern.core.workspace.resolve_workspace_root()."
+            )
+        resolved = root.resolve()
+        if (resolved / ".git").exists():
+            raise ValueError(
+                f"Refusing to initialize a physics workspace inside an existing "
+                f"git repository ({resolved}). 'git add -A' there would commit "
+                f"unrelated files."
+            )
+        for reserved in {Path.home().resolve(), Path("/")}:
+            if resolved == reserved:
+                raise ValueError(
+                    f"Refusing to initialize a physics workspace directly in "
+                    f"{resolved}."
+                )
+
     def init(self, problem: str):
         """Create workspace, initialize all .md files, git init."""
+        self._assert_safe_workspace_root()
         self.problem_statement = problem.strip()
         self.root.mkdir(parents=True, exist_ok=True)
         self.computations_dir.mkdir(exist_ok=True)

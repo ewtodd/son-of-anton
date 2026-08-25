@@ -1913,9 +1913,31 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
-# Mark this process as a gateway so cli.py's module-level load_cli_config()
-# knows not to clobber TERMINAL_CWD if lazily imported.
-os.environ["_SON_OF_ANTON_GATEWAY"] = "1"
+# True only in a process that is *actually* the gateway.
+#
+# Set by the gateway LAUNCHERS (cli.py's ``--gateway`` path and
+# son_of_anton_cli/gateway.py) immediately before they import this module, so
+# an incidental ``import gateway.run`` can never forge it.
+# ``__name__ == "__main__"`` covers ``python -m gateway.run`` / direct exec.
+_IS_GATEWAY_PROCESS = (
+    os.environ.get("_SON_OF_ANTON_GATEWAY_PROC") == "1" or __name__ == "__main__"
+)
+
+# Mark this process (and every child that inherits its environment) as running
+# inside the gateway. Consumers read it to answer "am I in the gateway process
+# tree?": cli.py skips clobbering TERMINAL_CWD, terminal_tool hard-blocks
+# gateway lifecycle commands, and `son-of-anton gateway stop|restart` refuse to
+# self-target.
+#
+# This MUST stay gated on _IS_GATEWAY_PROCESS. It used to be set
+# unconditionally at import, which made every one of those consumers fire in
+# any process that merely imported this module — including the CLI, which
+# lazy-imports it on the first agent turn. An unconditional marker also made it
+# useless as a gate for this module's own config->env bridge: the bridge read a
+# variable this module had already set a few hundred lines earlier, so the
+# check was always true (that is why the first TERMINAL_CWD fix was a no-op).
+if _IS_GATEWAY_PROCESS:
+    os.environ["_SON_OF_ANTON_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
@@ -2168,262 +2190,271 @@ os.environ["SON_OF_ANTON_TURN_LEASE_TIMEOUT"] = str(
     _DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"]
 )
 
-# Bridge config.yaml values into the environment so os.getenv() picks them up.
-# config.yaml is authoritative for terminal settings — overrides .env.
-#
-# IMPORTANT: this module is also imported lazily by the CLI agent on its first
-# turn (agent/relay_runtime._segments_config → gateway.run), where the CLI has
-# already bridged its own terminal contract (TERMINAL_CWD = launch dir). These
-# config→env bridges are gateway-process behavior only, so they are skipped
-# unless the process is actually a gateway (the _SON_OF_ANTON_GATEWAY marker
-# is set by this module itself at import time, line ~1918, in the gateway).
-class _SkipGatewayBridge(Exception):
-    pass
+# Config dict captured by the bridge, for module-level consumers below.
+_cfg: dict = {}
 
 
-_config_path = _son_of_anton_home / 'config.yaml'
-if _config_path.exists():
-    try:
-        if os.environ.get("_SON_OF_ANTON_GATEWAY") != "1":
-            raise _SkipGatewayBridge()
-        # Presence-sensitive env bridge: raw read is deliberate — only keys the
-        # user actually wrote may be bridged (a defaults merge would export the
-        # whole DEFAULT_CONFIG into the env). Overlay + expansion applied below.
-        from son_of_anton_cli.config import _expand_env_vars, read_user_config_raw
-        _cfg = read_user_config_raw(_config_path)
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        _cfg = _expand_env_vars(_cfg)
-        if not isinstance(_cfg, dict):
-            _cfg = {}
-        # Managed scope: overlay administrator-pinned values BEFORE bridging to
-        # env vars, so a managed timezone / redact_secrets / max_turns / terminal
-        # setting wins over the user's value at the env layer too. This bridge
-        # reads config.yaml directly (not via load_config), so without the
-        # overlay every SON_OF_ANTON_*/TERMINAL_* env var below would carry the user's
-        # value even when an administrator pinned it. Fail-open via the helper.
+def _bridge_gateway_config_to_env() -> None:
+    """Bridge config.yaml values into the environment so os.getenv() picks them up.
+
+    Gateway-process behavior: config.yaml is authoritative for terminal
+    settings and overrides .env.
+
+    Runs at import time, but ONLY in a real gateway process (see
+    ``_IS_GATEWAY_PROCESS``). Import time matters: module-level consumers
+    capture some of these vars when they are imported (e.g.
+    ``agent/redact.py`` reads SON_OF_ANTON_REDACT_SECRETS at its own import),
+    so deferring the bridge to ``start_gateway()`` would silently drop those
+    settings. Gating on the process identity keeps the gateway's timing
+    exactly as it was while leaving the CLI's terminal contract untouched.
+    """
+    global _cfg
+    _config_path = _son_of_anton_home / 'config.yaml'
+    if _config_path.exists():
         try:
-            from son_of_anton_cli import managed_scope
-            _cfg = managed_scope.apply_managed_overlay(_cfg)
-        except Exception:
-            pass
-        # Top-level simple values (fallback only — don't override .env)
-        for _key, _val in _cfg.items():
-            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-                os.environ[_key] = str(_val)
-        # Terminal config is nested — bridge to TERMINAL_* env vars.
-        # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_backend = str(
-                _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
-            ).strip().lower()
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "degraded_mode": "TERMINAL_DEGRADED_MODE",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "home_mode": "TERMINAL_HOME_MODE",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    # Skip cwd placeholder values (".", "auto", "cwd") — the
-                    # gateway resolves these to Path.home() later (line ~255).
-                    # Writing the raw placeholder here would just be noise.
-                    # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
-                        continue
-                    # Expand shell tilde in the local cwd so subprocess.Popen
-                    # never receives a literal "~/" which the kernel rejects.
-                    # SSH cwd is interpreted by the remote shell, so preserve
-                    # "~" / "~/..." for the SSH backend instead of expanding it.
-                    # Shared predicate with terminal_tool so the two sites can't
-                    # drift.
-                    if _cfg_key == "cwd" and isinstance(_val, str):
-                        if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
-                            _val = os.path.expanduser(_val)
-                    if isinstance(_val, (list, dict)):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
-        # Compression config is read directly from config.yaml by run_agent.py
-        # and auxiliary_client.py — no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision, web_extract,
-        # approval, plus any plugin-registered auxiliary tasks).
-        # Each task has provider/model/base_url/api_key; bridge non-default
-        # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-        # hard-coded list (vision/web_extract/approval) is replaced by a
-        # dynamic loop so plugin-registered tasks benefit from the same
-        # config→env bridging without core knowing about each one.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            # Built-in tasks that previously had explicit env-var bridging.
-            # Kept here as the canonical bridged set; plugin tasks are added
-            # below via the plugin auxiliary registry.
-            _aux_bridged_keys = {"vision", "web_extract", "approval"}
+            if not _IS_GATEWAY_PROCESS:
+                return
+            # Presence-sensitive env bridge: raw read is deliberate — only keys the
+            # user actually wrote may be bridged (a defaults merge would export the
+            # whole DEFAULT_CONFIG into the env). Overlay + expansion applied below.
+            from son_of_anton_cli.config import _expand_env_vars, read_user_config_raw
+            _cfg = read_user_config_raw(_config_path)
+            # Expand ${ENV_VAR} references before bridging to env vars.
+            _cfg = _expand_env_vars(_cfg)
+            if not isinstance(_cfg, dict):
+                _cfg = {}
+            # Managed scope: overlay administrator-pinned values BEFORE bridging to
+            # env vars, so a managed timezone / redact_secrets / max_turns / terminal
+            # setting wins over the user's value at the env layer too. This bridge
+            # reads config.yaml directly (not via load_config), so without the
+            # overlay every SON_OF_ANTON_*/TERMINAL_* env var below would carry the user's
+            # value even when an administrator pinned it. Fail-open via the helper.
             try:
-                from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
-                for _entry in get_plugin_auxiliary_tasks():
-                    _aux_bridged_keys.add(_entry["key"])
+                from son_of_anton_cli import managed_scope
+                _cfg = managed_scope.apply_managed_overlay(_cfg)
             except Exception:
-                # Plugin discovery failure must not break gateway startup;
-                # built-in bridging stays intact.
                 pass
+            # Top-level simple values (fallback only — don't override .env)
+            for _key, _val in _cfg.items():
+                if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
+                    os.environ[_key] = str(_val)
+            # Terminal config is nested — bridge to TERMINAL_* env vars.
+            # config.yaml overrides .env for these since it's the documented config path.
+            _terminal_cfg = _cfg.get("terminal", {})
+            if _terminal_cfg and isinstance(_terminal_cfg, dict):
+                _terminal_backend = str(
+                    _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
+                ).strip().lower()
+                _terminal_env_map = {
+                    "backend": "TERMINAL_ENV",
+                    "degraded_mode": "TERMINAL_DEGRADED_MODE",
+                    "cwd": "TERMINAL_CWD",
+                    "timeout": "TERMINAL_TIMEOUT",
+                    "home_mode": "TERMINAL_HOME_MODE",
+                    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+                    "ssh_host": "TERMINAL_SSH_HOST",
+                    "ssh_user": "TERMINAL_SSH_USER",
+                    "ssh_port": "TERMINAL_SSH_PORT",
+                    "ssh_key": "TERMINAL_SSH_KEY",
+                    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+                    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+                }
+                for _cfg_key, _env_var in _terminal_env_map.items():
+                    if _cfg_key in _terminal_cfg:
+                        _val = _terminal_cfg[_cfg_key]
+                        # Skip cwd placeholder values (".", "auto", "cwd") — the
+                        # gateway resolves these to Path.home() later (line ~255).
+                        # Writing the raw placeholder here would just be noise.
+                        # Only bridge explicit absolute paths from config.yaml.
+                        if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
+                            continue
+                        # Expand shell tilde in the local cwd so subprocess.Popen
+                        # never receives a literal "~/" which the kernel rejects.
+                        # SSH cwd is interpreted by the remote shell, so preserve
+                        # "~" / "~/..." for the SSH backend instead of expanding it.
+                        # Shared predicate with terminal_tool so the two sites can't
+                        # drift.
+                        if _cfg_key == "cwd" and isinstance(_val, str):
+                            if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
+                                _val = os.path.expanduser(_val)
+                        if isinstance(_val, (list, dict)):
+                            os.environ[_env_var] = json.dumps(_val)
+                        else:
+                            os.environ[_env_var] = str(_val)
+            # Compression config is read directly from config.yaml by run_agent.py
+            # and auxiliary_client.py — no env var bridging needed.
+            # Auxiliary model/direct-endpoint overrides (vision, web_extract,
+            # approval, plus any plugin-registered auxiliary tasks).
+            # Each task has provider/model/base_url/api_key; bridge non-default
+            # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
+            # hard-coded list (vision/web_extract/approval) is replaced by a
+            # dynamic loop so plugin-registered tasks benefit from the same
+            # config→env bridging without core knowing about each one.
+            _auxiliary_cfg = _cfg.get("auxiliary", {})
+            if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
+                # Built-in tasks that previously had explicit env-var bridging.
+                # Kept here as the canonical bridged set; plugin tasks are added
+                # below via the plugin auxiliary registry.
+                _aux_bridged_keys = {"vision", "web_extract", "approval"}
+                try:
+                    from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
+                    for _entry in get_plugin_auxiliary_tasks():
+                        _aux_bridged_keys.add(_entry["key"])
+                except Exception:
+                    # Plugin discovery failure must not break gateway startup;
+                    # built-in bridging stays intact.
+                    pass
 
-            for _task_key in _aux_bridged_keys:
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                _upper = _task_key.upper()
-                if _prov and _prov != "auto":
-                    os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
-                if _model:
-                    os.environ[f"AUXILIARY_{_upper}_MODEL"] = _model
-                if _base_url:
-                    os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
-                if _api_key:
-                    os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
-        # config.yaml is the documented, authoritative source for these
-        # settings — it unconditionally wins over .env values. Previously
-        # the guards below read `if X not in os.environ` and let stale
-        # .env entries (e.g. SON_OF_ANTON_MAX_ITERATIONS=60 written by an old
-        # `son-of-anton setup` run) silently shadow the user's current config.
-        # See PR #18413 / the 60-vs-500 max_turns incident.
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                _raw_mt = _agent_cfg["max_turns"]
-                # Same None-guard as _bridge_max_turns_from_config: str(None)
-                # → "None" → resolve_turn_limit maps to unlimited, not default.
-                if _raw_mt is not None:
-                    os.environ["SON_OF_ANTON_MAX_ITERATIONS"] = str(_raw_mt)
-                elif "SON_OF_ANTON_MAX_ITERATIONS" in os.environ:
-                    del os.environ["SON_OF_ANTON_MAX_ITERATIONS"]
-            if "gateway_timeout" in _agent_cfg:
-                os.environ["SON_OF_ANTON_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_turn_lease_timeout" in _agent_cfg:
-                os.environ["SON_OF_ANTON_TURN_LEASE_TIMEOUT"] = str(
-                    _agent_cfg["gateway_turn_lease_timeout"]
-                )
-            if "gateway_timeout_warning" in _agent_cfg:
-                os.environ["SON_OF_ANTON_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg:
-                os.environ["SON_OF_ANTON_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
-            if "session_stall_timeout" in _agent_cfg:
-                os.environ["SON_OF_ANTON_SESSION_STALL_TIMEOUT"] = str(
-                    _agent_cfg["session_stall_timeout"]
-                )
-            if "reconnect_attention_after" in _agent_cfg:
-                # Internal bridge only — config.yaml (agent.reconnect_attention_after)
-                # is the documented, user-facing setting.
-                os.environ["SON_OF_ANTON_RECONNECT_ATTENTION_AFTER_SECONDS"] = str(
-                    _agent_cfg["reconnect_attention_after"]
-                )
-            if "restart_drain_timeout" in _agent_cfg:
-                os.environ["SON_OF_ANTON_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
-            if "cron_drain_timeout" in _agent_cfg:
-                os.environ["SON_OF_ANTON_CRON_DRAIN_TIMEOUT"] = str(_agent_cfg["cron_drain_timeout"])
-            if "gateway_auto_continue_freshness" in _agent_cfg:
-                os.environ["SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS"] = str(
-                    _agent_cfg["gateway_auto_continue_freshness"]
-                )
-            if "gateway_startup_restore_drain_timeout" in _agent_cfg:
-                os.environ["SON_OF_ANTON_STARTUP_RESTORE_DRAIN_TIMEOUT"] = str(
-                    _agent_cfg["gateway_startup_restore_drain_timeout"]
-                )
-        # config-authoritative knobs for the session-search index; same
-        # bridge semantics as the agent settings above.
-        _sessions_cfg = _cfg.get("sessions", {})
-        if _sessions_cfg and isinstance(_sessions_cfg, dict):
-            if "cjk_fts" in _sessions_cfg:
-                os.environ["SON_OF_ANTON_CJK_FTS"] = str(_sessions_cfg["cjk_fts"])
-            if "search_slow_ms" in _sessions_cfg:
-                os.environ["SON_OF_ANTON_SEARCH_SLOW_MS"] = str(
-                    _sessions_cfg["search_slow_ms"]
-                )
-        _display_cfg = _cfg.get("display", {})
-        if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_input_mode" in _display_cfg:
-                os.environ["SON_OF_ANTON_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
-            if "busy_text_mode" in _display_cfg:
-                os.environ["SON_OF_ANTON_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
-            if "busy_ack_enabled" in _display_cfg:
-                os.environ["SON_OF_ANTON_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
-            # This process-level env var is documented as an override for
-            # service managers, so preserve it when already set. Other display
-            # bridges stay config-authoritative for backwards compatibility.
-            if (
-                "busy_steer_ack_enabled" in _display_cfg
-                and "SON_OF_ANTON_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ
-            ):
-                os.environ["SON_OF_ANTON_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(
-                    _display_cfg["busy_steer_ack_enabled"]
-                )
-        # Timezone: bridge config.yaml → SON_OF_ANTON_TIMEZONE env var.
-        _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str):
-            os.environ["SON_OF_ANTON_TIMEZONE"] = _tz_cfg.strip()
-        # Security settings
-        _security_cfg = _cfg.get("security", {})
-        if isinstance(_security_cfg, dict):
-            _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
-                os.environ["SON_OF_ANTON_REDACT_SECRETS"] = str(_redact).lower()
-        # Gateway settings (media delivery allowlist + recency trust + strict mode)
-        # Delegated to the shared bridge so standalone delivery entrypoints
-        # (manual `son-of-anton cron run`, ticks without the gateway) apply the SAME
-        # policy translation — process parity for attachment filtering.
-        _gateway_cfg = _cfg.get("gateway", {})
-        if isinstance(_gateway_cfg, dict):
-            from gateway.media_policy import apply_media_policy_env
+                for _task_key in _aux_bridged_keys:
+                    _task_cfg = _auxiliary_cfg.get(_task_key, {})
+                    if not isinstance(_task_cfg, dict):
+                        continue
+                    _prov = str(_task_cfg.get("provider", "")).strip()
+                    _model = str(_task_cfg.get("model", "")).strip()
+                    _base_url = str(_task_cfg.get("base_url", "")).strip()
+                    _api_key = str(_task_cfg.get("api_key", "")).strip()
+                    _upper = _task_key.upper()
+                    if _prov and _prov != "auto":
+                        os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
+                    if _model:
+                        os.environ[f"AUXILIARY_{_upper}_MODEL"] = _model
+                    if _base_url:
+                        os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
+                    if _api_key:
+                        os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
+            # config.yaml is the documented, authoritative source for these
+            # settings — it unconditionally wins over .env values. Previously
+            # the guards below read `if X not in os.environ` and let stale
+            # .env entries (e.g. SON_OF_ANTON_MAX_ITERATIONS=60 written by an old
+            # `son-of-anton setup` run) silently shadow the user's current config.
+            # See PR #18413 / the 60-vs-500 max_turns incident.
+            _agent_cfg = _cfg.get("agent", {})
+            if _agent_cfg and isinstance(_agent_cfg, dict):
+                if "max_turns" in _agent_cfg:
+                    _raw_mt = _agent_cfg["max_turns"]
+                    # Same None-guard as _bridge_max_turns_from_config: str(None)
+                    # → "None" → resolve_turn_limit maps to unlimited, not default.
+                    if _raw_mt is not None:
+                        os.environ["SON_OF_ANTON_MAX_ITERATIONS"] = str(_raw_mt)
+                    elif "SON_OF_ANTON_MAX_ITERATIONS" in os.environ:
+                        del os.environ["SON_OF_ANTON_MAX_ITERATIONS"]
+                if "gateway_timeout" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
+                if "gateway_turn_lease_timeout" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_TURN_LEASE_TIMEOUT"] = str(
+                        _agent_cfg["gateway_turn_lease_timeout"]
+                    )
+                if "gateway_timeout_warning" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
+                if "gateway_notify_interval" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
+                if "session_stall_timeout" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_SESSION_STALL_TIMEOUT"] = str(
+                        _agent_cfg["session_stall_timeout"]
+                    )
+                if "reconnect_attention_after" in _agent_cfg:
+                    # Internal bridge only — config.yaml (agent.reconnect_attention_after)
+                    # is the documented, user-facing setting.
+                    os.environ["SON_OF_ANTON_RECONNECT_ATTENTION_AFTER_SECONDS"] = str(
+                        _agent_cfg["reconnect_attention_after"]
+                    )
+                if "restart_drain_timeout" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
+                if "cron_drain_timeout" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_CRON_DRAIN_TIMEOUT"] = str(_agent_cfg["cron_drain_timeout"])
+                if "gateway_auto_continue_freshness" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS"] = str(
+                        _agent_cfg["gateway_auto_continue_freshness"]
+                    )
+                if "gateway_startup_restore_drain_timeout" in _agent_cfg:
+                    os.environ["SON_OF_ANTON_STARTUP_RESTORE_DRAIN_TIMEOUT"] = str(
+                        _agent_cfg["gateway_startup_restore_drain_timeout"]
+                    )
+            # config-authoritative knobs for the session-search index; same
+            # bridge semantics as the agent settings above.
+            _sessions_cfg = _cfg.get("sessions", {})
+            if _sessions_cfg and isinstance(_sessions_cfg, dict):
+                if "cjk_fts" in _sessions_cfg:
+                    os.environ["SON_OF_ANTON_CJK_FTS"] = str(_sessions_cfg["cjk_fts"])
+                if "search_slow_ms" in _sessions_cfg:
+                    os.environ["SON_OF_ANTON_SEARCH_SLOW_MS"] = str(
+                        _sessions_cfg["search_slow_ms"]
+                    )
+            _display_cfg = _cfg.get("display", {})
+            if _display_cfg and isinstance(_display_cfg, dict):
+                if "busy_input_mode" in _display_cfg:
+                    os.environ["SON_OF_ANTON_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
+                if "busy_text_mode" in _display_cfg:
+                    os.environ["SON_OF_ANTON_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
+                if "busy_ack_enabled" in _display_cfg:
+                    os.environ["SON_OF_ANTON_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
+                # This process-level env var is documented as an override for
+                # service managers, so preserve it when already set. Other display
+                # bridges stay config-authoritative for backwards compatibility.
+                if (
+                    "busy_steer_ack_enabled" in _display_cfg
+                    and "SON_OF_ANTON_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ
+                ):
+                    os.environ["SON_OF_ANTON_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(
+                        _display_cfg["busy_steer_ack_enabled"]
+                    )
+            # Timezone: bridge config.yaml → SON_OF_ANTON_TIMEZONE env var.
+            _tz_cfg = _cfg.get("timezone", "")
+            if _tz_cfg and isinstance(_tz_cfg, str):
+                os.environ["SON_OF_ANTON_TIMEZONE"] = _tz_cfg.strip()
+            # Security settings
+            _security_cfg = _cfg.get("security", {})
+            if isinstance(_security_cfg, dict):
+                _redact = _security_cfg.get("redact_secrets")
+                if _redact is not None:
+                    os.environ["SON_OF_ANTON_REDACT_SECRETS"] = str(_redact).lower()
+            # Gateway settings (media delivery allowlist + recency trust + strict mode)
+            # Delegated to the shared bridge so standalone delivery entrypoints
+            # (manual `son-of-anton cron run`, ticks without the gateway) apply the SAME
+            # policy translation — process parity for attachment filtering.
+            _gateway_cfg = _cfg.get("gateway", {})
+            if isinstance(_gateway_cfg, dict):
+                from gateway.media_policy import apply_media_policy_env
 
-            apply_media_policy_env(_cfg)
-            _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
-            if _trust_recent_seconds is not None:
-                os.environ["SON_OF_ANTON_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
-            # Bridge gateway.platform_connect_timeout → the internal env var the
-            # connect path + Discord adapter ready-wait both read (#19776).
-            # Unlike the agent.*/display.* bridges above (config-authoritative),
-            # this env var is the manual-override escape hatch, so it WINS if
-            # already set explicitly; otherwise config.yaml supplies the value.
-            if (
-                "platform_connect_timeout" in _gateway_cfg
-                and not os.environ.get("SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
-            ):
-                os.environ["SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT"] = str(
-                    _gateway_cfg["platform_connect_timeout"]
-                )
-    except _SkipGatewayBridge:
-        pass
-    except Exception as _bridge_err:
-        # Previously this was silent (`except Exception: pass`), which
-        # hid partial bridge failures and let .env defaults shadow
-        # config.yaml values — users observed max_turns=500 in config
-        # but a 60-iteration cap in practice. Surface the failure to
-        # stderr so operators see it even though `logger` is not yet
-        # initialized at module-import time (logger is defined further
-        # down this module).
-        print(
-            f"  Warning: config.yaml → env bridge failed: "
-            f"{type(_bridge_err).__name__}: {_bridge_err}",
-            file=sys.stderr,
-        )
-        print(
-            "  Gateway will fall back to .env values, which may not match "
-            "your current config.yaml. Run `son-of-anton doctor` to investigate.",
-            file=sys.stderr,
-        )
+                apply_media_policy_env(_cfg)
+                _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
+                if _trust_recent_seconds is not None:
+                    os.environ["SON_OF_ANTON_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
+                # Bridge gateway.platform_connect_timeout → the internal env var the
+                # connect path + Discord adapter ready-wait both read (#19776).
+                # Unlike the agent.*/display.* bridges above (config-authoritative),
+                # this env var is the manual-override escape hatch, so it WINS if
+                # already set explicitly; otherwise config.yaml supplies the value.
+                if (
+                    "platform_connect_timeout" in _gateway_cfg
+                    and not os.environ.get("SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
+                ):
+                    os.environ["SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT"] = str(
+                        _gateway_cfg["platform_connect_timeout"]
+                    )
+        except Exception as _bridge_err:
+            # Previously this was silent (`except Exception: pass`), which
+            # hid partial bridge failures and let .env defaults shadow
+            # config.yaml values — users observed max_turns=500 in config
+            # but a 60-iteration cap in practice. Surface the failure to
+            # stderr so operators see it even though `logger` is not yet
+            # initialized at module-import time (logger is defined further
+            # down this module).
+            print(
+                f"  Warning: config.yaml → env bridge failed: "
+                f"{type(_bridge_err).__name__}: {_bridge_err}",
+                file=sys.stderr,
+            )
+            print(
+                "  Gateway will fall back to .env values, which may not match "
+                "your current config.yaml. Run `son-of-anton doctor` to investigate.",
+                file=sys.stderr,
+            )
+
+# Bridge at import time so module-level consumers imported after this point
+# still observe the config-derived values (see the docstring). A no-op in any
+# process that merely imported gateway.run.
+_bridge_gateway_config_to_env()
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
@@ -2463,7 +2494,10 @@ os.environ["SON_OF_ANTON_QUIET"] = "1"
 # MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
 
-if os.environ.get("_SON_OF_ANTON_GATEWAY") == "1":
+# Same gate as the config bridge above: only a real gateway process may
+# resolve/write TERMINAL_CWD. In the CLI this module is an incidental import
+# and the launch-dir contract must survive it untouched.
+if _IS_GATEWAY_PROCESS:
     _configured_cwd = os.environ.get("TERMINAL_CWD", "")
     if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
         _resolved_cwd = resolve_placeholder_terminal_cwd(
@@ -6473,8 +6507,19 @@ def _run_physics_mode_sync(mode: str, problem_text: str) -> str:
             problem_name="session",
         )
     else:
+        from physics_intern.core.config import build_config
+        from physics_intern.core.workspace import resolve_workspace_root
         from physics_intern.engine import PhysicsIntern
-        engine = PhysicsIntern(problem_text)
+
+        # Explicit absolute workspace — see the note in cli._run_research_mode.
+        # The gateway's cwd is the profile's HOME, so an unpinned workspace_dir
+        # would `git add -A` the user's entire home directory.
+        _config = build_config(None)
+        _config.workspace_dir = str(
+            resolve_workspace_root("session", _config.model, "research")
+        )
+
+        engine = PhysicsIntern(problem_text, config=_config)
         engine.run()
         workspace = engine.workspace.root
 
@@ -10701,6 +10746,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_SON_OF_ANTON_GATEWAY", None)
+        # Shed the launcher marker too, or the watcher's `gateway restart`
+        # would re-mark itself as a gateway the moment it imports gateway.run.
+        watcher_env.pop("_SON_OF_ANTON_GATEWAY_PROC", None)
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(

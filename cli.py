@@ -654,8 +654,14 @@ def load_cli_config() -> Dict[str, Any]:
     }
     
     # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
-    # UNLESS we're inside a gateway process (detected by _SON_OF_ANTON_GATEWAY marker)
-    # where it was already set correctly by gateway/run.py's config bridge.
+    # UNLESS we're inside the gateway process tree, where gateway/run.py's
+    # config bridge already set it from terminal.cwd.
+    #
+    # _SON_OF_ANTON_GATEWAY is only set by a real gateway process (gateway/run.py
+    # gates it on _IS_GATEWAY_PROCESS). It used to be set by the mere act of
+    # importing gateway.run, which made this branch fire in the CLI too — the
+    # CLI then skipped exporting its launch dir and inherited whatever stale
+    # value was around.
     _is_gateway = os.environ.get("_SON_OF_ANTON_GATEWAY") == "1"
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
@@ -10747,9 +10753,19 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _run_research_mode(self, message: str) -> Optional[str]:
         """Run the nine-agent critical self-research pipeline on *message*."""
+        from physics_intern.core.config import build_config
+        from physics_intern.core.workspace import resolve_workspace_root
         from physics_intern.engine import PhysicsIntern
 
-        engine = PhysicsIntern(message.strip())
+        # An explicit, absolute workspace is mandatory: Config.workspace_dir
+        # defaults to "" -> Path(".") -> the process cwd, and WorkspaceManager
+        # .init() runs `git init && git add -A && git commit` in it.
+        _config = build_config(None)
+        _config.workspace_dir = str(
+            resolve_workspace_root("session", _config.model, "research")
+        )
+
+        engine = PhysicsIntern(message.strip(), config=_config)
         engine.run()
 
         lines = [f"Research run complete. Workspace: {engine.workspace.root}"]
@@ -18773,6 +18789,12 @@ def main(
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
+        # Mark this process as a real gateway BEFORE importing gateway.run.
+        # gateway.run's config->env bridge (terminal.cwd -> TERMINAL_CWD) is
+        # gated on this marker, because the module sets _SON_OF_ANTON_GATEWAY
+        # on import and so cannot distinguish a genuine gateway from an
+        # incidental import.
+        os.environ["_SON_OF_ANTON_GATEWAY_PROC"] = "1"
         from gateway.run import start_gateway
         print("Starting Son of Anton Gateway (messaging platforms)...")
         asyncio.run(start_gateway())

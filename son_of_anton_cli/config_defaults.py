@@ -394,6 +394,11 @@ DEFAULT_CONFIG = {
         "model": "",
         "base_url": "",
         "api_key_env": "",
+        # Base directory for physics/research run workspaces. Each run gets its
+        # own timestamped subdirectory, git-initialized in place. MUST be a
+        # directory the agent owns: the run commits its whole contents.
+        # Empty = ~/.son-of-anton/workspaces.
+        "workspace_root": "",
     },
 
     "terminal": {

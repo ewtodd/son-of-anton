@@ -5143,6 +5143,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         except Exception:
             pass  # best-effort; don't block gateway startup
 
+    # Mark this process as a real gateway BEFORE importing gateway.run.
+    # gateway.run's config->env bridge (terminal.cwd -> TERMINAL_CWD) is gated
+    # on this marker, because the module sets _SON_OF_ANTON_GATEWAY on import
+    # and so cannot distinguish a genuine gateway from an incidental import.
+    os.environ["_SON_OF_ANTON_GATEWAY_PROC"] = "1"
     from gateway.run import start_gateway
 
     print("┌─────────────────────────────────────────────────────────┐")
