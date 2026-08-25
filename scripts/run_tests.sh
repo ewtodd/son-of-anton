@@ -11,7 +11,8 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.son-of-anton/...)
+#   * Nix dev-shell environment only (no pip venv fallback — this is a
+#     Nix-first repo; the lockfile-reproducible store env is the point)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -38,63 +39,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Locate python ───────────────────────────────────────────────────────────
-# Probe local venvs first; fall back to the Nix devShell's editable venv
-# (SON_OF_ANTON_PYTHON is exported by the devShell hook and ships [dev] extras:
-# pytest, pytest-asyncio, pytest-timeout, ruff, ty).
-#
-# A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.son-of-anton/son-of-anton/venv has bin/activate but no pytest, so an
-# existence-only probe selected it in checkouts/worktrees without a local
-# .venv — every file then died with "No module named pytest" and the run
-# reported "0 tests passed" (which reads green at a glance even though the
-# exit code is 1). Skip such a venv and keep probing instead.
-VENV=""
-VENV_PYTHON=""
-SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.son-of-anton/son-of-anton/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/bin/python"
-      break
-    fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-  # Native Windows venv layout: python.exe and activate live under
-  # Scripts/, and there is no bin/. Anyone running this script from
-  # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
-  # this branch — without it the canonical runner refuses to start.
-  if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/Scripts/python.exe"
-      break
-    fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-done
-
-if [ -n "$SKIPPED_VENVS" ]; then
-  for skipped in $SKIPPED_VENVS; do
-    echo "▶ skipping venv without pytest: $skipped" >&2
-  done
-fi
-
-if [ -n "$VENV" ]; then
-  PYTHON="$VENV_PYTHON"
-elif [ -n "${SON_OF_ANTON_PYTHON:-}" ] && [ -x "$SON_OF_ANTON_PYTHON" ] \
+# Nix-first repo: tests run through the dev shell's sealed environment. The
+# devShell hook exports SON_OF_ANTON_PYTHON, the editable uv2nix env with the
+# working tree on sys.path and the [dev] extras (pytest, pytest-asyncio,
+# pytest-timeout, ruff, ty). There is deliberately NO pip/venv fallback — a
+# local .venv would defeat the lockfile-reproducibility point of the setup.
+if [ -n "${SON_OF_ANTON_PYTHON:-}" ] && [ -x "$SON_OF_ANTON_PYTHON" ] \
     && "$SON_OF_ANTON_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: SON_OF_ANTON_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `son-of-anton` binary rather
-  # than the devShell hook.
   PYTHON="$SON_OF_ANTON_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via SON_OF_ANTON_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and SON_OF_ANTON_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
-  if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
-  fi
+  echo "error: Nix dev environment not active — run the suite through the dev shell:" >&2
+  echo "       nix develop -c scripts/run_tests.sh" >&2
+  echo "       (the devShell hook must export SON_OF_ANTON_PYTHON = a python with pytest)" >&2
   exit 1
 fi
 

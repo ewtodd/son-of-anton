@@ -69,7 +69,6 @@ _STALE_PURGE_PREFIXES = (
     "son_of_anton_cli",
     "gateway",
     "tools",
-    "tui_gateway",
     "agent",
 )
 
@@ -2531,7 +2530,7 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
 
 
 def _update_node_dependencies() -> list[str]:
-    """Refresh Node deps for the ui-tui and web workspaces.
+    """Refresh Node deps for the web workspace.
 
     Returns the list of labels whose npm install failed (empty on success),
     so the caller can treat a Node refresh failure as a partial update rather
@@ -2543,8 +2542,9 @@ def _update_node_dependencies() -> list[str]:
     npm = _m()._resolve_node_runtime_npm()
     if not npm:
         # If the only npm reachable inside this WSL shell is the Windows one,
-        # flag it loudly: silently skipping leaves ui-tui deps stale while the
-        # rest of the update proceeds, and running it would corrupt the tree.
+        # flag it loudly: silently skipping leaves the workspace deps stale
+        # while the rest of the update proceeds, and running it would corrupt
+        # the tree.
         from son_of_anton_constants import is_wsl
 
         path_npm = shutil.which("npm")
@@ -2554,11 +2554,8 @@ def _update_node_dependencies() -> list[str]:
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
             print("    package manager), then re-run `son-of-anton update`.")
             failed = []
-            if any(
-                (_m().PROJECT_ROOT / workspace / "package.json").exists()
-                for workspace in ("ui-tui", "web")
-            ):
-                failed.append("ui-tui, web workspaces")
+            if (_m().PROJECT_ROOT / "web" / "package.json").exists():
+                failed.append("web workspace")
             return failed
         return []
 
@@ -2589,7 +2586,7 @@ def _update_node_dependencies() -> list[str]:
 
     install_args = [
         "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
-        "--workspace", "ui-tui", "--workspace", "web",
+        "--workspace", "web",
         # Root package.json's own devDependencies (the shared ESLint flat
         # config every workspace's eslint.config.mjs imports) are otherwise
         # pruned by this scoped install, same as agent-browser/@streamdown
@@ -2617,14 +2614,14 @@ def _update_node_dependencies() -> list[str]:
     )
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_son_of_anton_root)
-        print("  ✓ ui-tui, web workspaces installed")
+        print("  ✓ web workspace installed")
         failures: list[str] = []
     else:
         print("  ⚠ npm install failed")
         stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        failures = _partial_update_failure("ui-tui, web workspaces")
+        failures = _partial_update_failure("web workspace")
 
     return failures
 

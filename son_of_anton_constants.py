@@ -1635,7 +1635,6 @@ FIRST_PARTY_MODULE_ROOTS = frozenset(
         "tools",
         "toolsets",
         "run_agent",
-        "tui_gateway",
         "utils",
     }
 )

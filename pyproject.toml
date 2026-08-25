@@ -341,7 +341,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "son_of_anton_cli", "son_of_anton_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "physics_intern", "physics_intern.*", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "son_of_anton_cli", "son_of_anton_cli.*", "gateway", "gateway.*", "cron", "cron.*", "physics_intern", "physics_intern.*", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
 son_of_anton_cli = ["observability/schemas/*.json", "data/*.json"]
@@ -362,7 +362,6 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_son_of_anton_instances",
-    "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Son of Anton falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",

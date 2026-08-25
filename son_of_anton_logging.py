@@ -246,7 +246,6 @@ COMPONENT_PREFIXES = {
     "gui": (
         "son_of_anton_cli.web_server",
         "son_of_anton_cli.pty_bridge",
-        "tui_gateway",
         "uvicorn",
     ),
 }

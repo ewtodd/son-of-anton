@@ -24,6 +24,39 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
 
+# Paths for which we've already logged an unreadable-.env warning.  Paths that
+# turn readable later are simply treated as present again; this set only stops
+# repeated startup noise from a stale/cross-user SON_OF_ANTON_HOME.
+_WARNED_UNREADABLE_ENV_PATHS: set[str] = set()
+
+
+def _env_file_exists(path: Path) -> bool:
+    """Return whether *path* exists, treating an unreadable file as absent.
+
+    ``Path.exists()`` raises ``PermissionError`` when a parent directory is
+    not traversable (e.g. a stale ``SON_OF_ANTON_HOME`` pointing at another
+    user's 0700 home after ``su`` between accounts), which crashed startup
+    with a raw traceback.  A config/home-ownership mismatch must never kill
+    ``son-of-anton``: treat the file as missing, log the warning once per
+    path, and continue with whatever the environment already provides.
+    """
+    try:
+        return path.exists()
+    except (PermissionError, OSError) as exc:
+        key = str(path)
+        if key not in _WARNED_UNREADABLE_ENV_PATHS:
+            _WARNED_UNREADABLE_ENV_PATHS.add(key)
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Cannot read %s (%s) — treating it as absent. "
+                "Check that SON_OF_ANTON_HOME points at this account's own "
+                "configuration directory.",
+                path,
+                exc,
+            )
+        return False
+
 # Paths we've already emitted a UTF-32 refuse-to-mangle warning for.
 # load_son_of_anton_dotenv can call _sanitize_env_file_if_needed multiple times
 # for the same file (user env + project env + hot-reload); once per path
@@ -340,6 +373,20 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    # TERMINAL_* env vars are the terminal backend's runtime contract, bridged
+    # from config.yaml by the launcher (cli.py, gateway/run.py, the TUI child
+    # env builder). A dotenv reload with override=True must never clobber that
+    # contract with stale values left in ~/.son-of-anton/.env by an older
+    # `son-of-anton setup` (the classic TERMINAL_ENV=docker/ssh artefact) —
+    # that is how an interactive session got pinned to a configured
+    # terminal.cwd (the agent's home) instead of the directory the user
+    # launched the CLI from. Preserve values a launcher already claimed;
+    # first-load (values unset) behaviour is untouched.
+    _terminal_env_snapshot: dict[str, str | None] = {}
+    if override:
+        for key in tuple(os.environ):
+            if key.startswith("TERMINAL_"):
+                _terminal_env_snapshot[key] = os.environ.get(key)
     try:
         # utf-8-sig strips a leading UTF-8 BOM if present (PowerShell 5.1
         # Set-Content -Encoding UTF8 / Notepad) and is a no-op for BOM-less
@@ -352,6 +399,13 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
         if raw.startswith(codecs.BOM_UTF8):
             raw = raw[len(codecs.BOM_UTF8) :]
         load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
+    finally:
+        if override:
+            for key, value in _terminal_env_snapshot.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars
@@ -491,12 +545,12 @@ def load_son_of_anton_dotenv(
     project_env_path = Path(project_env) if project_env else None
 
     # Normalize safe formatting and remove invalid NUL bytes before parsing.
-    if user_env.exists():
+    if _env_file_exists(user_env):
         _sanitize_env_file_if_needed(user_env)
-    if project_env_path and project_env_path.exists():
+    if project_env_path and _env_file_exists(project_env_path):
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists():
+    if _env_file_exists(user_env):
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
         # Mirror reload_env() known-key cleanup so inherited Son of Anton keys
@@ -514,10 +568,10 @@ def load_son_of_anton_dotenv(
     # in their gateway unit, which takes precedence (override=False below
     # ensures .op.env never clobbers a token already in the environment).
     op_env = home_path / ".op.env"
-    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    if _env_file_exists(op_env) and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         _load_dotenv_with_fallback(op_env, override=False)
 
-    if project_env_path and project_env_path.exists():
+    if project_env_path and _env_file_exists(project_env_path):
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
@@ -608,7 +662,7 @@ def _apply_managed_env() -> None:
     if managed_dir is None:
         return
     managed_env = managed_dir / ".env"
-    if not managed_env.exists():
+    if not _env_file_exists(managed_env):
         return
     _sanitize_env_file_if_needed(managed_env)
     _load_dotenv_with_fallback(managed_env, override=True)

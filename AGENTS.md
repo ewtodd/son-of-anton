@@ -111,7 +111,8 @@ Ad-hoc Python checks against the working tree can run in the sealed venv:
 
 **Always use `scripts/run_tests.sh`** for the Python test suite — never bare `pytest`.
 The script enforces hermetic environment parity (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-per-file subprocess isolation). It probes `.venv` first, then `venv`, then the shared venv.
+per-file subprocess isolation) and runs through the Nix dev shell's sealed
+environment (`nix develop` sets `SON_OF_ANTON_PYTHON`); there is no pip/venv fallback.
 
 For uv lock regeneration:
 
@@ -162,8 +163,6 @@ son-of-anton/
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
 ├── skills/               # Built-in skills bundled with the repo
 ├── optional-skills/      # Heavier/niche skills shipped but NOT active by default
-├── ui-tui/               # Ink (React) terminal UI — `son-of-anton --tui`
-├── tui_gateway/          # Python JSON-RPC backend for the TUI
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 └── tests/                # Pytest suite (small, focused set — see "Testing")
 ```
@@ -289,24 +288,12 @@ menus, and autocomplete automatically.
 
 ---
 
-## TUI Architecture (ui-tui + tui_gateway)
+## Interface
 
-The TUI is a full replacement for the classic (prompt_toolkit) CLI, activated via
-`son-of-anton --tui` or `SON_OF_ANTON_TUI=1`.
-
-```
-son-of-anton --tui
-  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
-       │                                  └─ AIAgent + tools + sessions
-       └─ renders transcript, composer, prompts, activity
-```
-
-TypeScript owns the screen; Python owns sessions, tools, model calls, and slash-command
-logic. Newline-delimited JSON-RPC over stdio; requests from Ink, events from Python.
-See `tui_gateway/server.py` for the method/event catalog.
-
-Dev commands (from `ui-tui/`): `npm install`, `npm run dev`, `npm start`, `npm run build`,
-`npm run typecheck`, `npm run lint`, `npm test`.
+The classic prompt_toolkit CLI (`son-of-anton`) is the only interface —
+the Ink TUI (`ui-tui/`, `tui_gateway/`) was removed on 2026-08-25. The
+Nix package never shipped the esbuild bundle, so `--tui` could only fail
+with a bogus "workspace missing" error; the CLI covers everything.
 
 ---
 
@@ -445,9 +432,6 @@ Built-ins: `default` (classic gold), `ares`, `mono`, `slate`. User skins drop in
 `~/.son-of-anton/skins/<name>.yaml` and inherit missing values from `default`. Activate
 with `/skin <name>` or `display.skin` in config.yaml. See the file for the full key list
 (colors, spinner faces/verbs/wings, tool prefix, branding).
-
-The TUI (`ui-tui/src/theme.ts`) still has its own hex color-mix engine — converting it to
-terminal-theme-driven is an open follow-up, not started.
 
 ## Plugins
 
@@ -693,5 +677,5 @@ platform as data can stay unmarked.
   `nous_account.py`/`portal_tags.py`, Nous-curated model helpers, the proxy's
   `nous_portal.py` adapter) remains inert after the cleanup layers — it is
   credential-gated dead code, to be excised with a live smoke test in hand;
-  the TUI theme engine is not yet terminal-theme-driven; physics runs are
+  physics runs are
   synchronous turns.

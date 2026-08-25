@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "paths": {
-      "@sonofanton/ink": ["src/types/son-of-anton-ink.d.ts"]
-    }
-  }
-}

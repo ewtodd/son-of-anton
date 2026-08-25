@@ -302,27 +302,52 @@ The 2026-08-24/25 rounds landed the HM per-user config on e-desktop + the
 supra-title routing on oracle (both rebuilt, flake lock at `114a8483`).
 What the user is still hitting:
 
-1. **CLI crashes on an unreadable `$SON_OF_ANTON_HOME/.env` (NOT fixed).**
+1. **Unreadable `$SON_OF_ANTON_HOME/.env` crash — FIXED (`a8e2…`, this round).**
    Repro: `su e-play` from e-work's shell (plain `su` preserves the env, so
    `SON_OF_ANTON_HOME=/home/e-work/.son-of-anton` carried over) → the HM
    activation writes `.env` mode 0600 owned by e-work → e-play's CLI raises
-   `PermissionError: /home/e-work/.son-of-anton/.env` at
-   `son_of_anton_cli/env_loader.py:494` (`if user_env.exists():`).
-   Fix for the fresh context: `load_son_of_anton_dotenv` must treat an
-   unreadable `.env` as absent (fail-open, log a warning) instead of dying
-   with a raw traceback — a stale/cross-user `SON_OF_ANTON_HOME` must never
-   crash startup. User-side mitigation meanwhile: `su - e-play` (login
-   shell resets the env) and never export the var across accounts.
+   `PermissionError` at `son_of_anton_cli/env_loader.py:494`. During this
+   round's investigation the same crash class surfaced at
+   `agent/skill_bundles.py` (`.exists()` on `skill-bundles`, `_max_mtime`)
+   and `get_container_exec_info()` (`.container-mode` read). Fix:
+   - `load_son_of_anton_dotenv` now checks env paths through
+     `_env_file_exists()`, which treats an unreadable file (or an
+     untraversable parent — `Path.exists()` raises PermissionError there,
+     verified against Python 3.12.14) as absent and logs one warning per
+     path. Applied to `.env`, `.op.env`, project `.env`, and the managed
+     `.env`.
+   - `agent/skill_bundles._iter_bundle_files` / `_max_mtime` and
+     `config.get_container_exec_info` fail open the same way.
+   The user-side hygiene still applies: `su - e-play` (login shell resets
+   the env) and never export the var across accounts. A fully unreadable
+   home can still surface permission errors later (session/state writes)
+   — the guard removes the crash-on-startup noise, it does not make a
+   cross-user home a valid workspace.
 
-2. **Working dir (fixed in code, user hasn't confirmed yet).** The
-   `terminal.cwd` bridge clobbered the local backend's launch dir
-   (`114a8483`; system prompt + terminal tool pinned to `$HOME` while the
-   banner showed the spawn dir). Verified against the DEPLOYED venv
-   (`9hcfwc13…`, the wrapper's venv): TERMINAL_CWD stays unset, terminal +
-   agent cwd = spawn dir. Requires fresh sessions (old sessions' persistent
-   shells keep their cwd) and, once, logout/login for the sessionVariables
-   export + to clear the old session-wide
-   `SON_OF_ANTON_HOME=/var/lib/son-of-anton/.son-of-anton`.
+2. **Working dir — code hardened, e-work root cause still unconfirmed.**
+   The `114a8483` local-backend guard skips bridging `terminal.cwd` when the
+   backend is detected as local, and the STATUS's "verified" claim was based
+   on the same import simulation used here — which produces the correct
+   `TERMINAL_CWD` with an HM-shaped config. The user still observed
+   `pwd` → the configured home (`/home/e-work`) while the banner showed the
+   spawn dir (`/home/e-work/MUSIC`), from a fresh session, on the deployed
+   rev `114a8483`. The holes closed this round (mechanism, not a
+   confirmation):
+   - A dotenv **reload** (run_agent import, MCP reload, gateway per-turn)
+     used to overwrite `TERMINAL_ENV`/`TERMINAL_CWD`/`TERMINAL_HOME_MODE`
+     with anything `~/.son-of-anton/.env` (or a shell export) held, and the
+     reapply bridge then detected the *stale* `TERMINAL_ENV=ssh/docker` as
+     the backend — pinning the agent to the config `terminal.cwd`.
+     `_load_dotenv_with_fallback` now snapshots and restores `TERMINAL_*`
+     around `override=True` loads: a launcher that already claimed the
+     contract keeps it; the first load (legacy config-less `.env` seeds)
+     is untouched.
+   **Still needed to close:** one diagnostic from the e-work side
+   (the working account, which this agent session cannot read):
+   `grep -iE '^TERMINAL' ~/.son-of-anton/.env`; `env | grep -E '^TERMINAL'`;
+   `grep -n -A4 terminal: ~/.son-of-anton/config.yaml`. A stale
+   `TERMINAL_ENV`/`TERMINAL_CWD` in e-work's `.env` (pre-fork hermes setup)
+   or shell is the remaining candidate.
 
 3. **Titling garbage (fixed in code + infra, user hasn't confirmed).**
    supra-title looped/truncated and the raw `{"title" : "Response Response
@@ -330,6 +355,55 @@ What the user is still hitting:
    degenerate/repetition rejection) and oracle's supra-title runs greedy
    (`--temp 0`). Existing garbage titles in `state.db` stay until retitled
    (`/title <name>` or `/new`).
+
+### TUI removed (2026-08-25, this round — "cli is all i want. kill tui!")
+
+- `ui-tui/`, `tui_gateway/`, `scripts/profile-tui.py` deleted (501 tracked
+  files). Root cause of the flag's failure: the Nix package (son-of-anton.nix)
+  explicitly excludes `ui-tui` from the build and never shipped the esbuild
+  bundle, but `main.py` still offered `--tui` — whose recovery text told the
+  user to `git restore -- ui-tui` INSIDE a store path. That could never work.
+- `--tui`/`--tui-dev` and `SON_OF_ANTON_TUI=1` are gone from both parsers;
+  `son-of-anton --tui` now errors cleanly ("unrecognized arguments"). The
+  default is and stays the classic prompt_toolkit CLI.
+- `main.py` TUI machinery removed (early-interface probe, TUI argv/npm
+  workspace provisioning, `_launch_tui`, the Termux TUI fast path, `--dev`);
+  `_resolve_continue_arg` and `cmd_chat` simplified to source="cli" only.
+- `tui_gateway` dropped from pyproject packaging, the venv-import sweep
+  (nix/checks.nix), the MCP child-spawn markers, update's npm workspace
+  list, the module-logging component map, file-safety markers, and
+  doctor's npm audit targets. `_capture_gateway_steer_authority` is now an
+  explicit no-op bridge (the TUI live-steer host is gone).
+- Remaining `tui_gateway`/`ui-tui` mentions in comments are history only.
+
+### Hermes-vs-fork attribution (the answer to "there's no way hermes is this bad")
+
+The user's premise is verified BOTH ways — today's crash is NOT fork-caused,
+but the worst turn-class bugs ARE:
+
+- **Upstream, verbatim:** the unreadable-`.env` crash. Upstream
+  `hermes_cli/env_loader.py` at `fcbd1076a9` is byte-identical in the
+  `if user_env.exists():` handling (the initial fork import
+  `677b5c39` → `be970450` only renamed `hermes`→`son-of-anton`). The fork
+  amplified exposure: per-user profiles + HM 0600 `.env` + `su` across
+  accounts is a deployment shape upstream never had. Likewise the whole
+  `terminal.cwd` → `TERMINAL_CWD` bridge + `_reapply_terminal_config_bridge`
+  re-run on every dotenv load is upstream architecture — the `114a8483`
+  local-backend guard was a partial fork fix to an upstream contract
+  conflict (CLI: spawn dir; gateway: config cwd; same env var).
+- **Fork-caused, by surgery:** the live-round crashes — credits-straggler
+  NameError/AttributeError (removed subsystem, orphaned calls), the i18n
+  empty-key strings (locale prune deleted catalogs but left call sites),
+  the sealed-venv `import plugins` failure (wrapper never set PYTHONPATH),
+  the `_resolve_session_agent_mode` `.get()` AttributeError (new fork
+  router), dict-form `custom_providers` rejection (fork validation vs
+  upstream examples). These are the bugs that made the user want to quit;
+  they are all strip/rewrite artifacts, not hermes quality.
+- **Fork packaging:** the TUI `--tui` failure (ui-tui excluded from the Nix
+  package while the flag stayed; now removed) and the Nix-only deployment
+  complexity (multiplexed profiles, terminal.home_mode=cwd, HM config
+  deep-merge) that produced the cwd/`~`/env-pollution bugs — none of which
+  exist upstream.
 
 The /etc/nixos changes from the round are committed there; the fork is at
 `114a8483` on `main` (pushed).
@@ -395,28 +469,23 @@ The /etc/nixos changes from the round are committed there; the fork is at
   finishes; the priority queue is the eventual fix.
 - **Research pipeline prompts are theory-era text** — experimental-language
   prompt tuning is a follow-up.
-- **TUI theming**: `ui-tui/src/theme.ts` still has its own hex color-mix
-  engine — converting it to terminal-theme-driven is a bigger JS refactor,
-  not started. The TUI also still ships `topup.ts` / `subscription.ts` slash
-  commands whose Python RPCs are gone — remove them with the TUI theming pass.
-- **TUI-side `:q`**: fixed (item 6 above).
+- **TUI removed** (see above) — the classic prompt_toolkit CLI is the only
+  interface now; `--tui` errors as an unknown argument.
 
 ## What's left
 
 1. **Final deep-Nous pass** — the tail above; the live gateway now provides
    the standard-loop smoke net, so this can proceed.
 2. **Research-mode live smoke test** — same litellm/llama-swap chain.
-3. **TUI follow-up** — remove topup/subscription commands; theming decision
-   (keep the hex engine or port terminal-theme colors).
-4. **README** stays in sync with the above.
+3. **README** stays in sync with the above (TUI removal + CLI-only).
 
 ## Operational notes
 
 - Commits: author `son-of-anton-bot <307402699+son-of-anton-bot@users.noreply.github.com>`, trailer `Co-authored-by: Ethan Todd <30243637+ewtodd@users.noreply.github.com>` (repo git config already set)
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
 - Verify: `nix flake check` (package + modules + venv import sweep), full-tree compile via `/tmp/opencode/compile_all.py` (path points at `/home/e-play/Software/son-of-anton`), import sweep via `/tmp/opencode/import_sweep.py` (run inside the sealed venv)
-- Python tests: `nix develop -c scripts/run_tests.sh` (86 tests, <1s); hooks: `nix develop -c pre-commit install`
-- TUI tests: `ui-tui/` — `npm run build:ink && npm test` (node via `nix shell nixpkgs#nodejs_22`)
+- Python tests: `nix develop -c scripts/run_tests.sh` (94 tests, <1s); hooks: `nix develop -c pre-commit install`
+- The TUI is gone; the CLI is the only interface. `son-of-anton` = classic prompt_toolkit REPL; `--tui` is an unknown argument.
 - **Deployment**: the gateway lives in the user's `/etc/nixos` repo (host
   `e-desktop`), input `son-of-anton` following `main` — bump with
   `nix flake lock --update-input son-of-anton` + `nixos-rebuild switch`.

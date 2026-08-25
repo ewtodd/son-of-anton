@@ -84,7 +84,17 @@ def _slugify(name: str) -> str:
 
 def _iter_bundle_files() -> List[Path]:
     base = _bundles_dir()
-    if not base.exists():
+    try:
+        if not base.exists():
+            return []
+    except PermissionError:
+        # A stale/cross-user SON_OF_ANTON_HOME (e.g. `su` between accounts)
+        # makes the dir untraversable; bundles are convenience aliases, so
+        # treat the region as empty rather than crashing every CLI invocation.
+        logger.warning(
+            "Cannot read skill bundles directory %s — treating it as empty.",
+            base,
+        )
         return []
     files: List[Path] = []
     for ext in ("*.yaml", "*.yml"):
@@ -100,7 +110,15 @@ def _max_mtime(files: List[Path]) -> float:
     """
     base = _bundles_dir()
     mtimes = []
-    if base.exists():
+    try:
+        base_exists = base.exists()
+    except PermissionError:
+        base_exists = False
+        logger.warning(
+            "Cannot stat skill bundles directory %s — treating it as empty.",
+            base,
+        )
+    if base_exists:
         try:
             mtimes.append(base.stat().st_mtime)
         except OSError:

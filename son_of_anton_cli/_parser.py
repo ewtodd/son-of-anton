@@ -41,13 +41,11 @@ _EPILOGUE = """
 Examples:
     son-of-anton                        Start interactive chat
     son-of-anton chat -q "Hello"        Single query mode
-    son-of-anton --tui                  Launch the modern TUI (or set display.interface: tui)
-    son-of-anton --cli                  Force the classic REPL (overrides display.interface: tui)
     son-of-anton -c                     Resume the most recent session
     son-of-anton -c "my project"        Resume a session by name (latest in lineage)
     son-of-anton --resume <session_id>  Resume a specific session by ID
     son-of-anton --resume latest        Resume the most recent session (same as -c)
-    son-of-anton --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
+    son-of-anton --in ./dir             Run in a specific directory
     son-of-anton setup                  Run setup wizard
     son-of-anton logout                 Clear stored authentication
     son-of-anton auth add <provider>    Add a pooled credential
@@ -136,7 +134,7 @@ def build_top_level_parser():
         default=None,
         help=(
             "Model override for this invocation (e.g. deepseek-v4). "
-            "Applies to -z/--oneshot and --tui. Also settable via SON_OF_ANTON_INFERENCE_MODEL env var."
+            "Applies to -z/--oneshot. Also settable via SON_OF_ANTON_INFERENCE_MODEL env var."
         ),
     )
     _inherited_flag(
@@ -145,7 +143,7 @@ def build_top_level_parser():
         default=None,
         help=(
             "Provider override for this invocation (e.g. deepseek, custom). "
-            "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
+            "Applies to -z/--oneshot. The persistent provider lives in config.yaml "
             "under model.provider — use `son-of-anton setup` or edit the file to change it."
         ),
     )
@@ -165,7 +163,7 @@ def build_top_level_parser():
         "-t",
         "--toolsets",
         default=None,
-        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
+        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot.",
     )
     parser.add_argument(
         "--resume",
@@ -269,25 +267,10 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
-        "--tui",
-        action="store_true",
-        default=False,
-        help="Launch the modern TUI instead of the classic REPL",
-    )
-    _inherited_flag(
-        parser,
         "--cli",
         action="store_true",
         default=False,
-        help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
-    )
-    _inherited_flag(
-        parser,
-        "--dev",
-        dest="tui_dev",
-        action="store_true",
-        default=False,
-        help="With --tui: run TypeScript sources via tsx (skip dist build)",
+        help="Force the classic prompt_toolkit REPL",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -516,25 +499,10 @@ def build_top_level_parser():
     )
     _inherited_flag(
         chat_parser,
-        "--tui",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Launch the modern TUI instead of the classic REPL",
-    )
-    _inherited_flag(
-        chat_parser,
         "--cli",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
-    )
-    _inherited_flag(
-        chat_parser,
-        "--dev",
-        dest="tui_dev",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="With --tui: run TypeScript sources via tsx (skip dist build)",
+        help="Force the classic prompt_toolkit REPL",
     )
 
     return parser, subparsers, chat_parser

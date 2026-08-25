@@ -1407,7 +1407,7 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
         current_user = None
 
     backend_tokens = {"serve", "dashboard", "gateway"}
-    son_of_anton_markers = ("son_of_anton_cli.main", "son-of-anton-gateway", "tui_gateway")
+    son_of_anton_markers = ("son_of_anton_cli.main", "son-of-anton-gateway")
     # Matches python / python3 / python3.12 / pythonw(.exe) — the interpreter
     # basenames a `#!/…/python3` console-script shim gets exec'd through when
     # something (e.g. Electron's `findOnPath('son-of-anton')` resolution) spawns the

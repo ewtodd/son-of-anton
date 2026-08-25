@@ -342,15 +342,11 @@ def _capture_gateway_steer_authority(
 
     This is intentionally an in-process bridge, not a serializable capability.
     Non-gateway hosts (including the CLI helper path) receive ``(None, None)``.
+    The TUI frontend that exposed a live session for steering was removed;
+    gateway callers get their authority from the gateway session context, so
+    this stays a no-op bridge that always returns ``(None, None)``.
     """
-    if not owner_session_id:
-        return None, None
-    try:
-        from tui_gateway.server import _current_session_steer_authority
-
-        return _current_session_steer_authority(owner_session_id)
-    except Exception:
-        return None, None
+    return None, None
 
 
 def list_active_subagents() -> List[Dict[str, Any]]:

@@ -5169,8 +5169,6 @@ def _snapshot_child_pids() -> set:
 # argv markers instead of argv[0] because Python/Java children begin with the
 # interpreter or binary path.
 _NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
-    "tui_gateway.slash_worker",
-    "tui_gateway.entry",
     "-dorg.eclipse.equinox.launcher",  # jdtls (legacy arg style)
     "eclipse.jdt.ls",
     "org.eclipse.equinox.launcher_",

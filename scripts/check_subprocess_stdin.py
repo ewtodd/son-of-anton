@@ -29,12 +29,11 @@ import re
 import sys
 from pathlib import Path
 
-# Directories that run inside the TUI gateway child process.
-TUI_CONTEXT_DIRS = [
+# Directories that run inside the CLI agent child process.
+CONTEXT_DIRS = [
     "agent/",
     "tools/",
     "plugins/",
-    "tui_gateway/",
 ]
 
 # User plugin roots — scanned at runtime if they exist.  Plugins load from
@@ -164,7 +163,7 @@ def main() -> int:
 
     all_violations = []
 
-    for tui_dir in TUI_CONTEXT_DIRS:
+    for tui_dir in CONTEXT_DIRS:
         dirpath = repo_root / tui_dir
         if not dirpath.exists():
             continue

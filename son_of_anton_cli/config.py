@@ -672,7 +672,13 @@ def get_container_exec_info() -> Optional[dict]:
                     info[key.strip()] = value.strip()
     except FileNotFoundError:
         return None
-    # All other exceptions (PermissionError, malformed data, etc.) propagate
+    except PermissionError:
+        # Container mode is an optional deployment feature. A stale/cross-user
+        # SON_OF_ANTON_HOME makes the marker unreadable; treat that as "not
+        # configured" and let the CLI continue (it will surface its own
+        # permission problem elsewhere if the home is truly wrong).
+        return None
+    # All other exceptions propagate
 
     backend = info.get("backend", "docker")
     container_name = info.get("container_name", "son-of-anton")

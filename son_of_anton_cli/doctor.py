@@ -2221,12 +2221,11 @@ def run_doctor(args):
             # Each entry: (cwd, label, extra_audit_args)
             # PROJECT_ROOT is audited with --workspaces=false so that the apps/*
             # glob (which pulls in Electron, node-pty, etc.) is never resolved
-            # for a routine security check. The web and ui-tui workspaces are
-            # audited separately via --workspace flags. See #38772.
+            # for a routine security check. The web workspace is audited
+            # separately via the --workspace flag. See #38772.
             npm_audit_targets = [
                 (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
                 (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
-                (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             ]
         for npm_dir, label, audit_extra in npm_audit_targets:
             # For workspace-scoped audits run from PROJECT_ROOT the

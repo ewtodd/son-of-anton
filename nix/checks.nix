@@ -186,7 +186,6 @@ import cli
 import run_agent
 import model_tools
 import gateway.run
-import tui_gateway.server
 import cron.scheduler
 import son_of_anton_cli.main
 import son_of_anton_cli.cli_commands_mixin

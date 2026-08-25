@@ -1,7 +1,7 @@
 """
 Unified self-relaunch for Son of Anton CLI.
 
-Preserves critical flags (--tui, --dev, --profile, --model, etc.) across
+Preserves critical flags (--profile, --model, etc.) across
 process replacement so that ``son-of-anton sessions browse`` or post-setup relaunch
 doesn't silently drop the user's UI mode or other preferences.
 
