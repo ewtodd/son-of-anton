@@ -6524,6 +6524,40 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("SON_OF_ANTON_AGENT", "true")
 
 
+class _CwdEnvTrace(dict):
+    """Debug wrapper that logs every TERMINAL_* os.environ write with a stack."""
+
+    def __setitem__(self, key, value):
+        if isinstance(key, str) and key.startswith("TERMINAL_"):
+            old = dict.get(self, key)
+            if old != value:
+                import logging
+                import traceback
+                logging.getLogger("son_of_anton_cwd_debug").info(
+                    "ENV WRITE %s: %r -> %r @\n%s",
+                    key, old, value,
+                    "".join(traceback.format_stack(limit=9)),
+                )
+        return dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key):
+        if isinstance(key, str) and key.startswith("TERMINAL_"):
+            import logging
+            import traceback
+            logging.getLogger("son_of_anton_cwd_debug").info(
+                "ENV DELETE %s: %r @\n%s",
+                key, dict.get(self, key),
+                "".join(traceback.format_stack(limit=9)),
+            )
+        return dict.__delitem__(self, key)
+
+
+def _install_cwd_env_tracer() -> None:
+    """Replace os.environ with a write-tracing proxy (DEBUG_CWD gate only)."""
+    import os as _os
+    _os.environ = _CwdEnvTrace(_os.environ)
+
+
 def _guard_son_of_anton_home_access() -> None:
     """Fail fast with a clear message when SON_OF_ANTON_HOME is unusable.
 
@@ -6562,6 +6596,8 @@ def _guard_son_of_anton_home_access() -> None:
 def main():
     """Main entry point for son-of-anton CLI."""
     _guard_son_of_anton_home_access()
+    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
+        _install_cwd_env_tracer()
 
     # Cosmetic: make the process show up as 'son-of-anton' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
