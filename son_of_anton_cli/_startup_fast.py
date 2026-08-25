@@ -7,20 +7,14 @@ no argparse). A guard test (``test_startup_fast_import_weight``) subprocess-
 imports this module and fails if any heavy module sneaks into sys.modules.
 
 Why this module exists (the bug class it kills): version-printing kept being
-reimplemented as ``*_fast()`` copies at the top of main.py (Termux first,
-then globally), each duplicating canonical logic — project-root resolution,
-container detection, profile detection. The copies drifted: eb4040242
-changed the canonical output and referenced ``PROJECT_ROOT`` inside the fast
-function, which doesn't exist yet on the fast path → the Termux fast path
-NameError'd on --version and nobody noticed. One implementation, imported
-by both the fast path and the module constants, makes that drift
-structurally impossible; the parity guard test would have caught eb4040242
-the day it landed.
-
-``son_of_anton_cli/config.py``'s ``get_container_exec_info()`` reads the same
-``.container-mode`` file; keep the file-format assumptions here and there in
-sync (this module deliberately only PROBES existence/typos cheaply and errs
-toward the slow path, which then does the authoritative parse).
+reimplemented as ``*_fast()`` copies at the top of main.py, each duplicating
+canonical logic — project-root resolution and profile detection. The copies
+drifted: eb4040242 changed the canonical output and referenced
+``PROJECT_ROOT`` inside the fast function, which doesn't exist yet on the
+fast path → the fast path NameError'd on --version and nobody noticed. One
+implementation, imported by both the fast path and the module constants,
+makes that drift structurally impossible; the parity guard test would have
+caught eb4040242 the day it landed.
 """
 
 from __future__ import annotations
@@ -31,12 +25,8 @@ import sys
 __all__ = [
     "project_root_str",
     "ensure_project_root_on_path",
-    "is_termux_env",
-    "is_termux_fast_version_argv",
     "is_global_fast_version_argv",
-    "is_container_startup_environment",
     "active_profile_may_override_home",
-    "container_mode_may_be_active",
     "read_openai_version",
     "read_install_method",
     "print_fast_version_info",
@@ -62,34 +52,8 @@ def ensure_project_root_on_path() -> None:
     sys.path.insert(0, project_root)
 
 
-def is_termux_env() -> bool:
-    """Tiny Termux check for pre-import startup shortcuts."""
-    prefix = os.environ.get("PREFIX", "")
-    return bool(
-        os.environ.get("TERMUX_VERSION")
-        or "com.termux/files/usr" in prefix
-        or prefix.startswith("/data/data/com.termux/")
-    )
-
-
-def is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"])
-
-
 def is_global_fast_version_argv(argv: list[str]) -> bool:
     return argv in (["--version"], ["-V"])
-
-
-def is_container_startup_environment() -> bool:
-    """True when we're already INSIDE a container (fast path is then safe)."""
-    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
-        return True
-    try:
-        with open("/proc/1/cgroup", encoding="utf-8") as handle:
-            cgroup = handle.read()
-    except OSError:
-        return False
-    return "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup
 
 
 def active_profile_may_override_home(son_of_anton_root: str) -> bool:
@@ -110,36 +74,6 @@ def _resolved_home() -> str:
     if son_of_anton_home:
         return son_of_anton_home
     return os.path.join(os.path.expanduser("~"), ".son-of-anton")
-
-
-def container_mode_may_be_active() -> bool:
-    """Conservative probe for NixOS container-mode routing.
-
-    False positives are fine (we fall through to the slow path, whose
-    ``get_container_exec_info()`` does the authoritative check and routes
-    into the container). False negatives are NOT fine — they'd print the
-    host's version instead of the container's. Hence: any profile
-    ambiguity → assume container mode may be active.
-    """
-    if os.environ.get("SON_OF_ANTON_DEV") == "1":
-        return False
-    if is_container_startup_environment():
-        return False
-
-    son_of_anton_home = os.environ.get("SON_OF_ANTON_HOME", "").strip()
-    if son_of_anton_home:
-        if os.path.exists(os.path.join(son_of_anton_home, ".container-mode")):
-            return True
-        parent_name = os.path.basename(os.path.dirname(os.path.normpath(son_of_anton_home)))
-        return (
-            parent_name != "profiles"
-            and active_profile_may_override_home(son_of_anton_home)
-        )
-
-    default_home = os.path.join(os.path.expanduser("~"), ".son-of-anton")
-    if active_profile_may_override_home(default_home):
-        return True
-    return os.path.exists(os.path.join(default_home, ".container-mode"))
 
 
 def read_openai_version() -> str | None:
@@ -167,9 +101,7 @@ def read_install_method() -> str | None:
 
     Only the stamp (step 1 of ``config.detect_install_method``'s resolution
     order) — the managed/git/pip fallbacks need heavier imports and stay on
-    the slow path. On the fast path home ambiguity is already excluded:
-    ``container_mode_may_be_active()`` bails to the slow path whenever a
-    non-default profile might redirect SON_OF_ANTON_HOME.
+    the slow path.
     """
     stamp = os.path.join(_resolved_home(), ".install_method")
     try:
@@ -254,21 +186,11 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
     """Handle ``son-of-anton --version`` before the heavy import wall.
 
     Only ``--version``/``-V`` (the ``version`` subcommand was removed —
-    ``--version`` now carries the full output incl. update status), and
-    never when container mode may need to route the command into the
-    container. Termux keeps the SON_OF_ANTON_TERMUX_DISABLE_FAST_CLI escape hatch.
+    ``--version`` now carries the full output incl. update status).
     """
     if argv is None:
         argv = sys.argv[1:]
-    is_termux = is_termux_env()
-    if is_termux and os.environ.get("SON_OF_ANTON_TERMUX_DISABLE_FAST_CLI") == "1":
-        return False
-    if is_termux:
-        if not is_termux_fast_version_argv(argv):
-            return False
-    elif not is_global_fast_version_argv(argv):
-        return False
-    elif container_mode_may_be_active():
+    if not is_global_fast_version_argv(argv):
         return False
 
     print_fast_version_info()

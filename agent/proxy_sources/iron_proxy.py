@@ -264,8 +264,6 @@ _PROXY_SUBPROCESS_ENV_ALLOWLIST: Tuple[str, ...] = (
     "NO_COLOR",
     "SSL_CERT_DIR",
     "SSL_CERT_FILE",
-    "SYSTEMROOT",  # Windows
-    "USERPROFILE",  # Windows
 )
 
 
@@ -280,9 +278,7 @@ _PROXY_SUBPROCESS_ENV_STRIP: Tuple[str, ...] = (
 )
 
 
-# SIGKILL doesn't exist on Windows.  We fall back to SIGTERM there, which the
-# OS treats as a hard terminate via TerminateProcess() — equivalent semantics.
-_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+_KILL_SIGNAL = signal.SIGKILL
 
 
 # Cached ``iron-proxy --version`` output keyed by binary path.  ``get_status``
@@ -388,23 +384,20 @@ def _proxy_state_dir() -> Path:
     try:
         d.chmod(0o700)
     except OSError:
-        # On Windows the chmod is a no-op for POSIX modes; on shared
-        # filesystems we may not own the dir.  Don't fail here — the
-        # individual files still get explicit perms.
+        # On shared filesystems we may not own the dir.  Don't fail here —
+        # the individual files still get explicit perms.
         pass
     return d
 
 
 def _platform_binary_name() -> str:
-    return "iron-proxy.exe" if platform.system() == "Windows" else "iron-proxy"
+    return "iron-proxy"
 
 
 def _platform_asset_name() -> str:
     """Map (uname, arch) → upstream release asset filename.
 
     iron-proxy ships ``iron-proxy_<version>_<os>_<arch>.tar.gz``.
-    Windows builds aren't published upstream as of v0.39.0; we raise a
-    clear error for callers on Windows.
     """
 
     system = platform.system()
@@ -416,12 +409,6 @@ def _platform_asset_name() -> str:
     if system == "Darwin":
         arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
         return f"iron-proxy_{_IRON_PROXY_VERSION}_darwin_{arch}.tar.gz"
-    if system == "Windows":
-        raise RuntimeError(
-            "iron-proxy does not ship native Windows binaries as of "
-            f"v{_IRON_PROXY_VERSION}. Run the proxy on a Linux/macOS host, "
-            "or inside WSL."
-        )
 
     raise RuntimeError(
         f"Unsupported platform for iron-proxy auto-install: {system} {machine}"
@@ -789,11 +776,7 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
         # — the state dir is 0o700-owned but a malicious local user with
         # the same uid could pre-create one).
         key_staged = ca_key.with_suffix(ca_key.suffix + ".staged")
-        open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        # O_NOFOLLOW exists on POSIX; on Windows we just rely on the
-        # default semantics.
-        if hasattr(os, "O_NOFOLLOW"):
-            open_flags |= os.O_NOFOLLOW
+        open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
         # Best-effort: pre-unlink any existing staged file so the open
         # with O_CREAT is always against a fresh inode.
         try:
@@ -1678,25 +1661,14 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        # Use psutil.pid_exists when available — it's a no-op on Windows
-        # whereas os.kill(pid, 0) on Windows is actually a hard kill
-        # (CTRL_C_EVENT to the target's console process group).  See
-        # bpo-14484.  windows-footgun: ok — we explicitly skip the
-        # os.kill probe on Windows below.
         import psutil  # type: ignore
         if not psutil.pid_exists(pid):
             return False
     except ImportError:
-        if platform.system() == "Windows":
-            # On Windows without psutil we can't safely probe — assume
-            # the pidfile content is fresh and confirm via the cmdline
-            # path below.  os.kill(pid, 0) is NOT safe here.
-            pass
-        else:
-            try:
-                os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch
-            except (ProcessLookupError, PermissionError, OSError):
-                return False
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
 
     # Strong proof: nonce env var matches.  /proc/<pid>/environ is null-
     # separated KEY=VALUE pairs; substring search is safe.
@@ -1849,34 +1821,24 @@ def start_proxy(
     except OSError:
         pass
     # Verify ownership — same st_uid check the pidfile uses.
-    try:
-        st = os.fstat(log_fd)
-        if hasattr(os, "getuid") and st.st_uid != os.getuid():
-            os.close(log_fd)
-            raise RuntimeError(
-                f"iron-proxy log {log_path} has unexpected owner "
-                f"uid={st.st_uid}; refusing to write."
-            )
-    except AttributeError:
-        pass  # Windows
+    st = os.fstat(log_fd)
+    if st.st_uid != os.getuid():
+        os.close(log_fd)
+        raise RuntimeError(
+            f"iron-proxy log {log_path} has unexpected owner "
+            f"uid={st.st_uid}; refusing to write."
+        )
 
     try:
         # Use the fd directly via the dup mechanism; Popen will dup() it
         # into the child so we can close ours unconditionally below.
-        # NOTE: on Windows ``start_new_session`` is invalid; we don't
-        # support Windows for the proxy (the binary itself doesn't ship)
-        # but the kwarg is POSIX-only and silently ignored on Win.
-        popen_kwargs: Dict = dict(
+        proc = subprocess.Popen(  # noqa: S603 — binary path is trusted
+            [str(bin_path), "-config", str(cfg)],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=log_fd,
             stderr=subprocess.STDOUT,
-        )
-        if platform.system() != "Windows":
-            popen_kwargs["start_new_session"] = True
-        proc = subprocess.Popen(  # noqa: S603 — binary path is trusted
-            [str(bin_path), "-config", str(cfg)],
-            **popen_kwargs,
+            start_new_session=True,
         )
     except OSError as exc:
         os.close(log_fd)
@@ -1933,10 +1895,7 @@ def start_proxy(
 
     prev_sigint = None
     prev_sigterm = None
-    install_handlers = (
-        platform.system() != "Windows"
-        and threading.current_thread() is threading.main_thread()
-    )
+    install_handlers = threading.current_thread() is threading.main_thread()
     if install_handlers:
         prev_sigint = signal.signal(signal.SIGINT, _interrupt_handler)
         prev_sigterm = signal.signal(signal.SIGTERM, _interrupt_handler)
@@ -2046,14 +2005,11 @@ def _write_pidfile_safely(pidfile: Path, pid: int) -> None:
 
     try:
         # Ownership check — same st_uid pattern the log file uses.
-        try:
-            st = os.fstat(fd)
-            if hasattr(os, "getuid") and st.st_uid != os.getuid():
-                raise RuntimeError(
-                    f"pidfile {pidfile} has unexpected owner uid={st.st_uid}"
-                )
-        except AttributeError:
-            pass  # Windows
+        st = os.fstat(fd)
+        if st.st_uid != os.getuid():
+            raise RuntimeError(
+                f"pidfile {pidfile} has unexpected owner uid={st.st_uid}"
+            )
         os.write(fd, str(pid).encode("utf-8"))
     finally:
         os.close(fd)

@@ -57,7 +57,7 @@ from utils import atomic_json_write, env_var_enabled
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - Windows
+except ImportError:  # pragma: no cover - non-POSIX fallback
     fcntl = None
 
 logger = logging.getLogger(__name__)
@@ -1217,9 +1217,9 @@ def _env_line_safe(value: Any) -> str:
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
-    # A Windows editor can leave a UTF-8 BOM, which prevents the first key
-    # from matching, or save the file as cp1252, which makes a strict UTF-8
-    # read fail. Strip the BOM and round-trip undecodable bytes unchanged so
+    # Some editors leave a UTF-8 BOM, which prevents the first key from
+    # matching, or save the file as cp1252, which makes a strict UTF-8 read
+    # fail. Strip the BOM and round-trip undecodable bytes unchanged so
     # updating one credential cannot corrupt an unrelated value.
     existing_lines = (
         env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines()
@@ -1549,15 +1549,12 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Do not let the server child inherit this process's PYTHONPATH.
-        # The Son of Anton Desktop backend can include the Son of Anton venv's
+        # A Son of Anton backend can include the Son of Anton venv's
         # site-packages in PYTHONPATH. If inherited, openviking-server would
         # import aiohttp and friends from the Son of Anton venv instead of its own
         # (its venv's site-packages are shadowed because PYTHONPATH precedes
-        # them) —
-        # and on Windows the loaded DLLs then lock the Son of Anton venv,
-        # aborting `son-of-anton update` with access-denied on .pyd files.
-        # Strip PYTHONPATH so the server resolves packages from its own
-        # venv. (#78153)
+        # them). Strip PYTHONPATH so the server resolves packages from its
+        # own venv. (#78153)
         child_env = os.environ.copy()
         child_env.pop("PYTHONPATH", None)
         with log_path.open("ab") as log_file:

@@ -166,7 +166,7 @@ def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
 
 
 def _platform_binary_name() -> str:
-    return "bws.exe" if platform.system() == "Windows" else "bws"
+    return "bws"
 
 
 def _platform_asset_name() -> str:
@@ -182,10 +182,6 @@ def _platform_asset_name() -> str:
         # Universal binary works on both Intel and Apple Silicon — no
         # need to pick a per-arch asset.
         return f"bws-macos-universal-{_BWS_VERSION}.zip"
-
-    if system == "Windows":
-        arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-        return f"bws-{arch}-pc-windows-msvc-{_BWS_VERSION}.zip"
 
     if system == "Linux":
         arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
@@ -336,8 +332,8 @@ def _safe_extract_member(
     """
     dest_root = os.path.realpath(dest_dir)
     target = os.path.realpath(os.path.join(dest_root, member))
-    # ``commonpath`` raises ValueError for e.g. different drives on
-    # Windows; treat that as an escape too.
+    # ``commonpath`` raises ValueError for disjoint roots; treat that as an
+    # escape too.
     try:
         contained = os.path.commonpath([dest_root, target]) == dest_root
     except ValueError:
@@ -373,8 +369,7 @@ def _derive_encrypted_cache_key(access_token: str, salt: bytes) -> bytes:
     """Derive the local cache encryption key from the bootstrap BWS token."""
     # Keep the native cryptography extension lazy.  Most CLI commands import
     # this module while building argparse, even though only encrypted-cache
-    # reads/writes need it.  Eagerly importing it maps ``_rust.pyd`` into a
-    # Windows updater and prevents uv from replacing that file (#73381).
+    # reads/writes need it.
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 

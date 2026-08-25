@@ -376,6 +376,42 @@ What the user is still hitting:
   explicit no-op bridge (the TUI live-steer host is gone).
 - Remaining `tui_gateway`/`ui-tui` mentions in comments are history only.
 
+### Nix-only sweep (2026-08-25 — "the more dead code we kill, the easier it is to find bugs")
+
+Son of Anton now supports ONLY Nix (NixOS/Home-Manager, Linux + macOS).
+Every other OS/environment fallback has been stripped from the product
+surface: ~11k lines, 87 files, three delegated waves + the lead's fixups.
+
+- **Windows**: removed `sys.platform == "win32"`/Windows/os.name=="nt"
+  branches, msvcrt/pywin32 lock paths, .exe/pythonw/Scripts handling,
+  MSYS/Git-Bash path translation, taskkill, PowerShell, Windows Terminal
+  shims, winreg, the pywin32/tzdata/pywinpty/concurrent-log-handler
+  dependencies (uv.lock regenerated — 4 deps gone), and the standalone
+  `gateway_windows.py`, `_scan_venv_blockers.py`, `setup-son-of-anton.sh`.
+- **Termux**: all Termux detection, fast-launch paths, install wording,
+  and the `_startup_fast` helpers (`is_termux_env`, termux version path).
+- **Docker/s6/container**: `_is_container`/`/.dockerenv`/cgroup detection,
+  `.container-mode`/`get_container_exec_info`, `container_boot.py`,
+  TERMINAL_DOCKER_* terminal backends (local+ssh stay), docker install
+  methods + `format_docker_update_message`, s6 supervision/dispatch
+  (gateway, doctor, profiles, service_manager, restart, monitoring).
+- **venv/pip fallbacks**: `.venv`/`venv` probing, `_scan_venv_blockers`,
+  pip-based install/update messaging (uv + Nix flows stay), and
+  `scripts/run_tests.sh` venv probing (Nix dev shell only now).
+- Kept: macOS/darwin, NixOS/Home-Manager modules, systemd/launchd service
+  code, managed scope, SSH terminal backend, `terminal.home_mode`,
+  git-checkout dev/update flow. `detect_install_method` now returns only
+  nix/nixos/home-manager/git/unknown.
+- Gates after the sweep: 94 tests pass, `nix flake check` green (sealed
+  venv import sweep covers the edited modules). Cross-file breakage found
+  and fixed by review: `tools/file_operations._escape_shell_arg` (was
+  importing removed `_bash_safe_path`), `cmd_update`'s dead
+  `format_docker_update_message` import, `gateway/cwd_placeholder`'s
+  docker branch, `service_manager`/`doctor`/`profiles` s6 paths, and the
+  `venv_python_path` windows kwargs.
+
+---
+
 ### Hermes-vs-fork attribution (the answer to "there's no way hermes is this bad")
 
 The user's premise is verified BOTH ways — today's crash is NOT fork-caused,

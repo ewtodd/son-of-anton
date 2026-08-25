@@ -27,15 +27,11 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking
+# fcntl is Unix-only; Nix platforms always have it.
 try:
     import fcntl
 except ImportError:
     fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        msvcrt = None
 from pathlib import Path
 from typing import Any, List, Optional, Protocol
 
@@ -45,7 +41,6 @@ from typing import Any, List, Optional, Protocol
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from son_of_anton_constants import get_son_of_anton_home
-from son_of_anton_cli._subprocess_compat import windows_hide_flags
 from son_of_anton_cli.config import (
     _expand_env_vars,
     cron_model_drift_axes,
@@ -1454,16 +1449,13 @@ def _get_lock_paths() -> tuple[Path, Path]:
 def _is_lock_contention_errno(err: OSError) -> bool:
     """Return True when *err* from the lock syscall means the lock is held.
 
-    - POSIX: ``flock(LOCK_EX|LOCK_NB)`` reports EWOULDBLOCK/EAGAIN when
-      another process holds the lock (EACCES on some NFS implementations).
-    - Windows: ``msvcrt.locking(LK_NBLCK)`` reports EACCES/EDEADLK.
+    POSIX: ``flock(LOCK_EX|LOCK_NB)`` reports EWOULDBLOCK/EAGAIN when
+    another process holds the lock (EACCES on some NFS implementations).
     """
     if err.errno is None:
         return False
     if fcntl is not None:
         return err.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
-    if msvcrt is not None:
-        return err.errno in (errno.EACCES, errno.EDEADLK)
     return False
 
 
@@ -3402,107 +3394,37 @@ def _get_media_send_timeout() -> int:
     return _DEFAULT_MEDIA_SEND_TIMEOUT
 
 
-def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
-    cfg_path = venv_dir / "pyvenv.cfg"
-    try:
-        lines = cfg_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-
-    parsed: dict[str, str] = {}
-    for raw in lines:
-        if "=" not in raw:
-            continue
-        key, value = raw.split("=", 1)
-        parsed[key.strip().lower()] = value.strip()
-    return parsed
-
-
-def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
-    """Return an output-capable hidden Python invocation for Windows scripts.
-
-    Cron scripts capture stdout/stderr, so using ``pythonw.exe`` directly can
-    lose script output.  uv-created venv ``python.exe`` launchers are also a
-    problem: even with CREATE_NO_WINDOW, the launcher can re-exec the base
-    console interpreter and flash a visible window.  For uv venvs, bypass the
-    launcher and run the base ``python.exe`` directly with the venv paths
-    overlaid in the environment.
-    """
-    if sys.platform != "win32":
-        return python_exe, {}
-
-    interpreter = Path(python_exe)
-    venv_dir = interpreter.parent.parent
-    env_overlay: dict[str, str] = {}
-
-    if interpreter.name.lower() == "pythonw.exe":
-        sibling = interpreter.with_name("python.exe")
-        if sibling.exists():
-            interpreter = sibling
-
-    cfg = _read_windows_pyvenv_cfg(venv_dir)
-    home = cfg.get("home", "")
-    site_packages = venv_dir / "Lib" / "site-packages"
-    if "uv" in cfg and home:
-        base_python = Path(home) / "python.exe"
-        if base_python.exists() and site_packages.exists():
-            interpreter = base_python
-            env_overlay["VIRTUAL_ENV"] = str(venv_dir)
-            pythonpath_entries = [
-                str(Path(__file__).resolve().parents[1]),
-                str(site_packages),
-            ]
-            existing_pythonpath = os.environ.get("PYTHONPATH", "")
-            if existing_pythonpath:
-                pythonpath_entries.append(existing_pythonpath)
-            env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
-
-    return str(interpreter), env_overlay
-
-
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
     """Best-effort hard stop of a cron script and every child it spawned."""
     if proc.poll() is not None:
         return
-    if sys.platform == "win32":
+    try:
+        process_group: Optional[int] = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        process_group = None
+    if process_group is not None:
         try:
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                timeout=10,
-                creationflags=windows_hide_flags(),
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            proc.kill()
-    else:
-        try:
-            process_group: Optional[int] = os.getpgid(proc.pid)
-        except (ProcessLookupError, OSError):
+            os.killpg(process_group, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
             process_group = None
         if process_group is not None:
             try:
-                os.killpg(process_group, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch (win32 handled above)
-            except (ProcessLookupError, PermissionError, OSError):
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+            # Escalate whenever ANY group member survived the TERM: a
+            # TERM-ignoring descendant keeps the stdio pipe write ends
+            # open, and the caller's communicate() would then block on
+            # EOF forever.  killpg(pgid, 0) probes group liveness.
+            try:
+                os.killpg(process_group, 0)
+            except (ProcessLookupError, OSError):
                 process_group = None
             if process_group is not None:
                 try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
+                    os.killpg(process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
+                except (ProcessLookupError, PermissionError, OSError):
                     pass
-                # Escalate whenever ANY group member survived the TERM: a
-                # TERM-ignoring descendant keeps the stdio pipe write ends
-                # open, and the caller's communicate() would then block on
-                # EOF forever.  killpg(pgid, 0) probes group liveness.
-                try:
-                    os.killpg(process_group, 0)  # windows-footgun: ok — POSIX-only branch
-                except (ProcessLookupError, OSError):
-                    process_group = None
-                if process_group is not None:
-                    try:
-                        os.killpg(process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
     try:
         proc.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
@@ -3539,52 +3461,6 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
         # Truly wedged — leave the zombie to the OS reaper rather than
         # blocking the cron worker thread forever.
         pass
-
-
-def _windows_cron_bootstrap_argv(
-    python_exe: str,
-    env_overlay: dict[str, str],
-    script_path: str,
-) -> list[str]:
-    """Bootstrap a cron script under the base interpreter with ``.pth`` support.
-
-    The uv-venv overlay mode runs the base ``python.exe`` (to avoid the
-    launcher re-execing a console interpreter and flashing a window) and
-    re-attaches the venv via ``PYTHONPATH``.  But ``PYTHONPATH`` entries are
-    plain ``sys.path`` additions — Python's site initialization never
-    processes ``.pth`` files for them (only ``site.addsitedir()`` does) — so
-    editable installs (``pip install -e``, ``__editable__*.pth`` links) are
-    invisible to cron script jobs.
-
-    Bootstrap with ``site.addsitedir()`` on the venv ``site-packages``, then
-    exec the script as ``__main__``.  ``runpy.run_path`` keeps ``__file__``
-    correct; ``sys.path[0]`` is set to the script's directory to preserve the
-    ``python script.py`` import semantics.  Note: ``runpy`` does not set
-    ``__package__``/``__spec__`` the way a direct invocation does, so
-    package-relative imports (``from . import x``) may behave differently.
-    Falls back to a plain invocation if the venv layout is unresolvable —
-    the pre-existing PYTHONPATH behaviour is strictly better than failing
-    to run at all.
-    """
-    site_packages = Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
-    if not site_packages.is_dir():
-        # Silent here would make the "editable installs invisible" failure
-        # undiagnosable; the pre-existing PYTHONPATH-only behaviour applies.
-        logger.warning(
-            "Windows cron script: venv site-packages %s not found; running "
-            "without .pth processing (editable installs may be unimportable)",
-            site_packages,
-        )
-        return [python_exe, script_path]
-    bootstrap = (
-        "import os, runpy, site, sys;"
-        f"site.addsitedir({str(site_packages)!r});"
-        "script = sys.argv[1];"
-        "sys.argv = [script] + sys.argv[2:];"
-        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
-        "runpy.run_path(script, run_name='__main__')"
-    )
-    return [python_exe, "-c", bootstrap, script_path]
 
 
 def _run_job_script(
@@ -3633,10 +3509,8 @@ def _run_job_script(
     scripts_dir_resolved = scripts_dir.resolve()
 
     # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
-    # a NUL-bearing value can never name a real script, and on Windows the
-    # Path operations raise ValueError *after* expanduser (expanduser never
-    # expands "~user" there, so the try below never fires) — reject eagerly
-    # so both platforms fail cleanly instead of crashing the scheduler.
+    # a NUL-bearing value can never name a real script — reject eagerly so
+    # the failure is clean instead of crashing the scheduler.
     # str() first so the guard itself can never raise TypeError on a
     # non-str script_path (e.g. a Path passed by a future caller) — the
     # guard must be crash-proof even though every current call site
@@ -3682,45 +3556,26 @@ def _run_job_script(
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
+        # Resolve bash dynamically: on Linux/macOS bash lives on PATH (or at
+        # /bin/bash). shutil.which returning None is a broken host — surface
+        # a clear error rather than a confusing FileNotFoundError traceback.
         _bash = shutil.which("bash") or (
             "/bin/bash" if os.path.isfile("/bin/bash") else None
         )
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
-                "On Windows, install Git for Windows (which ships Git Bash) "
-                "or rewrite the script as Python (.py)."
+                "Install bash or rewrite the script as Python (.py)."
         )
         argv = [_bash, str(path)]
-        env_overlay: dict[str, str] = {}
     else:
-        python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-        if env_overlay:
-            # Overlay mode (Windows uv venv): PYTHONPATH alone cannot make
-            # editable installs importable — .pth processing needs
-            # site.addsitedir() (see _windows_cron_bootstrap_argv).
-            argv = _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path))
-        else:
-            argv = [python_exe, str(path)]
+        argv = [sys.executable, str(path)]
 
     try:
         from tools.environments.local import build_subprocess_env
 
         popen_kwargs: dict[str, Any] = {"start_new_session": True}
-        if sys.platform == "win32":
-            popen_kwargs = {
-                "creationflags": windows_hide_flags()
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                "encoding": "utf-8",
-                "errors": "replace",
-            }
         env = build_subprocess_env()
-        env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into
@@ -6848,7 +6703,7 @@ def tick(
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows.
+    # POSIX file locking via fcntl.
     # Only genuine lock contention (another ticker holds the lock) skips the
     # tick silently.  A real OSError — most importantly EMFILE/ENFILE from fd
     # exhaustion — must NOT be swallowed as "another instance holds the
@@ -6859,8 +6714,6 @@ def tick(
         lock_fd = open(lock_file, "w", encoding="utf-8")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError as exc:
         if lock_fd is not None and _is_lock_contention_errno(exc):
             logger.debug("Tick skipped — another instance holds the lock")
@@ -7255,11 +7108,6 @@ def tick(
         if fcntl:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
             except (OSError, IOError):
                 pass
         lock_fd.close()

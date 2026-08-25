@@ -97,10 +97,6 @@ try:
     import fcntl
 except Exception:
     fcntl = None
-try:
-    import msvcrt
-except Exception:
-    msvcrt = None
 
 # =============================================================================
 # Constants
@@ -902,7 +898,7 @@ def _file_lock(
     """Cross-process advisory flock helper.
 
     Reentrant per-thread via ``holder.depth``. Falls back to a depth-only
-    guard when neither ``fcntl`` nor ``msvcrt`` is available (rare).
+    guard when ``fcntl`` is unavailable (rare).
     Callers supply their own ``threading.local`` so independent locks
     (e.g. profile auth.json vs shared Nous store) don't share reentrancy
     state — that would let one lock's reentrant acquisition silently skip
@@ -918,7 +914,7 @@ def _file_lock(
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if fcntl is None and msvcrt is None:
+    if fcntl is None:
         holder.depth = 1
         try:
             yield
@@ -926,20 +922,11 @@ def _file_lock(
             holder.depth = 0
         return
 
-    # On Windows, msvcrt.locking needs the file to have content and the
-    # file pointer at position 0. Ensure the lock file has at least 1 byte.
-    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
-
-    with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
         deadline = time.monotonic() + max(1.0, timeout_seconds)
         while True:
             try:
-                if fcntl:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                else:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except (BlockingIOError, OSError, PermissionError):
                 if time.monotonic() >= deadline:
@@ -951,17 +938,10 @@ def _file_lock(
             yield
         finally:
             holder.depth = 0
-            if fcntl:
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                except (OSError, IOError):
-                    pass
-            elif msvcrt:
-                try:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
 
 
 @contextmanager
@@ -5067,7 +5047,7 @@ def _poll_for_token(
 # File lives at ${SON_OF_ANTON_SHARED_AUTH_DIR}/nous_auth.json, defaulting to
 # ``<son-of-anton-root>/shared/nous_auth.json`` where ``<son-of-anton-root>`` is what
 # ``get_default_son_of_anton_root()`` returns — ``~/.son-of-anton`` on Linux/macOS,
-# ``%LOCALAPPDATA%\son-of-anton`` on native Windows, or the Docker/custom root.
+# or a custom ``SON_OF_ANTON_HOME`` root.
 # It is OUTSIDE any named profile's SON_OF_ANTON_HOME so named profiles (which
 # typically live under ``<son-of-anton-root>/profiles/<name>/``) all see the
 # same file.
@@ -5089,9 +5069,8 @@ def _nous_shared_auth_dir() -> Path:
     path without touching the real user's home. Defaults to
     ``<son-of-anton-root>/shared/``, where ``<son-of-anton-root>`` is what
     :func:`son_of_anton_constants.get_default_son_of_anton_root` returns — so
-    Linux/macOS classic installs land at ``~/.son-of-anton/shared/``, native
-    Windows installs at ``%LOCALAPPDATA%\\son-of-anton\\shared\\``, and
-    Docker / custom ``SON_OF_ANTON_HOME`` deployments at
+    Linux/macOS classic installs land at ``~/.son-of-anton/shared/``, and
+    custom ``SON_OF_ANTON_HOME`` deployments at
     ``<SON_OF_ANTON_HOME>/shared/``. Sits outside any named profile so all
     profiles under the same root share the store.
     """

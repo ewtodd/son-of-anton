@@ -1,10 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
-import ntpath
 import os
-import platform
-import re
 import shutil
 import signal
 import subprocess
@@ -16,39 +13,8 @@ from pathlib import Path
 
 from son_of_anton_constants import get_process_son_of_anton_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
-_IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
-
-
-def _msys_to_windows_path(cwd: str) -> str:
-    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
-    native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
-    ``subprocess.Popen(..., cwd=...)`` can find it.
-
-    Also accepts the Cygwin (``/cygdrive/c/...``) and WSL-mount
-    (``/mnt/c/...``) spellings of a drive root. Multi-segment POSIX paths
-    like ``/home/x`` or ``/tmp/foo`` are left untouched.
-
-    No-ops on non-Windows hosts or for paths that aren't in MSYS form.
-    Returns the input unchanged when no translation applies. This is
-    idempotent — calling it on an already-Windows path returns it as-is.
-    """
-    if not _IS_WINDOWS or not cwd:
-        return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root),
-    # plus /cygdrive/<letter>/... and /mnt/<letter>/... variants.
-    m = re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
-    if not m:
-        return cwd
-    # Reject /cygdrive or /mnt with no drive letter — the optional group above
-    # already requires the letter. Multi-char first segments (/home, /tmp)
-    # fail the single-letter capture and fall through as no-ops.
-    drive = m.group(1).upper()
-    tail = (m.group(2) or "").replace('/', '\\')
-    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
 def _resolve_local_initial_cwd(cwd: str) -> str:
@@ -64,14 +30,6 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
     in-shell ``cd`` use the same absolute directory.
     """
     expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
-    if _IS_WINDOWS:
-        expanded = _msys_to_windows_path(expanded)
-        # Use the Windows-aware check explicitly: when _IS_WINDOWS is
-        # patched in tests on a POSIX host, os.path.isabs would reject
-        # ``C:\Users\x`` and mangle it through the relative branch.
-        import ntpath
-        if ntpath.isabs(expanded):
-            return expanded
     if os.path.isabs(expanded):
         return expanded
 
@@ -89,53 +47,6 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
                 return current
 
     return candidate
-
-
-def _windows_to_msys_path(cwd: str) -> str:
-    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
-    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
-
-    No-ops on non-Windows hosts or for paths that aren't drive-qualified
-    native Windows paths. Returns the input unchanged when no translation
-    applies.
-    """
-    if not _IS_WINDOWS or not cwd:
-        return cwd
-    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
-    if not m:
-        return cwd
-    drive = m.group(1).lower()
-    tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
-    return f"/{drive}/{tail}" if tail else f"/{drive}/"
-
-
-def _bash_safe_path(path: str) -> str:
-    """Return *path* in a form safe to embed in a Git Bash script.
-
-    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
-    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
-    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
-    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
-    failure class. No-op off Windows and for empty input.
-
-    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
-    Python compatibility; those still need the ``/c/...`` rewrite —
-    MSYS argument conversion treats ``C:/...`` as a Windows path and
-    can corrupt the login-shell ``drivers\\etc`` lookup.
-    """
-    if not _IS_WINDOWS or not path:
-        return path
-    path = _windows_to_msys_path(path)
-    if "\\" in path:
-        path = path.replace("\\", "/")
-    return path
-
-
-def _quote_bash_path(path: str) -> str:
-    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
-    import shlex
-
-    return shlex.quote(_bash_safe_path(path))
 
 
 def _cwd_usable(path: str) -> bool:
@@ -160,11 +71,6 @@ def _resolve_safe_cwd(cwd: str) -> str:
     usable directory (effectively never on a healthy filesystem, but cheap
     belt-and-braces).
 
-    On Windows, also normalizes Git Bash / MSYS-style POSIX paths
-    (``/c/Users/x``) to native Windows form before the isdir check so a
-    perfectly valid ``pwd -P`` result from bash doesn't get rejected as
-    "missing" (see ``_msys_to_windows_path``).
-
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
     (issue #17558) — or inaccessible to this user, e.g. ``/root`` leaking
@@ -173,7 +79,6 @@ def _resolve_safe_cwd(cwd: str) -> str:
     raises ``FileNotFoundError``/``PermissionError`` before bash starts,
     wedging every subsequent terminal call until the gateway restarts.
     """
-    cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
     if cwd and _cwd_usable(cwd):
         return cwd
     if cwd and os.path.isdir(cwd):
@@ -517,13 +422,10 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # spawn path (process_registry.spawn_local builds env via this function).
     _inject_session_context_env(sanitized)
 
-    # Filter PYTHONPATH before removing VIRTUAL_ENV: legacy Windows launchers
-    # can run the gateway under a base interpreter while VIRTUAL_ENV identifies
-    # the separate Son of Anton runtime venv.  The filter validates that relationship
-    # against the repo layout before trusting it.
+    # Filter PYTHONPATH before removing VIRTUAL_ENV, then strip the runtime
+    # marker vars.  PYTHONPATH filtering must run first so the runtime marker
+    # check can still prove ownership against the repo layout.
     _strip_son_of_anton_owned_pythonpath_and_runtime_markers(sanitized)
-
-    _apply_windows_msys_bash_env_defaults(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
 
@@ -641,7 +543,8 @@ def son_of_anton_subprocess_env(*, inherit_credentials: bool = False) -> dict[st
         for key in _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST:
             env.pop(key, None)
 
-    # Windows UTF-8 safety for spawned processes (#31420).
+    # Force UTF-8 mode for spawned child Pythons so encoding mismatches can't
+    # silently corrupt tool output (#31420).
     env.setdefault("PYTHONUTF8", "1")
 
     _inject_context_son_of_anton_home(env)
@@ -649,8 +552,6 @@ def son_of_anton_subprocess_env(*, inherit_credentials: bool = False) -> dict[st
     apply_subprocess_home_env(env)
 
     _strip_son_of_anton_owned_pythonpath_and_runtime_markers(env)
-
-    _apply_windows_msys_bash_env_defaults(env)
 
     # Cross-session leak guard, same as the terminal spawn paths: this helper
     # copies os.environ, whose SON_OF_ANTON_SESSION_* mirror is a last-writer-wins
@@ -736,288 +637,13 @@ def build_subprocess_env(
 
 def _find_bash() -> str:
     """Find bash for command execution."""
-    if not _IS_WINDOWS:
-        return (
-            shutil.which("bash")
-            or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
-            or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
-            or os.environ.get("SHELL")
-            or "/bin/sh"
-        )
-
-    candidates: list[str] = []
-
-    custom = os.environ.get("SON_OF_ANTON_GIT_BASH_PATH")
-    if custom and os.path.isfile(custom):
-        candidates.append(custom)
-
-    # Prefer our own portable Git install — a broken or partially-uninstalled
-    # system Git (or a stale SON_OF_ANTON_GIT_BASH_PATH pointing at one) must not
-    # brick the terminal.  install.ps1 drops PortableGit here when needed.
-    #
-    # Layouts (both checked so upgrades between MinGit and PortableGit
-    # installs work transparently):
-    #   PortableGit: %LOCALAPPDATA%\son-of-anton\git\bin\bash.exe   (primary)
-    #   MinGit:      %LOCALAPPDATA%\son-of-anton\git\usr\bin\bash.exe (legacy/32-bit fallback)
-    _local_appdata = os.environ.get("LOCALAPPDATA", "")
-    _son_of_anton_portable_git = os.path.join(_local_appdata, "son-of-anton", "git") if _local_appdata else ""
-    if _son_of_anton_portable_git:
-        for candidate in (
-            os.path.join(_son_of_anton_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
-            os.path.join(_son_of_anton_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
-        ):
-            if os.path.isfile(candidate) and candidate not in candidates:
-                candidates.append(candidate)
-
-    # Check known Git for Windows install locations before PATH lookup.
-    # On machines with both WSL and Git for Windows, shutil.which("bash")
-    # may return WSL's bash (which doesn't understand Windows paths and
-    # will fail silently).  Explicit Git-for-Windows paths avoid that.
-    for candidate in (
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe") if _local_appdata else "",
-    ):
-        if candidate and os.path.isfile(candidate) and candidate not in candidates:
-            candidates.append(candidate)
-
-    found = shutil.which("bash")
-    if found and found not in candidates:
-        candidates.append(found)
-
-    # Prefer the first candidate that can actually start.  A stale
-    # SON_OF_ANTON_GIT_BASH_PATH pointing at a broken Git-for-Windows install
-    # (``Directory \\drivers\\etc does not exist``) must not win over a
-    # healthy portable Git under %LOCALAPPDATA%\\son-of-anton\\git.
-    for candidate in candidates:
-        if _bash_starts(candidate):
-            if candidate != custom and custom and os.path.isfile(custom):
-                logger.warning(
-                    "SON_OF_ANTON_GIT_BASH_PATH=%s fails to start; using %s instead",
-                    custom,
-                    candidate,
-                )
-            return candidate
-
-    if candidates:
-        probe_details = "\n".join(
-            detail
-            for candidate in candidates
-            if (detail := _bash_probe_details_cache.get(candidate))
-        )
-        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(
-            probe_details
-        ):
-            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
-
-        # Last resort for failures unrelated to the known MSYS/ASLR class:
-        # return the first path so the caller still sees the real bash error
-        # instead of the less useful "not found" message.
-        return candidates[0]
-
-    raise RuntimeError(
-        "Git Bash not found. Son of Anton Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set SON_OF_ANTON_GIT_BASH_PATH to your bash.exe location."
-    )
-
-
-_bash_starts_cache: dict[str, bool] = {}
-_bash_probe_details_cache: dict[str, str] = {}
-_mandatory_aslr_enabled_cache: "bool | None" = None
-
-_BASH_EXTERNAL_PROGRAM_PROBE = "/usr/bin/true; /usr/bin/cat --version >/dev/null"
-
-
-def _looks_like_msys_spawn_failure(details: str) -> bool:
-    """Match Git-for-Windows child-launch failures associated with ASLR."""
-    lowered = details.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "dofork:",
-            "child_copy:",
-            "0xc0000142",
-            "0xc0000005",
-        )
-    )
-
-
-def _mandatory_aslr_enabled() -> "bool | None":
-    """Return Windows' system-wide ForceRelocateImages state when available."""
-    global _mandatory_aslr_enabled_cache
-    if _mandatory_aslr_enabled_cache is not None:
-        return _mandatory_aslr_enabled_cache
-
-    try:
-        powershell = shutil.which("powershell.exe") or "powershell.exe"
-        result = subprocess.run(
-            [
-                powershell,
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
-            ],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=10,
-            creationflags=windows_hide_flags(),
-        )
-        if result.returncode != 0:
-            return None
-        value = (result.stdout or "").strip().upper()
-        if value == "ON":
-            _mandatory_aslr_enabled_cache = True
-            return True
-        if value in {"OFF", "NOTSET"}:
-            _mandatory_aslr_enabled_cache = False
-            return False
-    except Exception as exc:
-        logger.debug("Could not query Windows Mandatory ASLR state: %s", exc)
-    return None
-
-
-def _git_root_from_bash(bash: str) -> str:
-    """Resolve Git's root from either <root>/bin or <root>/usr/bin bash."""
-    bin_dir = ntpath.dirname(ntpath.normpath(bash))
-    if ntpath.basename(bin_dir).lower() != "bin":
-        return ntpath.dirname(bin_dir)
-    parent = ntpath.dirname(bin_dir)
-    if ntpath.basename(parent).lower() == "usr":
-        return ntpath.dirname(parent)
-    return parent
-
-
-def _git_bash_aslr_help(bash: str, details: str = "") -> str:
-    """Build the targeted per-program Mandatory-ASLR remediation."""
-    git_root = _git_root_from_bash(bash)
-    escaped_root = git_root.replace("'", "''")
-    detail_line = f"\nGit Bash probe output: {details[:500]}" if details else ""
     return (
-        f"Git Bash at {bash} cannot launch required MSYS child processes while "
-        "Windows Mandatory ASLR (ForceRelocateImages) is enabled, or its output "
-        f"matches that Git-for-Windows failure class.{detail_line}\n"
-        "Reinstalling Git will not change the Windows mitigation policy. Open "
-        "PowerShell as Administrator and run:\n"
-        f"$gitRoot = '{escaped_root}'\n"
-        'Get-Item "$gitRoot\\bin\\bash.exe", "$gitRoot\\usr\\bin\\*.exe" '
-        "-ErrorAction SilentlyContinue | ForEach-Object { "
-        "Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }\n"
-        "Then restart Son of Anton. If the override is blocked or later re-applied, "
-        "ask your Windows administrator to allow this per-program exception."
+        shutil.which("bash")
+        or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
+        or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        or os.environ.get("SHELL")
+        or "/bin/sh"
     )
-
-
-def _bash_starts(bash: str) -> bool:
-    """True if *bash* can launch external MSYS programs.
-
-    Uses ``--noprofile --norc`` so a broken login post-install
-    (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
-    usable bash. The external ``true`` and ``cat`` calls are intentional:
-    a builtin-only ``exit 0`` probe misses Git-for-Windows fork/spawn failures
-    under system-wide Mandatory ASLR. Cached per path for the process lifetime.
-    """
-    cached = _bash_starts_cache.get(bash)
-    if cached is not None:
-        return cached
-
-    try:
-        result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=15,
-            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
-        )
-        ok = result.returncode == 0
-        if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}"
-            _bash_probe_details_cache[bash] = combined.strip()[:2000]
-            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
-    except Exception as exc:
-        _bash_probe_details_cache[bash] = str(exc)[:2000]
-        logger.debug("bash probe error for %s: %s", bash, exc)
-        ok = False
-
-    _bash_starts_cache[bash] = ok
-    return ok
-
-
-_git_bash_bin_dirs_cache: "list[str] | None" = None
-
-
-def _git_bash_bin_dirs() -> list[str]:
-    """Git Bash's coreutils/binary dirs, in ``/etc/profile`` precedence order.
-
-    A non-login ``bash -c`` (the fallback used when ``bash -l`` is broken —
-    the classic Windows ``Directory \\drivers\\etc does not exist`` failure)
-    never sources ``/etc/profile``, so it never gets ``…\\usr\\bin`` on PATH.
-    That directory holds every coreutil the file/terminal tools shell out to
-    (``cat``, ``mktemp``, ``mv``, ``wc``, ``head``, ``stat``, ``chmod``,
-    ``mkdir``, ``find`` …).  Without it, ``write_file`` fails with an empty
-    error (the failure text went to a missing binary's stderr) and terminal
-    commands exit 127.  We derive these dirs from the resolved ``bash.exe`` so
-    the fallback shell can find coreutils regardless of the login shell.
-
-    Returns ``[]`` off Windows or when bash can't be located.  Dirs are
-    returned in the order Git Bash's own ``/etc/profile`` prepends them
-    (mingw first, then usr/bin, then bin) and only if they exist on disk.
-    """
-    global _git_bash_bin_dirs_cache
-    if _git_bash_bin_dirs_cache is not None:
-        return _git_bash_bin_dirs_cache
-
-    if not _IS_WINDOWS:
-        _git_bash_bin_dirs_cache = []
-        return _git_bash_bin_dirs_cache
-
-    dirs: list[str] = []
-    try:
-        bash = _find_bash()
-    except Exception:
-        _git_bash_bin_dirs_cache = []
-        return _git_bash_bin_dirs_cache
-
-    bin_dir = os.path.dirname(bash)          # <root>\bin  or  <root>\usr\bin
-    parent = os.path.dirname(bin_dir)
-    # MinGit ships bash under usr\bin; PortableGit/system Git under bin.
-    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
-
-    # Order mirrors Git-for-Windows /etc/profile so coreutils win over the
-    # same-named Windows System32 tools (find.exe, sort.exe) inside the shell.
-    for candidate in (
-        os.path.join(root, "mingw64", "bin"),
-        os.path.join(root, "mingw32", "bin"),
-        os.path.join(root, "usr", "local", "bin"),
-        os.path.join(root, "usr", "bin"),
-        os.path.join(root, "bin"),
-    ):
-        if os.path.isdir(candidate) and candidate not in dirs:
-            dirs.append(candidate)
-
-    _git_bash_bin_dirs_cache = dirs
-    return dirs
-
-
-def _prepend_git_bash_dirs(existing_path: str) -> str:
-    """Prepend Git Bash's binary dirs to ``existing_path`` if missing.
-
-    No-op off Windows or when the dirs can't be resolved.  First-occurrence
-    wins, so a PATH that already lists a dir keeps its position.  This is what
-    lets the non-login ``bash -c`` fallback find coreutils; in the healthy
-    case the session snapshot re-exports the full login PATH inside the shell,
-    so this only matters when that snapshot is absent.
-    """
-    git_dirs = _git_bash_bin_dirs()
-    if not git_dirs:
-        return existing_path
-    sep = os.pathsep
-    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
-    missing = [d for d in git_dirs if d not in entries]
-    if not missing:
-        return existing_path
-    return sep.join([*missing, *entries])
 
 
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
@@ -1032,8 +658,8 @@ def _find_shell() -> str:
 
     Unlike ``_find_bash`` (which always returns a bash binary for callers
     that explicitly need bash), this function prefers the user's configured
-    ``$SHELL`` on POSIX so that ``spawn_local`` uses the shell the user
-    actually logs in with.
+    ``$SHELL`` so that ``spawn_local`` uses the shell the user actually logs
+    in with.
 
     On macOS Catalina+ the default login shell is zsh, but
     ``shutil.which("bash")`` still finds the system ``/bin/bash`` (GNU bash
@@ -1053,19 +679,15 @@ def _find_shell() -> str:
     nushell, elvish, xonsh, etc.  Returning such a ``$SHELL`` would trade the
     bash-3.2 swallow for a parse error on every background command, so for any
     non-allowlisted shell we fall back to ``_find_bash`` (the prior behaviour).
-
-    On Windows, ``$SHELL`` is typically bash (Git Bash), so behaviour is
-    unchanged — we fall through to ``_find_bash``.
     """
-    if not _IS_WINDOWS:
-        user_shell = os.environ.get("SHELL")
-        if (
-            user_shell
-            and os.path.isfile(user_shell)
-            and os.access(user_shell, os.X_OK)
-            and Path(user_shell).name in _SPAWN_COMPATIBLE_SHELLS
-        ):
-            return user_shell
+    user_shell = os.environ.get("SHELL")
+    if (
+        user_shell
+        and os.path.isfile(user_shell)
+        and os.access(user_shell, os.X_OK)
+        and Path(user_shell).name in _SPAWN_COMPATIBLE_SHELLS
+    ):
+        return user_shell
     return _find_bash()
 
 
@@ -1127,7 +749,7 @@ def _resolve_son_of_anton_bin_dir() -> str | None:
     if candidate is None:
         exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
         if exe_dir:
-            shim = "son-of-anton.exe" if _IS_WINDOWS else "son-of-anton"
+            shim = "son-of-anton"
             if os.path.isfile(os.path.join(exe_dir, shim)):
                 candidate = exe_dir
 
@@ -1207,12 +829,8 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
 
     For a well-formed PATH (no empties, no duplicates) the leading segment is
     byte-identical to the input and ordering is preserved; only the missing
-    sane entries are appended. On Windows this is a no-op passthrough (the
-    separator is ``;`` and the native PATH must not be touched).
+    sane entries are appended.
     """
-    if _IS_WINDOWS:
-        return existing_path
-
     sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
     sane_entries.extend(
         entry for entry in _managed_runtime_path_entries() if entry not in sane_entries
@@ -1237,47 +855,6 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
             ordered_entries.append(entry)
 
     return ":".join(ordered_entries)
-
-
-def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
-    """Disable MSYS argument path conversion for Git Bash subprocesses.
-
-    Git Bash rewrites arguments that look like Unix paths (``/FO``, ``/TN``,
-    ``/Create``) into ``C:/.../git/FO``-style paths, which breaks native
-    Windows commands such as ``tasklist``, ``schtasks``, and ``wmic``.  Son of Anton
-    runs terminal commands through bash on Windows, so set the standard MSYS
-    opt-out by default.  Users who need conversion can override in their env.
-    Refs #56700.
-
-    ``MSYS_NO_PATHCONV`` is honored by Git for Windows bash only.  MSYS2-proper
-    and Cygwin bash (which ``_find_bash`` can still return via the final
-    ``shutil.which`` fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL``
-    instead, so set both.  ``*`` disables all argv conversion — the semantic
-    equivalent of ``MSYS_NO_PATHCONV=1``.  Also fixes ``cmd /c`` mangling
-    (#56147).
-    """
-    if not _IS_WINDOWS:
-        return
-    env.setdefault("MSYS_NO_PATHCONV", "1")
-    env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
-
-
-def _path_env_key(run_env: dict) -> str | None:
-    """Return the PATH env key to update without altering Windows casing.
-
-    Note: this is deliberately a *second* Windows guard, distinct from the
-    early-return in ``_append_missing_sane_path_entries``. Its job is to pick
-    the correctly-cased key (``Path`` vs ``PATH``) so completion writes back to
-    the key the caller already used; the helper's guard makes that helper safe
-    to call standalone (it is, e.g. in the Windows unit tests). Both are
-    intentional.
-    """
-    if not _IS_WINDOWS:
-        return "PATH"
-    for key in run_env:
-        if key.upper() == "PATH":
-            return key
-    return None
 
 
 def _make_run_env(env: dict, cwd: str | None = None) -> dict:
@@ -1308,20 +885,12 @@ def _make_run_env(env: dict, cwd: str | None = None) -> dict:
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:
                 run_env[k] = value
-    path_key = _path_env_key(run_env)
-    if path_key is not None:
-        new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
-        # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
-        # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
-        # broken) never sources /etc/profile, so without this cat/mktemp/mv and
-        # friends are missing and every write_file/terminal call fails (empty
-        # error / exit 127).  No-op off Windows and when a login snapshot is
-        # healthy (the snapshot re-exports the full PATH inside the shell).
-        new_path = _prepend_git_bash_dirs(new_path)
-        # Ensure the son-of-anton install dir is reachable so plugins can shell out
-        # to bare ``son-of-anton`` via the terminal tool even when the gateway was
-        # launched without it on PATH (systemd, service managers, cron, etc.).
-        run_env[path_key] = _prepend_son_of_anton_bin_dir(new_path)
+    path_key = "PATH"
+    new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+    # Ensure the son-of-anton install dir is reachable so plugins can shell out
+    # to bare ``son-of-anton`` via the terminal tool even when the gateway was
+    # launched without it on PATH (systemd, service managers, cron, etc.).
+    run_env[path_key] = _prepend_son_of_anton_bin_dir(new_path)
 
     _inject_context_son_of_anton_home(run_env)
 
@@ -1334,8 +903,6 @@ def _make_run_env(env: dict, cwd: str | None = None) -> dict:
     _inject_session_context_env(run_env)
 
     _strip_son_of_anton_owned_pythonpath_and_runtime_markers(run_env)
-
-    _apply_windows_msys_bash_env_defaults(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
 
@@ -1362,14 +929,14 @@ def _build_son_of_anton_repo_root_aliases(
 ) -> tuple[Path, ...]:
     """Return exact repo-root spellings emitted by Son of Anton launchers.
 
-    ``gateway_windows._preserve_son_of_anton_home_path`` maps a physical path under
-    the resolved SON_OF_ANTON_HOME back onto the configured SON_OF_ANTON_HOME spelling.
-    Mirror that producer contract here so a junction-backed install is matched
-    without treating arbitrary descendants of SON_OF_ANTON_HOME as Son of Anton-owned.
-    Additionally, when the repo itself is a junction under the configured root
-    (repo-level junction, possibly cross-drive), the single deterministic
-    candidate <root>/<repo dirname> is accepted only when strict resolve
-    proves it is the exact physical repo root.
+    Launchers can map a physical path under the resolved SON_OF_ANTON_HOME back
+    onto the configured SON_OF_ANTON_HOME spelling. Mirror that producer
+    contract here so a symlink/junction-backed install is matched without
+    treating arbitrary descendants of SON_OF_ANTON_HOME as Son of Anton-owned.
+    Additionally, when the repo itself is a junction/symlink under the
+    configured root, the single deterministic candidate <root>/<repo dirname>
+    is accepted only when strict resolve proves it is the exact physical repo
+    root.
     """
     aliases: list[Path] = []
 
@@ -1404,13 +971,13 @@ def _build_son_of_anton_repo_root_aliases(
             pass
 
     # Repo-level junction recovery: the repository itself may be a
-    # junction/symlink under the configured root (e.g. D:\son-of-anton\son-of-anton
-    # -> C:\...\son-of-anton) while the import spelling (editable install)
-    # resolves to the physical location.  The home-relative mapping above
-    # cannot express a cross-drive link (commonpath raises on different
-    # drives), so prove the EXACT filesystem identity of the single
-    # deterministic candidate -- <lexical root>/<repo dirname> -- with a
-    # strict resolve before accepting it as Son of Anton-owned.  Fail-closed: a
+    # junction/symlink under the configured root (e.g. a symlinked checkout)
+    # while the import spelling (editable install) resolves to the physical
+    # location.  The home-relative mapping above cannot express a cross-root
+    # link (commonpath raises on disjoint roots), so prove the EXACT
+    # filesystem identity of the single deterministic candidate -- <lexical
+    # root>/<repo dirname> -- with a strict resolve before accepting it as
+    # Son of Anton-owned.  Fail-closed: a
     # missing path (strict resolve raises), a real directory that is not the
     # known physical root, or any unrelated spelling never becomes an alias.
     for home in home_candidates:
@@ -1435,11 +1002,9 @@ def _build_son_of_anton_repo_root_aliases(
 _son_of_anton_repo_root: Path = Path(__file__).resolve().parents[2]
 
 #: Alternate spellings of the repo root that Son of Anton launchers may emit.
-#: ``Path(__file__).resolve()`` canonicalizes symlinks/junctions, but the
-#: Windows gateway launcher deliberately renders Son of Anton-owned paths under
-#: the configured SON_OF_ANTON_HOME spelling (which may be a junction to another
-#: drive — see ``son_of_anton_cli/gateway_windows.py::_preserve_son_of_anton_home_path``).
-#: ``Path(__file__)`` (unresolved) keeps that spelling, so a PYTHONPATH
+#: ``Path(__file__).resolve()`` canonicalizes symlinks/junctions, but launchers
+#: can render Son of Anton-owned paths under the configured SON_OF_ANTON_HOME
+#: spelling. ``Path(__file__)`` (unresolved) keeps that spelling, so a PYTHONPATH
 #: entry written by the launcher still matches even though it differs
 #: lexically from the resolved root.
 _son_of_anton_repo_root_aliases: tuple[Path, ...] = _build_son_of_anton_repo_root_aliases(
@@ -1467,9 +1032,8 @@ def _validated_runtime_venv(env: dict) -> Path | None:
     """Return a producer-owned runtime venv identified by VIRTUAL_ENV.
 
     A user may carry an unrelated VIRTUAL_ENV, so the variable alone is not
-    provenance.  The legacy Windows base-Python gateway producer uses the exact
-    ``<Son of Anton repo>/venv`` layout and a real venv marker; require both before
-    accepting its separate runtime venv.
+    provenance.  Require the exact ``<Son of Anton repo>/venv`` layout and a real
+    venv marker before accepting its separate runtime venv.
     """
     value = env.get("VIRTUAL_ENV")
     if not value:
@@ -1493,9 +1057,7 @@ def _get_son_of_anton_site_packages(env: dict) -> list[Path]:
 
     Uses ``site.getsitepackages()`` when available for robustness (it respects
     ``.pth`` rewrites and platform conventions), with a manual fallback that
-    constructs the canonical path from ``sys.prefix`` for POSIX and Windows.
-    A validated Windows base-interpreter launch contributes its separate
-    ``VIRTUAL_ENV/Lib/site-packages`` directory as an additional exact entry.
+    constructs the canonical path from ``sys.prefix`` for POSIX layouts.
     """
     global _son_of_anton_site_packages
     if _son_of_anton_site_packages is not None:
@@ -1510,16 +1072,11 @@ def _get_son_of_anton_site_packages(env: dict) -> list[Path]:
             except Exception:
                 pass
 
-            # Fallback: construct manually.  On POSIX:
+            # Fallback: construct manually.
             #   sys.prefix / lib / python{X.Y} / site-packages
-            # On Windows:
-            #   sys.prefix / Lib / site-packages
             if not result:
-                if _IS_WINDOWS:
-                    result.append(Path(sys.prefix) / "Lib" / "site-packages")
-                else:
-                    pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
-                    result.append(Path(sys.prefix) / "lib" / pyver / "site-packages")
+                pyver = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+                result.append(Path(sys.prefix) / "lib" / pyver / "site-packages")
 
         _son_of_anton_site_packages = list(result)
 
@@ -1536,8 +1093,8 @@ def _strip_son_of_anton_owned_pythonpath_and_runtime_markers(env: dict) -> None:
     """Strip Son of Anton-owned PYTHONPATH entries, then the runtime marker vars.
 
     Ordering is load-bearing: PYTHONPATH filtering must run BEFORE the
-    markers are removed so a validated Windows base-interpreter launch
-    (VIRTUAL_ENV -> <repo>/venv) can still prove ownership.
+    markers are removed so a validated runtime venv (VIRTUAL_ENV ->
+    <repo>/venv) can still prove ownership.
     """
     _strip_son_of_anton_owned_pythonpath(env)
     for _marker in _ACTIVE_VENV_MARKER_VARS:
@@ -1557,8 +1114,7 @@ def _strip_son_of_anton_owned_pythonpath(env: dict) -> None:
     1. The exact repo root (never direct children -- no launcher injects
        one, and user paths under the repo must survive).
     2. The exact runtime site-packages dirs (running interpreter's venv or
-       a validated Windows base-Python runtime venv; descendants are user
-       paths).
+       a validated runtime venv; descendants are user paths).
 
     Everything else -- user libs, Nix plugin paths, a pythonX.Y/site-packages
     entry meant for a DIFFERENT child version -- is preserved byte-for-byte:
@@ -1661,7 +1217,7 @@ def _resolve_shell_init_files() -> list[str]:
     candidates: list[str] = []
     if explicit:
         candidates.extend(explicit)
-    elif auto_bashrc and not _IS_WINDOWS:
+    elif auto_bashrc:
         # Build a login-shell-ish source list so tools like n / nvm / asdf /
         # pyenv that self-install into the user's shell rc land on PATH in
         # the captured snapshot.
@@ -1729,7 +1285,6 @@ class LocalEnvironment(BaseEnvironment):
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
 
-        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
         Prefer POSIX-style env vars when available, keep using /tmp on regular
         Unix systems, and only fall back to tempfile.gettempdir() when it also
         resolves to a POSIX path.
@@ -1737,29 +1292,7 @@ class LocalEnvironment(BaseEnvironment):
         Check the environment configured for this backend first so callers can
         override the temp root explicitly (for example via terminal.env or a
         custom TMPDIR), then fall back to the host process environment.
-
-        **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
-        can't open the path, and the Windows default temp (``%TEMP%``) often
-        contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
-        break unquoted bash interpolations.  Use a dedicated cache dir under
-        ``SON_OF_ANTON_HOME`` instead — single-word path, guaranteed to exist, same
-        string resolves in both Git Bash and native Python.
         """
-        if _IS_WINDOWS:
-            # Derive a Windows-safe temp dir under SON_OF_ANTON_HOME.  Using
-            # forward slashes makes the same string work unchanged in bash
-            # command interpolations AND in Python ``open()`` — Windows
-            # accepts forward slashes in filesystem paths, and we control
-            # the path so we can guarantee no spaces.
-            try:
-                from son_of_anton_constants import get_son_of_anton_home
-                cache_dir = get_son_of_anton_home() / "cache" / "terminal"
-            except Exception:
-                cache_dir = Path(tempfile.gettempdir()) / "son_of_anton_terminal"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            # Force forward slashes so the same string serves both contexts.
-            return str(cache_dir).replace("\\", "/")
-
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
@@ -1773,15 +1306,6 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
-
-    @staticmethod
-    def _quote_cwd_for_cd(cwd: str) -> str:
-        """Use native paths for Python, but Git Bash-friendly paths for cd."""
-        return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
-
-    def _quote_shell_path(self, path: str) -> str:
-        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
-        return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -1805,29 +1329,17 @@ class LocalEnvironment(BaseEnvironment):
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
         # the cwd before bash starts, wedging every subsequent call until the
         # gateway restarts.
-        #
-        # On Windows, ``_resolve_safe_cwd`` also normalises Git Bash-style
-        # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
-        # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
-        # and spammed as a warning on every command.
         safe_cwd = _resolve_safe_cwd(self.cwd)
         if safe_cwd != self.cwd:
-            # MSYS → Windows translation alone shouldn't surface as a warning
-            # (it's a benign normalization, not a recovery). Only warn when
-            # the directory really doesn't exist on disk.
-            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
-            if safe_cwd != normalized:
-                logger.warning(
-                    "LocalEnvironment cwd %r is missing on disk; "
-                    "falling back to %r so terminal commands keep working.",
-                    self.cwd,
-                    safe_cwd,
-                )
+            logger.warning(
+                "LocalEnvironment cwd %r is missing on disk; "
+                "falling back to %r so terminal commands keep working.",
+                self.cwd,
+                safe_cwd,
+            )
             self.cwd = safe_cwd
 
         _popen_cwd = self.cwd
-
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
             args,
@@ -1840,13 +1352,11 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True,
             cwd=_popen_cwd,
-            **_popen_kwargs,
         )
-        if not _IS_WINDOWS:
-            try:
-                proc._son_of_anton_pgid = os.getpgid(proc.pid)
-            except ProcessLookupError:
-                pass
+        try:
+            proc._son_of_anton_pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            pass
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -1858,8 +1368,7 @@ class LocalEnvironment(BaseEnvironment):
 
         def _group_alive(pgid: int) -> bool:
             try:
-                # POSIX-only: _IS_WINDOWS is handled before this helper is used.
-                os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
+                os.killpg(pgid, 0)
                 return True
             except ProcessLookupError:
                 return False
@@ -1886,46 +1395,33 @@ class LocalEnvironment(BaseEnvironment):
             return not _group_alive(pgid)
 
         try:
-            if _IS_WINDOWS:
-                try:
-                    from gateway.status import terminate_pid
+            try:
+                pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pgid = getattr(proc, "_son_of_anton_pgid", None)
+                if pgid is None:
+                    raise
 
-                    terminate_pid(proc.pid, force=True)
-                except Exception:
-                    proc.kill()
-                try:
-                    proc.wait(timeout=2.0)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
-            else:
-                try:
-                    pgid = os.getpgid(proc.pid)
-                except ProcessLookupError:
-                    pgid = getattr(proc, "_son_of_anton_pgid", None)
-                    if pgid is None:
-                        raise
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
 
-                try:
-                    os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
-                except ProcessLookupError:
-                    return
+            # Wait on the process group, not just the shell wrapper. Under
+            # load the wrapper can exit before grandchildren do; returning
+            # at that point leaves orphaned process-group members behind.
+            if _wait_for_group_exit(pgid, 1.0):
+                return
 
-                # Wait on the process group, not just the shell wrapper. Under
-                # load the wrapper can exit before grandchildren do; returning
-                # at that point leaves orphaned process-group members behind.
-                if _wait_for_group_exit(pgid, 1.0):
-                    return
-
-                try:
-                    # POSIX-only: _IS_WINDOWS is handled by the outer branch.
-                    os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
-                except ProcessLookupError:
-                    return
-                _wait_for_group_exit(pgid, 2.0)
-                try:
-                    proc.wait(timeout=0.2)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            _wait_for_group_exit(pgid, 2.0)
+            try:
+                proc.wait(timeout=0.2)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()
@@ -1938,31 +1434,24 @@ class LocalEnvironment(BaseEnvironment):
         The base command wrapper already appends ``pwd -P`` to stdout inside a
         session-specific marker, so the local backend can share the same parser
         as remote backends instead of re-reading the temp file it just wrote.
-        ``_extract_cwd_from_output`` keeps the local Windows normalization and
-        stale-path rollback semantics intact.
         """
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):
-        """Same semantics as the base class, but on Windows the value
-        emitted by ``pwd -P`` inside Git Bash is in MSYS form
-        (``/c/Users/x``). Normalize to native Windows form and validate
-        the directory exists before assigning to ``self.cwd`` — otherwise
-        ``_run_bash``'s safe-cwd recovery would warn on every subsequent
+        """Same semantics as the base class, validating the parsed directory
+        exists before assigning to ``self.cwd`` — a stale path would otherwise
+        make ``_run_bash``'s safe-cwd recovery warn on every subsequent
         command.
 
         Always defers to the base class for stripping the marker text from
         ``result["output"]`` so output formatting is identical.
         """
         # Snapshot pre-existing cwd, defer to base for parsing + marker
-        # stripping, then validate / normalize whatever it assigned.
+        # stripping, then validate whatever it assigned.
         prev_cwd = self.cwd
         super()._extract_cwd_from_output(result)
         if self.cwd != prev_cwd:
-            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
-            if normalized and os.path.isdir(normalized):
-                self.cwd = normalized
-            else:
+            if not self.cwd or not os.path.isdir(self.cwd):
                 # Stale / non-existent path — keep previous cwd; _run_bash
                 # will resolve a safe fallback on the next call if needed.
                 # The rollback restores a value this command did not observe,

@@ -75,41 +75,11 @@ def _project_root() -> Path:
 
 
 def _pid_is_running(pid: int) -> bool:
-    """Best-effort stdlib-only process liveness probe.
-
-    ``os.kill(pid, 0)`` is not a no-op on Windows, so use the Win32 process
-    handle API there.  An access-denied result is conservatively live: racing
-    an elevated updater is worse than postponing recovery for one launch.
-    """
+    """Best-effort stdlib-only process liveness probe."""
     if pid <= 0:
         return False
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            synchronize = 0x00100000
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.OpenProcess.argtypes = [
-                ctypes.c_ulong,
-                ctypes.c_int,
-                ctypes.c_ulong,
-            ]
-            kernel32.OpenProcess.restype = ctypes.c_void_p
-            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-            kernel32.WaitForSingleObject.restype = ctypes.c_ulong
-            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-            kernel32.CloseHandle.restype = ctypes.c_int
-            handle = kernel32.OpenProcess(synchronize, False, pid)
-            if not handle:
-                return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
-            try:
-                return kernel32.WaitForSingleObject(handle, 0) == 258
-            finally:
-                kernel32.CloseHandle(handle)
-        except Exception:
-            return True
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — Windows returns above
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -220,9 +190,9 @@ def _find_uv_binary() -> str | None:
     uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so
     the stdlib ``pip`` fallback below refuses to touch them.  In that state
     the only sanctioned installer is uv itself, which Son of Anton already vendors
-    (``~/.son-of-anton/bin/uv.exe``) or the user has on PATH.  Stdlib-only.
+    (``~/.son-of-anton/bin/uv``) or the user has on PATH.  Stdlib-only.
     """
-    exe = "uv.exe" if sys.platform == "win32" else "uv"
+    exe = "uv"
     candidates = [
         Path.home() / ".son-of-anton" / "bin" / exe,
         Path.home() / ".local" / "bin" / exe,
@@ -266,9 +236,9 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
     Two installer paths, in priority order:
 
     1. ``uv pip install`` with ``VIRTUAL_ENV`` pointed at the project venv —
-       required when the base interpreter is uv-managed (Windows git checkouts
-       install exactly this way: uv's Python declares PEP 668
-       ``EXTERNALLY-MANAGED`` and plain ``python -m pip`` refuses to run).
+       required when the base interpreter is uv-managed (uv's Python declares
+       PEP 668 ``EXTERNALLY-MANAGED`` and plain ``python -m pip`` refuses to
+       run).
     2. ``sys.executable -m pip`` as before, for self-contained venvs whose
        interpreter carries no PEP 668 marker.
     """
@@ -376,7 +346,7 @@ def recover_if_needed(
         lazy_marker = root / ".lazy-refresh-incomplete"
         if not core_marker.exists() and not lazy_marker.exists():
             return
-        # Managed/Docker/PyPI installs have no source tree here — the marker
+        # Managed installs have no source tree here — the marker
         # is not ours to act on; main.py's recovery clears it.
         if not (root / "pyproject.toml").is_file():
             return
@@ -385,8 +355,7 @@ def recover_if_needed(
         # any native extension can be imported by this process.  The lazy
         # import-probe path below only proves main.py is importable; the core
         # install here guarantees the WHOLE dependency set is replaced while
-        # nothing pins venv .pyd files yet (#83569 self-lock: deferring the
-        # install to main()'s post-import recovery re-locks it on Windows).
+        # nothing pins venv files yet.
         # Bounded retries: a persistently failing install must not hammer
         # every launch, so attempts past the ceiling are left for main.py's
         # post-import recovery path (which can safely probe-import after this
@@ -503,12 +472,10 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
     """Run the pending core install BEFORE main.py can import native modules.
 
     ``recover_if_needed`` invokes this when ``.update-incomplete`` exists —
-    a prior ``son-of-anton update`` (or the self-lock preflight, #83569) left the
-    dependency sync deliberately unfinished.  Completing it here matters on
-    Windows: the deferral exists precisely because the process that wrote the
-    marker had a native venv extension mapped; this process, running before
-    ``son_of_anton_cli.main``'s third-party imports, maps nothing yet, so the
-    installer can replace ``.pyd`` files without hitting the lock.
+    a prior ``son-of-anton update`` left the dependency sync deliberately
+    unfinished.  Completing it here matters because this process, running
+    before ``son_of_anton_cli.main``'s third-party imports, maps nothing yet, so
+    the installer can replace venv files without hitting a lock.
 
     Marker lifecycle: cleared on success; kept (attempts counter bumped) on
     failure for the next launch or main.py's post-import recovery.  An

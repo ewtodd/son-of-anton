@@ -205,13 +205,9 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
         except Exception:
             return False  # any doubt → keep the lease until TTL expiry
     # Scaffold-phase fallback only (psutil missing), and POSIX-only: stdlib
-    # os.kill(pid, 0) is NOT a no-op probe on Windows (bpo-14484 — sig=0 maps
-    # to CTRL_C_EVENT and can kill the target's console group). Without psutil
-    # a Windows host stays TTL-only; the lease TTL remains the recovery path.
-    if os.name == "nt":
-        return False
+    # os.kill(pid, 0) is a liveness probe on POSIX.
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
+        os.kill(pid, 0)
     except ProcessLookupError:
         return True
     except (PermissionError, OSError, OverflowError):
@@ -448,15 +444,7 @@ def _real_platform_state_root() -> Optional[Path]:
     variable / passwd entry, which the hermetic conftest never rewrites.
     """
     try:
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA", "").strip()
-            root = (
-                Path(base) / "son-of-anton"
-                if base
-                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "son-of-anton"
-            )
-        else:
-            root = Path(os.path.expanduser("~")) / ".son-of-anton"
+        root = Path(os.path.expanduser("~")) / ".son-of-anton"
         return root.resolve()
     except Exception:
         return None
@@ -487,7 +475,7 @@ def _running_under_pytest() -> bool:
 #: against the *basename* of each argv token so ``/tmp/pytest-of-dev/...``
 #: paths — which do show up in real argv — cannot false-positive.
 _PYTEST_LAUNCHER_NAMES = frozenset(
-    {"pytest", "py.test", "pytest.exe", "py.test.exe"}
+    {"pytest", "py.test"}
 )
 
 #: Memoised ancestry answer.  The process tree above us does not change in a
@@ -510,10 +498,7 @@ def _process_looks_like_pytest(proc: Any) -> bool:
     for arg in cmdline:
         try:
             token = str(arg).strip('"').strip("'")
-            # Split on both separators on every host: os.path.basename is
-            # POSIX-only under Linux and would leave a Windows-style path
-            # intact, making the matcher's answer depend on the platform.
-            name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            name = os.path.basename(token).lower()
         except Exception:
             continue
         if name in _PYTEST_LAUNCHER_NAMES:
@@ -1361,8 +1346,6 @@ def _wal_reset_repair_hint() -> str:
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
             return f"Son of Anton-managed installs can repair the embedded runtime with `{cmd}`"
-        if method == "docker":
-            return f"update the container image with `{cmd}`"
         # nix/nixos
         return cmd
     except Exception:
@@ -1728,7 +1711,6 @@ def _claim_repair_attempt(db_path: Path) -> bool:
 # just did so on top of the winner's.
 _REPAIR_LOCK_TIMEOUT_SECONDS = 120.0
 _REPAIR_LOCK_POLL_SECONDS = 0.1
-_IS_WINDOWS = sys.platform == "win32"
 
 
 @contextlib.contextmanager
@@ -1768,15 +1750,9 @@ def _cross_process_repair_lock(db_path: Path):
         deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
         while True:
             try:
-                if _IS_WINDOWS:
-                    import msvcrt
+                import fcntl
 
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
                 break
             except (BlockingIOError, OSError):
@@ -1794,15 +1770,9 @@ def _cross_process_repair_lock(db_path: Path):
     finally:
         try:
             if acquired:
-                if _IS_WINDOWS:
-                    import msvcrt
+                import fcntl
 
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:  # pragma: no cover - best effort release
             pass
         finally:
@@ -2724,37 +2694,22 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
     under the lock, finding the file already gone (or a fresh DB in its place)
     instead of clobbering the quarantine.
     """
-    import platform
-
     lock_path = path.with_name(path.name + ".quarantine.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
     acquired = False
     try:
         deadline = time.monotonic() + 5.0
-        if platform.system() == "Windows":
-            import msvcrt
-            while True:
-                try:
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    acquired = True
+        import fcntl
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
                     break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.020)
-        else:
-            import fcntl
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except (BlockingIOError, OSError):
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.020)
+                time.sleep(0.020)
         if not acquired:
             # Fail closed: do NOT proceed without the lock. A slow or paused
             # startup that still owns the lock can overlap this fallback and
@@ -2817,13 +2772,8 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
     finally:
         try:
             if acquired:
-                if platform.system() == "Windows":
-                    import msvcrt
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except (OSError, AttributeError):
             pass
         finally:

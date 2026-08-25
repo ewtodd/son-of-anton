@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from son_of_anton_constants import get_son_of_anton_home
-from son_of_anton_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
@@ -421,7 +420,6 @@ class GitHubAuth:
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
                 stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

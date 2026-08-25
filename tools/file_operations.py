@@ -1131,46 +1131,15 @@ class ShellFileOperations(FileOperations):
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands.
 
-        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
-        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
-        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
-        backslashes and MSYS otherwise mangles drive paths into the
-        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
-        the env-layer translator so shell file ops and the terminal ``cd``
-        agree on the path form. No-op off Windows and for plain POSIX paths.
+        Uses single quotes and escapes any single quotes in the string.
         """
-        from tools.environments.local import _bash_safe_path
-
-        arg = _bash_safe_path(arg)
-        # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _escape_native_tool_arg(self, arg: str) -> str:
-        """Escape a path argument destined for a NATIVE Windows binary.
+        """Escape a path argument destined for a native tool binary.
 
-        ``_escape_shell_arg`` rewrites Windows paths to the Git Bash MSYS
-        form (``/c/Users/x``) so bash builtins resolve them. But native
-        Windows binaries invoked from that bash (ripgrep installed via
-        winget/cargo/choco, native git, etc.) do not understand ``/c/...``
-        paths — and Son of Anton disables MSYS argument conversion for its bash
-        subprocesses (``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*``,
-        see ``_apply_windows_msys_bash_env_defaults``), so nothing ever
-        translates the MSYS form back. The native tool then fails with
-        ``The system cannot find the path specified. (os error 3)``.
-
-        The forward-slash native form (``C:/Users/x``) is the one spelling
-        every layer accepts: bash passes it through untouched (it is not an
-        absolute POSIX path, so no conversion applies even without the
-        opt-outs), and Windows APIs treat ``/`` and ``\\`` as equivalent
-        separators. MSYS builds of the same tools accept it too, so this is
-        safe regardless of which flavor of the binary is installed.
-
-        On non-Windows hosts this is exactly ``_escape_shell_arg``.
+        On POSIX hosts this is exactly ``_escape_shell_arg``.
         """
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
-
-        if _IS_WINDOWS and arg:
-            arg = _msys_to_windows_path(arg).replace("\\", "/")
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":

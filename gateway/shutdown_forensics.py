@@ -21,7 +21,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -218,12 +217,6 @@ def spawn_async_diagnostic(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return None
-
-    # Inline shell so we don't have to ship a helper script.  bash -c is
-    # available on every POSIX target we support; on Windows we just skip
-    # the snapshot (the platform doesn't ship ps anyway).
-    if sys.platform == "win32":
         return None
 
     script = (

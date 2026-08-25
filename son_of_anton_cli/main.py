@@ -43,9 +43,8 @@ Usage:
     son-of-anton claw migrate --dry-run  # Preview migration without changes
 """
 
-# IMPORTANT: son_of_anton_bootstrap must be the very first import — it sets up
-# UTF-8 stdio on Windows so print()/subprocess children don't hit
-# UnicodeEncodeError with non-ASCII characters.  No-op on POSIX.
+# IMPORTANT: son_of_anton_bootstrap must be the very first import — it hardens
+# sys.path and activates the durable lazy-install target.  No-op on POSIX.
 #
 # Guarded against ModuleNotFoundError because ``son_of_anton_bootstrap`` is a
 # top-level module registered via pyproject.toml's ``py-modules`` list.
@@ -54,22 +53,13 @@ Usage:
 # new code references ``son_of_anton_bootstrap`` but the editable install's
 # ``.pth`` file still points at the old set of top-level modules.  Without
 # this guard, son-of-anton crashes on import and the user can't run
-# ``son-of-anton update`` to recover.  Missing the bootstrap means UTF-8 stdio
-# setup is skipped on Windows — degraded, not broken.  POSIX is unaffected.
+# ``son-of-anton update`` to recover.
 try:
     import son_of_anton_bootstrap  # noqa: F401
 except ModuleNotFoundError:
     pass
 
-# Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
-# imports — it shells out ``cmd /c ver`` (shell=True, no CREATE_NO_WINDOW), so
-# any dependency touching ``platform.uname()`` at import time flashes a
-# visible console when this process is windowless (pythonw gateway).  No-op
-# on POSIX; never raises.
-from son_of_anton_cli._subprocess_compat import suppress_platform_ver_console
 from son_of_anton_cli.cli_output import line_input
-
-suppress_platform_ver_console()
 
 import os
 import sys
@@ -239,7 +229,6 @@ def _set_process_title() -> None:
       2. ctypes ``prctl(PR_SET_NAME)`` (Linux only, 15-char limit).
       3. ctypes ``pthread_setname_np`` (macOS only, kernel thread name —
          changes lldb/top but not ``ps aux``).
-      4. No-op on Windows (the .exe name is already ``son-of-anton.exe``).
     """
     # Strategy 1: setproctitle (best — works on macOS, Linux, BSD)
     try:
@@ -262,7 +251,6 @@ def _set_process_title() -> None:
         elif system == "Darwin":
             libc = ctypes.CDLL("libc.dylib", use_errno=True)
             libc.pthread_setname_np(b"son-of-anton")
-        # Windows: the .exe name is already ``son-of-anton.exe`` — nothing to do.
     except Exception:
         pass
 
@@ -273,29 +261,8 @@ def _set_process_title() -> None:
 # CLI covers every surface this project needs.
 
 
-def _is_termux_startup_environment_fast() -> bool:
-    """Tiny Termux check for pre-import startup shortcuts."""
-    return _startup_fast.is_termux_env()
-
-
-def _is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return _startup_fast.is_termux_fast_version_argv(argv)
-
-
-def _is_global_fast_version_argv(argv: list[str]) -> bool:
-    return _startup_fast.is_global_fast_version_argv(argv)
-
-
-def _is_container_startup_environment_fast() -> bool:
-    return _startup_fast.is_container_startup_environment()
-
-
 def _active_profile_may_override_home_fast(son_of_anton_root: str) -> bool:
     return _startup_fast.active_profile_may_override_home(son_of_anton_root)
-
-
-def _container_mode_may_be_active_fast() -> bool:
-    return _startup_fast.container_mode_may_be_active()
 
 
 def _read_openai_version_fast() -> str | None:
@@ -310,13 +277,6 @@ def _print_fast_version_info() -> None:
 def _try_ultrafast_version() -> bool:
     """Handle ``son-of-anton --version`` before config/logging imports."""
     return _startup_fast.try_fast_version()
-
-
-def _try_termux_ultrafast_version() -> bool:
-    """Backward-compatible test hook for the Termux startup fast path."""
-    if not _is_termux_startup_environment_fast():
-        return False
-    return _try_ultrafast_version()
 
 
 _ensure_project_root_on_path_fast()
@@ -421,7 +381,7 @@ def _apply_profile_override() -> None:
         """True once argv reaches `son-of-anton mcp add ... --args <command argv>`.
 
         ``mcp add --args`` is command-argv passthrough. Flags after that point
-        belong to the child MCP command (for example Docker MCP Toolkit's
+        belong to the child MCP command (for example an MCP server's
         ``--profile``), not to Son of Anton' own profile selector.
         """
         try:
@@ -532,17 +492,7 @@ def _apply_profile_override() -> None:
             return
 
     # 2. If no flag, check active_profile in the son-of-anton root.
-    #
-    # EXCEPTION: a supervised s6 gateway child (exported by the container
-    # run-script as SON_OF_ANTON_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
-    # active_profile. Each supervised slot has a fixed profile identity: named
-    # slots pass ``-p <name>`` explicitly (handled in step 1 above), and the
-    # reserved ``gateway-default`` slot runs bare ``son-of-anton gateway run`` to mean
-    # "the root SON_OF_ANTON_HOME profile". If the reserved default child read
-    # active_profile here, switching the active profile would silently
-    # redirect the default gateway into that profile — yielding a
-    # duplicate gateway for the active profile and no real default gateway.
-    if profile_name is None and not os.environ.get("SON_OF_ANTON_S6_SUPERVISED_CHILD"):
+    if profile_name is None:
         try:
             from son_of_anton_constants import get_default_son_of_anton_root
 
@@ -591,8 +541,8 @@ from son_of_anton_cli.config import get_son_of_anton_home
 from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
 
 # Updating dependencies must not import optional secret-manager libraries into
-# the updater process before ``uv`` replaces the environment.  On Windows,
-# Bitwarden's cryptography import maps ``_rust.pyd`` and the parent updater then
+# the updater process before ``uv`` replaces the environment: Bitwarden's
+# cryptography import maps a native module and the parent updater then
 # prevents its own child installer from replacing that file (#73381).  Profile
 # flags have already been stripped above, so the first remaining argument is
 # the authoritative argparse subcommand.  Dotenv/managed config still loads;
@@ -684,17 +634,6 @@ from son_of_anton_cli.model_setup_flows import (
 logger = logging.getLogger(__name__)
 
 
-def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
-    """Import-safe Termux check for cold-start-sensitive CLI paths."""
-    check = env or os.environ
-    prefix = str(check.get("PREFIX", ""))
-    return bool(
-        check.get("TERMUX_VERSION")
-        or "com.termux/files/usr" in prefix
-        or prefix.startswith("/data/data/com.termux/")
-    )
-
-
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     """Look up a ref in .git/packed-refs without spawning git.
 
@@ -757,69 +696,6 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
         return f"git:HEAD:{head}"
     except OSError:
         return None
-
-
-def _termux_bundled_skills_fingerprint() -> str:
-    """Cheap invalidation key for Termux bundled-skill startup sync."""
-    git_fp = _read_git_revision_fingerprint(PROJECT_ROOT)
-    if git_fp:
-        return git_fp
-    skills_dir = PROJECT_ROOT / "skills"
-    try:
-        stat = skills_dir.stat()
-        return f"skills:{__version__}:{__release_date__}:{stat.st_mtime_ns}:{stat.st_size}"
-    except OSError:
-        return f"skills:{__version__}:{__release_date__}:missing"
-
-
-def _termux_bundled_skills_stamp_path() -> Path:
-    return get_son_of_anton_home() / "skills" / ".termux_bundled_sync_stamp"
-
-
-def _termux_bundled_skills_sync_needed() -> bool:
-    if not _is_termux_startup_environment():
-        return True
-    if os.environ.get("SON_OF_ANTON_TERMUX_FORCE_SKILLS_SYNC") == "1":
-        return True
-    try:
-        stamp = _termux_bundled_skills_stamp_path()
-        return stamp.read_text(encoding="utf-8").strip() != _termux_bundled_skills_fingerprint()
-    except OSError:
-        return True
-
-
-def _mark_termux_bundled_skills_synced() -> None:
-    if not _is_termux_startup_environment():
-        return
-    try:
-        stamp = _termux_bundled_skills_stamp_path()
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(_termux_bundled_skills_fingerprint() + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
-def _sync_bundled_skills_for_startup() -> bool:
-    """Sync bundled skills, but skip unchanged Termux checkouts cheaply.
-
-    Hashing every bundled skill is safe but expensive on older Android
-    storage. The git/ref stamp keeps post-update correctness: a changed
-    checkout revision forces one real sync, then later starts skip it.
-    """
-    if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
-        return False
-
-    from tools.skills_sync import sync_skills
-
-    sync_skills(quiet=True)
-    _mark_termux_bundled_skills_synced()
-    return True
-
-
-def _termux_should_prefetch_update_check() -> bool:
-    if not _is_termux_startup_environment():
-        return True
-    return os.environ.get("SON_OF_ANTON_TERMUX_PREFETCH_UPDATES") == "1"
 
 
 def _relative_time(ts) -> str:
@@ -1398,8 +1274,8 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
     except Exception:
         pass
 
-    # Fallback: numbered list (Windows without curses, etc.). Shows the same
-    # status/message-count columns but has no delete support.
+    # Fallback: numbered list when the interactive picker can't run. Shows
+    # the same status/message-count columns but has no delete support.
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
@@ -1487,117 +1363,6 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
             except Exception:
                 pass
     return None
-
-
-def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
-    """Run a container inspect probe, returning the CompletedProcess.
-
-    Catches TimeoutExpired specifically for a human-readable message;
-    all other exceptions propagate naturally.
-    """
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
-    except subprocess.TimeoutExpired:
-        label = f"sudo {backend}" if via_sudo else backend
-        print(
-            f"Error: timed out waiting for {label} to respond.\n"
-            f"The {backend} daemon may be unresponsive or starting up.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
-def _exec_in_container(container_info: dict, cli_args: list):
-    """Replace the current process with a command inside the managed container.
-
-    Probes whether sudo is needed (rootful containers), then os.execvp
-    into the container. On success the Python process is replaced entirely
-    and the container's exit code becomes the process exit code (OS semantics).
-    On failure, OSError propagates naturally.
-
-    Args:
-        container_info: dict with backend, container_name, exec_user, son_of_anton_bin
-        cli_args: the original CLI arguments (everything after 'son-of-anton')
-    """
-
-    backend = container_info["backend"]
-    container_name = container_info["container_name"]
-    exec_user = container_info["exec_user"]
-    son_of_anton_bin = container_info["son_of_anton_bin"]
-
-    runtime = shutil.which(backend)
-    if not runtime:
-        print(
-            f"Error: {backend} not found on PATH. Cannot route to container.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Rootful containers (NixOS systemd service) are invisible to unprivileged
-    # users — Podman uses per-user namespaces, Docker needs group access.
-    # Probe whether the runtime can see the container; if not, try via sudo.
-    sudo_path = None
-    probe = _probe_container(
-        [runtime, "inspect", "--format", "ok", container_name],
-        backend,
-    )
-    if probe.returncode != 0:
-        sudo_path = shutil.which("sudo")
-        if sudo_path:
-            probe2 = _probe_container(
-                [sudo_path, "-n", runtime, "inspect", "--format", "ok", container_name],
-                backend,
-                via_sudo=True,
-            )
-            if probe2.returncode != 0:
-                print(
-                    f"Error: container '{container_name}' not found via {backend}.\n"
-                    f"\n"
-                    f"The container is likely running as root. Your user cannot see it\n"
-                    f"because {backend} uses per-user namespaces. Grant passwordless\n"
-                    f"sudo for {backend} — the -n (non-interactive) flag is required\n"
-                    f"because a password prompt would hang or break piped commands.\n"
-                    f"\n"
-                    f"On NixOS:\n"
-                    f"\n"
-                    f"  security.sudo.extraRules = [{{\n"
-                    f'    users = [ "{os.getenv("USER", "your-user")}" ];\n'
-                    f'    commands = [{{ command = "{runtime}"; options = [ "NOPASSWD" ]; }}];\n'
-                    f"  }}];\n"
-                    f"\n"
-                    f"Or run: sudo son-of-anton {' '.join(cli_args)}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        else:
-            print(
-                f"Error: container '{container_name}' not found via {backend}.\n"
-                f"The container may be running under root. Try: sudo son-of-anton {' '.join(cli_args)}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    is_tty = sys.stdin.isatty()
-    tty_flags = ["-it"] if is_tty else ["-i"]
-
-    env_flags = []
-    for var in ("TERM", "COLORTERM", "LANG", "LC_ALL"):
-        val = os.environ.get(var)
-        if val:
-            env_flags.extend(["-e", f"{var}={val}"])
-
-    cmd_prefix = [sudo_path, "-n", runtime] if sudo_path else [runtime]
-    exec_cmd = (
-        cmd_prefix
-        + ["exec"]
-        + tty_flags
-        + ["-u", exec_user]
-        + env_flags
-        + [container_name, son_of_anton_bin]
-        + cli_args
-    )
-
-    os.execvp(exec_cmd[0], exec_cmd)
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
@@ -1773,15 +1538,7 @@ def cmd_chat(args):
     # recorded cwd (so the restore step below is skipped).
     in_dir = getattr(args, "in_dir", None)
     if in_dir:
-        # Git Bash / MSYS hands the CLI POSIX-style paths (`--in ~` expands to
-        # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
-        # disabled for native executables). Translate the MSYS/Cygwin/WSL
-        # drive-root spellings to native Windows form first — no-op elsewhere.
-        from tools.environments.local import _msys_to_windows_path
-
-        _target_dir = os.path.abspath(
-            os.path.expanduser(_msys_to_windows_path(in_dir))
-        )
+        _target_dir = os.path.abspath(os.path.expanduser(in_dir))
         if not os.path.isdir(_target_dir):
             print(f"Error: --in directory not found: {in_dir}")
             sys.exit(1)
@@ -1905,18 +1662,15 @@ def cmd_chat(args):
         sys.exit(1)
 
     # Start update check in background (runs while other init happens).
-    # On Termux this imports rich/prompt_toolkit in the foreground and then
-    # competes for CPU on single-core devices, so keep it opt-in there.
-    if _termux_should_prefetch_update_check():
-        try:
-            from son_of_anton_cli.banner import prefetch_banner_data, prefetch_update_check
+    try:
+        from son_of_anton_cli.banner import prefetch_banner_data, prefetch_update_check
 
-            prefetch_update_check()
-            # Warm git banner state + skills index off-thread too — their
-            # subprocess/file-I/O waits overlap the CPU-bound cli import.
-            prefetch_banner_data()
-        except Exception:
-            pass
+        prefetch_update_check()
+        # Warm git banner state + skills index off-thread too — their
+        # subprocess/file-I/O waits overlap the CPU-bound cli import.
+        prefetch_banner_data()
+    except Exception:
+        pass
 
     # Sync bundled skills on every CLI launch. Normally runs in a background
     # daemon thread: the sync is idempotent, hash-gated (unchanged skills are
@@ -1944,7 +1698,9 @@ def cmd_chat(args):
 
     def _skills_sync_bg() -> None:
         try:
-            _sync_bundled_skills_for_startup()
+            from tools.skills_sync import sync_skills
+
+            sync_skills(quiet=True)
         except Exception:
             pass
 
@@ -3300,9 +3056,7 @@ def _remove_custom_provider(config):
 # fast paths like `son-of-anton --version` and slash-command dispatch that never
 # touch the catalog. PEP 562 module-level __getattr__ defers the import
 # until first attribute access, so the cost is only paid by callers that
-# actually look up the catalog. Termux already defers via the same
-# mechanism (its model-selection handlers do their own function-local
-# imports), so the explicit termux branch from before is no longer needed.
+# actually look up the catalog.
 _LAZY_MODEL_EXPORTS = ("_PROVIDER_MODELS",)
 
 
@@ -3320,7 +3074,6 @@ _LAZY_COMMAND_EXPORTS = {
         "cmd_sessions",
     ),
     "son_of_anton_cli.update_cmd": (
-        "_abort_dependency_sync_if_self_locked",
         "_add_upstream_remote",
         "_atomic_replace_dir",
         "_capture_active_lazy_features",
@@ -3331,36 +3084,25 @@ _LAZY_COMMAND_EXPORTS = {
         "_branch_head_suffix",
         "_cmd_update_check",
         "_cmd_update_impl",
-        "_cold_start_windows_gateway_after_update",
         "_count_commits_between",
-        "_dependency_sync_would_rewrite",
-        "_detect_self_loaded_native_modules",
-        "_detect_venv_python_processes",
-        "_defer_update_for_self_lock",
         "_discard_lockfile_churn",
         "_discard_stashed_changes",
         "_park_stashed_changes",
         "_ensure_fhs_path_guard",
-        "_ensure_uv_for_termux",
         "_for_each_systemd_gateway_unit",
-        "_format_concurrent_instances_message",
         "_format_time_ago",
-        "_ledger_reapable_backend_pids",
         "_purge_stale_son_of_anton_modules",
-        "_format_venv_python_holders_message",
         "_gateway_prompt",
         "_get_origin_url",
         "_has_upstream_remote",
         "_invalidate_update_cache",
         "_is_fork",
-        "_leftover_pausable_gateway_pids",
         "_log_only_write",
         "_mark_skip_upstream_prompt",
         "_npm_bin_exists",
         "_npm_lockfile_changed",
         "_npm_manifest_paths",
         "_npm_manifests_digest",
-        "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
@@ -3371,38 +3113,31 @@ _LAZY_COMMAND_EXPORTS = {
         "_refresh_active_lazy_features",
         "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts",
-        "_refresh_windows_gateway_launchers",
         "_reload_updated_runtime_modules",
         "_resolve_pre_update_backup_mode",
         "_resolve_stash_selector",
         "_restart_phase_failure_is_incomplete",
         "_restore_active_tool_dependencies",
         "_restore_stashed_changes",
-        "_resume_windows_gateways_after_update",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
         "_service_unit_supports_graceful_sigusr1_restart",
         "_should_skip_upstream_prompt",
         "_stash_apply_failed_only_on_existing_untracked",
         "_stash_local_changes_if_needed",
-        "_stop_process_trees",
         "_surviving_gateway_pids_after_failed_restart",
         "_sync_fork_with_upstream",
         "_sync_with_upstream_if_needed",
         "_update_node_dependencies",
-        "_update_via_zip",
         "_upgrade_pip_before_lazy_refresh",
         "_validate_critical_files_syntax",
         "_validate_critical_modules_import",
         "_venv_core_imports_healthy",
-        "_venv_launcher_ancestors",
-        "_wait_for_windows_update_gateway_exit",
         "_warn_gateway_restart_phase_aborted",
         "_warn_incomplete_gateway_fleet_restart",
         "_write_lazy_refresh_incomplete_marker",
         "_write_marker_file",
         "_write_update_incomplete_marker",
-        "_write_update_planned_stop_marker",
         "_UPDATE_RUNTIME_RELOAD_MODULES",
         "_UPDATE_CRITICAL_FILES",
         "_UPDATE_CRITICAL_MODULES",
@@ -4094,17 +3829,10 @@ def _nixos_build_env() -> dict[str, str] | None:
     if shutil.which("python3"):
         return None
 
-    # Tier 1: fast path — son-of-anton venv python3, no nix-shell overhead
-    for venv_name in ("venv", ".venv"):
-        venv_python = PROJECT_ROOT / venv_name / "bin" / "python3"
-        if venv_python.exists():
-            return {**os.environ, "PYTHON": str(venv_python)}
-
-    # Tier 2: nix-shell fallback — resolves the absolute python3 path once.
-    # Slower (~2–5 s for the nix-shell eval) but always works, even without
-    # a son-of-anton venv (pip / non-managed / bare-git installs).  The resolved
-    # path is a self-contained Nix store binary (all deps via RPATH) so it
-    # stays valid even after the nix-shell exits.
+    # Resolve the absolute python3 path via nix-shell. Slower (~2–5 s for the
+    # nix-shell eval) but always works. The resolved path is a self-contained
+    # Nix store binary (all deps via RPATH) so it stays valid even after the
+    # nix-shell exits.
     try:
         result = subprocess.run(
             ["nix-shell", "-p", "python3", "--run", "which python3"],
@@ -4252,8 +3980,7 @@ def _run_npm_watching_for_engine_failure(
 def _load_installable_optional_extras(group: str = "all") -> list[str]:
     """Return optional extras referenced by a dependency group.
 
-    ``group`` is usually ``all`` (desktop/server broad install) or
-    ``termux-all`` (Termux-compatible broad install).
+    ``group`` is usually ``all`` (broad install).
     """
     try:
         import tomllib
@@ -4365,7 +4092,7 @@ def _recover_from_interrupted_install() -> None:
     if not core_marker and not lazy_marker:
         return
 
-    # Skip in managed/Docker installs and on PyPI installs with no git checkout:
+    # Skip in managed installs and on PyPI installs with no git checkout:
     # those don't run the source-tree update path, so a stray marker is not ours
     # to act on. Just clear it.
     if not (PROJECT_ROOT / "pyproject.toml").is_file():
@@ -4470,20 +4197,6 @@ def _recover_core_update_marker_locked() -> None:
         "finishing dependency installation now..."
     )
 
-    # Windows: a normal ``son-of-anton.exe`` launch always has the launcher as an
-    # ancestor. Full editable reinstall uses quarantine so the live shim can
-    # still be replaced. Package-only import repair may help as first aid but
-    # must NEVER clear this core marker on its own (#58004 review).
-    self_locked = _windows_running_son_of_anton_launcher_locked()
-    if self_locked:
-        install_prefix, install_env = _default_venv_install_target()
-        print(
-            "  → Running from son-of-anton.exe; applying package-only first aid, "
-            "then quarantined full reinstall (core marker stays until that "
-            "succeeds)..."
-        )
-        _repair_venv_via_import_probes(install_prefix, env=install_env)
-
     try:
         from son_of_anton_cli import _install_repair as _ir
 
@@ -4508,178 +4221,14 @@ def _recover_core_update_marker_locked() -> None:
         # the exact manual recovery command in the meantime.
         logger.debug("Interrupted-install recovery failed: %s", exc)
         print("✗ Could not auto-recover the interrupted install.")
-        if self_locked:
-            print(
-                "  Son of Anton is still running from the launcher that needs "
-                "replacing. Close other Son of Anton windows, restart from a "
-                "different terminal, then run:"
-            )
-            print(f'    cd /d "{PROJECT_ROOT}"')
-            print(
-                f'    "{sys.executable}" -m pip install -e ".[all]"'
-            )
-        else:
-            print("  Recover manually with:")
-            print(f"    cd {PROJECT_ROOT}")
-            print(f"    {sys.executable} -m ensurepip --upgrade")
-            print(f"    {sys.executable} -m pip install -e '.[all]'")
-
-
-def _norm_exe_path(path) -> str:
-    """Case-folded resolved path, for comparing executables on Windows."""
-    try:
-        return str(Path(path).resolve()).lower()
-    except OSError:
-        return str(path).lower()
-
-
-def _windows_shim_in_process_chain() -> Path | None:
-    """The venv console shim this process runs from or under, if any.
-
-    ``venv\\Scripts\\son-of-anton.exe`` is a launcher that runs the interpreter with
-    the shim itself as its script, and that keeps the shim open — without
-    ``FILE_SHARE_DELETE`` — for the whole process lifetime. So every
-    ``son-of-anton ...`` command holds its own shim, and an editable install run
-    from one can never rewrite it (#88838, #89599).
-
-    Two independent probes, because either can come up empty. Process
-    ancestry finds the launcher when it is a separate parent process, but
-    needs psutil. This process's own launch paths (``sys.argv[0]``,
-    ``__main__.__file__``, the module spec origin) cover the rest — the
-    runpy/zipapp launch puts ``<shim>\\__main__.py`` there, which a plain
-    argv[0] check misses.
-
-    Candidates are intersected with the project venv's own shims, so a
-    ``son-of-anton.exe`` belonging to some other install never matches.
-    """
-    if not _is_windows():
-        return None
-    scripts_dir = _venv_scripts_dir()
-    if scripts_dir is None:
-        return None
-    shims = {_norm_exe_path(shim): shim for shim in _son_of_anton_exe_shims(scripts_dir)}
-    if not shims:
-        return None
-
-    def _match(candidate) -> Path | None:
-        path = Path(candidate)
-        if path.name.lower() == "__main__.py":
-            path = path.parent
-        return shims.get(_norm_exe_path(path))
-
-    candidates: list[str] = list(sys.argv[:1])
-    main_mod = sys.modules.get("__main__")
-    for attr in (getattr(main_mod, "__file__", None),
-                 getattr(getattr(main_mod, "__spec__", None), "origin", None)):
-        if attr:
-            candidates.append(attr)
-    for candidate in candidates:
-        matched = _match(candidate)
-        if matched is not None:
-            return matched
-
-    try:
-        import psutil
-
-        me = psutil.Process()
-        for proc in [me] + list(me.parents()):
-            try:
-                matched = _match(proc.exe())
-            except Exception:
-                continue
-            if matched is not None:
-                return matched
-    except Exception:
-        return None
-    return None
-
-
-def _windows_running_son_of_anton_launcher_locked() -> bool:
-    """True when a venv ``son-of-anton*.exe`` shim is this process or an ancestor.
-
-    Best-effort: returns False when psutil is unavailable or inspection fails.
-    """
-    return _windows_shim_in_process_chain() is not None
+        print("  Recover manually with:")
+        print(f"    cd {PROJECT_ROOT}")
+        print(f"    {sys.executable} -m ensurepip --upgrade")
+        print(f"    {sys.executable} -m pip install -e '.[all]'")
 
 
 # Set on the re-exec'd child so it can never spawn another one.
 _UPDATE_REEXEC_ENV = "SON_OF_ANTON_UPDATE_REEXEC"
-
-
-def _reexec_dependency_sync_off_windows_shim() -> bool:
-    """Hand the dependency sync to the venv interpreter, off the console shim.
-
-    Returns True when a child was spawned and the caller must exit at once,
-    releasing the shim before the child reaches ``pip install -e .``. Returns
-    False to continue the sync in-process.
-
-    Called at the dependency-sync boundary, NOT at the top of the command —
-    the same placement rule as the native-module deferral beside it, and for
-    the same reason (#86735): a hand-off that fires before the fetch detaches
-    every run, including the ``Already up to date!`` no-op that never touches
-    the venv at all, and it takes the interactive prompts with it. By the time
-    we reach here the code swap is done and every question — stash, branch
-    switch, config migration — has already been asked and answered in the
-    user's own console. Only the venv rewrite is left, and that is the single
-    step that genuinely cannot run from inside the shim.
-
-    ``venv\\Scripts\\son-of-anton.exe`` is a launcher that runs the interpreter with
-    the shim as its script and holds it open without ``FILE_SHARE_DELETE`` for
-    the whole command, so the quarantine rename is refused and uv fails to
-    replace it with os error 32 (#88838, #89599).
-
-    A child is required, and waiting on it cannot work: this process holds the
-    handle the child needs released, so a parent that waits deadlocks against
-    the work it is waiting for. Windows has no exec to escape with either.
-    The shell therefore returns while the install runs on; the child keeps the
-    console and prints its own result, and ``--gateway`` writes the true exit
-    code to ``.update_exit_code`` for the gateway watcher.
-
-    The child re-runs ``son-of-anton update``, so the whole remaining flow — the
-    dependency sync and the node/web/lazy-refresh tail behind it — still
-    happens exactly once. ``_UPDATE_REEXEC_ENV`` marks it so it cannot spawn
-    another child, and so the "already up to date" early return does not
-    swallow the sync it was spawned to perform (the checkout is current by
-    now; that is the point).
-
-    The caller has already written ``.update-incomplete``, so a child that
-    dies mid-install is finished by the next launch's recovery instead of
-    leaving a half-synced venv. Anything that stops the hand-off (no venv
-    python, spawn refused) returns False and syncs in-process, where the
-    pre-existing os-error-32 path and its marker recovery still apply.
-    """
-    if os.environ.get(_UPDATE_REEXEC_ENV) == "1":
-        return False
-    shim = _windows_shim_in_process_chain()
-    if shim is None:
-        return False
-
-    from son_of_anton_constants import venv_python_path
-
-    python_exe = venv_python_path(shim.parent.parent, windows=True)
-    cmd = [str(python_exe), "-m", "son_of_anton_cli.main", *sys.argv[1:]]
-    if python_exe.is_file():
-        try:
-            subprocess.Popen(
-                cmd,
-                env={**os.environ, _UPDATE_REEXEC_ENV: "1"},
-                stdin=subprocess.DEVNULL,
-            )
-            print(
-                f"→ Windows: {shim.name} cannot replace itself while it runs; "
-                "finishing the dependency install under the venv Python."
-            )
-            print(
-                "  The code update is already applied. The install continues "
-                "below and this shell returns right away."
-            )
-            return True
-        except OSError as exc:
-            logger.debug("Dependency-sync hand-off via %s failed: %s", python_exe, exc)
-        print(f"  ⚠ Could not hand the dependency install off {shim.name}.")
-        print("    Continuing in-process; if it cannot replace the shim, run:")
-        print(f"    {subprocess.list2cmdline(cmd)}")
-    return False
 
 
 def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
@@ -4695,9 +4244,6 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
 
         venv_dir = project_venv_dir(PROJECT_ROOT) or PROJECT_ROOT / "venv"
         env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)}
-        if _is_termux_env(env):
-            env.pop("PYTHONPATH", None)
-            env.pop("PYTHONHOME", None)
         return [uv_bin, "pip"], env
     return [sys.executable, "-m", "pip"], None
 
@@ -4741,271 +4287,6 @@ def _run_install_with_heartbeat(
         t.join(timeout=0.2)
 
 
-def _is_windows() -> bool:
-    return sys.platform == "win32"
-
-
-def _venv_scripts_dir() -> Path | None:
-    """Return the venv Scripts directory if we're running inside the project venv."""
-    from son_of_anton_constants import project_venv_dir, venv_bin_dir
-
-    venv_dir = project_venv_dir(PROJECT_ROOT)
-    if venv_dir is None:
-        return None
-
-    scripts = venv_bin_dir(venv_dir, windows=_is_windows())
-    return scripts if scripts.is_dir() else None
-
-
-def _son_of_anton_exe_shims(scripts_dir: Path) -> list[Path]:
-    """Entry-point shims that uv may try to rewrite during ``pip install -e .``.
-
-    On Windows these are .exe launchers generated by setuptools/uv. On POSIX
-    they're regular Python scripts which can be replaced atomically — no
-    self-replacement hazard exists outside Windows.
-    """
-    if not _is_windows():
-        return []
-
-    names = set(_load_console_script_names()) or {"son-of-anton", "son-of-anton", "son-of-anton-acp"}
-    # The gateway shim is not a [project.scripts] entry point, but older
-    # update/install paths still rewrite and quarantine it.
-    names.add("son-of-anton-gateway")
-    return [scripts_dir / f"{name}.exe" for name in sorted(names)]
-
-
-def _quarantine_running_son_of_anton_exe(
-    scripts_dir: Path, *, max_attempts: int = 4
-) -> list[tuple[Path, Path]]:
-    """Pre-empt Windows file lock on the running ``son-of-anton.exe``.
-
-    Windows allows RENAMING a mapped/running executable (the kernel tracks the
-    file by handle, not path), but blocks DELETE/REPLACE while it's loaded. uv
-    needs to overwrite the entry-point shims during ``pip install -e .``;
-    when ``son-of-anton update`` runs, ``son-of-anton.exe`` IS the live process, and uv
-    fails with ``Access is denied. (os error 5)``.
-
-    We rename live shims to ``son-of-anton.exe.old.<unix-ms>`` first. uv then writes
-    fresh shims at the original paths. The ``.old`` files are cleaned up on
-    the next son-of-anton invocation by ``_cleanup_quarantined_exes``.
-
-    Rename can still fail when *another* process has opened the .exe without
-    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
-    handles (recovers in <1s), or the Son of Anton Desktop backend child process
-    (won't recover until the user closes it). We mitigate:
-
-    1. Retry up to ``max_attempts`` times with exponential backoff
-       (100/250/500/1000 ms). Handles the AV-scanner case.
-    2. If all retries fail, print a clear warning naming the most likely
-       culprit (running Son of Anton Desktop / gateway / REPL).
-
-    The updater's own launcher is no longer one of those culprits: an update
-    started from ``son-of-anton.exe`` re-runs itself under the venv Python before
-    reaching here (``_reexec_dependency_sync_off_windows_shim``).
-
-    Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement.
-    """
-    moved: list[tuple[Path, Path]] = []
-    if not _is_windows():
-        return moved
-
-    import time
-
-    stamp = int(time.time() * 1000)
-    # Backoff schedule: first attempt is immediate, subsequent ones sleep.
-    # 100ms / 250ms / 500ms covers the typical AV scanner re-scan window.
-    backoff_ms = [0, 100, 250, 500, 1000]
-    attempts = max(1, min(max_attempts, len(backoff_ms)))
-
-    for shim in _son_of_anton_exe_shims(scripts_dir):
-        if not shim.exists():
-            continue
-        target = shim.with_suffix(shim.suffix + f".old.{stamp}")
-
-        last_exc: OSError | None = None
-        for attempt in range(attempts):
-            delay = backoff_ms[attempt] / 1000.0
-            if delay:
-                time.sleep(delay)
-            try:
-                shim.rename(target)
-                moved.append((shim, target))
-                last_exc = None
-                break
-            except OSError as e:
-                last_exc = e
-                continue
-
-        if last_exc is None:
-            continue
-
-        # Every rename failed. Deferring one to next boot via
-        # MOVEFILE_DELAY_UNTIL_REBOOT used to be the fallback here, but it
-        # cannot help: it needs elevation we don't have, and when it does
-        # land it frees nothing for the install running right now while
-        # queueing an operation that will move a later, freshly repaired shim
-        # aside at next boot. Report and let uv try its luck instead —
-        # sometimes its own retry handling pulls through.
-        print(
-            f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
-            f"another process is holding it open)."
-        )
-        print(
-            "    Close Son of Anton Desktop, exit other `son-of-anton` REPLs, stop the "
-            "gateway, or pause AV scanning, then re-run `son-of-anton update`."
-        )
-
-    return moved
-
-
-_PENDING_RENAME_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager"
-_PENDING_RENAME_VALUE = "PendingFileRenameOperations"
-
-
-def _filter_pending_shim_renames(
-    entries: list[str], shims: list[Path]
-) -> tuple[list[str], int]:
-    """Drop shim-quarantine pairs from a PendingFileRenameOperations value.
-
-    The value is a flat REG_MULTI_SZ of (source, target) pairs, and other
-    installers share it, so only pairs matching our own
-    ``<shim>`` -> ``<shim>.old.<stamp>`` naming are removed. Returns the
-    entries to keep and how many pairs were dropped.
-    """
-    import ntpath
-
-    def _norm(value: str) -> str:
-        path = str(value).lstrip("!")
-        if path.startswith("\\??\\"):
-            path = path[4:]
-        return ntpath.normcase(ntpath.normpath(path))
-
-    shim_paths = {_norm(str(shim)) for shim in shims}
-    kept: list[str] = []
-    removed = 0
-    for index in range(0, len(entries) - 1, 2):
-        source, target = entries[index], entries[index + 1]
-        source_norm = _norm(source)
-        if source_norm in shim_paths and _norm(target).startswith(f"{source_norm}.old."):
-            removed += 1
-        else:
-            kept.extend((source, target))
-    if len(entries) % 2:
-        kept.append(entries[-1])
-    return kept, removed
-
-
-def _cleanup_pending_shim_renames(scripts_dir: Path) -> int:
-    """Drop reboot renames older Son of Anton versions queued for our shims.
-
-    Son of Anton used to fall back to ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``
-    when the quarantine rename failed. Those entries outlive the update that
-    queued them, so at the next boot they move away whatever now sits at the
-    shim path — including a shim a later repair just wrote. Needs elevation
-    to remove (same as it needed to create); a no-op otherwise.
-    """
-    if not _is_windows():
-        return 0
-    try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            _PENDING_RENAME_KEY,
-            0,
-            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE,
-        ) as key:
-            entries, value_type = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
-            if value_type != winreg.REG_MULTI_SZ or not isinstance(entries, list):
-                return 0
-            kept, removed = _filter_pending_shim_renames(
-                entries, _son_of_anton_exe_shims(scripts_dir)
-            )
-            if not removed:
-                return 0
-            if kept:
-                winreg.SetValueEx(key, _PENDING_RENAME_VALUE, 0, winreg.REG_MULTI_SZ, kept)
-            else:
-                winreg.DeleteValue(key, _PENDING_RENAME_VALUE)
-            return removed
-    except (OSError, ValueError):
-        return 0
-
-
-def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
-    """Roll back ``_quarantine_running_son_of_anton_exe`` if uv didn't write replacements."""
-    for original, quarantined in moved:
-        try:
-            if not original.exists() and quarantined.exists():
-                quarantined.rename(original)
-        except OSError:
-            pass
-
-
-def _run_quarantined_install(
-    cmd: list[str],
-    *,
-    env: dict[str, str] | None = None,
-    scripts_dir: Path | None = None,
-) -> None:
-    """Run an editable install, quarantining the running ``son-of-anton.exe`` first.
-
-    Any ``pip install -e .`` (or ``--reinstall``) rewrites the entry-point
-    shims, and on Windows the live ``son-of-anton.exe`` is the running process —
-    pip can neither delete nor overwrite it, so without quarantine the shim
-    is left missing and ``son-of-anton`` drops off PATH. This wraps
-    :func:`_run_install_with_heartbeat` with the same rename-out-of-the-way /
-    restore-on-failure dance that the primary install path uses, so EVERY
-    install that touches the shims is protected — including the
-    verification-repair reinstalls in
-    :func:`_verify_core_dependencies_installed`, which previously called
-    ``_run_install_with_heartbeat`` directly and bypassed quarantine.
-
-    Off-Windows (``scripts_dir is None``) this is a thin pass-through.
-    """
-    moved: list[tuple[Path, Path]] = []
-    if scripts_dir is not None:
-        moved = _quarantine_running_son_of_anton_exe(scripts_dir)
-    try:
-        _run_install_with_heartbeat(cmd, env=env)
-    finally:
-        # Restore shims when the installer didn't write replacements — on
-        # FAILURE (install died before the entry-points step) and on SUCCESS
-        # too: uv audits an already-satisfied editable install as a no-op and
-        # rewrites no entry points, which would otherwise leave the shims
-        # quarantined aside and `son-of-anton` missing from PATH after a green
-        # install (#75584). _restore_quarantined_exes skips any shim the
-        # installer actually replaced, so this never clobbers fresh output.
-        # Errors are not swallowed — the finally re-raises whatever escaped.
-        if scripts_dir is not None:
-            _restore_quarantined_exes(moved)
-
-
-def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
-    """Sweep ``son-of-anton.exe.old.*`` and stale reboot renames left by prior updates.
-
-    Called early on every son-of-anton invocation. The .old files are unlocked once
-    their owning process exited, so deletion succeeds the next run. Silent
-    no-op when nothing's there or on file-locked / permission errors.
-    """
-    if not _is_windows():
-        return
-    if scripts_dir is None:
-        scripts_dir = _venv_scripts_dir()
-    if scripts_dir is None:
-        return
-    _cleanup_pending_shim_renames(scripts_dir)
-    try:
-        for stale in scripts_dir.glob("*.exe.old.*"):
-            try:
-                stale.unlink()
-            except OSError:
-                pass  # still locked or in use — try again next run
-    except OSError:
-        pass
-
-
 # Import probes for venv corruption after a failed lazy ``uv pip install``.
 # Metadata can look fine while ``.py`` files were removed mid-install (#57828).
 # Canonical tables live in the stdlib-only ``_early_recovery`` module (which
@@ -5028,8 +4309,8 @@ def _run_package_only_install(
     """Run a package-only pip/uv install without quarantining entry-point shims.
 
     ``pip install --upgrade pip`` and ``--force-reinstall <pkg>`` do not
-    rewrite ``son-of-anton.exe``. The editable-install quarantine path would rename
-    shims without uv recreating them on Windows (#57828).
+    rewrite entry-point shims, so the editable-install quarantine path is
+    not needed.
     """
     _run_install_with_heartbeat(cmd, env=env)
 
@@ -5187,7 +4468,7 @@ def _repair_venv_via_import_probes(
 
     Uses real ``import`` checks (not distribution metadata) so a venv where
     METADATA remains but ``.py`` files were wiped mid-install is still
-    detected (#57828). Package-only reinstall — never rewrites ``son-of-anton.exe``.
+    detected (#57828). Package-only reinstall.
 
     Never raises. Returns one of:
       - ``"healthy"`` — probes ran and found nothing broken
@@ -5230,20 +4511,10 @@ def _install_python_dependencies_with_optional_fallback(
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
-    By default this targets ``.[all]``; Termux callers can pass
-    ``group='termux-all'`` to use the curated Android-compatible profile.
-
-    On Windows, pre-renames live ``son-of-anton.exe`` / ``son-of-anton-gateway.exe`` shims
-    in the venv Scripts dir before each install attempt so uv can write fresh
-    copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
-    ``_quarantine_running_son_of_anton_exe`` for the rationale.
+    By default this targets ``.[all]``.
     """
-    scripts_dir = _venv_scripts_dir() if _is_windows() else None
-
     def _install(args: list[str]) -> None:
-        _run_quarantined_install(
-            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
-        )
+        _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -5288,94 +4559,16 @@ def _install_python_dependencies_with_optional_fallback(
     _verify_console_scripts_installed(install_cmd_prefix, env=env)
 
 
-def _load_console_script_names() -> list[str]:
-    """Return ``[project.scripts]`` entry-point names from pyproject.toml."""
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover
-        return []
-
-    pyproject = PROJECT_ROOT / "pyproject.toml"
-    if not pyproject.is_file():
-        return []
-
-    try:
-        with open(pyproject, "rb") as f:
-            data = tomllib.load(f)
-        scripts = data.get("project", {}).get("scripts", {}) or {}
-        return [str(name) for name in scripts if name]
-    except Exception as e:
-        logger.debug("console script verification: failed to read pyproject.toml: %s", e)
-        return []
-
-
 def _verify_console_scripts_installed(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Ensure every declared console_script shim exists on disk after install.
+    """Windows-only entry-point shim verification; no-op on Nix platforms.
 
-    On Windows, ``uv pip install -e .`` can register ``son-of-anton.exe`` in the
-    wheel RECORD while the file never lands on disk — typically when the live
-    ``son-of-anton.exe`` shim is locked during ``son-of-anton update``, or when uv/distlib
-    skips a launcher write. The symptom is ``son-of-anton.exe`` and
-    ``son-of-anton-acp.exe`` present but ``son-of-anton.exe`` missing, so ``son-of-anton`` drops
-    off PATH even though the install reported success (issue #52931).
-
-    If any shim is missing we reinstall with ``--reinstall -e .`` under the
-    same quarantine dance as the primary install path, then re-check.
+    Kept importable: ``update_cmd`` calls it after dependency installs.
     """
-    if not _is_windows():
-        return
-
-    scripts_dir = _venv_scripts_dir()
-    if scripts_dir is None:
-        return
-
-    names = _load_console_script_names()
-    if not names:
-        return
-
-    def _missing() -> list[str]:
-        return [
-            name
-            for name in names
-            if not (scripts_dir / f"{name}.exe").is_file()
-        ]
-
-    missing = _missing()
-    if not missing:
-        return
-
-    print(
-        f"  ⚠ Verification: {len(missing)} console script(s) missing on disk: "
-        f"{', '.join(missing)}"
-    )
-    print("  → Reinstalling entry points with --reinstall...")
-
-    try:
-        _run_quarantined_install(
-            install_cmd_prefix + ["install", "--reinstall", "-e", "."],
-            env=env,
-            scripts_dir=scripts_dir,
-        )
-    except subprocess.CalledProcessError as e:
-        logger.warning("console script verification: repair install failed: %s", e)
-        print(
-            "  ⚠ Entry point repair failed; try `son-of-anton update --force` after "
-            "closing other son-of-anton processes."
-        )
-        return
-
-    still_missing = _missing()
-    if still_missing:
-        print(
-            f"  ⚠ Still missing after repair: {', '.join(still_missing)}. "
-            "Workaround: python -m son_of_anton_cli.main <command>"
-        )
-    else:
-        print("  ✓ All console entry points restored")
+    return None
 
 
 def _verify_core_dependencies_installed(
@@ -5439,8 +4632,8 @@ def _verify_core_dependencies_installed(
                 deps.append((name, None))
 
     # Apply environment markers to drop deps that don't apply on this platform
-    # (e.g. ``ptyprocess ; sys_platform != 'win32'`` is correctly skipped on
-    # Windows). Without markers we'd false-positive every cross-platform exclusion.
+    # (e.g. ``ptyprocess ; sys_platform != 'win32'`` evaluates True here).
+    # Without markers we'd false-positive every cross-platform exclusion.
     applicable: list[str] = []
     for name, marker in deps:
         if marker is None:
@@ -5502,16 +4695,9 @@ def _verify_core_dependencies_installed(
     # purpose — the missing dep is in *base* deps; rerunning the full all-
     # extras install can cost minutes and trips on whatever optional extra
     # was already broken upstream. Base is fast and is what's actually wrong.
-    #
-    # Quarantine the running ``son-of-anton.exe`` first: ``--reinstall -e .``
-    # rewrites the entry-point shims, and on Windows pip can't overwrite the
-    # live launcher, which would leave ``son-of-anton`` off PATH.
-    scripts_dir = _venv_scripts_dir() if _is_windows() else None
     repair_args = ["install", "--reinstall", "-e", "."]
     try:
-        _run_quarantined_install(
-            install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
-        )
+        _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: repair install failed: %s", e)
         print("  ⚠ Repair install failed; check `son-of-anton update` output above.")
@@ -5576,7 +4762,7 @@ def _resolve_install_target_python(
         from son_of_anton_constants import venv_python_path
 
         venv_root = Path(env["VIRTUAL_ENV"])
-        candidate = venv_python_path(venv_root, windows=_is_windows())
+        candidate = venv_python_path(venv_root)
         if candidate.exists():
             return candidate
 
@@ -5590,65 +4776,11 @@ def _resolve_install_target_python(
     return None
 
 
-def _is_termux_env(env: dict[str, str] | None = None) -> bool:
-    return _is_termux_startup_environment(env)
-
-
-def _is_windows_npm_path(npm_path: str) -> bool:
-    """Return True if ``npm_path`` points at a Windows npm shim.
-
-    On WSL the Windows install dir is exposed through the ``/mnt/c`` drive
-    mount and PATH interop, so ``shutil.which("npm")`` can hand back
-    ``/mnt/c/Program Files/nodejs/npm`` (or the ``npm.cmd`` / ``npm.exe``
-    shim). Those are detected here by their ``.exe``/``.cmd``/``.bat``
-    suffix, a ``/mnt/`` drive-mount prefix, or an embedded backslash (a UNC
-    path). Callers use this only on a POSIX host — on native Windows an
-    ``npm.cmd`` shim is the correct executable.
-    """
-    low = npm_path.lower()
-    return (
-        low.endswith((".exe", ".cmd", ".bat"))
-        or low.startswith("/mnt/")
-        or "\\" in npm_path
-    )
-
-
 def _resolve_node_runtime_npm() -> str | None:
-    """Resolve an npm executable that belongs to the host's Node runtime.
-
-    On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed
-    through PATH interop. Running that Windows npm against the Linux checkout
-    operates over ``\\wsl.localhost\\...`` UNC paths and fails with EISDIR /
-    symlink errors in symlink-heavy trees like ``ui-tui`` (#30271). Refuse a
-    Windows npm on a POSIX host and re-scan PATH (skipping ``/mnt/*`` interop
-    entries) for a Linux-native npm. Returns the npm path, or ``None`` when
-    no suitable npm is reachable.
-    """
+    """Resolve an npm executable that belongs to the host's Node runtime."""
     from son_of_anton_constants import find_node_executable
 
-    npm = find_node_executable("npm")
-
-    # On native Windows the platform npm (``npm.cmd``) is exactly what we
-    # want — only reject Windows shims when we're a POSIX/WSL process.
-    if _is_windows():
-        return npm
-
-    if not npm:
-        return None
-
-    if not _is_windows_npm_path(npm):
-        return npm
-
-    # The first resolution was a Windows npm. Re-scan PATH skipping the
-    # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native npm that
-    # came later on PATH is still found.
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory or directory.lower().startswith("/mnt/"):
-            continue
-        candidate = shutil.which("npm", path=directory)
-        if candidate and not _is_windows_npm_path(candidate):
-            return candidate
-    return None
+    return find_node_executable("npm")
 
 
 class _UpdateOutputStream:
@@ -5860,7 +4992,6 @@ def cmd_update(args):
     """
     from son_of_anton_cli.config import (
         detect_install_method,
-        format_docker_update_message,
         is_managed,
         is_nix_install_method,
         managed_error,
@@ -5872,9 +5003,9 @@ def cmd_update(args):
         return
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
-    # docker/nix/apt refusal gates: on an image-managed or package-managed
-    # install the plan itself reports "not updatable in place" plus the
-    # right mechanism — strictly more useful than the bare refusal text.
+    # nix refusal gate: on a package-managed install the plan itself reports
+    # "not updatable in place" plus the right mechanism — strictly more
+    # useful than the bare refusal text.
     if getattr(args, "plan", False):
         # Read-only plan phase (#91277 Phase 2): inventory every running
         # Son of Anton runtime across profiles, its supervisor, and its running
@@ -5887,18 +5018,8 @@ def cmd_update(args):
         print_update_plan(collect_runtime_inventory())
         return
 
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
     install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
-
-    if is_nix_install_method(install_method) or install_method == "apt":
+    if is_nix_install_method(install_method):
         print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 
@@ -6418,8 +5539,7 @@ def cmd_profile(args):
                 print(f"Installed from: {dist_source}")
             print(f"  (run `son-of-anton profile info {name}` for full manifest)")
         if alias_name:
-            is_windows = sys.platform == "win32"
-            wrapper = _get_wrapper_dir() / (f"{alias_name}.bat" if is_windows else alias_name)
+            wrapper = _get_wrapper_dir() / alias_name
             print(f"Alias:   {alias_name} → son-of-anton -p {name}  ({wrapper})")
         print()
 
@@ -6944,9 +6064,8 @@ def _prepare_agent_startup(args) -> None:
     # plugin/tool discovery below imports tools.approval, which freezes
     # _YOLO_MODE_FROZEN at import time (PR #7994 security design).  main()'s
     # dispatch path also sets this earlier, but _prepare_agent_startup() is
-    # reachable from other launchers too (e.g. the Termux fast-CLI path),
-    # so the guarantee lives here where the import is actually triggered
-    # (#60328).
+    # reachable from other launchers too, so the guarantee lives here where
+    # the import is actually triggered (#60328).
     if getattr(args, "yolo", False):
         os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
@@ -7059,22 +6178,12 @@ def _try_fast_chat_launch() -> bool:
 
     Bails out (returns False) whenever the invocation is not certainly a
     chat launch — a subcommand positional, ``--help``, unknown flags — so
-    every other path still goes through the full parser unchanged. Mirrors
-    ``_try_termux_fast_cli_launch`` minus the Termux-specific deferred
-    startup; kept separate so phone-tuned behavior doesn't leak to desktops.
+    every other path still goes through the full parser unchanged.
     """
     if os.environ.get("SON_OF_ANTON_DISABLE_FAST_CHAT_LAUNCH") == "1":
         return False
     argv = sys.argv[1:]
     if "-h" in argv or "--help" in argv:
-        return False
-    # Container-aware routing must win: when NixOS container mode is
-    # active, EVERY invocation is forwarded into the managed container.
-    try:
-        from son_of_anton_cli.config import get_container_exec_info
-        if get_container_exec_info():
-            return False
-    except Exception:
         return False
     if _first_positional_argv() not in {None, "chat"}:
         return False
@@ -7117,72 +6226,6 @@ def _try_fast_chat_launch() -> bool:
     _set_chat_arg_defaults(args)
     cmd_chat(args)
     return True
-
-
-def _try_termux_fast_cli_launch() -> bool:
-    """Run obvious Termux non-TUI chat/oneshot/version paths on a light parser."""
-    if not _is_termux_startup_environment():
-        return False
-    if os.environ.get("SON_OF_ANTON_TERMUX_DISABLE_FAST_CLI") == "1":
-        return False
-
-    argv = sys.argv[1:]
-    if "-h" in argv or "--help" in argv:
-        return False
-    if _is_termux_fast_version_argv(argv):
-        _print_version_info(check_updates=True)
-        return True
-
-    first = _first_positional_argv()
-    has_oneshot = any(
-        arg == "-z" or arg == "--oneshot" or arg.startswith("--oneshot=")
-        for arg in argv
-    )
-    if not has_oneshot and first not in {None, "chat"}:
-        return False
-
-    from son_of_anton_cli._parser import build_top_level_parser
-
-    parser, _subparsers, chat_parser = build_top_level_parser()
-    chat_parser.set_defaults(func=cmd_chat)
-    args = parser.parse_args(_coalesce_session_name_args(argv))
-
-    if getattr(args, "version", False):
-        _print_version_info(check_updates=True)
-        return True
-
-    if getattr(args, "oneshot", None):
-        _prepare_agent_startup(args)
-        _confirm_startup_expensive_model_override(args)
-        _run_and_exit_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            skills=getattr(args, "skills", None),
-            usage_file=getattr(args, "usage_file", None),
-        )
-
-    if (args.resume or args.continue_last) and args.command is None:
-        args.command = "chat"
-
-    if args.command in {None, "chat"}:
-        _set_chat_arg_defaults(args)
-        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
-        if interactive_prompt:
-            # Bare Termux CLI should reach the prompt first and do agent-only
-            # discovery on the first submitted turn instead of before input.
-            setattr(args, "compact", True)
-            os.environ["SON_OF_ANTON_DEFER_AGENT_STARTUP"] = "1"
-            os.environ["SON_OF_ANTON_FAST_STARTUP_BANNER"] = "1"
-            if getattr(args, "accept_hooks", False):
-                os.environ["SON_OF_ANTON_ACCEPT_HOOKS"] = "1"
-        else:
-            _prepare_agent_startup(args)
-        cmd_chat(args)
-        return True
-
-    return False
 
 
 def cmd_memory(args):
@@ -7471,21 +6514,6 @@ def main():
     # under an AI agent harness.
     _advertise_agent_env()
 
-    # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
-    try:
-        from son_of_anton_cli.stdio import configure_windows_stdio
-        configure_windows_stdio()
-    except Exception:
-        pass
-
-    # Sweep stale ``son-of-anton.exe.old.*`` quarantine files left by previous
-    # ``son-of-anton update`` runs on Windows. Silent no-op on non-Windows or when
-    # there's nothing to clean. See ``_quarantine_running_son_of_anton_exe``.
-    try:
-        _cleanup_quarantined_exes()
-    except Exception:
-        pass
-
     # If the checkout changed since the last launch (son-of-anton update, manual
     # git pull, old-updater update that predates newer clears), sweep stale
     # __pycache__ once so no process — this one's lazy imports included —
@@ -7508,8 +6536,6 @@ def main():
     except Exception:
         pass
 
-    if _try_termux_fast_cli_launch():
-        return
     if _try_fast_chat_launch():
         return
 
@@ -7635,11 +6661,11 @@ def main():
     )
 
     # Lazy-import secrets_cli: the module imports agent.secret_sources.bitwarden
-    # which loads cryptography._rust.pyd.  On Windows this maps the native
-    # extension into the updater process, causing the self-lock preflight to
-    # defer (#86781).  secrets_cli defers its backend import to first use
-    # (module-level __getattr__ + handler-level _load_bw()), so register_cli
-    # at parse time only wires argparse structure with no crypto cost.
+    # which loads cryptography's native extension into the updater process,
+    # causing the self-lock preflight to defer (#86781).  secrets_cli defers
+    # its backend import to first use (module-level __getattr__ +
+    # handler-level _load_bw()), so register_cli at parse time only wires
+    # argparse structure with no crypto cost.
     from son_of_anton_cli import secrets_cli as _secrets_cli
     from son_of_anton_cli import onepassword_secrets_cli as _op_secrets_cli
 
@@ -8599,20 +7625,6 @@ def main():
     # Pre-process argv so unquoted multi-word session names after -c / -r
     # are merged into a single token before argparse sees them.
     # e.g. ``son-of-anton -c Pokemon Agent Dev`` → ``son-of-anton -c 'Pokemon Agent Dev'``
-    # ── Container-aware routing ────────────────────────────────────────
-    # When NixOS container mode is active, route ALL subcommands into
-    # the managed container.  This MUST run before parse_args() so that
-    # --help, unrecognised flags, and every subcommand are forwarded
-    # transparently instead of being intercepted by argparse on the host.
-    from son_of_anton_cli.config import get_container_exec_info
-
-    container_info = get_container_exec_info()
-    if container_info:
-        _exec_in_container(container_info, sys.argv[1:])
-        # Unreachable: os.execvp never returns on success (process is replaced)
-        # and raises OSError on failure (which propagates as a traceback).
-        sys.exit(1)
-
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
 
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────

@@ -8,7 +8,6 @@ import re
 import shutil
 import stat
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -89,9 +88,7 @@ def _preserve_file_mode(path: Path) -> "int | None":
 
 
 def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
-    """Capture the owning uid/gid of *path* if the platform supports it."""
-    if os.name != "posix":
-        return None
+    """Capture the owning uid/gid of *path*."""
     try:
         st = path.stat()
     except OSError:
@@ -102,11 +99,10 @@ def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
 def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
     """Re-apply uid/gid after an atomic replace when permitted.
 
-    Docker and NAS-backed installs often run some commands as root while the
-    persistent volume is owned by the runtime user. ``os.replace`` swaps in the
-    temp file's owner, so a root-run config write can leave ``config.yaml`` owned
-    by root. Best-effort chown preserves the existing owner for privileged
-    callers and is harmless for unprivileged callers that cannot chown.
+    ``os.replace`` swaps in the temp file's owner, so a root-run config write
+    can leave ``config.yaml`` owned by root. Best-effort chown preserves the
+    existing owner for privileged callers and is harmless for unprivileged
+    callers that cannot chown.
     """
     if owner is None or not hasattr(os, "chown"):
         return
@@ -131,93 +127,6 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         os.chmod(path, mode)
     except OSError:
         pass
-
-
-_IS_WINDOWS = os.name == "nt"
-
-# Windows rename failures that can be caused by another handle on the target
-# rather than by a permission problem.  ``os.replace`` onto a file that any
-# other handle has open is denied because CPython opens files without
-# ``FILE_SHARE_DELETE``:
-#
-#   5  ERROR_ACCESS_DENIED    — what a held *target* handle actually reports
-#   32 ERROR_SHARING_VIOLATION — reported when the *source* temp file is held
-#   33 ERROR_LOCK_VIOLATION    — byte-range lock on the target
-#
-# Measured on Windows 11 (build 26200, CPython 3.11): a plain reader on the
-# target — in-process or cross-process — yields winerror 5, NOT 32.  Keying
-# recovery on 32 alone therefore misses every real occurrence of this bug.
-# These codes are ambiguous (a genuine ACL denial is also 5), which is why
-# recovery is bounded and any still-failing write is re-raised unchanged
-# rather than being classified up front.
-_WINDOWS_CONTENDED_REPLACE_ERRORS = frozenset({5, 32, 33})
-
-# Retry budget for the atomic rename.  A rename that wins here keeps the write
-# fully atomic, so the budget is sized to cover a realistic contended hold: an
-# observed desktop auth-init holds auth.json past 100 ms, while an ordinary
-# status read is ~0.05 ms.  Measured on Windows 11 build 26200, this recovers
-# holds up to ~200 ms atomically (~310 ms worst case).
-#
-# The cap matters as much as the attempt count.  gateway_state.json is
-# rewritten at every turn boundary, so a permanently-held target pays the full
-# budget on every write: a longer 6 x 20..400 ms budget cost ~1.3 s per write
-# under a persistent reader, versus ~0.3 s here for the same atomic coverage.
-# Jittered so concurrent writers don't retry in lockstep.
-_REPLACE_RETRY_ATTEMPTS = 4
-_REPLACE_RETRY_BASE_DELAY_S = 0.02
-_REPLACE_RETRY_MAX_DELAY_S = 0.1
-
-
-def _is_contended_windows_replace_error(exc: OSError) -> bool:
-    """Return True for Windows rename failures a retry might clear.
-
-    Only a *candidate* classification: ``ERROR_ACCESS_DENIED`` covers both a
-    concurrent handle and a real ACL denial, and the two are not reliably
-    distinguishable up front.  Probing the target with ``os.access`` does not
-    work — ``os.replace`` needs delete-child rights on the *parent directory*,
-    so a directory-level denial reports the target as writable.  Instead of
-    guessing, both cases enter the same bounded retry and a genuine denial
-    falls through to the caller with its original error.
-    """
-    return _IS_WINDOWS and getattr(exc, "winerror", None) in (
-        _WINDOWS_CONTENDED_REPLACE_ERRORS
-    )
-
-
-def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
-    """Overwrite *real_path* with the contents of *tmp_str*, in place.
-
-    Last-resort path for a target whose handle is still held after the retry
-    budget: writing through the existing file works where renaming onto it
-    does not.  Unlike ``shutil.copyfile`` this never truncates the target to
-    zero first — a concurrent reader would otherwise be able to observe an
-    empty ``auth.json`` / ``gateway_state.json`` mid-write (measured: a
-    4-thread poller sees a 0-byte read during a plain copyfile).  A single
-    ``os.write`` of the full payload followed by ``ftruncate`` keeps the
-    visible content going straight from old to new.
-
-    This is still not atomic — it is a strictly smaller window than a copy,
-    not the absence of one — so it runs only after the rename has genuinely
-    failed.  Writing through the target also preserves its ACL, which
-    ``os.replace`` does not (the temp file's inherited ACL wins there).
-    """
-    with open(tmp_str, "rb") as src:
-        data = src.read()
-    flags = os.O_WRONLY | getattr(os, "O_BINARY", 0)
-    fd = os.open(real_path, flags)
-    try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        written = 0
-        while written < len(data):
-            written += os.write(fd, data[written:])
-        os.ftruncate(fd, len(data))
-        try:
-            os.fsync(fd)
-        except OSError:
-            pass
-    finally:
-        os.close(fd)
-    os.unlink(tmp_str)
 
 
 def _copy_fallback(tmp_str: str, real_path: str) -> None:
@@ -248,21 +157,10 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call unless the rename fails with:
-
-    * ``EXDEV`` / ``EBUSY`` (any platform) — cross-device, bind-mount, and
-      busy-file deployments fall back to copy/fsync/unlink immediately.
-      These never clear on retry.
-    * A Windows rename contended by another open handle (winerror 5/32/33).
-      CPython opens files without ``FILE_SHARE_DELETE``, so *any* concurrent
-      reader of the target blocks the rename.  The rename is retried with
-      jittered backoff first — a retry that wins keeps the write atomic —
-      and only a target whose handle outlives the budget is rewritten in
-      place, so the update lands instead of being silently dropped.
-
-    A genuine Windows permission failure produces the same winerror as a
-    contended one, so it is not classified up front: it exhausts the retry
-    budget, fails the in-place rewrite too, and is re-raised unchanged.
+    ``os.replace`` call unless the rename fails with ``EXDEV`` / ``EBUSY``
+    (any platform) — cross-device, bind-mount, and busy-file deployments
+    fall back to copy/fsync/unlink immediately.  These never clear on
+    retry.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
@@ -274,49 +172,9 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         os.replace(tmp_str, real_path)
         return real_path
     except OSError as exc:
-        contended = _is_contended_windows_replace_error(exc)
-        if exc.errno not in (errno.EXDEV, errno.EBUSY) and not contended:
+        if exc.errno not in (errno.EXDEV, errno.EBUSY):
             raise
-        if contended:
-            # Lazy import: keeps ``utils`` free of a package-level dependency
-            # on ``agent`` for every consumer that never hits this path.
-            from agent.retry_utils import jittered_backoff
-
-            for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
-                time.sleep(
-                    jittered_backoff(
-                        attempt,
-                        base_delay=_REPLACE_RETRY_BASE_DELAY_S,
-                        max_delay=_REPLACE_RETRY_MAX_DELAY_S,
-                    )
-                )
-                try:
-                    os.replace(tmp_str, real_path)
-                    return real_path
-                except OSError as retry_exc:
-                    if retry_exc.errno in (errno.EXDEV, errno.EBUSY):
-                        # Not contention after all — stop burning the budget.
-                        exc = retry_exc
-                        contended = False
-                        break
-                    if not _is_contended_windows_replace_error(retry_exc):
-                        raise
-                    exc = retry_exc
-        logger.debug(
-            "atomic_replace: %s -> %s failed with %s; falling back to %s",
-            tmp_str,
-            real_path,
-            getattr(exc, "winerror", None)
-            or errno.errorcode.get(exc.errno or 0, exc.errno),
-            "in-place rewrite" if contended else "copy",
-        )
-        if contended:
-            # Re-raises the rewrite's own error (not the rename's) when the
-            # target is genuinely unwritable — an ACL denial stays an ACL
-            # denial rather than being reported as contention.
-            _rewrite_in_place(tmp_str, real_path)
-        else:
-            _copy_fallback(tmp_str, real_path)
+        _copy_fallback(tmp_str, real_path)
     return real_path
 
 
@@ -366,10 +224,9 @@ def atomic_write_text(
     )
     try:
         with os.fdopen(fd, "w", encoding=encoding) as handle:
-            if effective_mode is not None and hasattr(os, "fchmod"):
+            if effective_mode is not None:
                 # fchmod the temp fd BEFORE the replace so the target never
-                # transits through mkstemp's 0600. fchmod is Unix-only; on
-                # Windows the post-replace chmod below applies the mode.
+                # transits through mkstemp's 0600.
                 os.fchmod(handle.fileno(), effective_mode)
             handle.write(content)
             handle.flush()
@@ -377,8 +234,6 @@ def atomic_write_text(
         real_path = atomic_replace(tmp_path, path)
         if preserve_mode:
             _restore_file_owner(Path(real_path), original_owner)
-        if effective_mode is not None and not hasattr(os, "fchmod"):
-            _restore_file_mode(Path(real_path), effective_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -423,10 +278,9 @@ def atomic_json_write(
         suffix=".tmp",
     )
     try:
-        if mode is not None and hasattr(os, "fchmod"):
-            # fchmod is Unix-only; Windows' os module has no fchmod. Skipping it
-            # here is safe — mkstemp already created the temp file as 0o600, and
-            # the post-replace os.chmod below applies the final mode durably.
+        if mode is not None:
+            # Apply the mode to the temp fd BEFORE the replace so the target
+            # never transits through mkstemp's 0600.
             os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
@@ -482,10 +336,6 @@ def warn_if_credential_file_broadly_readable(
     try:
         file_mode = p.stat().st_mode
     except OSError:
-        return False
-    if os.name != "posix":
-        # Windows ACLs don't map onto POSIX group/other bits; st_mode there
-        # is synthesized and would false-positive.
         return False
     if not (file_mode & (stat.S_IRGRP | stat.S_IROTH)):
         return False
@@ -557,11 +407,9 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            if original_mode is not None and hasattr(os, "fchmod"):
+            if original_mode is not None:
                 # Apply the mode to the temp fd BEFORE the replace so the
-                # target never transits through mkstemp's 0600 (the
-                # post-replace _restore_file_mode below then re-applies it
-                # harmlessly, and remains the sole path on Windows).
+                # target never transits through mkstemp's 0600.
                 os.fchmod(f.fileno(), original_mode)
             # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
             # cursors) as real UTF-8 instead of fragile escape sequences. Without

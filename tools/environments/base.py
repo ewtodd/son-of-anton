@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import IO, Callable, Iterable, Protocol
 
 from son_of_anton_constants import get_son_of_anton_home
-from son_of_anton_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -370,7 +369,6 @@ def _popen_bash(
     Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
     this and call :func:`_pipe_stdin` directly.
     """
-    kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -615,8 +613,8 @@ class BaseEnvironment(ABC):
         """Return the backend temp directory used for session artifacts.
 
         Most sandboxed backends use ``/tmp`` inside the target environment.
-        LocalEnvironment overrides this on platforms like Termux where ``/tmp``
-        may be missing and ``TMPDIR`` is the portable writable location.
+        LocalEnvironment overrides this when ``/tmp`` is missing and
+        ``TMPDIR`` is the portable writable location.
         """
         return "/tmp"
 
@@ -711,16 +709,12 @@ class BaseEnvironment(ABC):
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
         # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
-        # the Windows subclass override converts a native ``C:\Users\x`` cwd to
-        # the Git-Bash ``/c/Users/x`` form the bootstrap ``cd`` can resolve.
-        # Without this the snapshot bootstrap ``cd`` below fails on Windows and
-        # ``pwd -P`` captures the login shell's directory, not ``terminal.cwd``.
+        # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
+        # subclass overrides can rewrite a native path to the shell form the
+        # bootstrap ``cd`` can resolve.
         _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
-        # Quote snapshot / cwd-file paths via ``_quote_shell_path`` so the
-        # LocalEnvironment override can rewrite ``C:/...`` (and mixed
-        # ``/c/Users\\...``) to ``/c/...`` before quoting — bare drive paths
-        # in the bootstrap script trip MSYS into the
-        # ``Directory \\drivers\\etc does not exist`` failure class.
+        # Quote snapshot / cwd-file paths via ``_quote_shell_path`` so a
+        # LocalEnvironment override can rewrite native paths before quoting.
         # On POSIX this is plain ``shlex.quote``.
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
         # Use atomic file replacement: assemble the snapshot in a temp file,
@@ -740,8 +734,8 @@ class BaseEnvironment(ABC):
         # but macOS ships bash 3.2 which does NOT provide it — the name expands
         # empty there, so every writer shares one temp path and the race is
         # back.  ``mktemp`` allocates a per-writer unique path portably across
-        # bash versions.  The template is shell-quoted (Windows/Git-Bash drive
-        # letters, spaces) and the resulting path lives in a shell variable so
+        # bash versions.  The template is shell-quoted (spaces and special
+        # characters) and the resulting path lives in a shell variable so
         # every later expansion is consistent.
         _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
         _snap_tmp = '"$__son_of_anton_snap_tmp"'
@@ -840,8 +834,8 @@ class BaseEnvironment(ABC):
     def _quote_shell_path(self, path: str) -> str:
         """Quote *path* for interpolation into a bash script.
 
-        LocalEnvironment overrides this to rewrite native/mixed Windows
-        paths to ``/c/...`` before quoting. Remote backends leave paths
+        LocalEnvironment overrides this to rewrite native/mixed paths to the
+        shell form before quoting. Remote backends leave paths
         as-is (they already speak POSIX).
         """
         return shlex.quote(path)
@@ -852,7 +846,7 @@ class BaseEnvironment(ABC):
         escaped = command.replace("'", "'\\''")
 
         # Quote the snapshot path (see init_session — LocalEnvironment
-        # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle it).
+        # rewrites native paths to the shell form).
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
@@ -1102,26 +1096,9 @@ class BaseEnvironment(ABC):
             if not isinstance(fd, int) or fd < 0:
                 _drain_iterable(stream)
                 return
-            # select.select does NOT work on pipe fds on Windows (only sockets).
-            # Use blocking os.read in a daemon thread instead — safe because
-            # EOF arrives promptly when bash exits.
-            if os.name == "nt":
-                try:
-                    while True:
-                        chunk = os.read(fd, 4096)
-                        if not chunk:
-                            break
-                        output.append(decoder.decode(chunk))
-                except (ValueError, OSError):
-                    pass
-                finally:
-                    try:
-                        tail = decoder.decode(b"", final=True)
-                        if tail:
-                            output.append(tail)
-                    except Exception:
-                        pass
-                return
+            # select on the pipe fd: blocks at most 0.1s per cycle and stops
+            # promptly on EOF; idle detection catches a grandchild holding the
+            # write end after bash itself exits.
             idle_after_exit = 0
             try:
                 while True:

@@ -16,7 +16,6 @@ from pathlib import Path
 from son_of_anton_constants import (
     get_son_of_anton_home,
     get_skills_dir,
-    is_wsl,
     reset_son_of_anton_home_override,
     set_son_of_anton_home_override,
 )
@@ -244,7 +243,7 @@ SKILLS_GUIDANCE = (
 
 # Guidance injected into the system prompt when the computer_use toolset
 # is active. Universal — works for any model (Claude, GPT, open models).
-# Built per-platform via computer_use_guidance() so Windows/Linux hosts
+# Built per-platform via computer_use_guidance() so Linux hosts
 # don't get macOS-only wording ("Mac", "Space", cmd+s). The module-level
 # COMPUTER_USE_GUIDANCE constant renders the macOS variant for backwards
 # compatibility; system_prompt.py selects the host-appropriate variant.
@@ -483,8 +482,8 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 
 # Guidance injected into the system prompt when the computer_use toolset
 # is active. Universal — works for any model (Claude, GPT, open models).
-# Built per-platform via computer_use_guidance() so Windows/Linux hosts
-# don't get macOS-only wording ("Mac", "Space", cmd+s). The module-level
+# Built per-platform via computer_use_guidance() so Linux hosts don't get
+# macOS-only wording ("Mac", "Space", cmd+s). The module-level
 # COMPUTER_USE_GUIDANCE constant renders the macOS variant for backwards
 # compatibility; system_prompt.py selects the host-appropriate variant.
 
@@ -492,14 +491,13 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
     """Return platform-aware computer-use guidance for the system prompt.
 
     ``platform_name`` is an ``sys.platform``-style string ("darwin",
-    "win32", "linux"); defaults to the running host's platform.
+    "linux"); defaults to the running host's platform.
     """
     if platform_name is None:
         import sys as _sys
         platform_name = _sys.platform
 
     is_macos = platform_name == "darwin"
-    is_windows = platform_name == "win32"
 
     if is_macos:
         os_name = "macOS"
@@ -509,27 +507,19 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         )
         save_combo = "cmd+s"
     else:
-        os_name = "Windows" if is_windows else "Linux"
+        os_name = "Linux"
         share_line = (
             "focus, or active window. You and the user can share the same "
             "desktop at the same time.\n\n"
         )
         save_combo = "ctrl+s"
 
-    # Background-mode rules: the "different Space" wording is macOS-only;
-    # Windows needs a note about foreground-only targets (Chromium/GTK).
+    # Background-mode rules: the "different Space" wording is macOS-only.
     if is_macos:
         offscreen_line = (
             "- If an element you need is on a different Space or behind "
             "another window, cua-driver still drives it — no need to switch "
             "Spaces.\n\n"
-        )
-    elif is_windows:
-        offscreen_line = (
-            "- If an element is behind another window, cua-driver still "
-            "drives it — no need to raise it. Some apps may still force "
-            "foreground behavior internally; if an action does not land, "
-            "re-capture and adapt instead of retrying blindly.\n\n"
         )
     else:
         offscreen_line = (
@@ -539,7 +529,7 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
 
     # Capture-target example: a real app the user is likely to have running,
     # so the model has a concrete reference rather than a generic placeholder.
-    example_app = "Safari" if is_macos else ("Chrome" if is_windows else "Firefox")
+    example_app = "Safari" if is_macos else "Firefox"
 
     return (
         f"# Computer Use ({os_name} background control)\n"
@@ -1063,30 +1053,18 @@ TELEGRAM_RICH_MESSAGES_HINT = (
 # the machine/OS the agent's tools actually run on.
 # ---------------------------------------------------------------------------
 
-WSL_ENVIRONMENT_HINT = (
-    "You are running inside WSL (Windows Subsystem for Linux). "
-    "The Windows host filesystem is mounted under /mnt/ — "
-    "/mnt/c/ is the C: drive, /mnt/d/ is D:, etc. "
-    "The user's Windows files are typically at "
-    "/mnt/c/Users/<username>/Desktop/, Documents/, Downloads/, etc. "
-    "When the user references Windows paths or desktop files, translate "
-    "to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover "
-    "the Windows username if needed."
-)
-
-
 # Non-local terminal backends that run commands (and therefore every file
 # tool: read_file, write_file, patch, search_files) on a remote host rather
 # than on the machine where Son of Anton itself runs. For these backends,
-# host info (Windows/Linux/macOS, $HOME, cwd) is misleading — the agent
-# should only see the machine it can actually touch.
+# host info (Linux/macOS, $HOME, cwd) is misleading — the agent should only
+# see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "ssh",
 })
 
 
 # Per-backend fallback descriptions — used when the live probe fails.
-# Only states what we know from the backend choice itself (container type,
+# Only states what we know from the backend choice itself (backend type,
 # likely OS family). Does NOT invent cwd, user, or $HOME — the agent is
 # told to probe those directly if it needs them.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
@@ -1100,50 +1078,6 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # disk) because the probe captures live backend state that may change
 # across Son of Anton restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
-
-
-def _windows_marketing_version() -> str:
-    """Return the marketing Windows version ("10", "11", ...) for the prompt.
-
-    ``platform.release()`` reports the kernel version, which is ``10`` for
-    BOTH Windows 10 and Windows 11 — the prompt then claims "Windows (10)"
-    on Windows 11 hosts and misleads the model about the OS (#51755).
-    Windows 11 is distinguished by build number: >= 22000 is 11.
-    Falls back to ``platform.release()`` on any lookup failure.
-    """
-    try:
-        build = sys.getwindowsversion().build  # type: ignore[attr-defined]
-        if build >= 22000:
-            return "11"
-        return "10"
-    except Exception:
-        import platform
-
-        return platform.release()
-
-
-_WINDOWS_BASH_SHELL_HINT = (
-    "Shell: on this Windows host your `terminal` tool runs commands through "
-    "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
-    "syntax (`ls`, `$HOME`, `&&`, `|`, single-quoted strings) inside terminal "
-    "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
-    "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
-    "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`). Path arguments for NATIVE "
-    "Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
-    "path conversion is disabled here, so `git -C /c/Users/x` or "
-    "`node /tmp/a.js` fails with 'cannot change to'/'not found' even though "
-    "`cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style "
-    "forward-slash native paths to native tools, and prefer "
-    "`$LOCALAPPDATA/Temp` over `/tmp` for scratch files a native tool must "
-    "read. When answering prompts in a "
-    "pty background process, use process(submit) — never process(write) "
-    "with a bare trailing newline: Enter on a Windows PTY is a carriage "
-    "return, and a lone `\\n` is not delivered as a line terminator, so the "
-    "child's prompt silently never returns. When a CLI offers a "
-    "non-interactive path (flags, `--with-token`, config files, an OAuth "
-    "device flow polled with curl), prefer it over driving prompts."
-)
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
@@ -1255,16 +1189,12 @@ def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
     Always emits a factual block describing the execution environment:
-    - For **local** terminal backends: the host OS, user home, current
-      working directory (plus a Windows-only note about hostname != user
-      and a Windows-only note that `terminal` shells out to bash, not
-      PowerShell).
+    - For **local** terminal backends: the host OS, user home, and current
+      working directory.
     - For **remote** terminal backends (ssh): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.
-
-    The WSL environment hint is appended unchanged when running under WSL.
     """
     import platform
     import sys
@@ -1277,11 +1207,7 @@ def build_environment_hints() -> str:
     if not is_remote_backend:
         # --- Host info block (local backend: host == where tools run) ---
         host_lines: list[str] = []
-        if is_wsl():
-            host_lines.append("Host: WSL (Windows Subsystem for Linux)")
-        elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({_windows_marketing_version()})")
-        elif sys.platform == "darwin":
+        if sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")
         else:
@@ -1292,20 +1218,7 @@ def build_environment_hints() -> str:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:
             pass
-
-        if sys.platform == "win32" and not is_wsl():
-            host_lines.append(
-                "Note: on Windows, the machine hostname (e.g. from `hostname` "
-                "or uname) is NOT the username. Use the 'User home directory' "
-                "above to construct paths under C:\\Users\\<user>\\, never the "
-                "hostname."
-            )
         hints.append("\n".join(host_lines))
-
-        # Windows-local terminal runs bash, not PowerShell — the model must
-        # know this or it will issue PowerShell syntax and fail.
-        if sys.platform == "win32" and not is_wsl():
-            hints.append(_WINDOWS_BASH_SHELL_HINT)
     else:
         # --- Remote backend block (host info suppressed) ---
         probe = _probe_remote_backend(backend)
@@ -1333,15 +1246,12 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
-    if is_wsl():
-        hints.append(WSL_ENVIRONMENT_HINT)
-
     # Embedder-supplied environment description. Lets a host that wraps Son of Anton
     # (e.g. a sandbox runner / managed platform) explain the environment the
     # agent is running in — proxy, credential handling, mount layout — without
     # forking the identity slot (SOUL.md). Read once at prompt-build time, so
     # it's part of the stable, cache-safe system prompt. The env var is the
-    # build-time/embedder mechanism (set in a container ENV); config.yaml
+    # build-time/embedder mechanism; config.yaml
     # ``agent.environment_hint`` is the user-facing surface. Env var wins.
     extra = (os.getenv("SON_OF_ANTON_ENVIRONMENT_HINT") or "").strip()
     if not extra:

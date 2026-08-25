@@ -41,9 +41,8 @@ migrate onto in later phases:
 * :func:`kill_process_tree` — portable whole-tree termination so
   kill-on-timeout stops orphaning descendants (#71148, #59549, #84967,
   #68139 class).  Existing site-local tree-kills that migrate onto this in
-  Phase 4 of #85125: ``gateway/status.py`` (taskkill wrapper + psutil
-  snapshot/reap pair) and ``tools/code_execution_tool.py`` (psutil
-  recursive children kill).
+  Phase 4 of #85125: ``gateway/status.py`` (psutil snapshot/reap pair) and
+  ``tools/code_execution_tool.py`` (psutil recursive children kill).
 
 Design invariants:
 
@@ -66,8 +65,6 @@ import asyncio
 import faulthandler
 import logging
 import os
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -447,52 +444,25 @@ def run_bounded_sync(
 # ---------------------------------------------------------------------------
 
 def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
-    """Terminate ``pid`` and all its descendants, portably.
+    """Terminate ``pid`` and all its descendants.
 
     Kill-on-timeout that signals only the direct child orphans process trees
     (cron scripts, in-container shells, browser daemons — #71148 class).
 
-    * Windows: ``taskkill /F /T`` terminates the tree (``sig`` ignored;
-      Windows has no equivalent). Console-window flash is suppressed via
-      ``windows_hide_flags`` and the exit code is checked, so a dead or
-      inaccessible PID reports ``False`` like the POSIX path.
-    * POSIX: the descendant set is snapshotted via psutil (a hard
-      dependency) BEFORE any signal — once the parent dies its children are
-      reparented and can no longer be found by a parent walk. Then the
-      process group is signalled when ``pid`` leads one (covers
-      grandchildren in the same session in one syscall), and every
-      snapshotted descendant is signalled individually — which also reaches
-      descendants that created their OWN sessions (a child that called
-      ``setsid``, exactly what user shell commands do; see
-      tools/environments/base.py). ``sig`` defaults to ``SIGKILL``.
-      psutil's identity-aware ``Process`` (PID + create time) means a
-      recycled PID is never signalled.
+    The descendant set is snapshotted via psutil (a hard dependency) BEFORE
+    any signal — once the parent dies its children are reparented and can no
+    longer be found by a parent walk. Then the process group is signalled
+    when ``pid`` leads one (covers grandchildren in the same session in one
+    syscall), and every snapshotted descendant is signalled individually —
+    which also reaches descendants that created their OWN sessions (a child
+    that called ``setsid``, exactly what user shell commands do; see
+    tools/environments/base.py). ``sig`` defaults to ``SIGKILL``. psutil's
+    identity-aware ``Process`` (PID + create time) means a recycled PID is
+    never signalled.
 
     Returns True when the target (or any of its tree) was signalled, False
     when the process was already gone or every termination call failed.
     """
-    if sys.platform == "win32":
-        try:
-            from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
-            creationflags = windows_hide_flags()
-        except Exception:
-            creationflags = 0
-        try:
-            proc = subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                timeout=15,
-                check=False,
-                creationflags=creationflags,
-            )
-            # taskkill exits non-zero for not-found / access-denied; keep the
-            # cross-platform contract (False = nothing was terminated).
-            return proc.returncode == 0
-        except Exception:
-            logger.debug("kill_process_tree: taskkill failed for pid %s", pid, exc_info=True)
-            return False
-
     import signal as _signal
 
     if sig is None:
@@ -523,7 +493,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
             # pid leads its own group: one syscall covers the whole group.
             # (The == check guards against signalling the caller's own group
             # when pid is not a leader.)
-            os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (win32 returns above)
+            os.killpg(pgid, sig)
         else:
             os.kill(pid, sig)
         signalled = True

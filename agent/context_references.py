@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
-from son_of_anton_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from son_of_anton_cli.sizefmt import format_bytes
 
 from abc import ABC, abstractmethod
@@ -422,7 +421,7 @@ def _expand_git_reference(
     args: list[str],
     label: str,
 ) -> tuple[str | None, str | None]:
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    _popen_kwargs = {}
     try:
         result = subprocess.run(
             ["git", *args],
@@ -635,7 +634,6 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
 
 
 def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["rg", "--files", str(path.relative_to(cwd))],
@@ -644,7 +642,6 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             text=True, encoding='utf-8', errors='replace',
             timeout=10,
             stdin=subprocess.DEVNULL,
-            **_popen_kwargs,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None

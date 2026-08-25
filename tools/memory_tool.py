@@ -36,16 +36,10 @@ from typing import Dict, Any, List, Optional, Tuple
 from utils import atomic_write_text, is_truthy_value
 from tools.registry import no_cache_check_fn
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking
-msvcrt = None
 try:
     import fcntl
-except ImportError:
+except ImportError:  # pragma: no cover - fcntl is always present on supported platforms
     fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        pass
 
 logger = logging.getLogger(__name__)
 
@@ -310,30 +304,19 @@ class MemoryStore:
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if fcntl is None and msvcrt is None:
+        if fcntl is None:
             yield
             return
 
         fd = open(lock_path, "a+", encoding="utf-8")
         try:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            else:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+            fcntl.flock(fd, fcntl.LOCK_EX)
             yield
         finally:
-            if fcntl:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except (OSError, IOError):
-                    pass
-            elif msvcrt:
-                try:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
             fd.close()
 
     @staticmethod

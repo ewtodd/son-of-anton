@@ -6,10 +6,8 @@ import errno
 import json
 import logging
 import os
-import posixpath
-import sys
 import threading
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import (
@@ -153,7 +151,7 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
-def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
     """
@@ -197,20 +195,6 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
         return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
     except Exception:
         return str(os.getenv("TERMINAL_ENV") or "local").lower()
-
-
-def _uses_container_paths(task_id: str = "default") -> bool:
-    return False
-
-
-def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
-    """Normalize path syntax without following host symlinks.
-
-    Container backends use paths that are meaningful inside the sandbox. Calling
-    ``Path.resolve()`` on the host can dereference a host-side symlink such as
-    ``/workspace`` and rewrite the path before the sandbox sees it.
-    """
-    return PurePosixPath(posixpath.normpath(str(path)))
 
 
 def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
@@ -294,11 +278,7 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     return _configured_terminal_cwd()
 
 
-def _resolve_base_dir(
-    task_id: str = "default",
-    *,
-    container_paths: bool | None = None,
-) -> Path | PurePosixPath:
+def _resolve_base_dir(task_id: str = "default") -> Path:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
     Resolution order:
@@ -322,27 +302,10 @@ def _resolve_base_dir(
     the process cwd only as a last resort, deterministically.
     """
     root = _authoritative_workspace_root(task_id)
-    if container_paths is None:
-        container_paths = _uses_container_paths(task_id)
     if root:
         base_text = _expand_tilde(root)
     else:
         base_text = os.getcwd()
-    if container_paths:
-        if not posixpath.isabs(base_text):
-            base_text = posixpath.join(os.getcwd(), base_text)
-        return _normalize_without_host_deref(base_text)
-    # Git Bash ``pwd -P`` reports ``/c/Users/...``; translate before Path so
-    # relative file-tool paths don't anchor under a nonexistent ``\\c\\Users``.
-    from tools.environments.local import _msys_to_windows_path
-
-    base_text = _msys_to_windows_path(base_text)
-    if sys.platform == "win32":
-        import ntpath
-
-        if not ntpath.isabs(base_text):
-            base_text = ntpath.join(os.getcwd(), base_text)
-        return Path(ntpath.normpath(base_text))
     base = Path(base_text)
     if not base.is_absolute():
         # Last-resort anchoring: a live cwd should already be absolute, but if a
@@ -352,40 +315,17 @@ def _resolve_base_dir(
     return base.resolve()
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
-
-    On native Windows, Git Bash / MSYS drive paths (``/c/Users/...``) are
-    translated to ``C:\\Users\\...`` before resolution so file tools don't
-    treat them as relative ``\\c\\Users\\...`` under the process cwd.
     """
-    container_paths = _uses_container_paths(task_id)
-    if container_paths:
-        expanded = _expand_tilde(filepath)
-        if posixpath.isabs(expanded):
-            return _normalize_without_host_deref(expanded)
-        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
-        return _normalize_without_host_deref(resolved)
-
-    # Host paths only — never rewrite Linux paths inside a container/WSL env.
-    from tools.environments.local import _msys_to_windows_path
-
-    expanded = _expand_tilde(_msys_to_windows_path(filepath))
-    if sys.platform == "win32":
-        import ntpath
-
-        if ntpath.isabs(expanded):
-            return Path(ntpath.normpath(expanded))
-        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
-        return Path(ntpath.normpath(joined))
-
+    expanded = _expand_tilde(filepath)
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    resolved = _resolve_base_dir(task_id) / p
     return resolved.resolve()
 
 
@@ -410,10 +350,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        if _uses_container_paths(task_id):
-            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
-        else:
-            root = Path(_expand_tilde(workspace_root)).resolve()
+        root = Path(_expand_tilde(workspace_root)).resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)

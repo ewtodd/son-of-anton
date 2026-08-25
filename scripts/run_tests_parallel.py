@@ -109,7 +109,7 @@ def _split_pathspec(value: str) -> List[str]:
 
     POSIX: ``:``-separated, as documented.
 
-    Windows: ``;`` (``os.pathsep``) and ``:`` are both accepted as
+    POSIX: ``:`` (``os.pathsep``) is accepted as
     separators, but a ``:`` that forms a drive letter (``C:\\...`` or
     ``C:/...``) stays glued to its path — a naive ``split(":")`` turns
     ``C:\\repo\\tests`` into ``['C', '\\repo\\tests']``, where the bogus
@@ -140,12 +140,11 @@ def _split_pathspec(value: str) -> List[str]:
 # Host-OS gating (see the ``_OS_MARKS`` block in tests/conftest.py): tests
 # marked for another host are collected and SKIPPED by the conftest hook —
 # this runner never executes them, by construction. The summary calls that
-# out explicitly so a local run isn't misread as covering macOS/Windows
-# behaviour, and names the CI lane where those tests actually execute.
+# out explicitly so a local run isn't misread as covering unsupported
+# platforms, and names the CI lane where those tests actually execute.
 _OS_MARKERS = {
     "linux_only": ("linux", "the main Linux CI lane"),
-    "macos_only": ("darwin", "the tests-os CI lane (macos-latest)"),
-    "windows_only": ("win32", "the tests-os CI lane (windows-latest)"),
+    "macos_only": ("darwin", "the macOS CI lane"),
 }
 
 
@@ -250,7 +249,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     long-running grandchildren that survive the pytest subprocess exit
     if we don't kill the whole tree. ``subprocess.Popen.kill()`` only
     targets the immediate child; grandchildren reparent to PID 1
-    (Linux) / get adopted by services.exe (Windows) and leak.
+    and leak.
 
     POSIX: the caller must pass ``pgid`` — the process group id captured
     immediately after Popen (via ``os.getpgid(proc.pid)``). We can't
@@ -259,9 +258,6 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     gone from the kernel's process table, even though descendants in
     the group are still alive. SIGKILL'ing the captured pgid takes out
     everything in that group atomically.
-
-    Windows: ``taskkill /F /T /PID`` walks the recorded ppid chain and
-    terminates the whole tree, even when the root has already exited.
 
     Why not psutil: psutil walks the parent-child tree, but in the
     happy path the root has already been reaped so ``psutil.Process(pid)``
@@ -273,26 +269,14 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     if proc.pid is None:
         return
 
-    if sys.platform == "win32":
+    # POSIX: kill the captured pgid. Local-import signal so the
+    # SIGKILL attribute is never referenced on unsupported platforms.
+    if pgid is not None:
         try:
-            
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )  # windows-footgun: ok
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            import signal as _signal
+            os.killpg(pgid, _signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
-    else:
-        # POSIX: kill the captured pgid. Local-import signal so the
-        # SIGKILL attribute is never referenced on Windows.
-        if pgid is not None:
-            try:
-                import signal as _signal
-                os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
 
     # Belt-and-suspenders: ensure subprocess.communicate() sees the exit.
     try:

@@ -409,16 +409,15 @@ def check_alias_collision(name: str) -> Optional[str]:
 
     # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
-    is_windows = sys.platform == "win32"
     try:
         result = subprocess.run(
-            ["where" if is_windows else "which", canon],
+            ["which", canon],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         if result.returncode == 0:
             existing_path = result.stdout.strip().splitlines()[0]
             # Allow overwriting our own wrappers
-            expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
+            expected = wrapper_dir / canon
             if existing_path == str(expected):
                 try:
                     content = expected.read_text(encoding="utf-8")
@@ -446,7 +445,6 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     activates is ``target`` if given, otherwise ``name`` — this lets a custom
     alias name point at a differently-named profile without a post-hoc rewrite.
 
-    On Windows, creates a ``.bat`` file instead of a POSIX shell script.
     Returns the path to the created wrapper, or None if creation failed.
     """
     canon = normalize_profile_name(name)
@@ -461,25 +459,15 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
-    is_windows = sys.platform == "win32"
-    if is_windows:
-        wrapper_path = wrapper_dir / f"{canon}.bat"
-        try:
-            wrapper_path.write_text(f"@echo off\r\nson-of-anton -p {profile} %*\r\n", encoding="utf-8")
-            return wrapper_path
-        except OSError as e:
-            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
-            return None
-    else:
-        wrapper_path = wrapper_dir / canon
-        try:
-            son_of_anton_exe = shutil.which("son-of-anton") or "son-of-anton"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(son_of_anton_exe)} -p {profile} "$@"\n', encoding="utf-8")
-            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-            return wrapper_path
-        except OSError as e:
-            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
-            return None
+    wrapper_path = wrapper_dir / canon
+    try:
+        son_of_anton_exe = shutil.which("son-of-anton") or "son-of-anton"
+        wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(son_of_anton_exe)} -p {profile} "$@"\n', encoding="utf-8")
+        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return wrapper_path
+    except OSError as e:
+        print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
+        return None
 
 
 def remove_wrapper_script(name: str) -> bool:
@@ -492,12 +480,8 @@ def remove_wrapper_script(name: str) -> bool:
         validate_alias_name(canon)
     except ValueError:
         return False
-    is_windows = sys.platform == "win32"
 
-    # Check both the extensionless path (POSIX) and .bat (Windows)
     candidates = [wrapper_dir / canon]
-    if is_windows:
-        candidates.insert(0, wrapper_dir / f"{canon}.bat")
 
     for wrapper_path in candidates:
         if wrapper_path.exists():
@@ -586,16 +570,13 @@ def build_alias_map() -> dict[str, str]:
     result: dict[str, str] = {}
     if not wrapper_dir.is_dir():
         return result
-    is_windows = sys.platform == "win32"
     prefix = "son-of-anton -p "
 
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
+        # Only our own wrappers are named with the alias (no extension).
+        if entry.suffix:
             continue
         try:
             with open(entry, "r", encoding="utf-8", errors="strict") as f:
@@ -612,7 +593,7 @@ def build_alias_map() -> dict[str, str]:
         if not canon:
             continue
         canon = normalize_profile_name(canon)
-        alias = entry.stem if is_windows else entry.name
+        alias = entry.name
         # Custom alias (name != profile) preferred; otherwise keep the
         # profile-named wrapper. Don't overwrite a custom alias already found.
         if alias == canon:
@@ -974,8 +955,7 @@ def list_profiles() -> List[ProfileInfo]:
             model, provider = _read_config_model(entry)
             alias_name = alias_map.get(normalize_profile_name(name))
             if alias_name:
-                is_windows = sys.platform == "win32"
-                alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
+                alias_path = wrapper_dir / alias_name
             else:
                 alias_path = None
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
@@ -1255,13 +1235,8 @@ def create_profile(
             pass  # non-fatal — user can describe later with `son-of-anton profile describe`
 
     # Phase 4: when running inside a container under s6, register the
-    # new profile's gateway as a runtime s6 service so
-    # `son-of-anton -p <profile> gateway start` can supervise it via
-    # `s6-svc -u` instead of spawning a bare process. On host (systemd
-    # / launchd / windows) this is a no-op — the existing per-profile
-    # unit-generation paths handle gateway lifecycle.
-    _maybe_register_gateway_service(canon)
-
+    # Gateway lifecycle on Nix hosts is owned by the service manager
+    # (systemd/launchd) via the per-profile unit-generation paths.
     return profile_dir
 
 
@@ -1408,13 +1383,13 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
 
     backend_tokens = {"serve", "dashboard", "gateway"}
     son_of_anton_markers = ("son_of_anton_cli.main", "son-of-anton-gateway")
-    # Matches python / python3 / python3.12 / pythonw(.exe) — the interpreter
-    # basenames a `#!/…/python3` console-script shim gets exec'd through when
-    # something (e.g. Electron's `findOnPath('son-of-anton')` resolution) spawns the
+    # Matches python / python3 / python3.12 — the interpreter basenames a
+    # `#!/…/python3` console-script shim gets exec'd through when something
+    # (e.g. Electron's `findOnPath('son-of-anton')` resolution) spawns the
     # shim by handing the interpreter its path explicitly instead of running
     # the shim directly. In that shape the OS-reported argv[0] is the
     # interpreter, not "son-of-anton", so the checks below would otherwise miss it.
-    _python_interpreter_re = re.compile(r"^python[\d.]*w?(\.exe)?$")
+    _python_interpreter_re = re.compile(r"^python[\d.]*$")
     # The actual console-script entry points this project ships (see
     # pyproject.toml [project.scripts]) -- used to validate argv[1] against
     # a known shim identity rather than a loose prefix match, since argv[1]
@@ -1642,10 +1617,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 1. Disable service (prevents auto-restart)
     _cleanup_gateway_service(canon, profile_dir)
-    # 1b. Phase 4: unregister the s6 service slot (container path).
-    # On host this is a no-op; on container it removes
-    # /run/service/gateway-<profile>/ so s6-supervise drops it.
-    _maybe_unregister_gateway_service(canon)
 
     # 2. Stop running gateway
     if gw_running:
@@ -1739,89 +1710,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir
-
-
-def _maybe_register_gateway_service(profile_name: str) -> None:
-    """Register a profile's gateway with s6 inside the container.
-
-    No-op on host (systemd/launchd/windows) — those backends raise
-    ``NotImplementedError`` on ``register_profile_gateway`` and the
-    existing per-profile unit-generation paths handle lifecycle.
-
-    Best-effort: any error (no backend detected, s6 not yet ready,
-    etc.) is logged and swallowed so profile creation doesn't fail
-    because the s6 supervision tree is in a weird state. The user
-    can re-register manually later via the gateway start command,
-    which goes through the same dispatch path.
-
-    Port selection: each supervised profile gateway loads its own
-    ``SON_OF_ANTON_HOME`` and binds the port resolved by ``gateway/config.py``
-    from that profile's environment (no built-in platform binds a TCP port
-    anymore; plugin platforms may still declare one), so profiles that
-    register the same plugin listener port would conflict. Give each profile
-    a distinct port in its own ``.env``.
-
-    Host short-circuit: check ``detect_service_manager()`` first and
-    return immediately if it isn't ``"s6"``. This keeps host
-    (systemd/launchd/windows) profile creation completely silent —
-    no ``get_service_manager()`` call, no exception path, no chance
-    of the ``⚠ Could not register s6 gateway service`` warning ever
-    rendering on a non-container machine. The earlier
-    ``supports_runtime_registration()`` check still catches the case
-    where detection somehow returns ``"s6"`` but the backend isn't
-    actually the S6 one.
-    """
-    try:
-        from son_of_anton_cli.service_manager import detect_service_manager
-        if detect_service_manager() != "s6":
-            return  # host path — silent, no registration needed
-        from son_of_anton_cli.service_manager import get_service_manager
-        mgr = get_service_manager()
-    except RuntimeError:
-        return  # no backend on this host — nothing to do
-    except Exception:
-        # Defensive: detect_service_manager failed for some other
-        # reason. Stay silent on host rather than printing a confusing
-        # s6 warning to users who have never touched the container.
-        return
-    if not mgr.supports_runtime_registration():
-        return  # host backend; no-op
-    try:
-        mgr.register_profile_gateway(profile_name, start_now=False)
-    except ValueError:
-        # Already registered (e.g. the container-boot reconciler ran
-        # first and brought up a stale slot). That's fine.
-        pass
-    except Exception as exc:
-        # Don't fail profile create over a supervision-tree hiccup.
-        print(f"⚠ Could not register s6 gateway service: {exc}")
-
-
-def _maybe_unregister_gateway_service(profile_name: str) -> None:
-    """Tear down a profile's s6 gateway service inside the container.
-
-    No-op on host. Idempotent: absent services are silently skipped
-    by ``unregister_profile_gateway``.
-
-    Same host short-circuit as :func:`_maybe_register_gateway_service`
-    — see that docstring.
-    """
-    try:
-        from son_of_anton_cli.service_manager import detect_service_manager
-        if detect_service_manager() != "s6":
-            return  # host path — silent
-        from son_of_anton_cli.service_manager import get_service_manager
-        mgr = get_service_manager()
-    except RuntimeError:
-        return
-    except Exception:
-        return
-    if not mgr.supports_runtime_registration():
-        return
-    try:
-        mgr.unregister_profile_gateway(profile_name)
-    except Exception as exc:
-        print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
 def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:

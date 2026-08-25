@@ -18,6 +18,7 @@ from son_of_anton_cli.config import get_env_path, get_env_value, get_son_of_anto
 from son_of_anton_cli.models import provider_label
 from son_of_anton_cli.runtime_provider import resolve_requested_provider
 
+
 def check_mark(ok: bool) -> str:
     if ok:
         return color("✓", Colors.GREEN)
@@ -98,9 +99,6 @@ def _effective_provider_label() -> str:
             effective = "custom"
 
     return provider_label(effective)
-
-
-from son_of_anton_constants import is_termux as _is_termux
 
 
 def _estop_status_line():
@@ -266,24 +264,15 @@ def show_status(args):
             print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
         if snapshot.has_process_service_mismatch:
             print("  Service:      installed but not managing the current running gateway")
-        elif _is_termux() and not snapshot.gateway_pids:
-            print("  Start with:   son-of-anton gateway")
-            print("  Note:         Android may stop background jobs when Termux is suspended")
         elif snapshot.service_installed and not snapshot.service_running:
             print("  Service:      installed but stopped")
     except Exception:
-        if _is_termux():
-            print(f"  Status:       {color('unknown', Colors.DIM)}")
-            print("  Manager:      Termux / manual process")
-        elif sys.platform.startswith('linux'):
+        if sys.platform.startswith('linux'):
             print(f"  Status:       {color('unknown', Colors.DIM)}")
             print("  Manager:      systemd/manual")
         elif sys.platform == 'darwin':
             print(f"  Status:       {color('unknown', Colors.DIM)}")
             print("  Manager:      launchd")
-        else:
-            print(f"  Status:       {color('N/A', Colors.DIM)}")
-            print("  Manager:      (not supported on this platform)")
 
     # =========================================================================
     # Cron Jobs

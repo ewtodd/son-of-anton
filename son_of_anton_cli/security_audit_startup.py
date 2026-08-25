@@ -12,12 +12,10 @@ and simply yields no finding):
 
 1. Running as root (POSIX uid 0).
 2. SSH daemon present with password authentication enabled.
-3. Running inside a container with no persistent volume mount over the
-   SON_OF_ANTON_HOME data dir (state is ephemeral — lost on container restart).
-4. A network-accessible gateway listener with no authentication configured.
+3. A network-accessible gateway listener with no authentication configured.
 
-Cross-platform: the root and SSH checks are POSIX-only and no-op on Windows.
-Everything is best-effort and read-only.
+The root and SSH checks are POSIX-only. Everything is best-effort and
+read-only.
 """
 from __future__ import annotations
 
@@ -35,7 +33,7 @@ _AUDIT_RAN = False
 
 
 def _is_root() -> bool:
-    """True when the process runs as POSIX uid 0. Always False on Windows."""
+    """True when the process runs as POSIX uid 0."""
     getuid = getattr(os, "geteuid", None) or getattr(os, "getuid", None)
     if getuid is None:
         return False
@@ -52,7 +50,7 @@ def _running_as_root() -> Optional[str]:
         "Running as ROOT. The agent's terminal/file tools execute with full "
         "root privileges — a single prompt-injection or exposed endpoint is a "
         "full host compromise. Run Son of Anton as an unprivileged user (or in a "
-        "sandboxed terminal backend / container with a non-root user)."
+        "sandboxed terminal backend with a non-root user)."
     )
 
 
@@ -88,7 +86,7 @@ def _ssh_password_auth_enabled() -> Optional[str]:
 
     Password auth on a public SSH daemon is the classic brute-force surface
     and pairs badly with a root-capable agent box. POSIX-only; returns None
-    when there's no sshd config to read (e.g. Windows, or SSH not installed).
+    when there's no sshd config to read (e.g. SSH not installed).
     """
     lines = _iter_sshd_config_lines()
     if not lines:
@@ -108,81 +106,6 @@ def _ssh_password_auth_enabled() -> Optional[str]:
         f"SSH password authentication is ENABLED{qualifier}. Password auth is "
         "brute-forceable and dangerous on an internet-facing box. Set "
         "'PasswordAuthentication no' in sshd_config and use key-based auth."
-    )
-
-
-def _in_container() -> bool:
-    """Best-effort container detection (Docker / Podman / generic OCI)."""
-    if os.path.exists("/.dockerenv"):
-        return True
-    if os.environ.get("SON_OF_ANTON_DESKTOP_CHILD_PID"):
-        return False  # desktop child, not a server container
-    try:
-        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="replace")
-        if any(tok in cgroup for tok in ("docker", "containerd", "kubepods", "libpod")):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _path_is_mounted(path: Path) -> bool:
-    """True if *path* sits on (or under) a real mount point per /proc/mounts.
-
-    Container overlay/root filesystems are ephemeral; a bind/volume mount over
-    the data dir shows up as a distinct mount entry. We treat the path as
-    persisted when a mountpoint at or above it is NOT the container root
-    overlay.
-    """
-    try:
-        target = path.resolve()
-    except Exception:
-        target = path
-    try:
-        mounts = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
-        return True  # can't tell — fail safe (no warning)
-    best = None
-    best_fstype = ""
-    for line in mounts:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        mountpoint, fstype = parts[1], parts[2]
-        try:
-            mp = Path(mountpoint)
-        except Exception:
-            continue
-        if mp == target or mp in target.parents:
-            # Longest matching mountpoint wins (most specific).
-            if best is None or len(str(mp)) > len(str(best)):
-                best = mp
-                best_fstype = fstype
-    if best is None:
-        return True
-    # overlay / tmpfs over the data dir = ephemeral container storage.
-    return best_fstype not in ("overlay", "tmpfs", "aufs")
-
-
-def _container_no_volume_mount(son_of_anton_home: Optional[Path]) -> Optional[str]:
-    if not _in_container():
-        return None
-    if son_of_anton_home is not None:
-        home = son_of_anton_home
-    else:
-        from son_of_anton_constants import get_son_of_anton_home
-
-        home = get_son_of_anton_home()
-    try:
-        if _path_is_mounted(home):
-            return None
-    except Exception:
-        return None
-    return (
-        f"Running in a container but the data dir ({home}) is NOT on a "
-        "persistent volume mount — sessions, memory, skills, and API keys are "
-        "ephemeral and lost on container restart. Mount a host volume over the "
-        "SON_OF_ANTON_HOME data directory."
     )
 
 
@@ -216,12 +139,6 @@ def run_security_audit(
                 findings.append(r)
         except Exception:
             continue
-    try:
-        r = _container_no_volume_mount(son_of_anton_home)
-        if r:
-            findings.append(r)
-    except Exception:
-        pass
     try:
         findings.extend(_network_listener_without_auth(config))
     except Exception:

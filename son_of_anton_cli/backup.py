@@ -108,23 +108,22 @@ _EXCLUDED_NAMES = {
 # profiles alike (``profiles/<name>/gateway_state.json``).
 #
 # These hold *volatile gateway/process runtime state that is namespaced to the
-# machine or container the backup was taken on* — PIDs in a dead process
-# namespace, a runtime lock, the process registry, and the gateway's last
-# recorded run/desired state. Restoring them onto a different host (or a hosted
-# container) is at best meaningless and at worst actively harmful:
+# machine the backup was taken on* — PIDs in a dead process namespace, a
+# runtime lock, the process registry, and the gateway's last recorded
+# run/desired state. Restoring them onto a different host is at best
+# meaningless and at worst actively harmful:
 #
-#   - ``gateway_state.json`` drives the container-boot reconciler
-#     (``container_boot._read_desired_state``), which only auto-starts a
-#     gateway whose recorded state is ``running``. A backup taken from a
-#     machine where the gateway was stopped (or carrying a stale/foreign
-#     value) overwrites the container's own state and leaves the gateway
-#     stuck "starting"/"cooking", disconnecting it from the Nous portal
-#     (NS-508 / the second half of NS-501).
+#   - ``gateway_state.json`` drives the boot reconciler, which only
+#     auto-starts a gateway whose recorded state is ``running``. A backup
+#     taken from a machine where the gateway was stopped (or carrying a
+#     stale/foreign value) overwrites the target's own state and leaves the
+#     gateway stuck "starting"/"cooking", disconnecting it from the Nous
+#     portal (NS-508 / the second half of NS-501).
 #   - ``gateway.pid`` / ``cron.pid`` / ``gateway.lock`` / ``processes.json``
 #     reference PIDs and locks in the *source* machine's process namespace; a
 #     numerically-equal PID in the new environment is a different process.
-#     These mirror exactly what ``container_boot._STALE_RUNTIME_FILES`` already
-#     sweeps on every container boot.
+#     These mirror exactly what the boot-time stale-runtime-file sweep
+#     already removes on every start.
 #
 # Older backups predate the backup-side exclusions, so we filter on import too
 # rather than trusting the archive's contents.
@@ -168,48 +167,23 @@ def _backup_operation_lock(son_of_anton_home: Path, timeout_seconds: float = 0.2
     acquired = False
     deadline = time.monotonic() + max(0.0, timeout_seconds)
     try:
-        if os.name == "nt":
-            import msvcrt
+        import fcntl
 
-            if lock_path.stat().st_size == 0:
-                handle.write(b" ")
-                handle.flush()
-            while True:
-                try:
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    acquired = True
-                    break
-                except (OSError, PermissionError):
-                    if time.monotonic() >= deadline:
-                        raise BackupInProgressError("another Son of Anton backup is already running")
-                    time.sleep(0.05)
-        else:
-            import fcntl
-
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except (BlockingIOError, OSError):
-                    if time.monotonic() >= deadline:
-                        raise BackupInProgressError("another Son of Anton backup is already running")
-                    time.sleep(0.05)
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    raise BackupInProgressError("another Son of Anton backup is already running")
+                time.sleep(0.05)
 
         yield
     finally:
         if acquired:
             try:
-                if os.name == "nt":
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except (OSError, PermissionError):
                 pass
         handle.close()
@@ -393,9 +367,9 @@ def _safe_copy_db(
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        # Windows will not remove the partial destination while SQLite still
-        # has it open. Close it before fail-closed cleanup; the finally block
-        # still owns the source and any close failure.
+        # Close the partial destination while SQLite still has it open before
+        # fail-closed cleanup; the finally block still owns the source and any
+        # close failure.
         if backup_conn is not None:
             try:
                 backup_conn.close()
@@ -909,7 +883,7 @@ def _default_new_file_mode() -> Optional[int]:
 
     ``tempfile.mkstemp`` always creates at 0600, so staging an import through a
     temp file would tighten every *newly created* file to owner-only — the same
-    hazard ``utils._restore_file_mode`` documents for Docker/NAS volume mounts
+    hazard ``utils._restore_file_mode`` documents for NAS volume mounts
     that rely on broader permissions.  The umask can only be read by setting it,
     so this is resolved once per import rather than once per member.  The probe
     installs a *restrictive* mask rather than 0 so that anything another thread
@@ -957,7 +931,7 @@ def _extract_member_atomically(
     produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
     so without the chown a ``sudo son-of-anton import`` would silently re-own every
     restored file to root — on the disaster-recovery path, and on exactly the
-    Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
+    NAS installs ``utils._restore_file_owner`` documents.  Both concerns
     delegate to the shared ``utils`` helpers rather than being re-derived here.
     The temp file is removed on any failure so a partial import leaves no
     residue.
@@ -1133,7 +1107,7 @@ def run_import(args) -> None:
                 continue
 
             # Never overwrite volatile gateway/process runtime state. These are
-            # namespaced to the machine/container the backup was taken on;
+            # namespaced to the machine the backup was taken on;
             # clobbering them (especially gateway_state.json) breaks the gateway
             # reconciler on the target and disconnects hosted instances from the
             # Nous portal. Matched by basename so both the root profile and

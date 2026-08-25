@@ -1260,7 +1260,7 @@ def _nested_plugin_mapping(segments: tuple[str, ...], value: Any) -> dict[str, A
 
 
 def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
-    """Return one Windows-safe directory component for plugin-owned data."""
+    """Return one portable, filesystem-safe directory component for plugin data."""
     candidate = skill_namespace or plugin_id
     if (
         skill_namespace
@@ -1270,7 +1270,7 @@ def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
         # Portable Agent Plugins already receive this exact PLUGIN_DATA path.
         return candidate
     # Reuse the portable namespace algorithm for native/nested ids too. Its
-    # fixed prefix avoids Windows reserved device names (CON, NUL, COM1...),
+    # fixed prefix avoids reserved device names and other unsafe components,
     # while the digest prevents collisions after unsafe characters are folded.
     return _portable_skill_namespace(candidate)
 
@@ -1285,35 +1285,21 @@ def _state_thread_lock(path: Path) -> threading.RLock:
 def _locked_plugin_state(path: Path):
     """Serialize state read-modify-write across threads and processes.
 
-    ``fcntl`` is used on POSIX and ``msvcrt`` on native Windows.  The lock is
-    kept in a sibling file because atomic replacement changes the inode/file
-    handle of the target itself.
+    Uses ``fcntl``. The lock is kept in a sibling file because atomic
+    replacement changes the inode/file handle of the target itself.
     """
     lock_path = path.with_name(f".{path.name}.lock")
     thread_lock = _state_thread_lock(lock_path)
     with thread_lock:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a+b") as handle:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                import msvcrt
+            import fcntl
 
-                if handle.seek(0, os.SEEK_END) == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class PluginState:

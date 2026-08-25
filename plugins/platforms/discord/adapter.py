@@ -306,26 +306,6 @@ def _format_privileged_intents_guidance(*, needs_members: bool) -> str:
     return "\n".join(lines)
 
 
-def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
-    """Return discord.py's bundled Windows opus DLL path when present."""
-    if sys.platform != "win32":
-        return None
-    discord_module = discord if discord_module is None else discord_module
-    if discord_module is None:
-        return None
-
-    opus_module = getattr(discord_module, "opus", None)
-    opus_file = getattr(opus_module, "__file__", None)
-    if not opus_file:
-        return None
-
-    target = "x64" if struct.calcsize("P") * 8 > 32 else "x86"
-    bundled = _Path(opus_file).resolve().parent / "bin" / f"libopus-0.{target}.dll"
-    if bundled.is_file():
-        return str(bundled)
-    return None
-
-
 class _DiscordNonConversationalMessageTracker:
     """Persistent bounded set of Discord message IDs that are status noise."""
 
@@ -922,8 +902,6 @@ class VoiceReceiver:
         piped WAV carries placeholder (0xFFFFFFFF) RIFF/data sizes that make
         strict readers misreport the length.
         """
-        from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
         subprocess.run(
             [
                 resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
@@ -943,7 +921,6 @@ class VoiceReceiver:
             # tools/transcription_tools' ffmpeg call sites) instead of
             # "returned non-zero exit status N" with stderr detached.
             stderr=subprocess.PIPE,
-            creationflags=windows_hide_flags(),
         )
 
 
@@ -1275,9 +1252,6 @@ class DiscordAdapter(BasePlatformAdapter):
         if not discord.opus.is_loaded():
             import ctypes.util
             opus_candidates = []
-            bundled_opus = _find_discord_windows_bundled_opus(discord)
-            if bundled_opus:
-                opus_candidates.append(bundled_opus)
             opus_path = ctypes.util.find_library("opus")
             if opus_path:
                 opus_candidates.append(opus_path)

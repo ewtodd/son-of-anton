@@ -151,10 +151,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
-from son_of_anton_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, windows_hide_flags
+from son_of_anton_cli._subprocess_compat import kill_process_tree
 
 try:
-    import fcntl  # POSIX only; Windows falls back to best-effort without flock.
+    import fcntl  # POSIX-only; Nix platforms always have it.
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
@@ -549,7 +549,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        # Windows-safe: plain shlex.split eats backslashes in paths (#78293).
+        # Tokenize with shlex (POSIX semantics; backslash-preserving).
         from son_of_anton_cli._subprocess_compat import split_command_line
 
         argv = split_command_line(os.path.expanduser(spec.command))
@@ -561,16 +561,13 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return result
 
     t0 = time.monotonic()
-    # Spawn the hook in its own process group on POSIX (``process_group=0``,
+    # Spawn the hook in its own process group (``process_group=0``,
     # Python ≥3.11) so a timed-out hook's descendants can be reaped with the
-    # hook itself. Windows keeps the hidden-window flags; tree cleanup there
-    # goes through ``taskkill /T`` in ``kill_process_tree``. Hooks that
-    # complete in time keep their descendants — an intentionally detached
-    # helper (``some-daemon &``) survives a successful run. Ported from
-    # openai/codex#37527 ("Terminate timed-out hook process trees").
-    _popen_kwargs: Dict[str, Any] = (
-        {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
-    )
+    # hook itself (see ``kill_process_tree``; ported from
+    # openai/codex#37527 "Terminate timed-out hook process trees"). Hooks
+    # that complete in time keep their descendants — an intentionally
+    # detached helper (``some-daemon &``) survives a successful run.
+    _popen_kwargs: Dict[str, Any] = {"process_group": 0}
     try:
         proc = subprocess.Popen(
             argv,

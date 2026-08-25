@@ -27,8 +27,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from son_of_anton_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
-
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants — VS Code's GitHub App client ID.
@@ -198,7 +196,6 @@ def _probe_gh_cli_token() -> Optional[str]:
     clean_env.setdefault("GH_PROMPT_DISABLED", "1")
     clean_env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
 
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     for gh_path in _gh_cli_candidates():
         cmd = [gh_path, "auth", "token"]
         if hostname:
@@ -211,7 +208,6 @@ def _probe_gh_cli_token() -> Optional[str]:
                 timeout=5,
                 env=clean_env,
                 stdin=subprocess.DEVNULL,
-                **_popen_kwargs,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)

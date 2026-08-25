@@ -594,38 +594,6 @@ _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
 })
 
-_SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
-    # Windows process/location vars. These are needed by launcher-style tools
-    # such as Docker Desktop's MCP plugin discovery, and do not carry secrets.
-    "ALLUSERSPROFILE",
-    "APPDATA",
-    "COMMONPROGRAMFILES",
-    "COMMONPROGRAMFILES(X86)",
-    "COMMONPROGRAMW6432",
-    "COMPUTERNAME",
-    "COMSPEC",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "LOCALAPPDATA",
-    "NUMBER_OF_PROCESSORS",
-    "OS",
-    "PATHEXT",
-    "PROCESSOR_ARCHITECTURE",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "PROGRAMW6432",
-    "PUBLIC",
-    "SYSTEMDRIVE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERDOMAIN",
-    "USERNAME",
-    "USERPROFILE",
-    "WINDIR",
-})
-
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:"
@@ -729,7 +697,6 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key, value in os.environ.items():
         if (
             key in _SAFE_ENV_KEYS
-            or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
             or key.startswith("XDG_")
             or (get_secret_source is not None and get_secret_source(key))
         ):
@@ -984,27 +951,6 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     if os.sep not in resolved_command:
         path_arg = resolved_env["PATH"] if "PATH" in resolved_env else None
         which_hit = shutil.which(resolved_command, path=path_arg)
-        if which_hit is None and sys.platform == "win32" and resolved_env:
-            # shutil.which(..., path=...) resolves extensions from the PARENT
-            # process PATHEXT, not the MCP subprocess env — so a config that
-            # supplies both PATH and PATHEXT can fail to resolve a command
-            # its own env can find (#56536). Retry with the config's PATHEXT
-            # (any key casing: PATHEXT / Pathext / pathext) applied.
-            cfg_pathext = next(
-                (v for k, v in resolved_env.items()
-                 if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()),
-                None,
-            )
-            if cfg_pathext and cfg_pathext != os.environ.get("PATHEXT"):
-                _saved = os.environ.get("PATHEXT")
-                try:
-                    os.environ["PATHEXT"] = cfg_pathext
-                    which_hit = shutil.which(resolved_command, path=path_arg)
-                finally:
-                    if _saved is None:
-                        os.environ.pop("PATHEXT", None)
-                    else:
-                        os.environ["PATHEXT"] = _saved
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
@@ -1043,16 +989,9 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
 def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
     """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
 
-    On POSIX, the watchdog records this process's PID and later detects parent
-    death directly through ``getppid()``. Returns the (command, args) unchanged
-    on non-POSIX platforms or if the PID cannot be read.
+    The watchdog records this process's PID and later detects parent death
+    directly through ``getppid()``.
     """
-    if os.name != "posix":
-        # Relies on process groups (os.getpgid/os.killpg); no POSIX
-        # equivalent wired up here yet, matching the existing killpg-based
-        # orphan cleanup's platform scope (Windows falls back to plain
-        # os.kill there too).
-        return command, args
     try:
         my_pid = os.getpid()
     except Exception:
@@ -3064,9 +3003,9 @@ class MCPServerTask:
             args=args,
             env=safe_env if safe_env else None,
             cwd=config.get("cwd"),
-            # On Windows, pipe I/O can deliver non-UTF-8 bytes at chunk
-            # boundaries.  Use "replace" to substitute undecodable bytes
-            # with U+FFFD instead of crashing with UnicodeDecodeError.
+            # Chunk-boundary bytes may not form valid UTF-8; use "replace" to
+            # substitute undecodable bytes with U+FFFD instead of crashing
+            # with UnicodeDecodeError.
             encoding_error_handler="replace",
         )
 
@@ -3123,8 +3062,7 @@ class MCPServerTask:
                     for _pid in new_pids:
                         try:
                             new_pgids[_pid] = os.getpgid(_pid)
-                        except (AttributeError, ProcessLookupError, OSError):
-                            # AttributeError: Windows (os.getpgid is POSIX-only)
+                        except (ProcessLookupError, OSError):
                             # ProcessLookupError: child raced and already exited
                             pass
                     with _lock:
@@ -3182,8 +3120,9 @@ class MCPServerTask:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
                     for pid in new_pids:
-                        # ``os.kill(pid, 0)`` is NOT a no-op on Windows
-                        # (bpo-14484). Use the cross-platform check.
+                        # Use the shared existence check rather than
+                        # ``os.kill(pid, 0)`` so identity semantics stay
+                        # uniform across every host surface.
                         pid_alive = _pid_exists(pid)
                         pgroup_alive = False
                         pgid = _stdio_pgids.get(pid)
@@ -5004,9 +4943,7 @@ _MCP_DISCOVERY_LOCK_RETRY_DELAY_S: float = 0.5
 class _LockCookie:
     """Holds a cross-process file lock; release() drops it.
 
-    On Windows the underlying file handle MUST stay alive while the lock is
-    held (portalocker keeps the kernel lock on the fd).  On POSIX the fcntl
-    lockdown is similarly tied to the file-descriptor lifetime.  We keep the
+    The fcntl lockdown is tied to the file-descriptor lifetime.  We keep the
     file object in ``_fh`` and close it on release.
     """
 
@@ -5017,18 +4954,11 @@ class _LockCookie:
         if self._fh is not None:
             try:
                 fd = self._fh.fileno()
-                if os.name == "posix":
-                    import fcntl
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-                else:
-                    import portalocker
-                    try:
-                        portalocker.unlock(self._fh)
-                    except Exception:
-                        pass
+                import fcntl
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except Exception:
+                    pass
             except Exception:
                 pass
             try:
@@ -5041,29 +4971,21 @@ class _LockCookie:
 def _acquire_lock_on_fh(fh: Any) -> bool:
     """Acquire a non-blocking exclusive lock on an open file handle.
 
-    Uses ``fcntl.flock`` on POSIX and ``portalocker.lock`` on Windows.
+    Uses ``fcntl.flock``.
 
     Returns ``True`` if the lock was acquired, ``False`` if another process
     holds it (non-blocking refusal).  Raises ``RuntimeError`` on unexpected
     errors so the caller can treat lock acquisition as unavailable.
     """
     fd = fh.fileno()
-    if os.name == "posix":
-        import fcntl
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError as e:
-            if e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
-                return False
-            raise
-    else:
-        import portalocker
-        try:
-            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
-            return True
-        except portalocker.LockException:
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as e:
+        if e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
             return False
+        raise
 
 
 def _try_acquire_mcp_discovery_lock() -> Any:
@@ -5131,8 +5053,7 @@ _orphan_stdio_pid_servers: Dict[int, str] = {}
 # grandchildren reparent to init/systemd-user but keep the original PGID, so
 # ``killpg(pgid, sig)`` still reaches them.  Tracked separately from
 # ``_stdio_pids`` so we retain the PGID even after the direct child has
-# exited and been removed from the active map.  Empty on Windows
-# (``os.getpgid`` is POSIX-only).
+# exited and been removed from the active map.
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 
 
@@ -7994,11 +7915,11 @@ def _kill_orphaned_mcp_children(
     survivors, avoiding shared-resource collisions when multiple son-of-anton
     processes run on the same host (each has its own ``_stdio_pids`` dict).
 
-    On POSIX, signals are sent via ``os.killpg`` to the spawn-time pgid when
-    one is tracked, so reparented grandchildren in the same process group
+    Signals are sent via ``os.killpg`` to the spawn-time pgid when one is
+    tracked, so reparented grandchildren in the same process group
     (e.g. ``claude mcp serve`` spawned by a stdio MCP wrapper that exited
     first) are reaped alongside the direct child.  Falls back to ``os.kill``
-    on Windows and when no pgid is recorded.
+    when no pgid is recorded.
 
     When ``server_name`` is set, only orphaned PIDs known to belong to that
     MCP server are reaped. This lets stdio reconnects clean up their previous
@@ -8045,11 +7966,11 @@ def _kill_orphaned_mcp_children(
     # Pre-compute the gateway's own pgid so _send_signal can avoid killing it.
     try:
         _my_pgid = os.getpgrp()
-    except (AttributeError, OSError):
-        _my_pgid = None  # Windows or restricted environment
+    except OSError:
+        _my_pgid = None  # restricted environment
 
     def _send_signal(pid: int, sig: int, server_name: str) -> None:
-        """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
+        """SIGTERM/SIGKILL via pgroup, fall back to pid signal."""
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
@@ -8092,9 +8013,8 @@ def _kill_orphaned_mcp_children(
     time.sleep(2)
 
     # Phase 3: SIGKILL any survivors
-    _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
-    # ``os.kill(pid, 0)`` is NOT a no-op on Windows. Use the cross-platform
-    # existence check before escalating to SIGKILL.
+    _sigkill = _signal.SIGKILL
+    # Use the shared existence check before escalating to SIGKILL.
     from gateway.status import _pid_exists
     for pid, server_name in pids.items():
         if not _pid_exists(pid):

@@ -6,7 +6,7 @@ constants they read. Function bodies are lifted verbatim; the only mechanical
 change is that references to helpers/constants that STAY in ``son_of_anton_cli.main``
 (and to moved-but-test-patched siblings) are routed through ``_m()`` — a lazy
 ``son_of_anton_cli.main`` reference — so existing call sites and test monkeypatches
-that target ``son_of_anton_cli.main.<name>`` (``PROJECT_ROOT``, ``_is_windows``,
+that target ``son_of_anton_cli.main.<name>`` (``PROJECT_ROOT``,
 ``_run_pre_update_backup``, ...) keep working unchanged. ``main.py`` re-imports
 every public-ish name from here (``# noqa: F401``) so the argparse wiring and
 the test-patch surface still resolve on ``son_of_anton_cli.main``.
@@ -27,8 +27,6 @@ import hashlib
 import json
 import logging
 import os
-import shlex
-import shutil
 import subprocess
 import sys
 import time as _time
@@ -266,11 +264,9 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
 
     ``uv pip install -e .`` never audits an editable target — it reinstalls on
     every invocation, and every reinstall rewrites the console-script shims.
-    On Windows that rewrite is the only reason the running ``son-of-anton.exe`` has
-    to be quarantined, and a quarantine that loses its race is the whole
-    ``os error 32`` family. Not reinstalling when the reinstall provably
-    cannot change anything removes that risk outright for the common update,
-    rather than trying to make the rename win more often.
+    Not reinstalling when the reinstall provably cannot change anything removes
+    that risk outright for the common update, rather than trying to make the
+    rename win more often.
 
     Skipping is safe because Son of Anton pins its editable finder to a *static*
     module list (``[tool.setuptools] py-modules`` plus
@@ -363,19 +359,12 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     ``ImportError: cannot import name 'TODO_INJECTION_HEADER' from
     'tools.todo_tool'``. Every file is valid Python; the *combination* is not.
 
-    That skew is reachable on the Windows ZIP-update path, whose copy loop
-    walks top-level entries in ``os.listdir`` order and replaces each one
-    independently — ``agent/`` lands long before ``tools/``, so a failure or
-    interruption between them leaves exactly that mismatch on disk.
-
     Runs in a subprocess because importing these modules into the running
     updater would pollute ``sys.modules`` and execute import-time side effects
     against the half-updated tree. Costs ~0.4s.
 
-    Uses the project venv's interpreter when there is one (matching
-    ``_venv_core_imports_healthy``): ``son-of-anton update`` can be driven by a
-    different Python than the install's own, and probing the wrong
-    interpreter would test a tree the user never runs.
+    Probes with the running interpreter — the same one that will launch the
+    updated CLI.
 
     Returns ``(ok, failing_module, error_message)``.
     """
@@ -405,14 +394,6 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     )
     try:
         interpreter = sys.executable
-        try:
-            venv_python = venv_python_path(
-                Path(root) / "venv", windows=_m()._is_windows()
-            )
-            if venv_python.exists():
-                interpreter = str(venv_python)
-        except Exception:
-            pass  # fall back to the running interpreter
         result = subprocess.run(
             [interpreter, "-c", probe],
             cwd=str(root),
@@ -482,11 +463,8 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
-    """True when an npm bin shim for *name* exists (POSIX or Windows)."""
-    return any(
-        (bin_dir / candidate).exists()
-        for candidate in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe")
-    )
+    """True when an npm bin shim for *name* exists."""
+    return (bin_dir / name).exists()
 
 def _print_curator_first_run_notice() -> None:
     """Print a short heads-up about the skill curator after `son-of-anton update`.
@@ -729,13 +707,12 @@ def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace directory *dst* with *src* without leaving *dst* half-deleted.
 
     The naive ``rmtree(dst); copytree(src, dst)`` has a destructive window: if
-    the copy fails partway (common on the Windows ZIP-update path, which only
-    runs because file I/O is already flaky on that machine), the old directory
-    is already gone and nothing replaced it — the install is left with a
-    deleted tree (issue #49145, where ``ui-tui/`` vanished and broke the TUI).
+    the copy fails partway, the old directory is already gone and nothing
+    replaced it — the install is left with a deleted tree (issue #49145, where
+    ``ui-tui/`` vanished and broke the TUI).
 
     Now a thin single-entry alias over the two-phase helpers below, which
-    generalise the same stage-then-swap discipline across every entry the ZIP
+    generalise the same stage-then-swap discipline across every entry a staged
     update touches (#76104). Retained because it is part of the mechanical
     ``son_of_anton_cli.main`` re-export surface and guards the #49145 regression.
     """
@@ -1080,387 +1057,6 @@ def _write_gateway_update_exit_code(ok: bool) -> None:
     except OSError:
         pass
 
-
-def _update_via_zip(args) -> bool:
-    """Update Son of Anton Agent by downloading a ZIP archive.
-
-    Used on Windows when git file I/O is broken (antivirus, NTFS filter
-    drivers causing 'Invalid argument' errors on file creation).
-
-    Returns ``True`` on success.
-    """
-    active_tool_dependencies = _m()._capture_active_tool_dependencies()
-
-    import tempfile
-    import zipfile
-    from urllib.request import urlretrieve
-
-    # Snapshot the pre-update version before files are replaced so the
-    # completion line can report the transition (prime-agent#630 port).
-    pre_update_version = _read_project_version()
-
-    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
-    # static archive from GitHub, which is fine for the default "main"
-    # channel but would silently ignore --branch and update from main even
-    # if the user asked for something else — exactly the silent-divergence
-    # bug --branch was added to prevent. Refuse to proceed in that case
-    # rather than lie.
-    branch = _m()._resolve_update_branch(args)
-    if branch != "main":
-        print(
-            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
-            "update path."
-        )
-        print(
-            "  This path runs when git file I/O is broken on the system. "
-            "Either resolve the git-side breakage (typically an antivirus "
-            "or NTFS filter holding files open) and rerun `son-of-anton update "
-            f"--branch {branch}`, or update against main with `son-of-anton update`."
-        )
-        _m().sys.exit(1)
-    zip_url = (
-        f"https://github.com/ewtodd/son-of-anton/archive/refs/heads/{branch}.zip"
-    )
-
-    print("→ Downloading latest version...")
-    tmp_dir = tempfile.mkdtemp(prefix="son-of-anton-update-")
-    try:
-        zip_path = os.path.join(tmp_dir, f"son-of-anton-{branch}.zip")
-        urlretrieve(zip_url, zip_path)
-
-        print("→ Extracting...")
-        import stat as _stat
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            # Validate paths to prevent zip-slip (path traversal) AND reject
-            # symlink members. A GitHub source ZIP for son-of-anton itself
-            # should never contain symlinks — they'd point outside the
-            # extracted tree and let an attacker who can compromise the
-            # update mirror plant arbitrary files via the update path.
-            tmp_dir_real = os.path.realpath(tmp_dir)
-            for member in zf.infolist():
-                member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
-                if (
-                    not member_path.startswith(tmp_dir_real + os.sep)
-                    and member_path != tmp_dir_real
-                ):
-                    raise ValueError(
-                        f"Zip-slip detected: {member.filename} escapes extraction directory"
-                    )
-                # Unix mode lives in the upper 16 bits of external_attr;
-                # mask to the file-type bits.
-                mode = (member.external_attr >> 16) & 0o170000
-                if _stat.S_ISLNK(mode):
-                    raise ValueError(
-                        f"ZIP contains unsupported symlink member: {member.filename}"
-                    )
-            zf.extractall(tmp_dir)
-
-        # GitHub ZIPs extract to son-of-anton-<branch>/
-        extracted = os.path.join(tmp_dir, f"son-of-anton-{branch}")
-        if not os.path.isdir(extracted):
-            # Try to find it
-            for d in os.listdir(tmp_dir):
-                candidate = os.path.join(tmp_dir, d)
-                if os.path.isdir(candidate) and d != "__MACOSX":
-                    extracted = candidate
-                    break
-
-        # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
-        entries = [i for i in os.listdir(extracted) if i not in preserve]
-
-        # Two-phase replace (#76104). Phase 1 copies every entry — directories
-        # AND top-level files — to a sibling staging path without touching
-        # anything live; phase 2 swaps them all in with same-filesystem
-        # renames and rolls back every swap if any one fails. Replacing
-        # entries one-at-a-time (the previous shape) meant an interruption
-        # partway left `agent/` new and `tools/` stale — all files valid, the
-        # tree unbootable. Files matter as much as directories here: the repo
-        # root holds 20 first-party modules (run_agent.py, cli.py,
-        # son_of_anton_constants.py, ...).
-        #
-        # Staging costs one extra copy of the tree on disk. Check up front so
-        # we fail with a clear message instead of running out mid-copy.
-        need = sum(
-            os.path.getsize(os.path.join(dirpath, f))
-            for entry in entries
-            for dirpath, _dirs, files in os.walk(os.path.join(extracted, entry))
-            for f in files
-        ) + sum(
-            os.path.getsize(os.path.join(extracted, e))
-            for e in entries
-            if os.path.isfile(os.path.join(extracted, e))
-        )
-        # Only the staging copy is new — the live tree already occupies its
-        # space and the swaps are renames, not copies. Ask for the staging
-        # copy plus 20% headroom rather than a full 2x, which would block
-        # updates that would have succeeded on exactly the space-constrained
-        # machines most likely to hit this path.
-        required = int(need * 1.2)
-        free = shutil.disk_usage(str(_m().PROJECT_ROOT)).free
-        if free < required:
-            raise RuntimeError(
-                f"not enough free disk space to stage the update safely "
-                f"(need ~{required // (1024 * 1024)} MB, have "
-                f"{free // (1024 * 1024)} MB)"
-            )
-
-        staged: list[tuple[str, str]] = []
-        try:
-            for item in entries:
-                src = os.path.join(extracted, item)
-                dst = os.path.join(str(_m().PROJECT_ROOT), item)
-                staged.append((_stage_replacement(src, dst), dst))
-        except Exception:
-            # Nothing is live yet; drop the partial staging copies so a retry
-            # starts from the same free space this attempt did.
-            _discard_staged(staged)
-            raise
-
-        try:
-            _commit_staged_replacements(staged)
-        except Exception:
-            # The rollback already restored every swapped entry, but staging
-            # copies for the not-yet-swapped entries (potentially most of a
-            # full tree) are still on disk. Drop them, or the retry's
-            # up-front free-space check — which runs BEFORE the lazy
-            # per-entry leftover cleanup — fails on litter this attempt
-            # left behind: the exact "retry fails harder" failure mode
-            # _discard_staged exists to prevent. Safe post-rollback: swapped
-            # entries' staging paths were renamed away, and _discard_staged
-            # skips paths that no longer exist.
-            _discard_staged(staged)
-            raise
-        update_count = len(staged)
-
-        print(f"✓ Updated {update_count} items from ZIP")
-
-    except Exception as e:
-        print(f"✗ ZIP update failed: {e}")
-        # The two-phase replace either commits every entry or rolls them all
-        # back, so a failure here does not leave a mixed-version tree — don't
-        # scare the user toward a reinstall they don't need.
-        print("  Your existing install was left in place.")
-        print(
-            "  Re-run `son-of-anton update` to retry; if the agent won't start, "
-            "reinstall from https://son-of-anton.nousresearch.com"
-        )
-        _m().sys.exit(1)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    # Clear stale bytecode after ZIP extraction
-    removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
-    if removed:
-        print(
-            f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
-        )
-    _m()._record_bytecode_fingerprint()
-    _m()._refresh_bootstrap_cache_scripts(branch)
-
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
-    #
-    # Self-lock deferral (relocated preflight — #86735): the ZIP code swap
-    # above is already committed; defer only the dependency sync when this
-    # process holds a native extension the sync must rewrite.
-    _m()._abort_dependency_sync_if_self_locked()
-    print("→ Updating Python dependencies...")
-
-    from son_of_anton_cli.managed_uv import ensure_uv, update_managed_uv
-
-    # Keep managed uv current — runs `uv self update` if we already have one.
-    update_managed_uv()
-
-    uv_bin = ensure_uv()
-
-    pip_cmd = [_m().sys.executable, "-m", "pip"]
-    if not uv_bin:
-        uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
-        if _m()._is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-    else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-            )
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
-
-    install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
-    install_env = uv_env if uv_bin else None
-    _m()._restore_active_tool_dependencies(
-        active_tool_dependencies,
-        install_prefix,
-        env=install_env,
-    )
-
-    # ZIP path parity: heal the active memory provider's bridge packages
-    # after the dependency reinstall, same as the git-pull path (#53272,
-    # #70636).
-    _m()._refresh_active_memory_provider_dependencies()
-
-    # Now that dependencies are installed, verify the tree actually imports.
-    # The copy loop above replaces top-level entries one at a time in
-    # os.listdir order, so an interruption between (say) `agent/` and `tools/`
-    # leaves a tree whose files all parse but cannot be imported together —
-    # the ImportError-on-startup class this guard exists to catch. Deliberately
-    # placed *after* the dependency reinstall so a genuinely-new third-party
-    # requirement isn't misreported as a partial copy. There is no SHA to roll
-    # back to here, so surface it with a concrete recovery step rather than
-    # reporting a successful update over a bricked install.
-    import_ok, failing_module, import_error = _validate_critical_modules_import(
-        _m().PROJECT_ROOT
-    )
-    if not import_ok:
-        print()
-        print("✗ Update left the install in an unimportable state:")
-        print(f"  {failing_module}: {import_error}")
-        print()
-        print("  This usually means the copy was interrupted partway through.")
-        print("  Re-run `son-of-anton update` to complete it.")
-        _m().sys.exit(1)
-
-    node_failures = _update_node_dependencies()
-
-    # Sync skills
-    try:
-        from tools.skills_sync import sync_skills
-
-        print("→ Syncing bundled skills...")
-        result = sync_skills(quiet=True)
-        if result["copied"]:
-            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
-        if result.get("updated"):
-            print(
-                f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
-            )
-        if result.get("user_modified"):
-            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-            print(
-                "    → see them: son-of-anton skills list-modified  "
-                "(diff/reset to resume updates)"
-            )
-        if result.get("cleaned"):
-            print(f"  − {len(result['cleaned'])} removed from manifest")
-        if result.get("relocated"):
-            print(
-                f"  → {len(result['relocated'])} moved to new upstream paths: "
-                f"{', '.join(result['relocated'])}"
-            )
-        if not result["copied"] and not result.get("updated"):
-            print("  ✓ Skills are up to date")
-    except Exception:
-        pass
-
-    # Seed the model-catalog disk cache from the freshly-unpacked checkout
-    # (same rationale as the git-pull path in _cmd_update_impl). Non-fatal.
-    try:
-        from son_of_anton_cli.model_catalog import seed_cache_from_checkout
-
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
-    except Exception as e:
-        logger.debug("Model catalog seed during zip update failed: %s", e)
-
-    # ── Post-update state.db integrity guard (#68474) ─────────────────
-    # Same as the git-pull path: verify state.db survived the ZIP update
-    # and auto-restore from the most recent pre-update snapshot if needed.
-    try:
-        from son_of_anton_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
-
-        _state_path = get_son_of_anton_home() / "state.db"
-        if _state_path.exists():
-            _state_ok = verify_sqlite_integrity(
-                _state_path, check_header=True, run_pragma=True
-            )
-            if not _state_ok.get("valid"):
-                print()
-                print(
-                    "⚠ state.db is corrupted after update: "
-                    + _state_ok.get("message", "unknown error")
-                )
-                _snap_root = _quick_snapshot_root(get_son_of_anton_home())
-                if _snap_root.exists():
-                    _snap_dirs = sorted(
-                        (d for d in _snap_root.iterdir() if d.is_dir()),
-                        reverse=True,
-                    )
-                    for _snap_dir in _snap_dirs:
-                        _snap_state = _snap_dir / "state.db"
-                        if _snap_state.exists():
-                            _snap_ok = verify_sqlite_integrity(
-                                _snap_state, check_header=True, run_pragma=True
-                            )
-                            if _snap_ok.get("valid"):
-                                try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
-                                        print(
-                                            "  ✓ Auto-restored from snapshot "
-                                            f"{_snap_dir.name}"
-                                        )
-                                    else:
-                                        print(
-                                            "  ✗ Auto-restore FAILED — restored "
-                                            "copy also failed integrity"
-                                        )
-                                    break
-                                except OSError as _exc:
-                                    print(
-                                        f"  ✗ Auto-restore file copy failed: {_exc}"
-                                    )
-                                    break
-    except Exception as exc:
-        logger.debug(
-            "Post-update state.db integrity check (zip path) failed: %s", exc
-        )
-
-    _print_update_summary(
-        node_failures=node_failures,
-        pre_update_version=pre_update_version,
-    )
-    try:
-        _print_curator_first_run_notice()
-    except Exception as e:
-        logger.debug("Curator first-run notice failed: %s", e)
-    try:
-        _print_curator_recent_run_notice()
-    except Exception as e:
-        logger.debug("Curator recent-run notice failed: %s", e)
-    try:
-        from son_of_anton_cli.update_receipt import finalize_update_receipt
-
-        finalize_update_receipt(
-            "success" if not node_failures else "partial"
-        )
-    except Exception as _receipt_exc:
-        logger.debug("Update receipt finalize (zip path) failed: %s", _receipt_exc)
-    return True
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(
@@ -2045,7 +1641,7 @@ def _invalidate_update_cache():
     ``son-of-anton update``, every profile is now current.
     """
     homes = []
-    # Default profile home (Docker-aware — uses /opt/data in Docker)
+    # Default profile home (used as the base for named profiles)
     from son_of_anton_constants import get_default_son_of_anton_root
 
     default_home = get_default_son_of_anton_root()
@@ -2083,31 +1679,6 @@ def _write_update_incomplete_marker() -> None:
 def _write_lazy_refresh_incomplete_marker() -> None:
     """Drop the interrupted lazy-refresh breadcrumb. Never raises."""
     _write_marker_file(_m()._lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
-
-def _format_concurrent_instances_message(
-    matches: list[tuple[int, str]], scripts_dir: Path
-) -> str:
-    """Build a human-readable explanation + remediation hint for the user."""
-    shim = scripts_dir / "son-of-anton.exe"
-    lines = ["✗ Another son-of-anton.exe is running:"]
-    for pid, name in matches:
-        lines.append(f"    PID {pid}  {name}")
-    lines.append("")
-    lines.append(f"  Updating now would fail to overwrite {shim} because")
-    lines.append("  Windows blocks REPLACE on a running executable.")
-    lines.append("")
-    lines.append("  Close Son of Anton Desktop, exit any open `son-of-anton` REPLs, and")
-    lines.append("  stop the gateway (`son-of-anton gateway stop`) before retrying.")
-    lines.append("")
-    if matches:
-        pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
-        lines.append("  If you've already closed everything and these PIDs are")
-        lines.append("  stale, terminate them directly, then retry the update:")
-        lines.append(f"      taskkill {pid_args} /F")
-        lines.append("")
-    lines.append("  Override with `son-of-anton update --force` if you've already")
-    lines.append("  confirmed those processes will not write to the venv.")
-    return "\n".join(lines)
 
 def _upgrade_pip_before_lazy_refresh(
     install_cmd_prefix: list[str],
@@ -2389,42 +1960,6 @@ def _refresh_active_memory_provider_dependencies() -> None:
     except Exception as exc:
         print(f"  ⚠ {provider} dependencies failed to refresh: {exc}")
 
-def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
-    """Best-effort uv bootstrap on Termux for faster update installs.
-
-    The normal path (``ensure_uv()`` in managed_uv) installs the managed
-    standalone uv into ``$SON_OF_ANTON_HOME/bin/uv``, but on Termux the official
-    installer may not work (glibc vs bionic).  Prefer a uv already on PATH
-    (e.g. ``pkg install uv``); only if there is none do we fall back to a
-    wheel-only ``pip install uv`` so we never source-build the Rust crate.
-    """
-    from son_of_anton_cli.managed_uv import resolve_uv
-
-    existing = resolve_uv()
-    if existing:
-        return existing
-    if not _m()._is_termux_env():
-        return None
-    # A Termux-packaged uv lands on PATH but not in the managed bin dir, so
-    # resolve_uv() misses it. Use it before pip, which has no Android wheel and
-    # would otherwise build uv from source on a low-memory device.
-    system_uv = shutil.which("uv")
-    if system_uv:
-        return system_uv
-    try:
-        print("  → Termux detected: trying to install uv for faster dependency updates...")
-        result = subprocess.run(
-            pip_cmd + ["install", "uv", "--only-binary", ":all:"],
-            cwd=_m().PROJECT_ROOT,
-            check=False,
-        )
-        if result.returncode != 0:
-            return None
-    except Exception:
-        pass
-    # After pip install, check managed path first, then PATH
-    return resolve_uv() or shutil.which("uv")
-
 def _npm_manifest_paths() -> tuple[Path, ...]:
     """Manifests whose changes must defeat the update-skip.
 
@@ -2541,22 +2076,8 @@ def _update_node_dependencies() -> list[str]:
 
     npm = _m()._resolve_node_runtime_npm()
     if not npm:
-        # If the only npm reachable inside this WSL shell is the Windows one,
-        # flag it loudly: silently skipping leaves the workspace deps stale
-        # while the rest of the update proceeds, and running it would corrupt
-        # the tree.
-        from son_of_anton_constants import is_wsl
-
-        path_npm = shutil.which("npm")
-        if is_wsl() and path_npm and _m()._is_windows_npm_path(path_npm):
-            print("→ Updating Node.js dependencies...")
-            print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
-            print("    Install Node.js inside the WSL distro (nvm, or your distro's")
-            print("    package manager), then re-run `son-of-anton update`.")
-            failed = []
-            if (_m().PROJECT_ROOT / "web" / "package.json").exists():
-                failed.append("web workspace")
-            return failed
+        # No Node runtime resolvable — silently skipping leaves the workspace
+        # deps stale while the rest of the update proceeds.
         return []
 
     from son_of_anton_constants import get_default_son_of_anton_root
@@ -2718,8 +2239,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on origin/<branch>?" without performing the update.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
-    Installs that can't honor non-default branches (e.g. Docker) surface a
-    one-line notice instead of silently dropping the flag.
+    Installs that can't honor non-default branches (e.g. managed Nix installs)
+    surface a one-line notice instead of silently dropping the flag.
     """
     from son_of_anton_cli.config import (
         detect_install_method,
@@ -2727,16 +2248,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         recommended_update_command_for_method,
     )
     method = detect_install_method(_m().PROJECT_ROOT)
-    if method == "docker":
-        # Docker can't ``git fetch`` from within the container.  Surface the
-        # same long-form ``docker pull`` guidance ``son-of-anton update`` (apply
-        # path) uses — telling the user to "reinstall via curl" or that
-        # ".git is missing" would point them at the wrong remediation.
-        from son_of_anton_cli.config import format_docker_update_message
-        print(format_docker_update_message())
-        sys.exit(1)
 
-    if is_nix_install_method(method) or method == "apt":
+    if is_nix_install_method(method):
         print(recommended_update_command_for_method(method))
         sys.exit(1)
 
@@ -2746,8 +2259,6 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         sys.exit(1)
 
     git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
     # A crashed/interrupted fetch can leave .git/shallow.lock (or another git
     # lock file) behind; every later fetch then fails with "File exists" and
@@ -3084,7 +2595,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         # After the snapshot, verify the source state.db is still intact.
         # The snapshot was taken via _safe_copy_db (read-only SQLite backup
         # API), but a concurrent process (antivirus, force-killed gateway
-        # releasing file handles, Windows filter driver) can corrupt the live
+        # releasing file handles) can corrupt the live
         # file at any point. A silent zeroing at this point would proceed with
         # the update and exit code 0 — exactly the #68474 symptom.
         if snapshot_id:
@@ -3197,87 +2708,31 @@ def _run_pre_update_backup(args) -> Optional[str]:
     print()
     return snapshot_id
 
-def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
-    """Write a planned-stop marker into a specific profile home."""
-    try:
-        from datetime import timezone
-
-        from gateway.status import _get_process_start_time
-        from utils import atomic_json_write
-
-        record = {
-            "target_pid": pid,
-            "target_start_time": _get_process_start_time(pid),
-            "stopper_pid": os.getpid(),
-            "written_at": datetime.now(timezone.utc).isoformat(),
-        }
-        atomic_json_write(
-            Path(profile_path) / ".gateway-planned-stop.json",
-            record,
-            indent=None,
-            separators=(",", ":"),
-        )
-        return True
-    except (OSError, PermissionError):
-        return False
-
-def _wait_for_windows_update_gateway_exit(
-    pids: list[int], *, timeout: float
-) -> set[int]:
-    """Wait for the given gateway PIDs to exit, returning survivors."""
-    if not pids:
-        return set()
-
-    from gateway.status import _pid_exists
-
-    remaining = set(pids)
-    deadline = _time.monotonic() + max(timeout, 0.0)
-    while remaining and _time.monotonic() < deadline:
-        for pid in list(remaining):
-            try:
-                if not _pid_exists(pid):
-                    remaining.discard(pid)
-            except Exception:
-                remaining.discard(pid)
-        if remaining:
-            _time.sleep(0.25)
-
-    survivors: set[int] = set()
-    for pid in remaining:
-        try:
-            if _pid_exists(pid):
-                survivors.add(pid)
-        except Exception:
-            pass
-    return survivors
-
 def _venv_core_imports_healthy() -> tuple[bool, str]:
     """Probe the project venv for the core imports the backend needs to boot.
 
     Runs a tiny import check inside the venv interpreter (NOT this process —
     ``son-of-anton update`` may be driven by a different Python). Catches the
     half-updated-venv state: git checkout current but a dependency sync that
-    failed or was killed partway (e.g. Windows access-denied on a loaded
-    .pyd), leaving imports like ``fastapi``'s new transitive deps missing.
-    Without this probe, ``son-of-anton update`` on a current checkout prints
-    "Already up to date!" and returns without ever re-syncing dependencies —
-    the user's install stays broken no matter how many times they update
-    (ryanc's incident, July 2026).
+    failed or was killed partway, leaving imports like ``fastapi``'s new
+    transitive deps missing. Without this probe, ``son-of-anton update`` on a
+    current checkout prints "Already up to date!" and returns without ever
+    re-syncing dependencies — the user's install stays broken no matter how
+    many times they update (ryanc's incident, July 2026).
 
     Returns ``(healthy, detail)``. Never raises; unknown states report
     healthy so a probe failure can't force needless reinstalls.
     """
     venv_dir = _m().PROJECT_ROOT / "venv"
-    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    venv_python = venv_python_path(venv_dir)
     if not venv_python.exists():
         # No venv interpreter at all. In a dev checkout that's normal (the
         # dev may run son-of-anton from any interpreter), so report healthy to
-        # avoid forcing reinstalls. But on a MANAGED install (the Windows
-        # installer stamps `.son-of-anton-bootstrap-complete`,
-        # and an interrupted update leaves `.update-incomplete`), the venv
-        # IS the install — its absence means a repair got interrupted after
-        # the old venv was moved aside, and "Already up to date!" would
-        # gaslight the user while nothing can run.
+        # avoid forcing reinstalls. But on a MANAGED install (an interrupted
+        # update leaves `.update-incomplete`), the venv IS the install — its
+        # absence means a repair got interrupted after the old venv was moved
+        # aside, and "Already up to date!" would gaslight the user while
+        # nothing can run.
         managed_markers = (
             _m().PROJECT_ROOT / ".son-of-anton-bootstrap-complete",
             _m()._update_marker_path(),
@@ -3318,676 +2773,6 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     if missing:
         return False, "; ".join(missing[:4])
     return True, ""
-
-def _detect_venv_python_processes(
-    *, exclude_pids: set[int] | None = None
-) -> list[tuple[int, str, str]]:
-    """Find live processes running from the project venv's interpreter.
-
-    The son-of-anton.exe shim guard misses the biggest lock-holder class on
-    Windows: anything running straight off ``venv\\Scripts\\python
-    (w).exe``. Those processes keep native ``.pyd`` extensions mapped, so a
-    dependency sync mid-update dies with access-denied and strands the venv
-    half-updated (ryanc's brotlicffi/_sodium.pyd incidents, July 2026).
-
-    The caller should refuse and tell the user to close the remaining Son of Anton
-    processes instead of killing them. Returns ``(pid, name, cmdline)``
-    tuples; empty off-Windows / without psutil / when nothing matches. The
-    calling process and its ancestors are always excluded (a CLI ``son-of-anton
-    update`` itself runs from the venv python). Never raises.
-    """
-    if not _m()._is_windows():
-        return []
-    try:
-        import psutil
-    except Exception:
-        return []
-
-    venv_dir = _m().PROJECT_ROOT / "venv"
-    try:
-        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
-    try:
-        root_prefix = str(_m().PROJECT_ROOT.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        root_prefix = str(_m().PROJECT_ROOT).lower().rstrip(os.sep) + os.sep
-
-    skip: set[int] = set(exclude_pids or set())
-    skip.add(os.getpid())
-    try:
-        for anc in psutil.Process().parents():
-            skip.add(int(anc.pid))
-    except Exception:
-        pass
-
-    matches: list[tuple[int, str, str]] = []
-    try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
-    except Exception:
-        return []
-    for proc in proc_iter:
-        try:
-            info = proc.info
-        except Exception:
-            continue
-        pid = info.get("pid")
-        exe = info.get("exe")
-        if not exe or pid is None or int(pid) in skip:
-            continue
-        try:
-            exe_norm = str(Path(exe).resolve()).lower()
-        except (OSError, ValueError):
-            exe_norm = str(exe).lower()
-        cmdline_raw = " ".join(info.get("cmdline") or [])
-        cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
-
-        # Primary match: the executable itself lives under this venv
-        # (venv\Scripts\python(w).exe — the gateway case).
-        is_holder = exe_norm.startswith(venv_prefix)
-        # Fallback: uv/base-interpreter trampolines run a python whose exe is
-        # OUTSIDE the venv but which still imports from it and holds its .pyd
-        # files. Catch those by what they're running: a cmdline that references
-        # this venv's path, or a `-m son_of_anton_cli.main ...` invocation tied to
-        # this install (install root in the cmdline or as the working dir).
-        if not is_holder and venv_prefix in cmdline_low:
-            is_holder = True
-        if not is_holder and "son_of_anton_cli.main" in cmdline_low:
-            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
-                is_holder = True
-        if not is_holder:
-            continue
-        name = info.get("name") or Path(exe).name
-        # Return the FULL cmdline: callers match against it (the Desktop
-        # preflight's pausable-gateway exemption parses for `gateway run`).
-        # Truncating here cut long managed-runtime interpreter paths before
-        # the `-m son_of_anton_cli.main gateway run` argv, so autostarted gateways
-        # were misreported as blockers and the update dead-ended. Truncate
-        # only at display time.
-        matches.append((int(pid), str(name), cmdline_raw))
-    return matches
-
-# Native-extension modules that pin files inside the venv once imported.  If
-# the updater process itself has any of these loaded, the dependency sync
-# below cannot rewrite the backing ``.pyd``/``.dll`` — Windows blocks REPLACE
-# on a mapped image — and the update dies with ``os error 5`` between
-# uninstall and reinstall, stranding the venv half-updated (#83569).
-# ``cryptography`` is the canonical case: ``son_of_anton_cli.main`` used to import
-# it at startup while resolving external secret sources; ``PyYAML``'s
-# ``_yaml`` C extension is loaded by every CLI process (config parsing).
-# Keep this guard as defence-in-depth against future eager imports (new
-# secret sources, plugins absorbed into core, refactors of the startup
-# order) — but the guard must be HONEST (#86735/#86780/#86781: a preflight
-# that fired on every run, before the fetch, re-bricked the exact flow it
-# was meant to protect).  Two honesty gates:
-#
-# 1. It only fires when the dependency sync would actually REWRITE the
-#    loaded distribution (``_dependency_sync_would_rewrite``): if the
-#    installed version already satisfies the on-disk pyproject pins, uv/pip
-#    will not touch the mapped ``.pyd``, so there is no lock to trip.
-# 2. It runs AFTER the code swap (git pull / ZIP commit), immediately
-#    before the venv rewrite — so the on-disk pyproject is the NEW one
-#    (gate 1 compares against the right target) and a deferral no longer
-#    strands the user on the old checkout: the next launch's marker
-#    recovery completes the dependency install against the already-updated
-#    pyproject.
-#
-# Keys are module prefixes in ``sys.modules``; values are
-# ``(display name, PyPI distribution name)``.
-_SELF_LOCKING_NATIVE_MODULES: dict[str, tuple[str, str]] = {
-    "cryptography.hazmat.bindings._rust": ("cryptography (_rust.pyd)", "cryptography"),
-    "yaml._yaml": ("PyYAML (_yaml.pyd)", "pyyaml"),
-}
-
-
-def _dependency_sync_would_rewrite(dist_name: str) -> bool | None:
-    """Whether ``uv pip install -e .[all]`` would replace *dist_name*'s files.
-
-    Compares the installed distribution version against every applicable
-    requirement for it in the on-disk ``pyproject.toml`` (base dependencies
-    plus all optional extras).  Returns:
-
-    - ``False`` — installed version satisfies every pin: the resolver will
-      leave the wheel alone, so a mapped extension is NOT at risk.
-    - ``True``  — some pin is not satisfied (or the distribution is
-      missing): the sync will rewrite it.
-    - ``None``  — could not determine (parse failure, unparseable pins).
-
-    Never raises.  Callers treat ``None`` as fail-OPEN (no deferral): a
-    module in the registry can be loaded by every process (PyYAML), so
-    deferring on uncertainty would recreate the #86735 always-firing loop.
-    """
-    try:
-        from importlib import metadata as _ilmd
-
-        installed = _ilmd.version(dist_name)
-    except Exception:
-        return True  # not installed → the sync will definitely install it
-    try:
-        import tomllib
-
-        from packaging.requirements import Requirement
-        from packaging.utils import canonicalize_name
-        from packaging.version import Version
-
-        pyproject = _m().PROJECT_ROOT / "pyproject.toml"
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        project = data.get("project") or {}
-        req_strings: list[str] = list(project.get("dependencies") or [])
-        for extra_reqs in (project.get("optional-dependencies") or {}).values():
-            req_strings.extend(extra_reqs or [])
-
-        target = canonicalize_name(dist_name)
-        installed_v = Version(installed)
-        saw_pin = False
-        for req_str in req_strings:
-            try:
-                req = Requirement(req_str)
-            except Exception:
-                continue
-            if canonicalize_name(req.name) != target:
-                continue
-            if req.marker is not None and not req.marker.evaluate():
-                continue
-            saw_pin = True
-            if installed_v not in req.specifier:
-                return True
-        if saw_pin:
-            return False
-        # Not pinned anywhere in pyproject: the resolver may still move it
-        # as a transitive — we cannot cheaply predict that, so stay honest
-        # about the uncertainty.
-        return None
-    except Exception:
-        return None
-
-
-def _detect_self_loaded_native_modules() -> list[str]:
-    """Native venv extensions loaded into THIS process that the sync would rewrite.
-
-    Returns display names (empty off Windows — POSIX lets a running process
-    keep using an unlinked inode, so self-locking is a Windows-only hazard).
-    A loaded module whose installed version already satisfies the on-disk
-    pyproject pins is NOT reported: the dependency sync will not touch its
-    files, so there is no swap at risk (#86735 — the always-firing variant
-    of this preflight bricked every Windows update).  Never raises.
-    """
-    if not _m()._is_windows():
-        return []
-    found = []
-    for prefix, (display, dist) in _SELF_LOCKING_NATIVE_MODULES.items():
-        if prefix not in sys.modules:
-            continue
-        # Defer ONLY on a CONFIRMED pending rewrite. An "unknown" result
-        # (unreadable/unparseable pyproject, no pin found) must fail OPEN:
-        # PyYAML is loaded in every CLI process, so treating unknown as
-        # at-risk would re-create the exact always-firing loop this guard's
-        # first version caused (#86735). The downside of a missed deferral
-        # is the pre-existing failure mode — a mid-sync os error 5 that the
-        # marker recovery already handles — which is strictly less harmful
-        # than an update that can never run.
-        if _m()._dependency_sync_would_rewrite(dist) is not True:
-            continue
-        found.append(display)
-    return sorted(set(found))
-
-
-def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
-    """Defer the venv rewrite when THIS process holds something it must replace.
-
-    Runs at the last moment before the venv rewrite — after the code swap —
-    so the on-disk pyproject reflects the update target and a deferral
-    leaves the user on NEW code with only the dependency install pending.
-    No-op when nothing at-risk is held.
-
-    Two hazards, both "this process holds a file the sync must replace", and
-    they end differently because their recoveries differ:
-
-    - A mapped native extension (``.pyd``).  Exit 2 and let the next launch's
-      marker recovery finish the install: that launch runs the install before
-      importing anything heavy, so it maps nothing and the swap succeeds.
-
-    - The ``son-of-anton.exe`` console shim we were launched from (#88838, #89599).
-      The marker cannot help here — every future ``son-of-anton`` launch is also the
-      shim, so deferring to the next launch defers forever.  Hand the install
-      to a child under the venv interpreter and exit, releasing the shim.
-    """
-    locked = _m()._detect_self_loaded_native_modules()
-    if locked:
-        _m()._defer_update_for_self_lock(locked)
-        if gateway_resume is not None:
-            _m()._resume_windows_gateways_after_update(gateway_resume)
-        sys.exit(2)
-
-    if _m()._reexec_dependency_sync_off_windows_shim():
-        if gateway_resume is not None:
-            _m()._resume_windows_gateways_after_update(gateway_resume)
-        sys.exit(0)
-
-
-def _defer_update_for_self_lock(loaded: list[str]) -> None:
-    """Bail out before the dependency sync when the updater holds a lock.
-
-    The install cannot win this race from inside the locked process — even
-    killing threads would not unmap the image — so defer it: drop the
-    update-incomplete marker (next launch's fresh process completes the
-    install before importing anything heavy), explain, and exit 2 like the
-    other preflight refusals.
-    """
-    print("✗ This updater process has already loaded native venv modules that")
-    print("  the dependency sync must replace:")
-    for name in loaded:
-        print(f"    {name}")
-    print()
-    print("  On Windows a mapped extension cannot be replaced by the process")
-    print("  holding it. The code update has been applied; only the dependency")
-    print("  sync has been deferred: the next `son-of-anton` launch will complete it")
-    print("  in a fresh process before anything imports these modules.")
-    _m()._write_update_incomplete_marker()
-
-
-def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them."""
-    lines = [
-        "✗ Other Son of Anton processes are running from this install's venv:",
-    ]
-    for pid, name, cmdline in matches[:6]:
-        hint = ""
-        low = cmdline.lower()
-        if "gateway" in low:
-            hint = "  ← gateway"
-        lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
-    if len(matches) > 6:
-        lines.append(f"  ... and {len(matches) - 6} more")
-    lines.append("")
-    lines.append(
-        "  On Windows these keep native extension files (.pyd) locked, so the"
-    )
-    lines.append(
-        "  dependency update would fail partway and leave a broken install."
-    )
-    lines.append(
-        "  Close other Son of Anton terminals / apps, then re-run:"
-    )
-    lines.append("    son-of-anton update")
-    lines.append("  (or use `son-of-anton update --force-venv` to proceed anyway at your own risk)")
-    return "\n".join(lines)
-
-def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
-    """Return venv-interpreter ancestors of *pids* that hold the install open.
-
-    On Windows a gateway started through the venv shim is a **two-process
-    chain**: ``venv\\Scripts\\python.exe`` (the launcher, which keeps native
-    ``.pyd`` files from the venv mapped) spawns the actual interpreter from
-    uv's managed CPython directory (``AppData\\Roaming\\uv\\python\\...``).
-    The gateway writes its PID file from the *child*, so
-    ``find_gateway_pids()`` — and therefore this module's pause set — only
-    ever sees the uv-side worker.
-
-    ``_detect_venv_python_processes()`` matches on the venv path prefix, so
-    the guard downstream of the pause sees the *launcher* instead. The two
-    sets are disjoint, which meant a paused gateway still tripped the
-    venv-holder guard and aborted the update every time (the Desktop
-    "venv-blocked: N process(es) hold the install" dead-end, where the
-    reported holder is a gateway the updater believes it already stopped).
-
-    Walking one hop up from each mapped gateway PID and keeping ancestors
-    that live under the project venv closes the gap. Only the venv-side
-    parent is returned — unrelated ancestors (the Scheduled Task's
-    ``cmd.exe``, an operator's shell) are ignored so we never widen the
-    blast radius beyond the gateway's own launcher. Never raises.
-    """
-    if not _m()._is_windows() or not pids:
-        return []
-    try:
-        import psutil
-    except Exception:
-        return []
-
-    venv_dir = _m().PROJECT_ROOT / "venv"
-    try:
-        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
-
-    # Never return ourselves or our own ancestry: a CLI ``son-of-anton update``
-    # runs from the venv python and would otherwise nominate itself.
-    skip: set[int] = {os.getpid()}
-    try:
-        for anc in psutil.Process().parents():
-            skip.add(int(anc.pid))
-    except Exception:
-        pass
-
-    found: list[int] = []
-    for pid in pids:
-        try:
-            parent = psutil.Process(int(pid)).parent()
-        except Exception:
-            continue
-        if parent is None:
-            continue
-        ppid = int(parent.pid)
-        if ppid in skip or ppid in found or ppid in set(pids):
-            continue
-        try:
-            exe = (parent.exe() or "").lower()
-        except Exception:
-            continue
-        if exe.startswith(venv_prefix):
-            found.append(ppid)
-    return found
-
-
-def _leftover_pausable_gateway_pids(
-    matches: list[tuple[int, str, str]],
-) -> list[int] | None:
-    """PIDs from *matches* when every remaining venv holder is a pausable gateway.
-
-    ``_pause_windows_gateways_for_update()`` stops every gateway its discovery
-    finds, but the venv-holder guard downstream sees the process table as it
-    is *now*: a gateway respawned by its supervisor (Scheduled Task, login
-    watchdog) inside the pause→guard window, or one started through a spawn
-    path the discovery does not map, still holds venv ``.pyd`` files and
-    would dead-end the update — an abort pointed at exactly the kind of
-    process the pause machinery exists to stop.
-
-    Holders are classified with the same matcher the Desktop preflight uses
-    to exempt them (``_is_pausable_gateway``), so the preflight's exemption
-    and this guard's tolerance cannot drift apart — matcher drift between
-    two views of the same process table is what produced the launcher/worker
-    dead-end fixed above. The scan captures only a 120-char cmdline prefix,
-    so the live argv is re-read where psutil allows; an unreadable argv
-    falls back to the captured prefix.
-
-    Returns ``None`` when any holder is not a pausable gateway — an operator
-    REPL, a stray script, or the Desktop backend has no pause machinery
-    downstream, and the guard must keep refusing exactly as before.
-    """
-    from son_of_anton_cli._scan_venv_blockers import _is_pausable_gateway
-
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        psutil = None
-
-    pids: list[int] = []
-    for pid, _name, cmdline in matches:
-        argv = cmdline
-        if psutil is not None:
-            try:
-                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
-            except Exception:
-                pass
-        if not _is_pausable_gateway(argv):
-            return None
-        pids.append(int(pid))
-    return pids
-
-
-def _ledger_reapable_backend_pids(
-    matches: list[tuple[int, str, str]],
-) -> list[int]:
-    """PIDs positively identified by the spawn ledger as orphaned backends.
-
-    The strongest rung: instead of inferring lineage from PPIDs or cmdline
-    shape, look each venv holder up in the machine spawn ledger
-    (``son_of_anton_cli.process_identity``). A holder qualifies when ALL of:
-
-    - its ``(pid, create_time)`` matches a live ledger entry (PID reuse
-      cannot forge this pair);
-    - the entry's purpose is a reapable backend kind (never an interactive
-      process);
-    - the entry's recorded SPAWNER is provably dead (``spawner_is_dead``).
-
-    Unlike the heuristic rungs, this is safe in ANY update context — no
-    hand-off contract needed — because the ownership claim is explicit: the
-    process itself declared who supervises it, and that supervisor is gone.
-    Holders not in the ledger are simply not returned (they fall through to
-    the later rungs); they never disqualify the identified ones. Never raises.
-    """
-    try:
-        from son_of_anton_cli.process_identity import (
-            REAPABLE_PURPOSES,
-            ledger_entries,
-            spawner_is_dead,
-        )
-
-        entries = ledger_entries()
-    except Exception:
-        return []
-    by_pid = {e.get("pid"): e for e in entries if isinstance(e.get("pid"), int)}
-    roots: list[int] = []
-    for pid, _name, _cmdline in matches:
-        entry = by_pid.get(int(pid))
-        if not entry:
-            continue
-        if entry.get("purpose") not in REAPABLE_PURPOSES:
-            continue
-        if spawner_is_dead(entry) is True:
-            roots.append(int(pid))
-    return roots
-
-
-def _stop_process_trees(pids: list[int]) -> None:
-    """Force-stop each PID with its full child tree (Windows).
-
-    ``taskkill /T /F`` mirrors the Desktop's ``forceKillProcessTree`` and
-    install.ps1's venv sweep: stopping only the parent can leave a managed
-    ``.son-of-anton-runtime`` interpreter child alive and holding the install open
-    (#70026). Best effort; never raises.
-    """
-    for pid in pids:
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
-                check=False,
-                capture_output=True,
-            )
-        except Exception as exc:
-            logger.debug("Could not stop process tree %s: %s", pid, exc)
-
-
-def _pause_windows_gateways_for_update() -> dict | None:
-    """Stop running Windows gateways before mutating the checkout or venv.
-
-    Windows scheduled/startup gateways run through pythonw.exe, so the generic
-    son-of-anton.exe concurrent-instance guard does not see them. They still import
-    from the checkout and can keep files locked while ``git`` or ``uv`` updates
-    the install. Stop only PIDs that the gateway discovery code identifies.
-    """
-    if not _m()._is_windows():
-        return None
-
-    try:
-        from gateway.status import terminate_pid
-        from son_of_anton_cli.gateway import (
-            _capture_gateway_argv,
-            _get_restart_drain_timeout,
-            find_gateway_pids,
-            find_profile_gateway_processes,
-        )
-    except Exception as exc:
-        logger.debug("Could not prepare Windows gateway pause for update: %s", exc)
-        return None
-
-    try:
-        running_pids = list(dict.fromkeys(find_gateway_pids(all_profiles=True)))
-    except Exception as exc:
-        logger.debug("Could not discover Windows gateway PIDs before update: %s", exc)
-        return None
-    if not running_pids:
-        # No gateway is running right now, but the user may have installed an
-        # autostart entry (Scheduled Task or Startup-folder login item) — that
-        # is an explicit "I want a gateway" signal. A gateway that died between
-        # updates (e.g. the spawning terminal/TUI closed, taking its child with
-        # it) would otherwise never come back: the autostart entry only fires on
-        # the next login, and the update flow's resume path only relaunched
-        # gateways that were running when the update began. Cold-start one after
-        # the update so an installed gateway is actually up post-update. Users
-        # who run gateway-less (no autostart entry) get nothing forced on them.
-        try:
-            from son_of_anton_cli import gateway_windows
-
-            if gateway_windows.is_installed():
-                return {
-                    "resume_needed": True,
-                    "profiles": {},
-                    "unmapped_pids": [],
-                    "unmapped": [],
-                    "cold_start_if_installed": True,
-                }
-        except Exception as exc:
-            logger.debug(
-                "Could not check Windows gateway autostart state before update: %s",
-                exc,
-            )
-        return None
-
-    profile_processes = {}
-    try:
-        profile_processes = {
-            proc.pid: proc for proc in find_profile_gateway_processes()
-        }
-    except Exception as exc:
-        logger.debug("Could not map Windows gateway PIDs to profiles: %s", exc)
-
-    profiles: dict[str, int] = {}
-    mapped_pids = []
-    for pid in running_pids:
-        proc = profile_processes.get(pid)
-        if proc is None:
-            continue
-        profiles[str(proc.profile)] = int(pid)
-        mapped_pids.append(int(pid))
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
-
-    # Resolve each mapped worker's venv-side launcher BEFORE draining: the
-    # drain stops tracking a PID exactly when it dies, so a gracefully
-    # drained worker is gone by the time the wait returns — and a dead pid's
-    # parent cannot be recovered (psutil raises NoSuchProcess). The snapshot
-    # is stopped after the drain alongside the survivors.
-    #
-    # Why launchers matter: the drain targets the PID that wrote the PID
-    # file (the uv-side worker). On Windows that worker's parent is usually
-    # the venv-side ``python.exe`` launcher, which keeps venv ``.pyd`` files
-    # mapped and is what ``_detect_venv_python_processes()`` reports
-    # downstream. Left alive, it trips the venv-holder guard and aborts the
-    # update even though the gateway itself is stopped.
-    launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
-
-    print("→ Stopping Windows gateway process(es) before updating Son of Anton...")
-    try:
-        drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
-    except Exception:
-        drain_timeout = 10.0
-    survivors = _m()._wait_for_windows_update_gateway_exit(
-        mapped_pids,
-        timeout=drain_timeout,
-    )
-    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
-
-    # Snapshot each unmapped gateway's command line *before* we force-kill it,
-    # so ``_resume_windows_gateways_after_update`` can respawn it by replaying
-    # its own argv. Unmapped gateways are ones with no profile→PID-file mapping
-    # — e.g. a Windows Scheduled Task running ``pythonw.exe -m son_of_anton_cli.main
-    # gateway run``. Without this snapshot they were force-killed and never
-    # restarted (the "Restart manually after update" dead-end from #50090).
-    unmapped: list[dict] = []
-    for pid in unmapped_pids:
-        argv = None
-        try:
-            argv = _capture_gateway_argv(int(pid))
-        except Exception as exc:
-            logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
-        unmapped.append({"pid": int(pid), "argv": argv})
-
-    # Stop drain survivors, unmapped gateways, and the pre-drain launcher
-    # snapshot. ``terminate_pid(force=True)`` is a tree kill, so a launcher
-    # that outlived its worker takes any stragglers with it; a launcher that
-    # already exited with its drained worker raises ProcessLookupError below
-    # and is skipped.
-    force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
-        try:
-            terminate_pid(int(pid), force=True)
-            force_killed.append(int(pid))
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-
-    if profiles:
-        print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
-    if force_killed:
-        print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
-
-    if unmapped_pids:
-        respawnable = sum(1 for u in unmapped if u.get("argv"))
-        print(
-            f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping"
-        )
-        if respawnable < len(unmapped_pids):
-            # Some had no recoverable command line (psutil missing, access
-            # denied, already gone): those still need a manual restart.
-            print("    Restart manually after update: son-of-anton gateway run")
-
-    return {
-        "resume_needed": True,
-        "profiles": profiles,
-        "unmapped_pids": unmapped_pids,
-        "unmapped": unmapped,
-    }
-
-def _cold_start_windows_gateway_after_update() -> None:
-    """Start a fresh detached gateway after update when one is installed but down.
-
-    Invoked from ``_resume_windows_gateways_after_update`` for the
-    ``cold_start_if_installed`` case: no gateway was running when the update
-    began, but an autostart entry (Scheduled Task / Startup-folder login item)
-    is installed, signalling the user wants a gateway. Unlike the relaunch
-    paths — which watch an old PID and respawn once it exits — this is a direct
-    fresh spawn via the same hidden-console + breakaway path that
-    ``son-of-anton gateway start`` uses (``gateway_windows._spawn_detached``).
-
-    Best-effort and idempotent: re-checks that nothing is running first so a
-    concurrent start (e.g. the autostart entry firing) can't produce a
-    duplicate gateway.
-
-    A successful ``Popen`` only proves the process was created, not that it
-    survived (e.g. a Windows job object denying breakaway kills it before it
-    logs anything — #84185). So the success line is gated on the same
-    post-spawn liveness poll every other ``_spawn_detached`` caller uses
-    (``gateway_windows._report_gateway_start``), instead of being printed
-    unconditionally from the returned PID.
-    """
-    if not _m()._is_windows():
-        return
-    try:
-        from son_of_anton_cli import gateway_windows
-        from son_of_anton_cli.gateway import find_gateway_pids
-    except Exception as exc:
-        logger.debug("Could not load Windows gateway cold-start helpers: %s", exc)
-        return
-
-    # Re-check liveness right before spawning — between pause and resume the
-    # autostart entry may have already brought a gateway up, or a leftover
-    # process may have re-registered. Don't double-start.
-    try:
-        if list(find_gateway_pids(all_profiles=True)):
-            return
-    except Exception as exc:
-        logger.debug("Could not re-check gateway liveness before cold-start: %s", exc)
-        return
-
-    try:
-        pid = gateway_windows._spawn_detached()
-    except Exception as exc:
-        logger.debug("Could not cold-start Windows gateway after update: %s", exc)
-        return
-
-    if pid:
-        print()
-        gateway_windows._report_gateway_start(f"cold-start after update (PID {pid})")
 
 def _for_each_systemd_gateway_unit(
     list_units_stdout: str,
@@ -4215,42 +3000,12 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     print("    son-of-anton gateway restart")
     print("    son-of-anton gateway status")
 
-def _refresh_windows_gateway_launchers() -> None:
-    """Regenerate installed Windows gateway launcher scripts after update.
-
-    The Scheduled Task / Startup-folder launchers (``gateway.cmd`` +
-    ``gateway.vbs``) are persistence artifacts written once at install time —
-    ``son-of-anton update`` never touched them, so installs created before the
-    hidden-console rework kept launching the gateway through
-    ``pythonw.exe`` forever: every descendant spawn flashed a conhost
-    (#54220/#56747) and, since #70344, the console-less gateway died at
-    startup with ``RuntimeError: sys.stderr is None`` (#71671).
-
-    The task's /TR points at a stable script path, so rewriting the files in
-    place retargets the task without any schtasks call (no UAC needed).
-    ``_write_task_script`` is idempotent and renders from current code, so
-    this is a no-op for modern installs. Best-effort: a failed refresh must
-    never fail the update.
-    """
-    if not _m()._is_windows():
-        return
-    try:
-        from son_of_anton_cli import gateway_windows
-
-        if not gateway_windows.is_installed():
-            return
-        gateway_windows._write_task_script()
-        print("  ✓ Refreshed Windows gateway launcher scripts")
-    except Exception as exc:
-        logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)
-
 def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     """Sync the installer's bootstrap-cache scripts from the fresh checkout.
 
-    The Desktop GUI updater (``son-of-anton-setup.exe``) executes
-    ``$SON_OF_ANTON_HOME/bootstrap-cache/install-<ref>.ps1`` (or ``.sh``) for its
-    repair/bootstrap stages. Installer binaries built before the #67193
-    cache-refresh fix (June 2026 and earlier) NEVER re-download a cached
+    The Desktop GUI updater executes ``$SON_OF_ANTON_HOME/bootstrap-cache/install-<ref>.ps1``
+    (or ``.sh``) for its repair/bootstrap stages. Installer binaries built before
+    the #67193 cache-refresh fix (June 2026 and earlier) NEVER re-download a cached
     branch-ref script — ``install-main.ps1`` cached at install time is
     reused forever, executing months-stale code with long-fixed bugs (the
     2026-08-09 incident: a June 4 cached script's venv stage lacked the
@@ -4322,76 +3077,6 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
     except Exception as exc:
         logger.debug("Could not refresh bootstrap-cache scripts after update: %s", exc)
 
-def _resume_windows_gateways_after_update(token: dict | None) -> None:
-    """Restart Windows profile gateways previously paused for update."""
-    if not token or not token.get("resume_needed"):
-        return
-    token["resume_needed"] = False
-    if not _m()._is_windows():
-        return
-
-    # Regenerate the persisted launcher scripts before respawning anything,
-    # so a legacy pythonw-era Scheduled Task / Startup entry comes back on
-    # the current hidden-console design at the next login too.
-    _m()._refresh_windows_gateway_launchers()
-
-    profiles = token.get("profiles") or {}
-    unmapped = token.get("unmapped") or []
-    cold_start = bool(token.get("cold_start_if_installed"))
-    if not profiles and not any(u.get("argv") for u in unmapped):
-        if cold_start:
-            _m()._cold_start_windows_gateway_after_update()
-        return
-
-    try:
-        from son_of_anton_cli.gateway import (
-            launch_detached_gateway_restart_by_cmdline,
-            launch_detached_profile_gateway_restart,
-        )
-    except Exception as exc:
-        logger.debug("Could not load Windows gateway restart helper: %s", exc)
-        return
-
-    relaunched = []
-    for profile, old_pid in sorted(profiles.items()):
-        try:
-            if launch_detached_profile_gateway_restart(str(profile), int(old_pid)):
-                relaunched.append(str(profile))
-        except Exception as exc:
-            logger.debug(
-                "Could not restart Windows gateway profile %s after update: %s",
-                profile,
-                exc,
-            )
-
-    # Respawn unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled
-    # Task) by replaying the argv we snapshotted before force-killing them.
-    unmapped_relaunched = 0
-    for entry in unmapped:
-        argv = entry.get("argv")
-        old_pid = entry.get("pid")
-        if not argv or not old_pid:
-            continue
-        try:
-            if launch_detached_gateway_restart_by_cmdline(int(old_pid), list(argv)):
-                unmapped_relaunched += 1
-        except Exception as exc:
-            logger.debug(
-                "Could not restart unmapped Windows gateway (pid %s) after update: %s",
-                old_pid,
-                exc,
-            )
-
-    if relaunched:
-        print()
-        print(f"  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
-    if unmapped_relaunched:
-        if not relaunched:
-            print()
-        print(
-            f"  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)"
-        )
-
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -4433,119 +3118,6 @@ def _discard_lockfile_churn(git_cmd, repo_root):
     except Exception:
         # Never let lockfile cleanup block an update.
         pass
-
-def _normalize_managed_eol(git_cmd, repo_root):
-    """Take a managed checkout off ``core.autocrlf=true`` without leaving it dirty.
-
-    Git for Windows ships ``core.autocrlf=true`` in its system config, which
-    renormalizes this repo's LF text files to CRLF in the working tree. That
-    breaks ``git checkout`` on update with "Your local changes would be
-    overwritten", so ``install.ps1`` pins ``core.autocrlf=false`` on the managed
-    clone (#67730). Checkouts created before that landed never got the pin and
-    cannot receive it — the bootstrap installer reuses its build-pinned
-    ``install.ps1`` forever — so ``son-of-anton update``, which ships with the checkout
-    itself, is the only path left that can fix them.
-
-    The pin and the cleanup are one operation. Under ``autocrlf=true`` git
-    compares normalized content, so a CRLF working tree reads clean; pinning
-    alone would expose every text file as modified and hand the update an
-    autostash of the whole tree. So the pin is written only after the tree is
-    verified clean under it, and a checkout we cannot fully normalize is left
-    exactly as it was. Best-effort: never blocks an update.
-    """
-    # -c, not config: evaluate the tree as it WOULD look pinned, without
-    # persisting anything we might not be able to follow through on.
-    probe = git_cmd + ["-c", "core.autocrlf=false"]
-
-    def _dirty(*extra):
-        out = subprocess.run(
-            probe + ["diff", "-z", "--name-only", *extra],
-            cwd=repo_root,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        if out.returncode != 0:
-            return None
-        return {p for p in out.stdout.split("\0") if p}
-
-    def _real_dirty():
-        # Files with a *content* change once CRLF differences are ignored.
-        # NOTE: ``diff --name-only --ignore-cr-at-eol`` still LISTS CR-only
-        # files (the name list is computed from blob/stat differences before
-        # the CR filter is applied), so it cannot be used to isolate real
-        # edits. ``--numstat`` does honor the filter: a CR-only file produces
-        # no numstat record, while a genuinely-edited file does. Parse the
-        # paths out of numstat instead.
-        out = subprocess.run(
-            probe + ["-c", "core.quotepath=false",
-                     "diff", "--numstat", "--ignore-cr-at-eol"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        if out.returncode != 0:
-            return None
-        paths = set()
-        for line in out.stdout.splitlines():
-            if not line.strip():
-                continue
-            # Format: "<added>\t<deleted>\t<path>". Rename detection is off in
-            # plain diff, so there is exactly one path field per record.
-            parts = line.split("\t", 2)
-            if len(parts) == 3 and parts[2]:
-                paths.add(parts[2])
-        return paths
-
-    def _eol_only():
-        all_dirty, real_dirty = _dirty(), _real_dirty()
-        if all_dirty is None or real_dirty is None:
-            return None
-        return all_dirty - real_dirty
-
-    try:
-        effective = subprocess.run(
-            git_cmd + ["config", "--get", "core.autocrlf"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
-        # Only "true" rewrites LF to CRLF on checkout. Unset, false, and input
-        # all leave the working tree alone, so there is nothing to repair.
-        if effective.stdout.strip().lower() != "true":
-            return
-
-        eol_only = _eol_only()
-        if eol_only is None:
-            return
-        if eol_only:
-            # Pathspec over stdin, not argv: a fully renormalized checkout is
-            # thousands of paths, well past the Windows command-line limit.
-            subprocess.run(
-                probe
-                + ["checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--"],
-                cwd=repo_root,
-                input="\0".join(sorted(eol_only)),
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                check=False,
-            )
-            if _eol_only():
-                # Still dirty — persisting the pin here would only surface churn
-                # we failed to clear. Leave the checkout as we found it.
-                return
-            print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")
-
-        subprocess.run(
-            git_cmd + ["config", "core.autocrlf", "false"],
-            cwd=repo_root,
-            capture_output=True,
-            check=False,
-        )
-    except Exception:
-        # Never let line-ending cleanup block an update.
-        pass
-
-
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -4631,18 +3203,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception as _plan_exc:
         logger.debug("Update plan phase failed: %s", _plan_exc)
 
-    # On Windows, abort early if another son-of-anton.exe is holding the venv shim
-    # open. Continuing would result in a string of WinError 32 warnings and
-    # then either a deferred-rename leftover or a failed git-pull fast path
-    # that silently falls back to the slower ZIP route. See issue #26670.
-    if _m()._is_windows() and not getattr(args, "force", False):
-        scripts_dir = _m()._venv_scripts_dir()
-        if scripts_dir is not None:
-            concurrent = _m()._detect_concurrent_son_of_anton_instances(scripts_dir)
-            if concurrent:
-                print(_format_concurrent_instances_message(concurrent, scripts_dir))
-                sys.exit(2)
-
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
     # Returns the quick-snapshot id (or None when disabled/failed); the
@@ -4659,116 +3219,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except Exception:
         pass
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-
-        _atexit.register(
-            _m()._resume_windows_gateways_after_update,
-            _windows_gateway_resume,
-        )
-
-    # With gateways paused, anything still running from the venv interpreter
-    # will keep .pyd files locked and corrupt the dependency sync below.
-    # Refuse rather than race: the user must close the remaining Son of Anton
-    # processes. Deliberately NOT bypassed by plain --force — a venv python
-    # holding a .pyd would sail through and corrupt the sync (the exact
-    # failure this guard exists for). --force-venv is the explicit escape
-    # hatch.
-    if _m()._is_windows() and not getattr(args, "force_venv", False):
-        _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
-            _gateway_holders = _m()._leftover_pausable_gateway_pids(_venv_holders)
-            if _gateway_holders is not None:
-                # Every remaining holder is a gateway the pause machinery
-                # already owns — respawned by its supervisor inside the
-                # pause→guard window, or up through a spawn path discovery
-                # does not map. Stop them and re-check instead of
-                # dead-ending; the post-update resume (and the supervisor
-                # that respawned them) brings gateways back afterwards.
-                from gateway.status import terminate_pid
-
-                print(
-                    f"  ⚠ {len(_gateway_holders)} gateway process(es) still "
-                    "hold the venv after the pause; stopping them"
-                )
-                for _pid in _gateway_holders:
-                    try:
-                        terminate_pid(int(_pid), force=True)
-                    except Exception as exc:
-                        logger.debug(
-                            "Could not stop leftover gateway %s: %s", _pid, exc
-                        )
-                _time.sleep(1.0)
-                _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
-            # Positive-identity rung (runs FIRST, any update context): holders
-            # the spawn ledger proves are orphaned Son of Anton backends — the
-            # process self-registered (pid, create_time, purpose, spawner) at
-            # startup and its recorded spawner is provably dead. No PPID
-            # archaeology, no hand-off contract required.
-            _ledger_backends = _m()._ledger_reapable_backend_pids(_venv_holders)
-            if _ledger_backends:
-                print(
-                    f"  ⚠ {len(_ledger_backends)} ledger-identified orphaned "
-                    "Son of Anton backend process(es) hold the venv; stopping their trees"
-                )
-                _m()._stop_process_trees(_ledger_backends)
-                _time.sleep(1.0)
-                _venv_holders = _m()._detect_venv_python_processes()
-        if _venv_holders:
-            print(_format_venv_python_holders_message(_venv_holders))
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(2)
-
-    # Self-lock deferral moved: the venv-holder sweep above excludes this
-    # process by design (a CLI `son-of-anton update` IS the venv python), and an
-    # updater that has imported a native venv extension cannot rewrite its
-    # own mapped .pyd (#83569). That check used to run HERE — before the
-    # fetch — but firing pre-fetch meant a deferral stranded the user on the
-    # OLD checkout, and any startup path that eagerly loaded cryptography
-    # turned every Windows update into an exit-2 loop (#86735/#86780/#86781).
-    # It now runs via _abort_dependency_sync_if_self_locked() after the code
-    # swap, immediately before the dependency sync — the only phase the lock
-    # can actually break — and only when the sync would truly rewrite the
-    # loaded distribution.
-
-    # Try git-based update first, fall back to ZIP download on Windows
-    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
-    use_zip_update = False
+    # Git-based update only — the ZIP fallback and the Windows venv-holder /
+    # gateway-pause machinery were removed with Windows support.
     git_dir = _m().PROJECT_ROOT / ".git"
 
     if not git_dir.exists():
-        if sys.platform == "win32":
-            use_zip_update = True
-        else:
-            print("✗ Not a git repository. Please reinstall:")
-            print(
-                "  curl -fsSL https://son-of-anton.nousresearch.com/install.sh | bash"
-            )
-            sys.exit(1)
-
-    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
-    # due to filesystem atomicity issues. Set the recommended workaround.
-    if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "windows.appendAtomically=false",
-                "config",
-                "windows.appendAtomically",
-                "false",
-            ],
-            cwd=_m().PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-        )
+        print("✗ Not a git repository. Reinstall via your Nix flake / package")
+        print("  manager, or clone the repository for a git-checkout install.")
+        sys.exit(1)
 
     # Build git command once — reused for fork detection and the update itself.
     git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
@@ -4778,10 +3239,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # switches fragile. Restoring them first lets the common case (only
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
-    # Same rationale, different generator: line-ending churn is machine-made
-    # dirt on a managed checkout, so clear it (and stop generating it) before
-    # the stash/branch logic rather than autostashing the entire tree.
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
@@ -4791,16 +3248,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("⚠ Updating from fork:")
         print(f"  {origin_url}")
         print()
-
-    if use_zip_update:
-        # ZIP-based update for Windows when git is broken
-        try:
-            _update_via_zip(args)
-        finally:
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        if gateway_mode:
-            _write_gateway_update_exit_code(True)
-        return
 
     # Fetch and pull
     try:
@@ -4874,9 +3321,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(
                         "⚠ Update finished — code update SKIPPED"
                         f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
-                    )
-                    _m()._resume_windows_gateways_after_update(
-                        _windows_gateway_resume
                     )
                     sys.exit(1)
                 parked_branch_switched = True
@@ -5022,30 +3466,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
 
             # A current checkout does NOT imply a healthy install: a previous
-            # dependency sync may have failed partway (classic on Windows,
-            # where a running gateway backend keeps .pyd files locked
-            # and uv/pip dies with access-denied, stranding the venv between
-            # versions). Probe the venv's core imports and repair if broken —
-            # otherwise "Already up to date!" gaslights the user while their
-            # install stays bricked.
+            # dependency sync may have failed partway, stranding the venv
+            # between versions. Probe the venv's core imports and repair if
+            # broken — otherwise "Already up to date!" gaslights the user
+            # while their install stays bricked.
             healthy, detail = _venv_core_imports_healthy()
-            # The Windows shim hand-off spawns this child precisely to run a
-            # sync its parent could not. The parent already pulled, so the
-            # checkout is current BY DESIGN and venv health is not the
-            # question — the pending sync is. Without this the child prints
-            # "Already up to date!" and exits without doing the one job it
-            # was spawned for.
-            handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
-            if handed_off_sync:
-                print("→ Finishing the dependency install handed off by son-of-anton.exe...")
-            elif not healthy:
+            if not healthy:
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
-            if handed_off_sync or not healthy:
-                # Self-lock deferral (#86735): the repair rewrites the venv
-                # too — same mapped-extension hazard as the update sync.
-                _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
+            if not healthy:
                 _write_update_incomplete_marker()
                 from son_of_anton_cli.managed_uv import ensure_uv
 
@@ -5053,10 +3483,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # A managed install whose venv is gone entirely (interrupted
                 # repair after the old venv was moved aside) needs the venv
                 # recreated before dependencies can be installed into it.
-                venv_python_missing = not (
-                    venv_python_path(
-                        _m().PROJECT_ROOT / "venv", windows=_m()._is_windows()
-                    )
+                venv_python_missing = not venv_python_path(
+                    _m().PROJECT_ROOT / "venv"
                 ).exists()
                 if venv_python_missing and repair_uv:
                     print("→ Recreating virtual environment...")
@@ -5081,16 +3509,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         env=repair_env,
                     )
                 else:
-                    _m()._install_python_dependencies_with_optional_fallback(
-                        [sys.executable, "-m", "pip"], group="all"
-                    )
-                    _m()._refresh_active_lazy_features(
-                        [sys.executable, "-m", "pip"],
-                        features=active_lazy_features,
-                    )
-                    _m()._restore_active_tool_dependencies(
-                        active_tool_dependencies,
-                        [sys.executable, "-m", "pip"],
+                    print(
+                        "  ⚠ No uv binary available — could not repair "
+                        "dependencies. Rebuild your Nix environment / flake."
                     )
                 _m()._clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()
@@ -5102,7 +3523,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Son of Anton windows/gateways and re-run: son-of-anton update")
             else:
                 _repair_node_deps_on_current_checkout(_print_update_completion)
-            if runtime_repaired is not None and not _m()._is_windows():
+            if runtime_repaired is not None:
                 print()
                 print(
                     "⚠ Restart required to finish the managed Python runtime repair."
@@ -5112,7 +3533,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "long-lived processes still use the previous runtime."
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
         if commit_count > 0:
@@ -5263,7 +3683,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "  Reattach to the branch and retry: "
                 f"git -C {_m().PROJECT_ROOT} checkout {branch} && son-of-anton update"
             )
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
         # And verify HEAD actually sits on the target branch. The parked-
@@ -5286,7 +3705,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "  Switch to the target branch and retry: "
                 f"git -C {_m().PROJECT_ROOT} checkout {branch} && son-of-anton update"
             )
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
@@ -5308,14 +3726,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         #
-        # Self-lock deferral (relocated preflight — #86735): if THIS process
-        # holds a native extension the sync must rewrite, defer NOW — after
-        # the code swap, so only the dependency install is pending and the
-        # next fresh launch completes it via the marker.
-        _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
-        #
         # Drop the core-install breadcrumb BEFORE touching the venv. If the
-        # install is killed mid-flight (Ctrl-C, terminal close, WSL OOM), the
+        # install is killed mid-flight (Ctrl-C, terminal close, OOM), the
         # marker survives and the next ``son-of-anton`` launch finishes the install
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
@@ -5333,52 +3745,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
         update_managed_uv()
 
         uv_bin = ensure_uv()
-
-        pip_cmd = [sys.executable, "-m", "pip"]
-        if not uv_bin:
-            uv_bin = _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
+        uv_env = None
+        install_prefix = None
 
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
-            if _m()._is_termux_env(uv_env):
-                uv_env.pop("PYTHONPATH", None)
-                uv_env.pop("PYTHONHOME", None)
-                install_group = "termux-all"
-                print("  → Termux detected: using uv + curated termux-all optional profile...")
+            install_prefix = [uv_bin, "pip"]
             if not deps_current:
                 _m()._install_python_dependencies_with_optional_fallback(
                     [uv_bin, "pip"], env=uv_env, group=install_group
                 )
         else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=_m().PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=_m().PROJECT_ROOT,
-                    check=True,
-                )
-            if _m()._is_termux_env():
-                install_group = "termux-all"
-                print("  → Termux detected: using curated termux-all optional profile...")
-            if not deps_current:
-                _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            print("  ⚠ No uv binary available — skipping the dependency sync.")
+            print("    Rebuild your Nix environment / flake to pick up dependency changes.")
 
-        install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
-        lazy_env = uv_env if uv_bin else None
+        lazy_env = uv_env
 
-        if deps_current:
+        if deps_current and install_prefix is not None:
             # The verification normally runs inside the install we just
             # skipped. Run it here so a wrong skip self-heals into a real
             # install (both verifiers reinstall what they find missing)
@@ -5411,29 +3795,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Upgrade pip before lazy refreshes — stale pip can fail source builds
         # and leave partially-written packages (#57828).
-        _write_lazy_refresh_incomplete_marker()
-        _m()._upgrade_pip_before_lazy_refresh(install_prefix, env=lazy_env)
+        if install_prefix is not None:
+            _write_lazy_refresh_incomplete_marker()
+            _m()._upgrade_pip_before_lazy_refresh(install_prefix, env=lazy_env)
 
-        # Lazy refresh can corrupt the venv when a backend install fails.
-        # Clear the lazy marker only when refresh/repair is confirmed healthy.
-        lazy_ok = _m()._refresh_active_lazy_features(
-            install_prefix,
-            env=lazy_env,
-            features=active_lazy_features,
-        )
-        if lazy_ok:
-            _m()._clear_lazy_refresh_incomplete_marker()
-        else:
-            print(
-                "  ⚠ Lazy-refresh recovery incomplete — run `son-of-anton` again "
-                "to finish import-based venv repair."
+            # Lazy refresh can corrupt the venv when a backend install fails.
+            # Clear the lazy marker only when refresh/repair is confirmed healthy.
+            lazy_ok = _m()._refresh_active_lazy_features(
+                install_prefix,
+                env=lazy_env,
+                features=active_lazy_features,
             )
+            if lazy_ok:
+                _m()._clear_lazy_refresh_incomplete_marker()
+            else:
+                print(
+                    "  ⚠ Lazy-refresh recovery incomplete — run `son-of-anton` again "
+                    "to finish import-based venv repair."
+                )
 
-        _m()._restore_active_tool_dependencies(
-            active_tool_dependencies,
-            install_prefix,
-            env=lazy_env,
-        )
+            _m()._restore_active_tool_dependencies(
+                active_tool_dependencies,
+                install_prefix,
+                env=lazy_env,
+            )
 
         # Heal the active memory provider's bridge packages last — the core
         # reinstall + lazy refresh above may have stripped or downgraded
@@ -6620,10 +5005,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     from gateway.status import terminate_pid as _terminate_pid
                     for pid in _stuck:
                         try:
-                            # Routes through taskkill /T /F on Windows,
-                            # SIGKILL on POSIX — _signal.SIGKILL doesn't
-                            # exist on Windows so the old raw os.kill call
-                            # used to crash the entire update path.
                             _terminate_pid(pid, force=True)
                         except (ProcessLookupError, PermissionError, OSError):
                             pass
@@ -6667,8 +5048,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             except Exception:
                 pass
-
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
         # Warn if legacy Son of Anton gateway unit files are still installed.
         # When both son-of-anton.service (from a pre-rename install) and the
@@ -6745,22 +5124,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
-            print("→ Falling back to ZIP download...")
-            print()
-            _update_via_zip(args)
-            if gateway_mode:
-                _write_gateway_update_exit_code(True)
-        else:
-            print(f"✗ Update failed: {e}")
-            try:
-                from son_of_anton_cli.update_receipt import finalize_update_receipt
+        print(f"✗ Update failed: {e}")
+        try:
+            from son_of_anton_cli.update_receipt import finalize_update_receipt
 
-                finalize_update_receipt("failed")
-            except Exception:
-                pass
-            sys.exit(1)
+            finalize_update_receipt("failed")
+        except Exception:
+            pass
+        sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
 

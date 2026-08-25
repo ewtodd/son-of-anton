@@ -50,13 +50,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
-
-from son_of_anton_cli._subprocess_compat import windows_hide_flags
 
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED,
@@ -90,16 +87,9 @@ RETRY_BASE_DELAY = 0.5  # 0.5, 1.0, 2.0 — exponential
 def file_uri(path: str) -> str:
     """Return ``file://`` URI for an absolute filesystem path.
 
-    Mirrors Node's ``pathToFileURL`` — handles spaces, unicode, and
-    Windows drive letters (``C:\\foo`` → ``file:///C:/foo``).
+    Mirrors Node's ``pathToFileURL`` — handles spaces and unicode.
     """
     abs_path = os.path.abspath(path)
-    if os.name == "nt":
-        # Windows: backslash → forward slash, prepend extra slash so
-        # the drive letter shows up as part of the path component.
-        abs_path = abs_path.replace("\\", "/")
-        if not abs_path.startswith("/"):
-            abs_path = "/" + abs_path
     return "file://" + quote(abs_path, safe="/:")
 
 
@@ -108,8 +98,6 @@ def uri_to_path(uri: str) -> str:
     if not uri.startswith("file://"):
         return uri
     raw = uri[len("file://"):]
-    if os.name == "nt" and raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
-        raw = raw[1:]  # strip leading slash before drive letter
     return os.path.normpath(unquote(raw))
 
 
@@ -280,29 +268,12 @@ class LSPClient:
             await self._cleanup_process()
             raise
 
-    @staticmethod
-    def _win_wrap_cmd(cmd: List[str]) -> List[str]:
-        """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
-        exe = cmd[0]
-        if exe.lower().endswith((".cmd", ".bat")):
-            return ["cmd.exe", "/c", *cmd]
-        return cmd
-
     async def _spawn(self) -> None:
         env = dict(os.environ)
         if self._env:
             env.update(self._env)
 
         cmd = self._command
-        if sys.platform == "win32":
-            cmd = self._win_wrap_cmd(cmd)
-        # Suppress the cmd.exe console window that would otherwise flash
-        # every time we launch a ``.cmd``-wrapped language server
-        # (e.g. pyright-langserver.CMD) from a console-less host such as
-        # a VS Code/Zed extension running the ACP adapter.
-        # windows_hide_flags() is CREATE_NO_WINDOW on Windows, 0 on POSIX.
-        creationflags = windows_hide_flags()
-
         try:
             # start_new_session=True detaches the LSP server into its own
             # process group / session. Without this, the LSP server inherits
@@ -320,7 +291,6 @@ class LSPClient:
                 env=env,
                 cwd=self._cwd,
                 start_new_session=True,
-                creationflags=creationflags,
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(

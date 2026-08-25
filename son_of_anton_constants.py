@@ -52,10 +52,6 @@ def get_son_of_anton_home_override() -> str | None:
 
 def _get_platform_default_son_of_anton_home() -> Path:
     """Return the platform-native default Son of Anton home path."""
-    if sys.platform == "win32":
-        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "son-of-anton"
     return Path.home() / ".son-of-anton"
 
 
@@ -184,15 +180,15 @@ def get_default_son_of_anton_root() -> Path:
     """Return the root Son of Anton directory for profile-level operations.
 
     In standard deployments this is the platform-native Son of Anton home
-    (``~/.son-of-anton`` on POSIX, ``%LOCALAPPDATA%\\son-of-anton`` on native Windows).
+    (``~/.son-of-anton``).
 
-    In Docker or custom deployments where ``SON_OF_ANTON_HOME`` points outside
+    In custom deployments where ``SON_OF_ANTON_HOME`` points outside
     ``~/.son-of-anton`` (e.g. ``/opt/data``), returns ``SON_OF_ANTON_HOME`` directly
     — that IS the root.
 
     In profile mode where ``SON_OF_ANTON_HOME`` is ``<root>/profiles/<name>``,
     returns ``<root>`` so that ``profile list`` can see all profiles.
-    Works both for standard (``~/.son-of-anton/profiles/coder``) and Docker
+    Works both for standard (``~/.son-of-anton/profiles/coder``) and custom
     (``/opt/data/profiles/coder``) layouts.
 
     Import-safe — no dependencies beyond stdlib.
@@ -284,36 +280,18 @@ def get_son_of_anton_dir(
 def iter_son_of_anton_node_dirs(home: Path | None = None) -> list[Path]:
     """Return Son of Anton-managed Node.js directories in preferred lookup order.
 
-    Windows installs from ``scripts/install.ps1`` unpack portable Node directly
-    into ``%LOCALAPPDATA%\\son-of-anton\\node``. POSIX installs use
-    ``$SON_OF_ANTON_HOME/node/bin``. Include both shapes on every platform so mixed
-    or migrated installs still work.
+    Son of Anton-managed Node trees use ``$SON_OF_ANTON_HOME/node/bin``. The
+    ``node`` root is included after the ``bin`` dir so the lookup prefers
+    the wrapper scripts.
     """
     root = home or get_son_of_anton_home()
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
-    # NOTE: keep this ordering in sync with son-of-antonManagedNodePathEntries() in
-    # apps/desktop/electron/backend-env.ts — the Electron main process is Node
-    # and cannot import this module, so the platform-ordering rule is mirrored
-    # there (once; main.ts imports it rather than keeping its own copy).
-    if sys.platform == "win32":
-        return dirs + [bin_dir]
     return [bin_dir] + dirs
 
 
 def _candidate_node_command_names(command: str) -> list[str]:
-    base = Path(command).name
-    if sys.platform != "win32" or "." in base:
-        return [base]
-    if base.lower() == "npm":
-        # Prefer npm.cmd. PowerShell may block npm.ps1 by execution policy, and
-        # CreateProcess cannot launch a bare .ps1 the way it can launch .cmd.
-        return ["npm.cmd", "npm.exe", "npm"]
-    if base.lower() == "npx":
-        return ["npx.cmd", "npx.exe", "npx"]
-    if base.lower() == "node":
-        return ["node.exe", "node"]
-    return [f"{base}.cmd", f"{base}.exe", base]
+    return [Path(command).name]
 
 
 _SON_OF_ANTON_NODE_TARGET_MAJOR = int(os.environ.get("SON_OF_ANTON_NODE_TARGET_MAJOR", "22"))
@@ -336,24 +314,17 @@ def node_tool_runnable(path: str | None) -> bool:
     """
     if not path:
         return False
-    candidate = Path(path)
-    if sys.platform == "win32":
-        if not candidate.is_file():
-            return False
-    elif not os.path.exists(path) or not os.access(path, os.X_OK):
+    if not os.path.exists(path) or not os.access(path, os.X_OK):
         return False
 
     import subprocess
 
     try:
-        from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_son_of_anton_node_path(),
-            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -368,9 +339,7 @@ def son_of_anton_managed_node_tree_present(home: Path | None = None) -> bool:
     for directory in iter_son_of_anton_node_dirs(home):
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and (
-                sys.platform == "win32" or os.access(candidate, os.X_OK)
-            ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 return True
     return False
 
@@ -405,8 +374,7 @@ def managed_node_tree_in_use(home: Path | None = None) -> bool:
     semantics.
 
     The scan is a fast pre-check that avoids pointless re-downloads in
-    long-lived processes; the rename-based swap in
-    :func:`_heal_managed_node_windows` is the authoritative in-use guard.
+    long-lived processes.
     """
     if sys.platform != "win32":
         return False
@@ -443,172 +411,6 @@ def managed_node_tree_in_use(home: Path | None = None) -> bool:
             if _path_under_any(arg, dirs):
                 return True
     return False
-
-
-_managed_node_in_use_notice_printed = False
-
-
-def _print_managed_node_in_use_notice() -> None:
-    """Print the managed-Node deferral notice once per process."""
-    global _managed_node_in_use_notice_printed
-    if _managed_node_in_use_notice_printed:
-        return
-    _managed_node_in_use_notice_printed = True
-    print(
-        "→ Son of Anton-managed Node.js is in use by a running app; deferring its "
-        "upgrade until the app is closed (re-run `son-of-anton update` afterwards).",
-        flush=True,
-    )
-
-
-def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
-    """Redownload the portable Node zip into ``%SON_OF_ANTON_HOME%\\node`` on Windows.
-
-    Returns ``True`` on success, ``False`` on a genuine failure (offline,
-    download error, bad archive), and ``None`` when the tree is in use and the
-    heal is deferred — callers must not record the once-per-process attempt
-    for ``None`` so a later call can retry once the tree is free.
-
-    The replacement is staging-first: the new tree is fully downloaded and
-    extracted to a sibling ``node.new-*`` directory, then the live tree is
-    renamed aside (``node.old-*``) and the staged tree renamed into place.
-    The live tree is never deleted before its replacement is ready, so an
-    interrupted heal cannot gut the running installation. Windows allows
-    renaming a tree whose executables are running (images are mapped with
-    ``FILE_SHARE_DELETE`` — the same mechanism as the son-of-anton.exe quarantine);
-    when the OS refuses the rename, that refusal *is* the in-use signal and
-    the heal defers instead of forcing the write and crashing with
-    ``PermissionError: [WinError 5]`` on ``npm.cmd`` (#80926).
-    """
-    import re
-    import tempfile
-    import time
-    import urllib.request
-    import uuid
-    import zipfile
-
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
-    if arch in ("amd64", "x86_64"):
-        node_arch = "x64"
-    elif arch == "arm64":
-        node_arch = "arm64"
-    elif arch in ("x86",):
-        node_arch = "x86"
-    else:
-        return False
-
-    home = home or get_son_of_anton_home()
-    target = home / "node"
-
-    # Cheap pre-check: skip the download and staging work when the tree is
-    # already visibly in use.  The rename-based swap below is the
-    # authoritative guard — this scan only avoids pointless re-downloads for
-    # long-lived processes whose npm resolution retries.
-    if managed_node_tree_in_use(home):
-        _print_managed_node_in_use_notice()
-        return None
-
-    # Best-effort sweep of staging/backup litter from interrupted runs; a
-    # locked file simply stays for the next attempt.  Only dirs older than
-    # 10 minutes are removed so a concurrent heal's in-flight swap (whose
-    # staged/backup dirs are seconds old) is never disturbed.
-    cutoff = time.time() - 600
-    for stale in home.glob("node.old-*"):
-        try:
-            if stale.stat().st_mtime < cutoff:
-                shutil.rmtree(stale, ignore_errors=True)
-        except OSError:
-            continue
-    for stale in home.glob("node.new-*"):
-        try:
-            if stale.stat().st_mtime < cutoff:
-                shutil.rmtree(stale, ignore_errors=True)
-        except OSError:
-            continue
-
-    index_url = f"https://nodejs.org/dist/latest-v{_SON_OF_ANTON_NODE_TARGET_MAJOR}.x/"
-    try:
-        with urllib.request.urlopen(index_url, timeout=60) as response:
-            index_html = response.read().decode("utf-8", errors="replace")
-    except OSError:
-        return False
-
-    match = re.search(
-        rf"node-v{_SON_OF_ANTON_NODE_TARGET_MAJOR}\.\d+\.\d+-win-{node_arch}\.zip",
-        index_html,
-    )
-    if not match:
-        return False
-
-    zip_name = match.group(0)
-    download_url = f"{index_url}{zip_name}"
-    try:
-        with urllib.request.urlopen(download_url, timeout=300) as response:
-            zip_bytes = response.read()
-    except OSError:
-        return False
-
-    token = uuid.uuid4().hex[:8]
-    staged = home / f"node.new-{token}"
-    backup = home / f"node.old-{token}"
-    try:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            zip_path = tmp_path / zip_name
-            zip_path.write_bytes(zip_bytes)
-            extract_dir = tmp_path / "extract"
-            extract_dir.mkdir()
-            with zipfile.ZipFile(zip_path) as archive:
-                archive.extractall(extract_dir)
-            extracted = next(extract_dir.glob("node-v*"), None)
-            if extracted is None or not extracted.is_dir():
-                return False
-            # Move the fully-extracted tree to a sibling staging dir so the
-            # swap below is a same-volume rename.
-            shutil.move(str(extracted), str(staged))
-    except OSError:
-        return False
-
-    if target.exists():
-        try:
-            os.replace(str(target), str(backup))
-        except OSError:
-            # The OS refuses to move the live tree — a running process holds
-            # it.  Defer; the old tree is untouched and the next resolution
-            # (e.g. the next update after the app is closed) retries.
-            _print_managed_node_in_use_notice()
-            shutil.rmtree(staged, ignore_errors=True)
-            return None
-        # A rename preserves the directory's mtime, so a backup renamed from
-        # a long-lived tree would instantly look older than the litter-sweep
-        # cutoff to a concurrent heal.  Touch it (best-effort — a failure
-        # must not abort the swap, which already succeeded) so the in-flight
-        # backup is never swept mid-swap.
-        try:
-            os.utime(backup, None)
-        except OSError:
-            pass
-        try:
-            os.replace(str(staged), str(target))
-        except OSError:
-            # Roll the live tree back and report the failure.
-            try:
-                os.replace(str(backup), str(target))
-            except OSError:
-                pass
-            shutil.rmtree(staged, ignore_errors=True)
-            return False
-        # The old tree is no longer canonical; locked files may keep it on
-        # disk until the next heal attempt, which is safe.
-        shutil.rmtree(backup, ignore_errors=True)
-    else:
-        try:
-            os.replace(str(staged), str(target))
-        except OSError:
-            shutil.rmtree(staged, ignore_errors=True)
-            return False
-
-    return node_tool_runnable(str(target / "node.exe"))
 
 
 def _bootstrap_managed_node_posix() -> bool:
@@ -666,19 +468,13 @@ def bootstrap_son_of_anton_managed_node() -> str | None:
     if existing:
         return existing
 
-    if sys.platform == "win32":
-        ok = _heal_managed_node_windows()
-    else:
-        ok = _bootstrap_managed_node_posix()
-    if not ok:
+    if not _bootstrap_managed_node_posix():
         return None
 
     for directory in iter_son_of_anton_node_dirs():
         for name in _candidate_node_command_names("npm"):
             candidate = directory / name
-            if candidate.is_file() and (
-                sys.platform == "win32" or os.access(candidate, os.X_OK)
-            ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 resolved = str(candidate)
                 if node_tool_runnable(resolved):
                     return resolved
@@ -688,27 +484,14 @@ def bootstrap_son_of_anton_managed_node() -> str | None:
 def heal_son_of_anton_managed_node() -> bool:
     """Redownload Son of Anton-managed Node when the tree exists but is broken.
 
-    Runs at most once per process. POSIX installs shell out to
-    ``heal_managed_node`` in ``scripts/lib/node-bootstrap.sh``; Windows
-    downloads the portable zip directly (same source as ``install.ps1``).
-    A Windows deferral (the tree is in use by a running app) does NOT record
-    the attempt, so a later call — or the next process — can heal once the
-    tree is free (#80926).
+    Runs at most once per process. Shells out to ``heal_managed_node`` in
+    ``scripts/lib/node-bootstrap.sh``.
     """
     global _managed_node_heal_attempted
     if _managed_node_heal_attempted:
         return False
     if not son_of_anton_managed_node_tree_present():
         return False
-
-    if sys.platform == "win32":
-        result = _heal_managed_node_windows()
-        if result is None:
-            # In-use deferral: leave the attempt flag clear so a later call
-            # in this process can heal after the app releases the tree.
-            return False
-        _managed_node_heal_attempted = True
-        return bool(result)
 
     _managed_node_heal_attempted = True
 
@@ -749,18 +532,13 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
     for directory in iter_son_of_anton_node_dirs(home):
         for name in _candidate_node_command_names("node"):
             candidate = directory / name
-            if not candidate.is_file() or (
-                sys.platform != "win32" and not os.access(candidate, os.X_OK)
-            ):
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
                 continue
             try:
-                from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
                 result = subprocess.run(
                     [str(candidate), "--version"],
                     capture_output=True,
                     timeout=10,
-                    creationflags=windows_hide_flags(),
                 )
                 major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
@@ -785,9 +563,7 @@ def find_son_of_anton_node_executable(command: str) -> str | None:
         for directory in iter_son_of_anton_node_dirs():
             for name in names:
                 candidate = directory / name
-                if candidate.is_file() and (
-                    sys.platform == "win32" or os.access(candidate, os.X_OK)
-                ):
+                if candidate.is_file() and os.access(candidate, os.X_OK):
                     resolved = str(candidate)
                     if node_tool_runnable(resolved):
                         return resolved, broken
@@ -806,31 +582,8 @@ def find_son_of_anton_node_executable(command: str) -> str | None:
 
 
 def find_node_executable_on_path(command: str) -> str | None:
-    """Return a Node/npm executable from PATH with Windows shim ordering.
-
-    ``shutil.which("npm")`` can resolve an extensionless npm shim before the
-    ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
-    directly, so prefer the launchable variants explicitly for Son of Anton-owned
-    subprocesses.
-    """
-    if sys.platform != "win32":
-        return shutil.which(command)
-
-    command_str = str(command)
-    has_path_separator = any(
-        sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")
-    )
-    if has_path_separator:
-        return command_str if Path(command_str).is_file() else None
-
-    for name in _candidate_node_command_names(command_str):
-        for directory in os.environ.get("PATH", "").split(os.pathsep):
-            if not directory:
-                continue
-            candidate = Path(directory) / name
-            if candidate.is_file():
-                return str(candidate)
-    return None
+    """Return a Node/npm executable from PATH."""
+    return shutil.which(command)
 
 
 def find_node_executable(command: str) -> str | None:
@@ -896,14 +649,11 @@ def agent_browser_runnable(path: str | None) -> bool:
     import subprocess
 
     try:
-        from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_son_of_anton_node_path(),
-            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -1038,18 +788,11 @@ def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
     try:
         import pwd
 
-        pw_home = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX-only module inside try/except
+        pw_home = pwd.getpwuid(os.getuid()).pw_dir.strip()
         if pw_home:
             candidates.append(pw_home)
     except Exception:
         pass
-    userprofile = str(env.get("USERPROFILE") or os.getenv("USERPROFILE", "")).strip()
-    if userprofile:
-        candidates.append(userprofile)
-    drive = str(env.get("HOMEDRIVE") or os.getenv("HOMEDRIVE", "")).strip()
-    path = str(env.get("HOMEPATH") or os.getenv("HOMEPATH", "")).strip()
-    if drive and path:
-        candidates.append(f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path))
     expanded = os.path.expanduser("~")
     if expanded and expanded != "~":
         candidates.append(expanded)
@@ -1082,9 +825,9 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     Policy is controlled by ``terminal.home_mode`` (bridged to
     ``TERMINAL_HOME_MODE``):
 
-    * ``auto`` (default): host installs keep the real user HOME; containers use
-      ``{SON_OF_ANTON_HOME}/home`` for persistent state. If a host parent already has
-      HOME pointed at the profile home, repair subprocesses back to real HOME.
+    * ``auto`` (default): host installs keep the real user HOME. If a host
+      parent already has HOME pointed at the profile home, repair subprocesses
+      back to real HOME.
     * ``real``: always prefer the real OS-user HOME.
     * ``profile``: use ``{SON_OF_ANTON_HOME}/home`` when it exists, preserving the
       older strict per-profile tool-config isolation.
@@ -1116,8 +859,6 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     if mode == "real":
         return real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
 
-    if profile_home and is_container():
-        return profile_home
     if _is_profile_home(current_home, profile_home):
         return real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
     return None
@@ -1351,137 +1092,7 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     return result
 
 
-def is_termux() -> bool:
-    """Return True when running inside a Termux (Android) environment.
 
-    Checks ``TERMUX_VERSION`` (set by Termux) or the Termux-specific
-    ``PREFIX`` path.  Import-safe — no heavy deps.
-    """
-    prefix = os.getenv("PREFIX", "")
-    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
-
-
-_wsl_detected: bool | None = None
-
-
-def is_wsl() -> bool:
-    """Return True when running inside WSL (Windows Subsystem for Linux).
-
-    Checks ``/proc/version`` for the ``microsoft`` marker that both WSL1
-    and WSL2 inject.  Result is cached for the process lifetime.
-    Import-safe — no heavy deps.
-    """
-    global _wsl_detected
-    if _wsl_detected is not None:
-        return _wsl_detected
-    try:
-        with open("/proc/version", "r", encoding="utf-8") as f:
-            _wsl_detected = "microsoft" in f.read().lower()
-    except Exception:
-        _wsl_detected = False
-    return _wsl_detected
-
-
-def windows_path_to_wsl(path: str) -> str | None:
-    """Convert a Windows drive path (``C:\\...``) to its ``/mnt/<drive>/...`` form."""
-    import re
-
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", str(path or "").strip())
-    if not match:
-        return None
-    drive = match.group(1).lower()
-    tail = match.group(2).replace("\\", "/")
-    return f"/mnt/{drive}/{tail}"
-
-
-def wsl_unc_path_to_posix(path: str) -> str | None:
-    """Convert a Windows WSL UNC path (``\\\\wsl.localhost\\<distro>\\...`` or the
-    legacy ``\\\\wsl$\\...``) to a POSIX path inside the distro."""
-    import re
-
-    normalized = str(path or "").strip().replace("/", "\\")
-    match = re.match(r"^\\\\wsl(?:\.localhost|\$)\\[^\\]+\\(.*)$", normalized, re.IGNORECASE)
-    if not match:
-        return None
-    tail = match.group(1).replace("\\", "/")
-    return f"/{tail}" if tail else "/"
-
-
-def translate_cwd_for_wsl_backend(cwd: str) -> str:
-    """Normalize a cross-boundary cwd when Son of Anton itself runs inside WSL.
-
-    A Windows-host UI (native picker / drive path / ``\\\\wsl.localhost\\`` UNC)
-    can hand the WSL backend a path it can't ``chdir`` into. Map it to the POSIX
-    equivalent so the picker, sidebar, and sessions all agree on the workspace.
-    No-op off WSL and for paths that are already POSIX.
-    """
-    if not is_wsl():
-        return cwd
-    for translator in (wsl_unc_path_to_posix, windows_path_to_wsl):
-        translated = translator(cwd)
-        if translated is not None:
-            return translated
-    return cwd
-
-
-_container_detected: bool | None = None
-
-
-def is_container() -> bool:
-    """Return True when running inside a container.
-
-    Recognizes Docker (``/.dockerenv``), Podman (``/run/.containerenv``),
-    and — via ``/proc/1/cgroup`` — the docker/podman/lxc cgroup-v1 markers.
-
-    cgroup v2 collapses ``/proc/1/cgroup`` to a single ``0::/`` line with no
-    runtime marker, so containerd/CRI-O runtimes (the common case on
-    Kubernetes/k3s) were previously missed. To cover those, also check:
-      * ``KUBERNETES_SERVICE_HOST`` env var — set in every Kubernetes pod.
-      * ``kubepods`` / ``containerd`` / ``crio`` markers in ``/proc/1/cgroup``.
-      * the same markers in ``/proc/self/mountinfo`` (cgroup-v2 fallback).
-
-    Result is cached for the process lifetime.  Import-safe — no heavy deps.
-
-    See: ewtodd/son-of-anton#47111
-    """
-    global _container_detected
-    if _container_detected is not None:
-        return _container_detected
-    if os.path.exists("/.dockerenv"):
-        _container_detected = True
-        return True
-    if os.path.exists("/run/.containerenv"):
-        _container_detected = True
-        return True
-    # Kubernetes always injects this into pod containers; absent on hosts.
-    if os.environ.get("KUBERNETES_SERVICE_HOST"):
-        _container_detected = True
-        return True
-    _CGROUP_MARKERS = ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio")
-    try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
-            cgroup = f.read()
-            if any(marker in cgroup for marker in _CGROUP_MARKERS):
-                _container_detected = True
-                return True
-    except OSError:
-        pass
-    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
-    try:
-        with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
-    except OSError:
-        pass
-    _container_detected = False
-    return False
-
-
-# ─── Well-Known Paths ─────────────────────────────────────────────────────────
 
 
 def get_config_path() -> Path:
@@ -1565,31 +1176,9 @@ AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 # ─── Venv layout ─────────────────────────────────────────────────────────────
 
-def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
-    """Directory holding a venv's executables (``Scripts`` / ``bin``).
-
-    Canonical helper for venv layout. This was open-coded in seven places
-    across four ``son_of_anton_cli`` modules using three different Windows
-    predicates (``platform.system()``, ``is_windows()``, ``_is_windows()``);
-    each new call site had to re-derive it, and #76091 shipped an eighth copy
-    because the correct behaviour lived 2400 lines away in another function.
-    A few sites outside ``son_of_anton_cli`` (``tools/code_execution_tool.py``,
-    ``agent/lsp/install.py``, ``agent/lsp/servers.py``) still hand-roll it —
-    convert them as they are touched.
-
-    *windows* lets a caller pass its own platform verdict. Several callers
-    resolve this through predicates the test-suite patches to exercise
-    Windows paths on Linux CI (``son_of_anton_cli.main._is_windows`` and friends);
-    reading ``sys.platform`` unconditionally here would silently drop those
-    paths out of coverage. Defaults to the host platform.
-
-    The path is returned unconditionally — callers legitimately differ on
-    whether a missing venv is an error, so existence checking stays with them.
-    """
-    if windows is None:
-        windows = sys.platform == "win32"
-    return Path(venv_dir) / ("Scripts" if windows else "bin")
-
+def venv_bin_dir(venv_dir) -> Path:
+    """Path to the bin directory inside *venv_dir* (may not exist)."""
+    return Path(venv_dir) / "bin"
 
 def project_venv_dir(project_root) -> Path | None:
     """The project's venv directory, ``venv`` or ``.venv``, when one exists.
@@ -1607,38 +1196,9 @@ def project_venv_dir(project_root) -> Path | None:
     return None
 
 
-def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
+def venv_python_path(venv_dir) -> Path:
     """Path to the Python interpreter inside *venv_dir* (may not exist)."""
-    if windows is None:
-        windows = sys.platform == "win32"
-    return venv_bin_dir(venv_dir, windows=windows) / (
-        "python.exe" if windows else "python"
-    )
-
-
-# ─── Partial-update diagnostics ──────────────────────────────────────────────
-
-# Top-level packages/modules that ship as part of Son of Anton itself. An ImportError
-# naming one of these means our own tree is inconsistent; anything else is a
-# third-party problem with different remediation. Single source of truth —
-# `son_of_anton_cli.update_cmd`'s post-update probe consumes this same set so the
-# guard that BLOCKS and the hint that EXPLAINS can never disagree.
-FIRST_PARTY_MODULE_ROOTS = frozenset(
-    {
-        "agent",
-        "cli",
-        "cron",
-        "gateway",
-        "model_tools",
-        "plugins",
-        "providers",
-        "tools",
-        "toolsets",
-        "run_agent",
-        "utils",
-    }
-)
-
+    return venv_bin_dir(venv_dir) / "python"
 
 def is_first_party_module(name: str | None) -> bool:
     """True when *name* is a module that ships with Son of Anton.

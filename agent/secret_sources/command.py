@@ -25,15 +25,12 @@ Security model (mirrors the TS provider line-for-line where it matters):
   ``SON_OF_ANTON_SECRET_KEY``) — it is never called per-key in a loop, so a
   helper that blocks (e.g. on a vault unlock prompt) can't be spawned
   dozens of times.
-* PLATFORM: the provider is POSIX-only (needs ``/bin/sh``).  On Windows it
-  degrades to an empty result with a warning; Windows users stay on the
-  default ``env`` provider.
+* PLATFORM: the provider is POSIX-only (needs ``/bin/sh``).
 """
 
 from __future__ import annotations
 
 import os
-import platform
 import re
 import signal as _signal
 import subprocess
@@ -69,10 +66,6 @@ _MAX_OUTPUT_BYTES = 1024 * 1024
 # shape before the '='.  Anchored; `.` does not cross newlines, so a
 # multi-line blob never matches as a single "env-shaped" value.
 _ENV_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-
-
-def _is_windows() -> bool:
-    return os.name == "nt" or platform.system() == "Windows"
 
 
 def unquote_dotenv_value(raw: str) -> str:
@@ -172,14 +165,6 @@ def _run_helper(
     (never inherited); stderr is discarded.  Any failure logs structured
     fields only and returns None — never raises.
     """
-    if _is_windows():
-        print(
-            "[secrets:command] the 'command' provider is POSIX-only "
-            "(needs /bin/sh); resolving no value on Windows",
-            file=sys.stderr,
-        )
-        return None
-
     # User-configured secret-helper command: runs with the user's full shell
     # env by design (it may need any credential to resolve the secret).
     source_env = get_source_environment()
@@ -217,10 +202,8 @@ def _run_helper(
     except subprocess.TimeoutExpired:
         # Hard timeout: kill the whole process group (a helper script may
         # have forked children that would otherwise keep the pipe open).
-        # POSIX-only by construction: _run_helper early-returns on Windows
-        # before ever spawning, so this line can't execute there.
         try:
-            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
         try:
@@ -350,13 +333,6 @@ def apply_command_secrets(
         )
         return result
 
-    if _is_windows():
-        result.warnings.append(
-            "the 'command' secret source is POSIX-only (needs /bin/sh); "
-            "skipping on Windows"
-        )
-        return result
-
     # The list/enumerate path: run the helper exactly ONCE with an empty
     # SON_OF_ANTON_SECRET_KEY and parse its stdout as a dotenv blob.
     stdout = _run_helper(command, "", timeout_seconds, max_output_bytes)
@@ -448,14 +424,6 @@ class CommandSource(SecretSource):
             result.error = (
                 "secrets.command.enabled is true but secrets.command.command "
                 "is empty.  Set the helper command in config.yaml."
-            )
-            result.error_kind = ErrorKind.NOT_CONFIGURED
-            return result
-
-        if _is_windows():
-            result.error = (
-                "the 'command' secret source is POSIX-only (needs /bin/sh); "
-                "skipping on Windows"
             )
             result.error_kind = ErrorKind.NOT_CONFIGURED
             return result

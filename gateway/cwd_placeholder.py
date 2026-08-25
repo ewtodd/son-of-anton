@@ -1,10 +1,9 @@
 """Resolve gateway ``terminal.cwd`` placeholder values to ``TERMINAL_CWD``.
 
 When ``terminal.cwd`` is unset or a placeholder (``.``, ``auto``, ``cwd``),
-the gateway must not blindly map host ``Path.home()`` into container backends.
-Docker with workspace mounting still needs an explicit host path signal
-(``MESSAGING_CWD`` or an absolute config path) for ``terminal_tool`` to map
-``/host/project`` → ``/workspace``.
+the gateway resolves it from the messaging cwd or the configured home
+fallback for the local backend; other backends leave ``TERMINAL_CWD``
+unset so the backend picks its own default.
 """
 
 from __future__ import annotations
@@ -21,17 +20,13 @@ def resolve_placeholder_terminal_cwd(
     configured_cwd: str,
     terminal_backend: str,
     messaging_cwd: str | None,
-    docker_mount_cwd_to_workspace: bool,
     home_fallback: str,
 ) -> str | None:
     """Return the ``TERMINAL_CWD`` value to set, or ``None`` to leave it unset.
 
     Cases:
       - **local** + placeholder → ``MESSAGING_CWD`` or ``home_fallback``
-      - **docker** + placeholder + mount on + host ``MESSAGING_CWD`` → host path
-        (for ``terminal_tool`` ``/workspace`` mapping)
-      - **docker** + placeholder + mount off → ``None`` (sandbox default)
-      - other non-local backends + placeholder → ``None``
+      - other backends + placeholder → ``None`` (backend default)
     """
     if configured_cwd and configured_cwd not in CWD_PLACEHOLDERS:
         return configured_cwd
@@ -40,10 +35,5 @@ def resolve_placeholder_terminal_cwd(
     if backend == "local":
         messaging = (messaging_cwd or "").strip()
         return messaging or home_fallback
-
-    if backend == "docker" and docker_mount_cwd_to_workspace:
-        messaging = (messaging_cwd or "").strip()
-        if messaging and messaging not in CWD_PLACEHOLDERS:
-            return messaging
 
     return None

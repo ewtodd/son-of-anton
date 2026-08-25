@@ -7,7 +7,7 @@ Detection and prompting live here in Python — not in install.sh — because:
 
 install.sh is still the *installation* backend because it has 1900 lines of
 battle-tested OS detection and package-manager logic (apt/brew/pacman/dnf/
-zypper/Termux/…).  Reimplementing that in Python would be huge duplication.
+zypper/…).  Reimplementing that in Python would be huge duplication.
 
 Deps that degrade gracefully (ripgrep → grep fallback, ffmpeg → skip conversion)
 don't need ensure_dependency wired in — only hard-fail sites do (TUI needs node,
@@ -15,7 +15,6 @@ browser tool needs agent-browser).
 """
 from __future__ import annotations
 
-import platform
 import shutil
 import subprocess
 import sys
@@ -23,8 +22,6 @@ from pathlib import Path
 
 from son_of_anton_constants import agent_browser_runnable, find_node_executable
 from tools.environments.local import son_of_anton_subprocess_env
-
-_IS_WINDOWS = platform.system() == "Windows"
 
 _DEP_CHECKS = {
     # find_node_executable() rather than a bare which(): $SON_OF_ANTON_HOME/node is
@@ -50,10 +47,7 @@ _DEP_DESCRIPTIONS = {
 
 
 def _has_system_browser() -> bool:
-    if _IS_WINDOWS:
-        names = ("chrome", "msedge", "chromium")
-    else:
-        names = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
+    names = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
     for name in names:
         if shutil.which(name):
             return True
@@ -62,29 +56,23 @@ def _has_system_browser() -> bool:
 
 def _has_npx_agent_browser() -> bool:
     """agent-browser resolves lazily via npx on the default install (#43564),
-    invisible to the PATH/managed-dir probes above. Mirror
-    tools.browser_tool.check_browser_requirements's Termux carve-out so this
-    check can't diverge from what browser tools actually find."""
+    invisible to the PATH/managed-dir probes above."""
     try:
         from tools.browser_tool import (
             _find_agent_browser,
             _is_npx_agent_browser_sentinel,
-            _requires_real_termux_browser_install,
         )
         browser_cmd = _find_agent_browser(validate=False)
     except Exception:
         return False
     if not _is_npx_agent_browser_sentinel(browser_cmd):
         return False
-    return not _requires_real_termux_browser_install(browser_cmd)
+    return True
 
 
 def _has_son_of_anton_agent_browser() -> bool:
     from son_of_anton_constants import get_son_of_anton_home
     home = get_son_of_anton_home()
-    if _IS_WINDOWS:
-        # npm -g --prefix puts .cmd shims directly in the prefix dir on Windows
-        return (home / "node" / "agent-browser.cmd").is_file()
     # install.sh installs globally into $SON_OF_ANTON_HOME/node/bin/ via npm -g --prefix
     # Also check legacy node_modules/.bin/ path for git-clone installs.
     return (
@@ -97,30 +85,22 @@ def _find_install_script(
     package_dir: Path | None = None,
     repo_root: Path | None = None,
 ) -> tuple[Path | None, str | None]:
-    """Locate the install script — bundled in wheel or in git checkout.
+    """Locate the install script — bundled or in git checkout.
 
-    On Windows, prefers install.ps1; on POSIX, prefers install.sh.
-    Returns a (path, shell) tuple, or (None, None) if neither is found.
+    Returns a (path, shell) tuple, or (None, None) if install.sh is not found.
     """
     if package_dir is None:
         package_dir = Path(__file__).parent
     if repo_root is None:
         repo_root = package_dir.parent
 
-    if _IS_WINDOWS:
-        preferred = ("install.ps1", "powershell")
-        fallback = ("install.sh", "bash")
-    else:
-        preferred = ("install.sh", "bash")
-        fallback = ("install.ps1", "powershell")
-
-    for script_name, shell in (preferred, fallback):
+    for script_name in ("install.sh",):
         bundled = package_dir / "scripts" / script_name
         if bundled.is_file():
-            return bundled, shell
+            return bundled, "bash"
         repo = repo_root / "scripts" / script_name
         if repo.is_file():
-            return repo, shell
+            return repo, "bash"
 
     return None, None
 
@@ -137,7 +117,7 @@ def ensure_dependency(
     if check():
         return True
 
-    script, shell = _find_install_script()
+    script, _shell = _find_install_script()
     if script is None:
         if interactive:
             desc = _DEP_DESCRIPTIONS.get(dep, dep)
@@ -154,22 +134,7 @@ def ensure_dependency(
         if reply not in ("", "y", "yes"):
             return False
 
-    if shell == "powershell":
-        from son_of_anton_constants import get_son_of_anton_home
-        ps_bin = shutil.which("powershell") or shutil.which("pwsh")
-        if not ps_bin:
-            if interactive:
-                print("  PowerShell not found. Install PowerShell or run install.ps1 manually.")
-            return False
-        cmd = [
-            ps_bin,
-            "-ExecutionPolicy", "Bypass",
-            "-File", str(script),
-            "-Ensure", dep,
-            "-SonOfAntonHome", str(get_son_of_anton_home()),
-        ]
-    else:
-        cmd = ["bash", str(script), "--ensure", dep]
+    cmd = ["bash", str(script), "--ensure", dep]
 
     run_env = son_of_anton_subprocess_env(inherit_credentials=False)
     run_env["IS_INTERACTIVE"] = "false"

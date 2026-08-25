@@ -68,16 +68,11 @@ _PROVIDER_ENV_HINTS = (
 )
 
 
-from son_of_anton_constants import is_termux as _is_termux
-
-
 def _python_install_cmd() -> str:
-    return "python -m pip install" if _is_termux() else "uv pip install"
+    return "uv pip install"
 
 
 def _system_package_install_cmd(pkg: str) -> str:
-    if _is_termux():
-        return f"pkg install {pkg}"
     if sys.platform == "darwin":
         return f"brew install {pkg}"
     return f"sudo apt install {pkg}"
@@ -237,25 +232,6 @@ def _safe_which(cmd: str) -> str | None:
         return shutil.which(cmd)
     except Exception:
         return None
-
-
-def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
-    steps: list[str] = []
-    step = 1
-    if not node_installed:
-        steps.append(f"{step}) pkg install nodejs")
-        step += 1
-    steps.append(f"{step}) npm install -g agent-browser")
-    steps.append(f"{step + 1}) agent-browser install")
-    return steps
-
-
-def _termux_install_all_fallback_notes() -> list[str]:
-    return [
-        "Termux install profile: use .[termux-all] for broad compatibility (installer default on Termux).",
-        "Local faster-whisper extra is excluded on Termux (ctranslate2/av build path unavailable).",
-        "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY).",
-    ]
 
 
 def _has_provider_env_config(content: str) -> bool:
@@ -729,54 +705,6 @@ def _check_version_consistency(issues: list[str]) -> None:
         )
 
 
-def _check_s6_supervision(issues: list[str]) -> None:
-    """Inside a container under our s6 /init, surface what s6 sees.
-
-    Runs as a counterpart to :func:`_check_gateway_service_linger` for
-    the systemd-on-host case. No-op everywhere except in the s6
-    container so host runs aren't cluttered with irrelevant output.
-
-    Reports:
-      - Whether the main-son-of-anton and dashboard static services are up
-      - How many per-profile gateway slots are registered (via
-        ``S6ServiceManager.list_profile_gateways()``) and how many are
-        currently supervised as ``up``
-    """
-    try:
-        from son_of_anton_cli.service_manager import (
-            S6ServiceManager,
-            detect_service_manager,
-        )
-    except Exception:
-        return
-
-    if detect_service_manager() != "s6":
-        return
-
-    _section("s6 Supervision")
-
-    mgr = S6ServiceManager()
-
-    # Static services. They live under /run/service/ via s6-rc symlinks,
-    # so the same s6-svstat probe works.
-    for static in ("main-son-of-anton", "dashboard"):
-        if mgr.is_running(static):
-            check_ok(f"{static}: up")
-        else:
-            check_info(f"{static}: down (expected if not enabled via env)")
-
-    profiles = mgr.list_profile_gateways()
-    if not profiles:
-        check_info("No per-profile gateways registered yet — create one with `son-of-anton profile create <name>`")
-        return
-
-    up_count = sum(1 for p in profiles if mgr.is_running(f"gateway-{p}"))
-    check_ok(
-        f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
-        + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else "")
-    )
-
-
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
     """Verify the certifi CA bundle is loadable.
 
@@ -877,18 +805,11 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
             get_systemd_unit_path,
             is_linux,
         )
-        from son_of_anton_cli.service_manager import detect_service_manager
     except Exception as e:
         check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
         return
 
     if not is_linux():
-        return
-
-    # Inside a container under our s6 /init, _check_s6_supervision
-    # reports the live supervision state; the linger warning would be
-    # confusing here (no systemd, no logout, no "lingering" concept).
-    if detect_service_manager() == "s6":
         return
 
     unit_path = get_systemd_unit_path()
@@ -1956,83 +1877,6 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
-    _check_s6_supervision(issues)
-
-    if sys.platform != "win32":
-        _section("Command Installation")
-        # Determine the venv entry point location
-        _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
-            _candidate = PROJECT_ROOT / _venv_name / "bin" / "son-of-anton"
-            if _candidate.exists():
-                _venv_bin = _candidate
-                break
-
-        # Determine the expected command link directory (mirrors install.sh logic)
-        _prefix = os.environ.get("PREFIX", "")
-        _is_termux_env = bool(os.environ.get("TERMUX_VERSION")) or "com.termux/files/usr" in _prefix
-        if _is_termux_env and _prefix:
-            _cmd_link_dir = Path(_prefix) / "bin"
-            _cmd_link_display = "$PREFIX/bin"
-        else:
-            _cmd_link_dir = Path.home() / ".local" / "bin"
-            _cmd_link_display = "~/.local/bin"
-        _cmd_link = _cmd_link_dir / "son-of-anton"
-
-        if _venv_bin is None:
-            check_warn(
-                "Venv entry point not found",
-                "(son-of-anton not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
-            )
-            manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
-            )
-        else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
-
-            # Check the symlink at the command link location
-            if _cmd_link.is_symlink():
-                _target = _cmd_link.resolve()
-                _expected = _venv_bin.resolve()
-                if _target == _expected:
-                    check_ok(f"{_cmd_link_display}/son-of-anton → correct target")
-                else:
-                    check_warn(
-                        f"{_cmd_link_display}/son-of-anton points to wrong target",
-                        f"(→ {_target}, expected → {_expected})"
-                    )
-                    if should_fix:
-                        _cmd_link.unlink()
-                        _cmd_link.symlink_to(_venv_bin)
-                        check_ok(f"Fixed symlink: {_cmd_link_display}/son-of-anton → {_venv_bin}")
-                        fixed_count += 1
-                    else:
-                        issues.append(f"Broken symlink at {_cmd_link_display}/son-of-anton — run 'son-of-anton doctor --fix'")
-            elif _cmd_link.exists():
-                # It's a regular file, not a symlink — possibly a wrapper script
-                check_ok(f"{_cmd_link_display}/son-of-anton exists (non-symlink)")
-            else:
-                check_fail(
-                    f"{_cmd_link_display}/son-of-anton not found",
-                    "(son-of-anton command may not work outside the venv)"
-                )
-                if should_fix:
-                    _cmd_link_dir.mkdir(parents=True, exist_ok=True)
-                    _cmd_link.symlink_to(_venv_bin)
-                    check_ok(f"Created symlink: {_cmd_link_display}/son-of-anton → {_venv_bin}")
-                    fixed_count += 1
-
-                    # Check if the link dir is on PATH
-                    _path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-                    if str(_cmd_link_dir) not in _path_dirs:
-                        check_warn(
-                            f"{_cmd_link_display} is not on your PATH",
-                            "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")"
-                        )
-                        manual_issues.append(f"Add {_cmd_link_display} to your PATH")
-                else:
-                    issues.append(f"Missing {_cmd_link_display}/son-of-anton symlink — run 'son-of-anton doctor --fix'")
-
     _section("External Tools")
     # Git
     if _safe_which("git"):
@@ -2049,26 +1893,8 @@ def run_doctor(args):
     
     # Docker (optional external tool)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
-    try:
-        from son_of_anton_constants import is_container as _is_container
-        running_in_container = _is_container()
-    except Exception:
-        running_in_container = False
-
-    if running_in_container:
-        # Inside our container the terminal tool runs against the local
-        # filesystem (Docker-in-Docker isn't configured by default); skip
-        # the noisy "docker not found" warning.
-        check_info(
-            "Running inside a container — using local terminal backend"
-        )
-        terminal_env = "local"
     if _safe_which("docker"):
         check_ok("docker", "(optional)")
-    elif _is_termux():
-        check_info("docker is not available inside Termux (expected on Android)")
-    elif running_in_container:
-        pass  # already explained above
     else:
         check_warn("docker not found", "(optional)")
     
@@ -2148,12 +1974,6 @@ def run_doctor(args):
                 "agent-browser found but not runnable",
                 f"(broken symlink at {_resolved_ab}? run: npx agent-browser --version)",
             )
-        elif _is_termux():
-            check_info("agent-browser is not installed (expected in the tested Termux path)")
-            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-            check_info("Termux browser setup:")
-            for step in _termux_browser_setup_steps(node_installed=True):
-                check_info(step)
         else:
             check_warn("agent-browser not installed", "(requires npm/npx on PATH)")
 
@@ -2161,9 +1981,8 @@ def run_doctor(args):
         # agent-browser is found but no Playwright-managed Chromium is on disk
         # (tools/browser_tool.py::check_browser_requirements filters them out
         # before the agent ever sees them).  Reuse the exact predicate it uses
-        # so the two checks cannot diverge.  Skip on Termux (not a tested
-        # path).
-        if agent_browser_ok and not _is_termux():
+        # so the two checks cannot diverge.
+        if agent_browser_ok:
             try:
                 # Lazy import: browser_tool is a ~150KB module we don't want
                 # to eagerly load in every `son-of-anton doctor` invocation.
@@ -2196,22 +2015,10 @@ def run_doctor(args):
                             "Playwright Chromium not installed",
                             "(browser_* tools will be hidden from the agent)",
                         )
-                        if sys.platform == "win32":
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install chromium"
-                            )
-                        else:
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install --with-deps chromium"
-                            )
-    elif _is_termux():
-        check_info("Node.js not found (browser tools are optional in the tested Termux path)")
-        check_info("Install Node.js on Termux with: pkg install nodejs")
-        check_info("Termux browser setup:")
-        for step in _termux_browser_setup_steps(node_installed=False):
-            check_info(step)
+                        check_info(
+                            f"Install with: cd {PROJECT_ROOT} && "
+                            "npx playwright install --with-deps chromium"
+                        )
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     
@@ -2301,11 +2108,6 @@ def run_doctor(args):
                     )
             except Exception:
                 pass
-
-    if _is_termux():
-        check_info("Termux compatibility fallbacks:")
-        for note in _termux_install_all_fallback_notes():
-            check_info(note)
 
     _section("API Connectivity")
     # Refactor: every connectivity probe below is HTTP-bound and fully

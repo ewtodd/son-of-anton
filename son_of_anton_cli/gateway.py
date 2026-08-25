@@ -210,8 +210,8 @@ def _get_parent_pid(pid: int) -> int | None:
 
     Uses psutil (core dependency) which works on every platform.  The
     older implementation shelled out to ``ps -o ppid= -p <pid>``, which
-    silently fails on Windows (no ``ps``) so the ancestor walk terminated
-    at self — the caller's dedup / exclude logic then couldn't distinguish
+    silently fails on some hosts so the ancestor walk terminated at self —
+    the caller's dedup / exclude logic then couldn't distinguish
     "son-of-anton CLI that invoked this scan" from "real gateway process".
     """
     if pid <= 1:
@@ -224,11 +224,7 @@ def _get_parent_pid(pid: int) -> int | None:
         pass
     except Exception:
         return None
-    # Fallback: shell out to ps (POSIX only).  Git Bash installs ``ps.exe`` on
-    # Windows; running it from the windowless desktop/gateway backend flashes a
-    # console, and psutil above is the authoritative Windows path anyway.
-    if is_windows():
-        return None
+    # Fallback: shell out to ps (POSIX only).
     if not shutil.which("ps"):
         return None
     try:
@@ -336,11 +332,8 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 
     import time as _time
 
-    # IMPORTANT Windows note: ``os.kill(pid, 0)`` is NOT a no-op on
-    # Windows — Python's implementation calls ``TerminateProcess(handle, 0)``
-    # for sig=0, hard-killing the target. Use the cross-platform
-    # ``_pid_exists`` helper in gateway.status which does OpenProcess +
-    # WaitForSingleObject on Windows.
+    # Route through the cross-platform ``_pid_exists`` helper (OpenProcess /
+    # kill(0) semantics differ per platform).
     from gateway.status import _pid_exists
 
     deadline = _time.monotonic() + max(timeout, 0.0)
@@ -553,195 +546,79 @@ def _scan_gateway_pids(
         return include_restart_managers and looks_like_gateway_runtime_command_line(command)
 
     try:
-        if is_windows():
-            # Prefer wmic when present (fast, stable output format).  On
-            # modern Windows 11 / Win 10 late builds, wmic has been
-            # removed as part of the WMIC deprecation — fall back to
-            # PowerShell's Get-CimInstance.  A spawn failure or timeout
-            # (result is None) trips the fallback.
-            # The scans go through ``bounded_probe_run`` — NOT plain
-            # ``subprocess.run(timeout=...)`` — because on Windows ``run()``'s
-            # post-timeout cleanup joins the pipe reader threads unbounded; a
-            # descendant (conhost.exe) holding duplicated pipe handles then
-            # wedges the caller forever. ``son-of-anton update`` hung exactly there
-            # on slow-WMI machines where the full Win32_Process scan exceeds
-            # its budget (#87134).
-            # bounded_probe_run also hides the console window: this scan runs
-            # inside the windowless pythonw.exe gateway/desktop backend, so a
-            # bare wmic/powershell spawn would flash a conhost window on every
-            # watchdog probe.
-            from son_of_anton_cli._subprocess_compat import bounded_probe_run
+        # Try /proc first (no external process tooling required),
+        # fall back to `ps -Aww` (BSD-safe; see below).
+        _found_via_proc = False
+        if os.path.isdir("/proc"):
+            try:
+                my_pid = os.getpid()
+                for entry in os.listdir("/proc"):
+                    if not entry.isdigit():
+                        continue
+                    pid = int(entry)
+                    if pid == my_pid or pid in exclude_pids:
+                        continue
+                    try:
+                        with open(f"/proc/{pid}/cmdline", "rb") as _f:
+                            cmdline = _f.read().decode("utf-8", errors="replace")
+                        cmdline = cmdline.replace("\x00", " ")
+                        if _matches_gateway_runtime(cmdline) and (
+                            all_profiles or _matches_current_profile(cmdline)
+                        ):
+                            _append_unique_pid(pids, pid, exclude_pids)
+                    except (OSError, PermissionError):
+                        continue
+                _found_via_proc = True
+            except Exception:
+                pass
 
-            wmic_path = shutil.which("wmic")
-            result = None
-            if wmic_path is not None:
-                result = bounded_probe_run(
-                    [
-                        wmic_path,
-                        "process",
-                        "get",
-                        "ProcessId,CommandLine",
-                        "/FORMAT:LIST",
-                    ],
-                    timeout=10,
-                    errors="ignore",
-                )
-            if result is None or result.returncode != 0 or not (result.stdout or ""):
-                # Fallback: PowerShell Get-CimInstance, emit LIST-style output
-                # so the downstream parser below doesn't need to branch.
-                powershell = shutil.which("powershell") or shutil.which("pwsh")
-                if powershell is None:
-                    return []
-                ps_cmd = (
-                    "Get-CimInstance Win32_Process | "
-                    "ForEach-Object { "
-                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
-                    "  'ProcessId=' + $_.ProcessId; "
-                    "  '' "
-                    "}"
-                )
-                result = bounded_probe_run(
-                    [powershell, "-NoProfile", "-Command", ps_cmd],
-                    timeout=15,
-                    errors="ignore",
-                )
-                if result is None:
-                    return []
-            if result.returncode != 0 or result.stdout is None:
+        if not _found_via_proc:
+            result = subprocess.run(
+                # ``-Aww`` (not ``-A eww``): the BSD ``e`` flag (show
+                # environment) is illegal on macOS/BSD ps and makes the
+                # whole command fail with rc 1, silently returning [] on
+                # every macOS machine (#73626).  The matcher only needs
+                # argv, not env vars, so ``e`` is unnecessary.  ``-ww``
+                # keeps unlimited-width output on both BSD and procps ps.
+                ["ps", "-Aww", "-o", "pid=,command="],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=10,
+            )
+            if result.returncode != 0:
                 return []
-            current_cmd = ""
             for line in result.stdout.split("\n"):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine=") :]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId=") :]
-                    if _matches_gateway_runtime(current_cmd) and (
-                        all_profiles or _matches_current_profile(current_cmd)
-                    ):
-                        try:
-                            _append_unique_pid(pids, int(pid_str), exclude_pids)
-                        except ValueError:
-                            pass
-                    current_cmd = ""
-        else:
-            # Try /proc first (works in Docker without procps installed),
-            # fall back to `ps -Aww` (BSD-safe; see below).
-            _found_via_proc = False
-            if os.path.isdir("/proc"):
-                try:
-                    my_pid = os.getpid()
-                    for entry in os.listdir("/proc"):
-                        if not entry.isdigit():
-                            continue
-                        pid = int(entry)
-                        if pid == my_pid or pid in exclude_pids:
-                            continue
-                        try:
-                            with open(f"/proc/{pid}/cmdline", "rb") as _f:
-                                cmdline = _f.read().decode("utf-8", errors="replace")
-                            cmdline = cmdline.replace("\x00", " ")
-                            if _matches_gateway_runtime(cmdline) and (
-                                all_profiles or _matches_current_profile(cmdline)
-                            ):
-                                _append_unique_pid(pids, pid, exclude_pids)
-                        except (OSError, PermissionError):
-                            continue
-                    _found_via_proc = True
-                except Exception:
-                    pass
+                stripped = line.strip()
+                if not stripped or "grep" in stripped:
+                    continue
 
-            if not _found_via_proc:
-                result = subprocess.run(
-                    # ``-Aww`` (not ``-A eww``): the BSD ``e`` flag (show
-                    # environment) is illegal on macOS/BSD ps and makes the
-                    # whole command fail with rc 1, silently returning [] on
-                    # every macOS machine (#73626).  The matcher only needs
-                    # argv, not env vars, so ``e`` is unnecessary.  ``-ww``
-                    # keeps unlimited-width output on both BSD and procps ps.
-                    ["ps", "-Aww", "-o", "pid=,command="],
-                    capture_output=True,
-                    text=True, encoding='utf-8', errors='replace',
-                    timeout=10,
-                )
-                if result.returncode != 0:
-                    return []
-                for line in result.stdout.split("\n"):
-                    stripped = line.strip()
-                    if not stripped or "grep" in stripped:
-                        continue
+                pid = None
+                command = ""
 
-                    pid = None
-                    command = ""
+                parts = stripped.split(None, 1)
+                if len(parts) == 2:
+                    try:
+                        pid = int(parts[0])
+                        command = parts[1]
+                    except ValueError:
+                        pid = None
 
-                    parts = stripped.split(None, 1)
-                    if len(parts) == 2:
-                        try:
-                            pid = int(parts[0])
-                            command = parts[1]
-                        except ValueError:
-                            pid = None
+                if pid is None:
+                    aux_parts = stripped.split()
+                    if len(aux_parts) > 10 and aux_parts[1].isdigit():
+                        pid = int(aux_parts[1])
+                        command = " ".join(aux_parts[10:])
 
-                    if pid is None:
-                        aux_parts = stripped.split()
-                        if len(aux_parts) > 10 and aux_parts[1].isdigit():
-                            pid = int(aux_parts[1])
-                            command = " ".join(aux_parts[10:])
-
-                    if pid is None:
-                        continue
-                    if _matches_gateway_runtime(command) and (
-                        all_profiles or _matches_current_profile(command)
-                    ):
-                        _append_unique_pid(pids, pid, exclude_pids)
+                if pid is None:
+                    continue
+                if _matches_gateway_runtime(command) and (
+                    all_profiles or _matches_current_profile(command)
+                ):
+                    _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
         return []
 
-    # Windows-specific: collapse venv launcher stubs.  A venv-built
-    # ``pythonw.exe`` in ``<venv>/Scripts/`` is a ~100 KB launcher exe
-    # that spawns the base Python (e.g. ``C:\Program Files\Python311\
-    # pythonw.exe``) with the same command line, preserving the venv's
-    # ``pyvenv.cfg`` context.  This is standard Windows CPython venv
-    # behaviour — BUT it means every gateway run produces two pythonw
-    # PIDs with identical command lines (one launcher stub, one actual
-    # interpreter) which is confusing in ``gateway status`` output.
-    # Filter the stub: if a PID in our result is the PARENT of another
-    # PID in our result, and both are pythonw.exe, the parent is the
-    # launcher stub — drop it, keep the child.
-    if is_windows() and len(pids) > 1:
-        pids = _filter_venv_launcher_stubs(pids)
-
     return pids
-
-
-def _filter_venv_launcher_stubs(pids: list[int]) -> list[int]:
-    """Drop venv-launcher ``pythonw.exe`` stubs that are parents of the real
-    interpreter process.  See comment at the tail of ``_scan_gateway_pids``.
-
-    Uses ``psutil`` (core dependency).  Safe on any platform; only invoked
-    on Windows by the caller because the stub pattern is Windows-specific.
-    """
-    try:
-        import psutil  # type: ignore
-    except ImportError:
-        return pids
-
-    pid_set = set(pids)
-    # Collect each PID's parent so we can flag "child of another matched PID".
-    parent_of: dict[int, int | None] = {}
-    for pid in pids:
-        try:
-            parent_of[pid] = psutil.Process(pid).ppid()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            parent_of[pid] = None
-
-    # For each child whose parent is also in our set, drop the parent.
-    drop: set[int] = set()
-    for pid, ppid in parent_of.items():
-        if ppid is not None and ppid in pid_set:
-            drop.add(ppid)
-
-    return [p for p in pids if p not in drop]
 
 
 def find_gateway_pids(
@@ -820,11 +697,9 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
 def _capture_gateway_argv(pid: int) -> list[str] | None:
     """Return the live argv of a running gateway process, or ``None``.
 
-    Used to respawn gateways that have no profile→PID-file mapping (e.g. a
-    Windows Scheduled Task running ``pythonw.exe -m son_of_anton_cli.main gateway
-    run``). ``_pause_windows_gateways_for_update`` force-kills such gateways
-    before mutating the venv; without their original command line we cannot
-    bring them back, so we snapshot it here before the kill.
+    Used to respawn gateways that have no profile→PID-file mapping; without
+    their original command line we cannot bring them back, so we snapshot it
+    here before the kill.
 
     Best-effort: returns ``None`` if psutil is unavailable, the process is
     gone, access is denied, or the argv doesn't look like a gateway command.
@@ -901,53 +776,12 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         return False
 
     # The watcher is a tiny Python subprocess that polls the old PID and
-    # respawns the gateway once it's gone.  Both legs of the chain need
-    # platform-appropriate detach semantics:
-    #
-    # POSIX — ``start_new_session=True`` (os.setsid in the child) detaches
-    # from the parent's process group so Ctrl+C in the CLI doesn't
-    # propagate and the watcher/gateway survive the CLI exiting.
-    #
-    # Windows — ``start_new_session`` is silently accepted but does NOT
-    # detach.  The watcher stays attached to the CLI's console and dies
-    # when the user closes the terminal, leaving ``son-of-anton update`` users
-    # with no running gateway until they re-invoke ``son-of-anton gateway``
-    # manually.  The Win32 equivalent is the ``CREATE_NEW_PROCESS_GROUP |
-    # DETACHED_PROCESS | CREATE_NO_WINDOW`` creationflags bundle.
-    #
-    # ``windows_detach_popen_kwargs()`` returns the right kwargs for the
-    # host platform and is a no-op on POSIX (just ``start_new_session=True``).
-    from son_of_anton_cli._subprocess_compat import (
-        windows_detach_flags_without_breakaway,
-        windows_detach_popen_kwargs,
-    )
+    # respawns the gateway once it's gone.  Detach with
+    # ``start_new_session=True`` (os.setsid in the child) so Ctrl+C in the
+    # CLI doesn't propagate and the watcher/gateway survive the CLI exiting.
 
-    # On Windows the incoming ``run_argv`` leads with the venv's console
-    # ``python.exe`` (from ``get_python_path()``).  That's the interpreter we
-    # want: the watcher respawns it under CREATE_NO_WINDOW detach flags, so
-    # the gateway owns one hidden console that all descendants inherit —
-    # nothing flashes (#54220/#56747).  The spec helper normalizes the
-    # interpreter and captures the stable cwd + env overlay (SON_OF_ANTON_HOME,
-    # VIRTUAL_ENV, PYTHONPATH) so the respawn doesn't depend on the watcher's
-    # transient working directory.  No-op on POSIX.
-    # See gateway_windows.windowless_gateway_restart_spec.
     respawn_cwd = ""
     respawn_env_overlay: dict[str, str] = {}
-    if sys.platform == "win32":
-        try:
-            from son_of_anton_cli.gateway_windows import (
-                windowless_gateway_restart_spec,
-            )
-
-            run_argv, respawn_cwd, respawn_env_overlay = (
-                windowless_gateway_restart_spec(list(run_argv))
-            )
-        except Exception:
-            # Best-effort: if the rewrite fails for any reason, fall back to
-            # the original argv.  A visible window is worse than nothing, but
-            # a failed respawn is worse still — keep the gateway coming back.
-            respawn_cwd = ""
-            respawn_env_overlay = {}
 
     # Serialized as JSON literals embedded in the watcher source so the
     # inner respawn can apply cwd= / env= without extra argv plumbing.
@@ -960,10 +794,6 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         import subprocess
         import sys
         import time
-        from son_of_anton_cli._subprocess_compat import (
-            windows_detach_flags,
-            windows_detach_flags_without_breakaway,
-        )
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
@@ -971,47 +801,21 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         _respawn_env_overlay = {respawn_env_literal}
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            # ``os.kill(pid, 0)`` is not a no-op on Windows — use the
-            # cross-platform existence check.
             from gateway.status import _pid_exists
             if not _pid_exists(pid):
                 break
             time.sleep(0.2)
 
-        # Platform-appropriate detach for the respawned gateway.  On POSIX
-        # start_new_session=True maps to os.setsid; on Windows we need
-        # explicit creationflags because start_new_session is a no-op there.
-        # CREATE_BREAKAWAY_FROM_JOB is critical: the watcher itself may have
-        # been spawned inside a job object (Electron/Tauri parent), and
-        # without breakaway the respawned gateway would die when that job
-        # tears down. See _subprocess_compat.windows_detach_flags().
         _popen_kwargs = {{
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
+            "start_new_session": True,
         }}
-        # Anchor the respawned gateway at the stable working dir and overlay
-        # the env (VIRTUAL_ENV / PYTHONPATH / SON_OF_ANTON_HOME) the windowless
-        # base interpreter needs to import son_of_anton_cli.  Empty on POSIX, where
-        # the venv python resolves imports without help.
         if _respawn_cwd:
             _popen_kwargs["cwd"] = _respawn_cwd
         if _respawn_env_overlay:
             _popen_kwargs["env"] = {{**os.environ, **_respawn_env_overlay}}
-        if sys.platform == "win32":
-            try:
-                _popen_kwargs["creationflags"] = windows_detach_flags()
-                subprocess.Popen(cmd, **_popen_kwargs)
-            except OSError:
-                # CREATE_BREAKAWAY_FROM_JOB can be rejected with
-                # ERROR_ACCESS_DENIED when the parent's job object refuses
-                # breakaway. Retry without it — DETACHED_PROCESS et al.
-                # alone are enough in most setups. Mirrors the canonical
-                # fallback in gateway_windows._spawn_detached.
-                _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-                subprocess.Popen(cmd, **_popen_kwargs)
-        else:
-            _popen_kwargs["start_new_session"] = True
-            subprocess.Popen(cmd, **_popen_kwargs)
+        subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip().format(
         respawn_cwd_literal=respawn_cwd_literal,
@@ -1026,32 +830,23 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         *run_argv,
     ]
 
-    # Same platform-aware detach for the watcher process itself — so
-    # closing the user's terminal doesn't kill the watcher.
+    # Detach the watcher process itself — so closing the user's terminal
+    # doesn't kill it.
     try:
         subprocess.Popen(
             watcher_argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **windows_detach_popen_kwargs(),
+            start_new_session=True,
         )
     except OSError:
-        # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job object
-        # (Electron, Windows Terminal with restrictive job settings, …).
-        # Retry without it. POSIX never reaches this branch — there
-        # ``start_new_session=True`` cannot raise OSError — so the
-        # fallback is only meaningful on Windows.
+        # Defensive retry with the same POSIX detach kwargs.
         try:
-            fallback_kwargs: dict = (
-                {"creationflags": windows_detach_flags_without_breakaway()}
-                if sys.platform == "win32"
-                else {"start_new_session": True}
-            )
             subprocess.Popen(
                 watcher_argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                **fallback_kwargs,
+                start_new_session=True,
             )
         except OSError:
             return False
@@ -1539,50 +1334,6 @@ def _probe_launchd_service_running() -> bool:
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
     """Return a unified view of gateway liveness for the current profile."""
     gateway_pids = tuple(find_gateway_pids())
-    if is_termux():
-        return GatewayRuntimeSnapshot(
-            manager="Termux / manual process",
-            gateway_pids=gateway_pids,
-        )
-
-    from son_of_anton_constants import is_container
-
-    if is_linux() and is_container():
-        # Phase 4: report s6 supervision when running under our /init.
-        # Other container runtimes (or containers built before Phase 2)
-        # still get the original "docker (foreground)" label.
-        try:
-            from son_of_anton_cli.service_manager import detect_service_manager, get_service_manager
-            if detect_service_manager() == "s6":
-                profile = _profile_suffix() or "default"
-                service_name = f"gateway-{profile}"
-                mgr = get_service_manager()
-                service_installed = False
-                service_running = False
-                try:
-                    service_dir = getattr(mgr, "scandir", None)
-                    if service_dir is not None:
-                        service_installed = (service_dir / service_name).is_dir()
-                except Exception:
-                    service_installed = False
-                if service_installed:
-                    try:
-                        service_running = bool(mgr.is_running(service_name))
-                    except Exception:
-                        service_running = False
-                return GatewayRuntimeSnapshot(
-                    manager="s6 (container supervisor)",
-                    service_installed=service_installed,
-                    service_running=service_running,
-                    gateway_pids=gateway_pids,
-                    service_scope="s6",
-                )
-        except Exception:
-            pass  # Fall through to the legacy label on any detection error.
-        return GatewayRuntimeSnapshot(
-            manager="docker (foreground)",
-            gateway_pids=gateway_pids,
-        )
 
     if supports_systemd_services():
         selected_system, service_running = _probe_systemd_service_running(system=system)
@@ -1745,51 +1496,6 @@ def kill_gateway_processes(
 _REAPER_SUPERVISOR_WALK_LIMIT = 12
 
 
-def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
-    """True when ``pid`` is a gateway process owned by the Windows Task Scheduler.
-
-    Windows-only backstop for the orphan reaper: ``_get_service_pids()`` is
-    empty on Windows (no systemd/launchd query), so a Scheduled-Task gateway
-    whose ``gateway.pid`` record is missing or stale is invisible to both the
-    service-PID and recorded-PID exclusions — yet it is alive and supervised.
-    Scheduled Tasks run under the services tree, so a candidate whose parent
-    chain reaches ``services.exe`` is spared even with no pidfile (#83683,
-    #86098).
-
-    This check is deliberately NOT applied on POSIX: there, every process has
-    PID 1 (launchd / init / systemd) in its ancestry — and a genuine orphan is
-    *reparented directly to PID 1* — so supervisor-name ancestry carries zero
-    signal and would spare every orphan the reaper exists to kill (#51325,
-    #75936). POSIX supervised gateways are already covered pidfile-
-    independently by the ``_get_service_pids()`` exclusion.
-
-    Known limitation (fail-open): if the Task-launched bootstrap parent has
-    already exited, Windows does not reparent the gateway, the chain breaks
-    before ``services.exe``, and the gateway is treated as an orphan. Any
-    error (process gone, psutil unavailable) is likewise treated as "not
-    owned" so a genuine orphan is still reaped.
-    """
-    if not is_windows():
-        return False
-    try:
-        import psutil  # type: ignore
-
-        parent = psutil.Process(pid).parent()
-        for _ in range(_REAPER_SUPERVISOR_WALK_LIMIT):
-            if parent is None:
-                break
-            try:
-                name = (parent.name() or "").lower()
-            except Exception:
-                name = ""
-            if name == "services.exe":
-                return True
-            parent = parent.parent()
-    except Exception:
-        pass
-    return False
-
-
 def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see.
 
@@ -1815,27 +1521,6 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     except Exception:
         return False
 
-    # Windows Task Scheduler is a supervisor too — and the most reliable
-    # signal is the task's own state, not a parent-chain walk. A Scheduled
-    # Task gateway whose conhost/VBS bootstrap has already exited is
-    # invisible to `_reaper_candidate_is_supervisor_owned` (the parent
-    # chain breaks before services.exe, fail-open), yet it is alive and
-    # supervised. After that launcher exits the task is typically Ready,
-    # not Running — treating only Running as supervised still kills the
-    # detached gateway on every desktop serve start (#86098, #87001).
-    if is_windows():
-        try:
-            # The install-time task name is profile-aware (Son of Anton_Gateway /
-            # Son of Anton_Gateway_<profile>) — never hardcode it, or the guard is
-            # dormant on every standard `son-of-anton gateway install` deployment.
-            from son_of_anton_cli.gateway_windows import get_task_name
-
-            _task_name = get_task_name()
-        except Exception:
-            _task_name = "Son of Anton_Gateway"
-        if _windows_scheduled_task_supervises(_task_name):
-            return False
-
     from gateway.status import _pid_exists, write_planned_stop_marker
 
     own = {os.getpid()}
@@ -1858,17 +1543,12 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         own |= _get_service_pids(all_profiles=True)
     except Exception:
         pass
-    # On Windows there is no systemd/launchd service query at all
-    # (_get_service_pids() returns an empty set), so a gateway supervised by
-    # a Scheduled Task / Startup VBS looks like an unsupervised orphan to the
-    # process scan (#86098).  The same holds on every platform for a healthy
-    # gateway launched standalone (no service registration) whose PID the
-    # runtime record can see (#83683).  Exempt the recorded healthy gateway
-    # PID and its parent chain: a recorded, liveness-verified gateway is by
-    # definition not an orphan "the pidfile/runtime record can't see", and
-    # the Scheduled-Task bootstrap's argv (``gateway run``) matches the
-    # gateway scan — killing that bootstrap takes the detached gateway it
-    # spawned down with it.
+    # A healthy gateway launched standalone (no service registration) whose
+    # PID the runtime record can see must be exempted too (#83683): it is by
+    # definition not an orphan "the pidfile/runtime record can't see".
+    # Exempt the recorded healthy gateway PID and its parent chain — a
+    # recorded, liveness-verified gateway is not an orphan, and killing its
+    # launcher would take the detached gateway it spawned down with it.
     try:
         from gateway.status import get_running_pid
 
@@ -1888,13 +1568,11 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         pass
     try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
-        # for the current profile when no systemd supervisor is present.  On
-        # Windows, additionally drop any candidate the Task Scheduler owns —
-        # the pidfile-less gap neither exclusion above can see (#83683, #86098).
+        # for the current profile when no systemd supervisor is present.
         orphans = [
             p
             for p in find_gateway_pids(exclude_pids=own)
-            if p and p > 0 and not _reaper_candidate_is_supervisor_owned(p)
+            if p and p > 0
         ]
     except Exception:
         return False
@@ -1978,8 +1656,7 @@ def stop_profile_gateway() -> bool:
         print(f"⚠ Permission denied to kill PID {pid}")
         return False
 
-    # Wait briefly for it to exit. On Windows, os.kill(pid, 0) is NOT
-    # a no-op — route through the cross-platform existence check.
+    # Wait briefly for it to exit.
     import time as _time
     from gateway.status import _pid_exists
 
@@ -2007,199 +1684,16 @@ def is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
-from son_of_anton_constants import is_container, is_termux, is_wsl
-
-
-def _wsl_systemd_operational() -> bool:
-    """Check if systemd is actually running as PID 1 on WSL.
-
-    WSL2 with ``systemd=true`` in wsl.conf has working systemd.
-    WSL2 without it (or WSL1) does not — systemctl commands fail.
-    """
-    return _systemd_operational(system=True)
-
-
-def _systemd_operational(system: bool = False) -> bool:
-    """Return True when the requested systemd scope is usable."""
-    try:
-        result = _run_systemctl(
-            ["is-system-running"],
-            system=system,
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=5,
-        )
-        # "running", "degraded", "starting" all mean systemd is PID 1
-        status = result.stdout.strip().lower()
-        return status in {"running", "degraded", "starting", "initializing"}
-    except (RuntimeError, subprocess.TimeoutExpired, OSError):
-        return False
-
-
-def _container_systemd_operational() -> bool:
-    """Return True when a container exposes working user or system systemd.
-
-    This is NOT our Son of Anton Docker image — that one runs s6-overlay as
-    PID 1 (since Phase 2 of the s6-overlay supervision plan) and is
-    detected via ``service_manager.detect_service_manager() == "s6"``.
-    This function handles the "container managed by something else"
-    case: systemd-nspawn, certain k8s pods, containers built FROM
-    systemd-bearing distros where the user has wired systemd as their
-    init. In those environments systemctl behaves identically to the
-    host case, so we fall through to the normal systemd code paths.
-    """
-    if _systemd_operational(system=False):
-        return True
-    if _systemd_operational(system=True):
-        return True
-    return False
-
-
 def supports_systemd_services() -> bool:
-    if not is_linux() or is_termux():
+    if not is_linux():
         return False
     if shutil.which("systemctl") is None:
         return False
-    if is_wsl():
-        return _wsl_systemd_operational()
-    if is_container():
-        return _container_systemd_operational()
     return True
 
 
 def is_macos() -> bool:
     return sys.platform == "darwin"
-
-
-def is_windows() -> bool:
-    return sys.platform == "win32"
-
-
-# Task Scheduler states that mean "this profile still has an official
-# supervisor". Ready is the steady state after the VBS/cmd launcher
-# exits and leaves the detached gateway running (#87001). Queued is a
-# rare in-between. Disabled / MISSING are not supervisors.
-_WINDOWS_TASK_SUPERVISOR_STATES = frozenset({"Running", "Ready", "Queued"})
-
-
-def _windows_scheduled_task_state(task_name: str) -> str | None:
-    """Return the English ``Get-ScheduledTask`` State, or None on failure.
-
-    Implemented with PowerShell instead of ``schtasks`` because the latter
-    localizes its output (a Chinese Windows prints ``状态: 正在运行``, not
-    ``Status: Running``) and emits the local codepage, which ``subprocess``
-    with ``encoding="utf-8"`` silently mangles. The ``State`` property is
-    an English enum value (``Running`` / ``Ready`` / ``Disabled``), stable
-    across locales.
-    """
-    if not is_windows():
-        return None
-    try:
-        powershell = shutil.which("powershell") or shutil.which("pwsh")
-        if powershell is None:
-            return None
-        ps_cmd = (
-            f"$t = Get-ScheduledTask -TaskName '{task_name}' "
-            "-ErrorAction SilentlyContinue; if ($t) { $t.State } else { 'MISSING' }"
-        )
-        result = subprocess.run(
-            [powershell, "-NoProfile", "-Command", ps_cmd],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-        state = (result.stdout or "").strip()
-        return state or None
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-
-
-def _windows_scheduled_task_running(task_name: str) -> bool:
-    """Return True when a Windows scheduled task with ``task_name`` is Running.
-
-    Narrow helper kept for callers that need the in-flight state. The
-    orphan-reaper uses ``_windows_scheduled_task_supervises`` instead —
-    Ready is the normal post-launch state for a detached gateway.
-    """
-    return _windows_scheduled_task_state(task_name) == "Running"
-
-
-def _windows_scheduled_task_supervises(task_name: str) -> bool:
-    """Return True when Task Scheduler still owns this profile's gateway.
-
-    Used to treat Task Scheduler as a gateway supervisor on Windows: the
-    orphan-reap sweep must not kill a gateway that a scheduled task
-    launched and left detached. After the bootstrap exits the task is
-    Ready, not Running; a Running-only check still writes the planned-stop
-    marker, the gateway exits cleanly with code 0, and the scheduler never
-    restarts it — silently killing messaging on every desktop-app
-    launch (#86098, #87001).
-
-    Best-effort: any failure (missing task, powershell unavailable, timeout)
-    returns False so the caller falls back to pidfile / parent-chain
-    exclusions.
-    """
-    state = _windows_scheduled_task_state(task_name)
-    return state in _WINDOWS_TASK_SUPERVISOR_STATES
-
-
-def _windows_gateway_should_absorb_console_controls() -> bool:
-    """Return True for detached Windows gateway runs that should ignore Ctrl+C.
-
-    Foreground ``son-of-anton gateway run`` must remain interruptible from
-    PowerShell/CMD. Detached service-style launches opt in via
-    ``SON_OF_ANTON_GATEWAY_DETACHED=1``; older wrappers without the env marker are
-    treated as detached when no interactive stdin is attached.
-    """
-    if not is_windows():
-        return False
-
-    detached = os.getenv("SON_OF_ANTON_GATEWAY_DETACHED", "").strip().lower()
-    if detached in {"1", "true", "yes", "on"}:
-        return True
-
-    try:
-        return not bool(sys.stdin and sys.stdin.isatty())
-    except (ValueError, OSError):
-        return True
-
-
-def _windows_console_window_attached() -> bool | None:
-    """Return whether Windows assigned this process a console window."""
-    if not is_windows():
-        return None
-    try:
-        import ctypes
-
-        return bool(ctypes.windll.kernel32.GetConsoleWindow())  # type: ignore[attr-defined]
-    except (OSError, AttributeError):
-        return None
-
-
-def _windows_gateway_breakaway_state() -> bool | None:
-    """Consume private spawn metadata without guessing for older launchers."""
-    if not is_windows():
-        return None
-    from son_of_anton_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
-
-    value = os.environ.pop(_WINDOWS_GATEWAY_BREAKAWAY_ENV, None)
-    if value == "1":
-        return True
-    if value == "0":
-        return False
-    return None
-
-
-# =============================================================================
-# Service Configuration
-# =============================================================================
-
-_SERVICE_BASE = "son-of-anton-gateway"
-SERVICE_DESCRIPTION = "Son of Anton Agent Gateway - Messaging Platform Integration"
 
 
 def _profile_suffix() -> str:
@@ -2934,24 +2428,13 @@ def ensure_gateway_service(context: str = "setup") -> bool:
     running (or already was) by the time we return.
 
     Scope choice: always the least-surprising, no-privilege option —
-    user-scope systemd unit on Linux, LaunchAgent on macOS, Scheduled Task
-    on Windows. Users who want a boot-time system service still run
+    user-scope systemd unit on Linux, LaunchAgent on macOS. Users who want
+    a boot-time system service still run
     ``son-of-anton gateway install --system`` explicitly (that path prompts and
     requires root; we never self-elevate from an installer).
     """
-    from son_of_anton_constants import is_container
-
-    if is_container():
-        # Containers use restart policies, not service managers.
-        print_info("Start the gateway to bring your bots online:")
-        print_info("   son-of-anton gateway run          # Run as container main process")
-        print_info("")
-        print_info("For automatic restarts, use a Docker restart policy:")
-        print_info("   docker run --restart unless-stopped ...")
-        return False
-
     supports_systemd = supports_systemd_services()
-    if not (supports_systemd or is_macos() or is_windows()):
+    if not (supports_systemd or is_macos()):
         print_info("  No supported service manager found on this host.")
         print_info("  Run the gateway in the foreground with: son-of-anton gateway")
         return False
@@ -2971,22 +2454,11 @@ def ensure_gateway_service(context: str = "setup") -> bool:
                 systemd_install(force=False, non_interactive=True)
             elif is_macos():
                 launchd_install(force=False)
-            else:
-                from son_of_anton_cli import gateway_windows
-
-                # Registers the Scheduled Task AND starts it.
-                gateway_windows.install(force=False)
-                print_success("  Gateway service installed and started.")
-                return True
 
         if supports_systemd:
             systemd_start()
         elif is_macos():
             launchd_start()
-        else:
-            from son_of_anton_cli import gateway_windows
-
-            gateway_windows.start()
         print_success("  Gateway service running (cron jobs + messaging platforms).")
         return True
     except UserSystemdUnavailableError as e:
@@ -3015,8 +2487,6 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
         (False, "") when linger is disabled.
         (None, detail) when the status could not be determined.
     """
-    if is_termux():
-        return None, "not supported in Termux"
     if not is_linux():
         return None, "not supported on this platform"
 
@@ -3147,12 +2617,6 @@ def _detect_venv_dir() -> Path | None:
         if venv.is_dir():
             return venv
 
-    # Fallback: check common virtualenv directory names under the project root.
-    for candidate in (".venv", "venv"):
-        venv = PROJECT_ROOT / candidate
-        if venv.is_dir():
-            return venv
-
     return None
 
 
@@ -3169,7 +2633,7 @@ def get_python_path() -> str:
 
             venv_python_path = _reload_son_of_anton_constants().venv_python_path
 
-        venv_python = venv_python_path(venv, windows=is_windows())
+        venv_python = venv_python_path(venv)
         if venv_python.exists():
             return str(venv_python)
     return sys.executable
@@ -3189,46 +2653,6 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / ".npm-global" / "bin"),  # npm global packages
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
-
-
-def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
-    """Return WSL Windows interop PATH entries for generated systemd units.
-
-    WSL shells normally inherit Windows PATH entries such as
-    ``/mnt/c/WINDOWS/System32``. systemd user services do not, so gateway tools
-    that call ``powershell.exe``/``cmd.exe`` work in a terminal but fail in the
-    background service unless we persist the relevant entries at install time.
-    """
-    if not is_wsl():
-        return []
-
-    candidates: list[str] = []
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if entry.startswith("/mnt/"):
-            candidates.append(entry)
-
-    for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
-        resolved = shutil.which(executable)
-        if resolved:
-            candidates.append(str(Path(resolved).parent))
-
-    for entry in (
-        "/mnt/c/WINDOWS/system32",
-        "/mnt/c/WINDOWS",
-        "/mnt/c/WINDOWS/System32/Wbem",
-        "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/",
-        "/mnt/c/WINDOWS/System32/OpenSSH/",
-    ):
-        if Path(entry).exists():
-            candidates.append(entry)
-
-    result: list[str] = []
-    seen = set(path_entries)
-    for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
-            result.append(entry)
-    return result
 
 
 def _remap_path_for_user(path: str, target_home_dir: str) -> str:
@@ -3508,7 +2932,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             e for e in _target_node_entries if e not in path_entries
         ] + path_entries
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
-        path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
         return f"""[Unit]
@@ -3551,7 +2974,6 @@ WantedBy=multi-user.target
     )
     profile_arg = _profile_arg(son_of_anton_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
-    path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
     return f"""[Unit]
@@ -3794,7 +3216,7 @@ def _print_linger_enable_warning(username: str, detail: str | None = None) -> No
 
 def _ensure_linger_enabled() -> None:
     """Enable linger when possible so the user gateway survives logout."""
-    if is_termux() or not is_linux():
+    if not is_linux():
         return
 
     import getpass
@@ -4675,8 +4097,6 @@ def _spawn_detached_gateway() -> bool:
     gateway.pid file that `run_gateway` writes, so stop/status/restart keep
     working.
     """
-    from son_of_anton_cli._subprocess_compat import windows_detach_popen_kwargs
-
     log_dir = get_son_of_anton_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path = log_dir / "gateway.log"
@@ -4692,7 +4112,7 @@ def _spawn_detached_gateway() -> bool:
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=subprocess.DEVNULL,
-                **windows_detach_popen_kwargs(),
+                start_new_session=True,
             )
     except OSError:
         return False
@@ -5478,17 +4898,6 @@ def launchd_status(deep: bool = False):
 # =============================================================================
 
 
-def _truthy_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _is_official_docker_checkout() -> bool:
-    return (
-        str(PROJECT_ROOT) == "/opt/son-of-anton"
-        and (PROJECT_ROOT / "docker" / "entrypoint.sh").is_file()
-    )
-
-
 def _running_under_gateway_supervisor() -> bool:
     """Return True when this process IS the gateway a service manager launched.
 
@@ -5694,33 +5103,6 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     sys.exit(1)
 
 
-def _guard_official_docker_root_gateway() -> None:
-    """Refuse gateway startup when the official Docker privilege drop was bypassed."""
-    if not hasattr(os, "geteuid") or os.geteuid() != 0:
-        return
-    if _truthy_env(os.getenv("SON_OF_ANTON_ALLOW_ROOT_GATEWAY")):
-        return
-    if not _is_official_docker_checkout():
-        return
-
-    print_error(
-        "Refusing to run the Son of Anton gateway as root inside the official Docker image."
-    )
-    print(
-        "  The image entrypoint normally drops privileges to the 'son-of-anton' user. "
-        "If you override entrypoint in Docker Compose, include "
-        "/opt/son-of-anton/docker/entrypoint.sh before the Son of Anton command."
-    )
-    print(
-        "  Running the gateway as root can leave root-owned files in "
-        "$SON_OF_ANTON_HOME and break later non-root dashboard/gateway runs."
-    )
-    print(
-        "  Set SON_OF_ANTON_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk."
-    )
-    sys.exit(1)
-
-
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground.
 
@@ -5733,57 +5115,19 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         force: Skip the supervised-gateway conflict guard and start even when a
                systemd/launchd service is already supervising this profile.
     """
-    _guard_official_docker_root_gateway()
     _guard_named_profile_under_multiplexer(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    # Detached Windows gateway runs must ignore console-control broadcasts
-    # from sibling CLI processes, but foreground `son-of-anton gateway run` still
-    # needs to obey the banner's "Press Ctrl+C to stop" contract.
-    # Service-style launchers set SON_OF_ANTON_GATEWAY_DETACHED=1; older wrappers
-    # without the marker are handled by the non-TTY fallback.
     try:
         _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
     except (ValueError, OSError):
         _stdin_is_tty = False
-    _console_window_attached = _windows_console_window_attached()
     _gateway_detached = (
         os.getenv("SON_OF_ANTON_GATEWAY_DETACHED", "").strip().lower()
         in {"1", "true", "yes", "on"}
     )
-    _breakaway = _windows_gateway_breakaway_state()
-    _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
-    if _absorb_windows_console_controls:
-        try:
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            if hasattr(signal, "SIGBREAK"):
-                signal.signal(signal.SIGBREAK, signal.SIG_IGN)
-        except (OSError, ValueError):
-            # SetConsoleCtrlHandler not available (rare on Windows) —
-            # best-effort, proceed either way.
-            pass
-        # Python's signal module only hooks SIGINT/SIGBREAK. To also
-        # absorb CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT and any other
-        # console control signals Windows may broadcast to the console
-        # process group, call the native SetConsoleCtrlHandler(NULL, TRUE)
-        # — this tells the kernel to IGNORE all console control events
-        # for this process entirely, which is what background services
-        # are supposed to do. Belt-and-braces over the Python-level
-        # handlers above.
-        try:
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            # BOOL SetConsoleCtrlHandler(NULL, Add)  —  Add=TRUE means
-            # "install the NULL handler", which has the documented
-            # effect of ignoring Ctrl+C. Called twice for defense in
-            # depth: once before any Python import could have flipped
-            # our disposition, once as our last word.
-            kernel32.SetConsoleCtrlHandler(None, 1)
-        except (OSError, AttributeError):
-            pass
 
     # Refresh the systemd unit definition on every boot so that restart
     # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
@@ -5814,15 +5158,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     verbosity = None if quiet else verbose
 
     # ── Exit-path diagnostics ────────────────────────────────────────────
-    # When the gateway dies silently on Windows (no shutdown log, no
-    # traceback in gateway.log / errors.log), we're usually blind to the
-    # cause. The code below captures *every* way the asyncio.run() call
-    # below can return, with full context dumped to a dedicated log so
-    # the next silent death yields evidence instead of a mystery. This
-    # is diagnostic scaffolding; cheap to keep on, costs nothing during
-    # normal operation, and the emitted lines are opt-in via the
-    # SON_OF_ANTON_GATEWAY_EXIT_DIAG env var (default: on while we're still
-    # chasing the Windows lifecycle bug).
+    # When the gateway dies silently (no shutdown log, no traceback in
+    # gateway.log / errors.log), we're usually blind to the cause. The code
+    # below captures *every* way the asyncio.run() call below can return,
+    # with full context dumped to a dedicated log so the next silent death
+    # yields evidence instead of a mystery. This is diagnostic scaffolding;
+    # cheap to keep on, costs nothing during normal operation, and the
+    # emitted lines are opt-in via the SON_OF_ANTON_GATEWAY_EXIT_DIAG env var.
     import atexit as _atexit
     import traceback as _traceback
     from datetime import datetime as _dt, timezone as _tz
@@ -5856,10 +5198,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         replace=replace,
         argv=sys.argv,
         stdin_is_tty=_stdin_is_tty,
-        console_window_attached=_console_window_attached,
         detached=_gateway_detached,
-        breakaway=_breakaway,
-        absorb_windows_console_controls=_absorb_windows_console_controls,
     )
 
     def _atexit_hook() -> None:
@@ -5941,7 +5280,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
-        # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
+        # On detached runs this shouldn't fire (we absorb SIGINT above),
         # but keep the handler for console runs.
         _exit_diag(
             "asyncio.run.KeyboardInterrupt",
@@ -6121,7 +5460,7 @@ def _runtime_health_lines() -> list[str]:
             lines.append(f"⚠ {platform}: {message}")
 
     # A persisted snapshot that still claims liveness can outlive an
-    # ungracefully-killed gateway (taskkill /F, OOM, power loss) whose shutdown
+    # ungracefully-killed gateway (SIGKILL, OOM, power loss) whose shutdown
     # handler never ran.  When the record is past its freshness TTL AND the
     # recorded PID is gone, the file is contradicting reality — surface that
     # explicitly instead of rendering the misleading live-state summary.
@@ -6276,10 +5615,6 @@ def _is_service_installed() -> bool:
         )
     elif is_macos():
         return get_launchd_plist_path().exists()
-    elif is_windows():
-        from son_of_anton_cli import gateway_windows
-
-        return gateway_windows.is_installed()
     return False
 
 
@@ -6329,13 +5664,6 @@ def _is_service_running() -> bool:
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
-    elif is_windows():
-        from son_of_anton_cli import gateway_windows
-
-        if gateway_windows.is_installed():
-            # "installed" doesn't necessarily mean "running" on Windows. The
-            # canonical check is whether a gateway process actually exists.
-            return len(find_gateway_pids()) > 0
     # Check for manual processes
     return len(find_gateway_pids()) > 0
 
@@ -6367,7 +5695,6 @@ def _setup_signal():
             "    Linux:  download from https://github.com/AsamK/signal-cli/releases"
         )
         print_info("    macOS:  brew install signal-cli")
-        print_info("    Docker: bbernhard/signal-cli-rest-api")
         print()
         print_info("  After installing, link your account and start the daemon:")
         print_info('    signal-cli link -n "SonOfAntonAgent"')
@@ -6656,10 +5983,6 @@ def gateway_setup():
                         systemd_restart()
                     elif is_macos():
                         launchd_restart()
-                    elif is_windows():
-                        from son_of_anton_cli import gateway_windows
-
-                        gateway_windows.restart()
                     else:
                         stop_profile_gateway()
                         print_info("Start manually: son-of-anton gateway")
@@ -6681,10 +6004,6 @@ def gateway_setup():
                         systemd_start()
                     elif is_macos():
                         launchd_start()
-                    elif is_windows():
-                        from son_of_anton_cli import gateway_windows
-
-                        gateway_windows.start()
                 except UserSystemdUnavailableError as e:
                     print_error("  Start failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -6696,17 +6015,14 @@ def gateway_setup():
                     print_error(f"  Start failed: {e}")
         else:
             print()
-            if supports_systemd_services() or is_macos() or is_windows():
+            if supports_systemd_services() or is_macos():
                 if supports_systemd_services():
                     platform_name = "systemd"
-                elif is_macos():
-                    platform_name = "launchd"
                 else:
-                    platform_name = "Scheduled Task"
-                wsl_note = " (note: services may not survive WSL restarts)" if is_wsl() else ""
+                    platform_name = "launchd"
                 start_now = prompt_yes_no("  Start the gateway now?", True)
                 start_on_login = prompt_yes_no(
-                    f"  Start the gateway automatically on login/boot as a {platform_name} service?{wsl_note}",
+                    f"  Start the gateway automatically on login/boot as a {platform_name} service?",
                     True,
                 )
                 if start_now or start_on_login:
@@ -6721,11 +6037,6 @@ def gateway_setup():
                         elif is_macos():
                             launchd_install(force=False)
                             did_install = True
-                        else:
-                            from son_of_anton_cli import gateway_windows
-
-                            gateway_windows.install(force=False)
-                            did_install = True
                         print()
                         if did_install and start_now:
                             try:
@@ -6733,9 +6044,6 @@ def gateway_setup():
                                     systemd_start(system=installed_scope == "system")
                                 elif is_macos():
                                     launchd_start()
-                                elif is_windows():
-                                    from son_of_anton_cli import gateway_windows
-                                    gateway_windows.start()
                             except UserSystemdUnavailableError as e:
                                 print_error(
                                     "  Start failed — user systemd not reachable:"
@@ -6755,23 +6063,6 @@ def gateway_setup():
                             "  Or as a boot-time service: sudo son-of-anton gateway install --system"
                         )
                     print_info("  Or run in foreground:  son-of-anton gateway run")
-            elif is_wsl():
-                print_info("  WSL detected but systemd is not running.")
-                print_info("  Run in foreground: son-of-anton gateway run")
-                print_info(
-                    "  For persistence:   tmux new -s son-of-anton 'son-of-anton gateway run'"
-                )
-                print_info(
-                    "  To enable systemd: add systemd=true to /etc/wsl.conf, then 'wsl --shutdown'"
-                )
-            elif is_termux():
-                from son_of_anton_constants import display_son_of_anton_home as _dhh
-
-                print_info("  Termux does not use systemd/launchd services.")
-                print_info("  Run in foreground: son-of-anton gateway run")
-                print_info(
-                    f"  Or start it manually in the background (best effort): nohup son-of-anton gateway run >{_dhh()}/logs/gateway.log 2>&1 &"
-                )
             else:
                 print_info("  Service install not supported on this platform.")
                 print_info("  Run in foreground: son-of-anton gateway run")
@@ -6785,108 +6076,6 @@ def gateway_setup():
 # =============================================================================
 # Main Command Handler
 # =============================================================================
-
-def _dispatch_via_service_manager_if_s6(
-    action: str, profile: str | None = None,
-) -> bool:
-    """If we're in a container with s6, dispatch gateway lifecycle via s6.
-
-    Returns True iff dispatched (caller should ``return``); False
-    otherwise — caller continues with the host-side code path.
-
-    ``action`` is one of ``start`` / ``stop`` / ``restart``. The
-    profile defaults to the current one (resolved via ``_profile_arg``).
-    The s6 service slot was created either by the Phase 4 profile-create
-    hook or by the container-boot reconciler (cont-init.d/02-…). If it
-    doesn't exist or s6 returns an error, the named errors from
-    :mod:`son_of_anton_cli.service_manager` are caught and surfaced as
-    actionable CLI messages (no raw ``CalledProcessError`` traceback).
-    """
-    from son_of_anton_cli.service_manager import (
-        GatewayNotRegisteredError,
-        S6CommandError,
-        detect_service_manager,
-        get_service_manager,
-    )
-
-    if detect_service_manager() != "s6":
-        return False
-    if profile is None:
-        # _profile_suffix() returns the bare profile name for
-        # SON_OF_ANTON_HOME=<root>/profiles/<name>, "" for the default root,
-        # or a hash for unrelated paths. Map "" → "default" so the
-        # default-profile gateway is reachable as gateway-default.
-        profile = _profile_suffix() or "default"
-    mgr = get_service_manager()
-    service_name = f"gateway-{profile}"
-    try:
-        if action == "start":
-            mgr.start(service_name)
-        elif action == "stop":
-            mgr.stop(service_name)
-        elif action == "restart":
-            mgr.restart(service_name)
-        else:
-            return False
-    except GatewayNotRegisteredError as exc:
-        print(f"✗ {exc}")
-        sys.exit(1)
-    except S6CommandError as exc:
-        print(f"✗ {exc}")
-        sys.exit(1)
-    return True
-
-
-def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
-    """Inside a container with s6, dispatch ``--all`` lifecycle to every
-    registered profile gateway.
-
-    Returns True iff dispatched (caller should ``return``); False
-    otherwise — caller continues with the host-side code path.
-
-    Without this, ``son-of-anton gateway stop --all`` and ``... restart --all``
-    fall through to ``kill_gateway_processes(all_profiles=True)``, which
-    just ``pkill``s every gateway process. s6-supervise observes the
-    crash and restarts each one ~1s later — so ``--all`` ends up
-    *kicking* every gateway instead of *stopping* it. By iterating
-    ``list_profile_gateways()`` and sending the lifecycle command
-    through the service manager we get the intended semantics (s6's
-    ``want up``/``want down`` flips correctly so supervise stays down
-    after a stop).
-
-    ``action`` is one of ``stop`` / ``restart`` (``start --all`` isn't
-    a supported CLI surface).
-    """
-    from son_of_anton_cli.service_manager import (
-        detect_service_manager,
-        get_service_manager,
-    )
-
-    if detect_service_manager() != "s6":
-        return False
-    if action not in ("stop", "restart"):
-        return False
-    mgr = get_service_manager()
-    profiles = mgr.list_profile_gateways()
-    if not profiles:
-        print("✗ No profile gateways registered under s6")
-        return True
-    fn = mgr.stop if action == "stop" else mgr.restart
-    errors: list[tuple[str, Exception]] = []
-    for profile in profiles:
-        service_name = f"gateway-{profile}"
-        try:
-            fn(service_name)
-        except Exception as exc:  # noqa: BLE001 — report and continue
-            errors.append((profile, exc))
-    succeeded = len(profiles) - len(errors)
-    verb = "stopped" if action == "stop" else "restarted"
-    if succeeded:
-        print(f"✓ {verb.capitalize()} {succeeded} profile gateway(s) under s6")
-    for profile, exc in errors:
-        print(f"✗ Could not {action} gateway-{profile}: {exc}")
-    return True
-
 
 
 def gateway_command(args):
@@ -6910,128 +6099,12 @@ def gateway_command(args):
         sys.exit(1)
 
 
-def _maybe_redirect_run_to_s6_supervision(args) -> bool:
-    """Inside an s6 container, redirect bare ``gateway run`` to the
-    supervised path.
-
-    Background. Before the s6 image landed, ``docker run <image> gateway
-    run`` was the standard way to start a containerized gateway: the
-    gateway was the container's main process, tini reaped zombies, and
-    container exit code == gateway exit code. With s6-overlay as PID 1,
-    we'd much rather have the gateway run as a supervised s6 longrun
-    (auto-restart on crash, dashboard supervised alongside, multiple
-    profile gateways under the same /init). This redirect upgrades the
-    old invocation transparently — the user gets the new behavior
-    without changing their docker run command.
-
-    Three gates make this a no-op outside the intended scope:
-
-      1. ``_dispatch_via_service_manager_if_s6`` returns False unless
-         we're in a container with s6 as PID 1. Host runs of
-         ``son-of-anton gateway run`` are unaffected.
-      2. ``SON_OF_ANTON_S6_SUPERVISED_CHILD`` is exported by
-         ``S6ServiceManager._render_run_script`` for the supervised
-         process itself — i.e. when s6-supervise execs ``son-of-anton gateway
-         run --replace`` as a longrun, this guard short-circuits the
-         redirect so the supervised gateway actually runs in
-         foreground (otherwise we'd recurse: run → start → run → start
-         → ...).
-      3. ``--no-supervise`` (or ``SON_OF_ANTON_GATEWAY_NO_SUPERVISE=1``) opts
-         out for users who genuinely want pre-s6 semantics — CI smoke
-         tests, debugging the foreground startup path, etc.
-
-    Returns True iff dispatched (caller should ``return``).
-    """
-    no_supervise = getattr(args, "no_supervise", False) or \
-        os.environ.get("SON_OF_ANTON_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
-    if no_supervise:
-        return False
-    if os.environ.get("SON_OF_ANTON_S6_SUPERVISED_CHILD"):
-        # We ARE the supervised child s6-supervise is running. Fall
-        # through to the foreground code path so the gateway actually
-        # starts.
-        return False
-    if not _dispatch_via_service_manager_if_s6("start"):
-        return False
-    # Loud breadcrumb: explain the upgrade and how to opt out. Print to
-    # stderr so it doesn't pollute stdout-parsing scripts. The
-    # supervised gateway's own logs are routed by s6-log to both
-    # `docker logs` and ${SON_OF_ANTON_HOME}/logs/gateways/<profile>/current,
-    # so the user sees a clear sequence: this banner first, then the
-    # gateway's own stdout/stderr from the supervisor.
-    print(
-        "→ gateway is now running under s6 supervision (auto-restart on crash,\n"
-        "  dashboard supervised alongside if SON_OF_ANTON_DASHBOARD is set).\n"
-        "  This is the recommended setup for the s6 container image — the\n"
-        "  gateway will keep running even if it crashes.\n"
-        "  Use `--no-supervise` (or SON_OF_ANTON_GATEWAY_NO_SUPERVISE=1) to opt out\n"
-        "  and get the pre-s6 foreground behavior instead.",
-        file=sys.stderr,
-        flush=True,
-    )
-    # Keep the CMD process alive as a no-op heartbeat. The supervised
-    # gateway's lifetime is independent of this process — s6-supervise
-    # restarts it on crash, and we don't want the container to exit when
-    # the gateway flaps. The CMD process keeps /init alive until
-    # `docker stop` sends SIGTERM, at which point /init runs stage 3
-    # shutdown (which tears down the supervised gateway cleanly).
-    #
-    # Prefer `sleep infinity` (matches the static main-son-of-anton service's
-    # pattern in docker/s6-rc.d/main-son-of-anton/run, and frees the Python
-    # interpreter — the heartbeat is a tiny `sleep` process, not a
-    # resident interpreter). But `os.execvp` does a PATH lookup for the
-    # `sleep` binary and historically crashed the whole container with
-    # FileNotFoundError when PATH was empty/truncated/clobbered at this
-    # point — e.g. after user customizations rewrote PATH, or on minimal
-    # images without `sleep` on PATH (issue #36208). Fall back to an
-    # in-process block (no external binary, can't fail on PATH) so the
-    # container keeps running instead of dying during boot.
-    try:
-        os.execvp("sleep", ["sleep", "infinity"])
-    except OSError:
-        # execvp only returns by raising; on success it replaces this
-        # process. ENOENT (no `sleep` on PATH) and any other exec error
-        # land here.
-        print(
-            "→ `sleep` is unavailable; keeping the s6 CMD process alive "
-            "in-process until the container is stopped.",
-            file=sys.stderr,
-            flush=True,
-        )
-        _block_until_terminated()
-    return True  # unreachable on the execvp success path
-
-
-def _block_until_terminated() -> None:
-    """Keep the s6 CMD process alive until the container is stopped.
-
-    Fallback heartbeat for when ``os.execvp("sleep", ...)`` can't run
-    (``sleep`` missing from PATH — issue #36208). Installs a SIGTERM
-    handler that exits with the conventional 128+signum code so
-    ``docker stop`` produces a clean, expected exit, then blocks on
-    ``signal.pause()``. Falls back to ``threading.Event().wait()`` on
-    platforms without ``signal.pause()`` (e.g. Windows) — although this
-    path only runs inside the s6 Linux container image, the fallback
-    keeps the helper safe to import and unit-test anywhere.
-    """
-    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
-    pause = getattr(signal, "pause", None)
-    if pause is not None:
-        while True:
-            pause()
-    else:  # pragma: no cover - non-Unix fallback, not exercised in the s6 image
-        import threading
-
-        threading.Event().wait()
-
 
 def _gateway_command_inner(args):
     subcmd = getattr(args, "gateway_command", None)
 
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
-        if _maybe_redirect_run_to_s6_supervision(args):
-            return  # unreachable; execvp doesn't return
         if getattr(args, "external_supervisor", False):
             os.environ[EXTERNAL_GATEWAY_SUPERVISOR_ENV] = "1"
         verbose = getattr(args, "verbose", 0)
@@ -7053,22 +6126,7 @@ def _gateway_command_inner(args):
         force = getattr(args, "force", False)
         system = getattr(args, "system", False)
         run_as_user = getattr(args, "run_as_user", None)
-        if is_termux():
-            print("Gateway service installation is not supported on Termux.")
-            print("Run manually: son-of-anton gateway")
-            sys.exit(1)
         if supports_systemd_services():
-            if is_wsl():
-                print_warning(
-                    "WSL detected — systemd services may not survive WSL restarts."
-                )
-                print_info(
-                    "  Consider running in foreground instead: son-of-anton gateway run"
-                )
-                print_info(
-                    "  Or use tmux/screen for persistence: tmux new -s son-of-anton 'son-of-anton gateway run'"
-                )
-                print()
             # Honor CLI flags (--start-now / --no-start-now, --start-on-login /
             # --no-start-on-login).  When not provided, prompt interactively or
             # fall back to True for non-TTY / headless contexts (SSH, CI, pipes).
@@ -7099,60 +6157,6 @@ def _gateway_command_inner(args):
                 systemd_start(system=system)
         elif is_macos():
             launchd_install(force)
-        elif is_windows():
-            from son_of_anton_cli import gateway_windows
-
-            gateway_windows.install(
-                force=force,
-                start_now=getattr(args, 'start_now', None),
-                start_on_login=getattr(args, 'start_on_login', None),
-                elevated_handoff=getattr(args, 'elevated_handoff', False),
-            )
-        elif is_wsl():
-            print("WSL detected but systemd is not running.")
-            print(
-                "Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)"
-            )
-            print("or run the gateway in foreground mode:")
-            print()
-            print(
-                "  son-of-anton gateway run                              # direct foreground"
-            )
-            print(
-                "  tmux new -s son-of-anton 'son-of-anton gateway run'         # persistent via tmux"
-            )
-            print(
-                "  nohup son-of-anton gateway run > ~/.son-of-anton/logs/gateway.log 2>&1 &  # background"
-            )
-            sys.exit(1)
-        elif is_container():
-            # Phase 4: inside a container with s6 the gateway service is
-            # auto-registered when the profile is created (and reconciled
-            # at every container boot). `install` is therefore informational.
-            from son_of_anton_cli.service_manager import detect_service_manager
-            if detect_service_manager() == "s6":
-                print("Per-profile gateways are auto-registered when you create a profile.")
-                print()
-                print("  son-of-anton profile create <name>     # creates the s6 service slot")
-                print("  son-of-anton -p <name> gateway start   # bring it up via s6")
-                print("  son-of-anton status                    # see currently-supervised gateways")
-                return
-            # Fallback for pre-s6 containers or other container runtimes
-            # we haven't taught about supervision (Podman without our
-            # /init, k8s plain runs, etc.) — the historical guidance still
-            # applies.
-            print("Service installation is not needed inside a Docker container.")
-            print(
-                "The container runtime is your service manager — use Docker restart policies instead:"
-            )
-            print()
-            print(
-                "  docker run --restart unless-stopped ...   # auto-restart on crash/reboot"
-            )
-            print("  docker restart <container>                # manual restart")
-            print()
-            print("To run the gateway: son-of-anton gateway run")
-            sys.exit(0)
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: son-of-anton gateway run")
@@ -7163,34 +6167,10 @@ def _gateway_command_inner(args):
             managed_error("uninstall gateway service")
             return
         system = getattr(args, "system", False)
-        if is_termux():
-            print(
-                "Gateway service uninstall is not supported on Termux because there is no managed service to remove."
-            )
-            print("Stop manual runs with: son-of-anton gateway stop")
-            sys.exit(1)
         if supports_systemd_services():
             systemd_uninstall(system=system)
         elif is_macos():
             launchd_uninstall()
-        elif is_windows():
-            from son_of_anton_cli import gateway_windows
-
-            gateway_windows.uninstall()
-        elif is_container():
-            from son_of_anton_cli.service_manager import detect_service_manager
-            if detect_service_manager() == "s6":
-                print("Per-profile gateways are auto-unregistered when you delete the profile.")
-                print()
-                print("  son-of-anton profile delete <name>     # tears down the s6 service slot")
-                print("  son-of-anton -p <name> gateway stop    # stop without deleting the profile")
-                return
-            print("Service uninstall is not applicable inside a Docker container.")
-            print("To stop the gateway, stop or remove the container:")
-            print()
-            print("  docker stop <container>")
-            print("  docker rm <container>")
-            sys.exit(0)
         else:
             print("Not supported on this platform.")
             sys.exit(1)
@@ -7198,14 +6178,6 @@ def _gateway_command_inner(args):
     elif subcmd == "start":
         system = getattr(args, "system", False)
         start_all = getattr(args, "all", False)
-
-        # Phase 4: inside a container with s6, dispatch via the service
-        # manager instead of falling through to systemd/launchd/windows.
-        # `--all` isn't meaningful here (each profile has its own service
-        # slot — start them individually via `son-of-anton -p <name> gateway
-        # start`), so just bring up the current profile's slot.
-        if not start_all and _dispatch_via_service_manager_if_s6("start"):
-            return
 
         if start_all:
             # Kill all stale gateway processes across all profiles before starting
@@ -7216,52 +6188,10 @@ def _gateway_command_inner(args):
                 )
                 _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-        if is_termux():
-            print(
-                "Gateway service start is not supported on Termux because there is no system service manager."
-            )
-            print("Run manually: son-of-anton gateway")
-            sys.exit(1)
         if supports_systemd_services():
             systemd_start(system=system)
         elif is_macos():
             launchd_start()
-        elif is_windows():
-            from son_of_anton_cli import gateway_windows
-
-            gateway_windows.start()
-        elif is_wsl():
-            print("WSL detected but systemd is not available.")
-            print("Run the gateway in foreground mode instead:")
-            print()
-            print(
-                "  son-of-anton gateway run                              # direct foreground"
-            )
-            print(
-                "  tmux new -s son-of-anton 'son-of-anton gateway run'         # persistent via tmux"
-            )
-            print(
-                "  nohup son-of-anton gateway run > ~/.son-of-anton/logs/gateway.log 2>&1 &  # background"
-            )
-            print()
-            print(
-                "To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell."
-            )
-            sys.exit(1)
-        elif is_container():
-            # Reached only when s6 ISN'T running (the early dispatch
-            # above handles the s6 case). Pre-s6 containers or other
-            # container runtimes that don't ship our /init get the
-            # historical guidance: the gateway is the container's main
-            # process, so use docker lifecycle commands.
-            print("Service start is not applicable inside a Docker container.")
-            print("The gateway runs as the container's main process.")
-            print()
-            print("  docker start <container>     # start a stopped container")
-            print("  docker restart <container>   # restart a running container")
-            print()
-            print("Or run the gateway directly: son-of-anton gateway run")
-            sys.exit(0)
         else:
             print("Not supported on this platform.")
             sys.exit(1)
@@ -7279,15 +6209,6 @@ def _gateway_command_inner(args):
 
         stop_all = getattr(args, "all", False)
         system = getattr(args, "system", False)
-
-        # Phase 4: inside a container with s6, dispatch via the service
-        # manager. ``--all`` iterates every registered profile gateway
-        # through s6 (otherwise it would fall through to ``pkill``,
-        # which s6-supervise observes as a crash and immediately restarts).
-        if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
-            return
-        if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
-            return
 
         if stop_all:
             # --all: kill every gateway process on the machine
@@ -7307,15 +6228,6 @@ def _gateway_command_inner(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
-            elif is_windows():
-                from son_of_anton_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_available = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
@@ -7340,18 +6252,9 @@ def _gateway_command_inner(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
-            elif is_windows():
-                from son_of_anton_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_available = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
 
             if not service_available:
-                # No systemd/launchd/schtasks service — use profile-scoped PID file
+                # No systemd/launchd service — use profile-scoped PID file
                 if stop_profile_gateway():
                     print("✓ Stopped gateway for this profile")
                 else:
@@ -7376,16 +6279,6 @@ def _gateway_command_inner(args):
         restart_all = getattr(args, "all", False)
         service_configured = False
 
-        # Phase 4: inside a container with s6, dispatch via the service
-        # manager (s6-svc -t restarts the supervised process). ``--all``
-        # iterates every registered profile gateway through s6; without
-        # this it would fall through to ``pkill``, which s6-supervise
-        # would observe as a crash and immediately restart anyway.
-        if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
-            return
-        if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
-            return
-
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh
             service_stopped = False
@@ -7404,15 +6297,6 @@ def _gateway_command_inner(args):
                     service_stopped = True
                 except subprocess.CalledProcessError:
                     pass
-            elif is_windows():
-                from son_of_anton_cli import gateway_windows
-
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_stopped = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_stopped else 0)
             if total:
@@ -7428,16 +6312,6 @@ def _gateway_command_inner(args):
                 systemd_start(system=system)
             elif is_macos() and get_launchd_plist_path().exists():
                 launchd_start()
-            elif is_windows():
-                from son_of_anton_cli import gateway_windows
-
-                # On Windows, even without a registered Scheduled Task / Startup
-                # entry, gateway_windows.start() uses the safe detached
-                # pythonw.exe launcher.  Do not fall back to run_gateway() here:
-                # when invoked from a gateway-hosted agent/tool call, foreground
-                # run_gateway() is tied to the very gateway process we just
-                # stopped and can die before the replacement is stable.
-                gateway_windows.start()
             else:
                 run_gateway(verbose=0)
             return
@@ -7459,20 +6333,6 @@ def _gateway_command_inner(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
-        elif is_windows():
-            from son_of_anton_cli import gateway_windows
-
-            # Prefer the Windows-specific restart path: it supports both
-            # registered Scheduled Task / Startup installs and no-service
-            # detached restarts.  In the normal successful chat-triggered
-            # restart flow, this avoids the generic foreground run_gateway()
-            # path that can be reaped with the old gateway process.  If the
-            # Windows backend raises, intentionally preserve the existing
-            # generic failure fallback below.
-            service_configured = gateway_windows.is_installed()
-            try:
-                gateway_windows.restart()
-                return
             except (subprocess.CalledProcessError, RuntimeError, OSError):
                 pass
 
@@ -7524,11 +6384,6 @@ def _gateway_command_inner(args):
         snapshot = get_gateway_runtime_snapshot(system=system)
 
         # Check for service first
-        _windows_service_installed = False
-        if is_windows():
-            from son_of_anton_cli import gateway_windows
-
-            _windows_service_installed = gateway_windows.is_installed()
         if supports_systemd_services() and (
             get_systemd_unit_path(system=False).exists()
             or get_systemd_unit_path(system=True).exists()
@@ -7537,11 +6392,6 @@ def _gateway_command_inner(args):
             _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
-            _print_gateway_process_mismatch(snapshot)
-        elif _windows_service_installed:
-            from son_of_anton_cli import gateway_windows
-
-            gateway_windows.status(deep=deep)
             _print_gateway_process_mismatch(snapshot)
         else:
             # Check for manually running processes
@@ -7556,26 +6406,9 @@ def _gateway_command_inner(args):
                     for line in runtime_lines:
                         print(f"  {line}")
                 print()
-                if is_termux():
-                    print("Termux note:")
-                    print("  Android may stop background jobs when Termux is suspended")
-                elif is_wsl():
-                    print("WSL note:")
-                    print(
-                        "  The gateway is running in foreground/manual mode (recommended for WSL)."
-                    )
-                    print(
-                        "  Use tmux or screen for persistence across terminal closes."
-                    )
-                elif is_windows():
-                    print(
-                        "To install as a Windows Scheduled Task (auto-start on login):"
-                    )
-                    print("  son-of-anton gateway install")
-                else:
-                    print("To install as a service:")
-                    print("  son-of-anton gateway install")
-                    print("  sudo son-of-anton gateway install --system")
+                print("To install as a service:")
+                print("  son-of-anton gateway install")
+                print("  sudo son-of-anton gateway install --system")
             else:
                 print("✗ Gateway is not running")
                 runtime_lines = _runtime_health_lines()
@@ -7587,26 +6420,10 @@ def _gateway_command_inner(args):
                 print()
                 print("To start:")
                 print("  son-of-anton gateway run      # Run in foreground")
-                if is_termux():
-                    print(
-                        "  nohup son-of-anton gateway run > ~/.son-of-anton/logs/gateway.log 2>&1 &  # Best-effort background start"
-                    )
-                elif is_wsl():
-                    print(
-                        "  tmux new -s son-of-anton 'son-of-anton gateway run'         # persistent via tmux"
-                    )
-                    print(
-                        "  nohup son-of-anton gateway run > ~/.son-of-anton/logs/gateway.log 2>&1 &  # background"
-                    )
-                elif is_windows():
-                    print(
-                        "  son-of-anton gateway install  # Install as Windows Scheduled Task (auto-start on login)"
-                    )
-                else:
-                    print("  son-of-anton gateway install  # Install as user service")
-                    print(
-                        "  sudo son-of-anton gateway install --system  # Install as boot-time system service"
-                    )
+                print("  son-of-anton gateway install  # Install as user service")
+                print(
+                    "  sudo son-of-anton gateway install --system  # Install as boot-time system service"
+                )
 
         # Show other profiles' gateway status for multi-profile awareness
         _print_other_profiles_gateway_status()

@@ -106,15 +106,9 @@ def _config_refresh_lock(path: Path):
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fh = open(lock_path, "a+b")
-        if os.name == "nt":
-            import msvcrt
+        import fcntl
 
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
     except Exception:
         logger.debug("Honcho OAuth cross-process lock unavailable; in-process only", exc_info=True)
         if fh is not None:
@@ -125,15 +119,9 @@ def _config_refresh_lock(path: Path):
     finally:
         if fh is not None:
             try:
-                if os.name == "nt":
-                    import msvcrt
+                import fcntl
 
-                    fh.seek(0)
-                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             except Exception:
                 pass
             fh.close()

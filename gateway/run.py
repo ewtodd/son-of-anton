@@ -13,15 +13,14 @@ Usage:
     python cli.py --gateway
 """
 
-# IMPORTANT: son_of_anton_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See son_of_anton_bootstrap.py for full rationale.
+# IMPORTANT: son_of_anton_bootstrap must be the very first import — it sets up
+# UTF-8 stdio and runtime environment guards.
 try:
     import son_of_anton_bootstrap  # noqa: F401
 except ModuleNotFoundError:
     # Graceful fallback when son_of_anton_bootstrap isn't registered in the venv
     # yet — happens during partial ``son-of-anton update`` where git-reset landed
-    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
-    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    # new code but ``uv pip install -e .`` didn't finish.
     pass
 
 import asyncio
@@ -35,7 +34,6 @@ import os
 import queue
 import re
 import shlex
-import site
 import sys
 import signal
 import threading
@@ -444,60 +442,6 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
-
-
-def _ensure_windows_gateway_venv_imports() -> None:
-    """Make detached Windows gateway runs see the Son of Anton venv packages.
-
-    Some Windows restart paths run the gateway under uv's base ``pythonw.exe``
-    to avoid the venv launcher respawning a visible console interpreter.  That
-    mode can import the source tree via cwd/PYTHONPATH but still miss optional
-    packages installed only in ``venv/Lib/site-packages`` (notably the MCP SDK).
-    Patch the live process before MCP discovery so tool injection does not
-    depend on every launcher preserving PYTHONPATH perfectly.
-    """
-    if sys.platform != "win32":
-        return
-
-    project_root = Path(__file__).resolve().parent.parent
-    candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
-
-    seen: set[str] = set()
-    for venv_dir in candidates:
-        try:
-            resolved_venv = venv_dir.resolve()
-        except OSError:
-            resolved_venv = venv_dir
-        venv_key = str(resolved_venv).lower()
-        if venv_key in seen:
-            continue
-        seen.add(venv_key)
-
-        site_packages = resolved_venv / "Lib" / "site-packages"
-        if not site_packages.exists():
-            continue
-
-        project_entry = str(project_root)
-        site_entry = str(site_packages)
-        if project_entry not in sys.path:
-            sys.path.insert(0, project_entry)
-        # addsitepackages() semantics matter here: pywin32, used by the MCP
-        # SDK on Windows, relies on .pth processing to expose pywintypes.
-        site.addsitedir(site_entry)
-        if site_entry in sys.path:
-            sys.path.remove(site_entry)
-        insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
-        sys.path.insert(insert_at, site_entry)
-
-        os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        pythonpath = [project_entry, site_entry]
-        if os.environ.get("PYTHONPATH"):
-            pythonpath.append(os.environ["PYTHONPATH"])
-        os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-        return
 
 
 def _gateway_platform_value(platform: Any) -> str:
@@ -1883,7 +1827,7 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
 def _ensure_ssl_certs() -> None:
     """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python.
 
-    Windows startup paths (Desktop, Scheduled Tasks, installer children) can
+    Some startup paths (Desktop launchers, installer children) can
     occasionally inherit a stale SSL_CERT_FILE. Returning just because the
     variable is present makes every later httpx/OpenAI client construction fail
     with FileNotFoundError from ssl.load_verify_locations(). Treat a missing
@@ -2215,9 +2159,6 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     return False
 
 
-_DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
-_DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
-
 # This env var is internal bridge plumbing, not a user-facing configuration
 # source. Initialize it from the canonical config default after dotenv loading
 # so an ambient process/.env value can never control lease safety on its own.
@@ -2270,29 +2211,10 @@ if _config_path.exists():
                 "timeout": "TERMINAL_TIMEOUT",
                 "home_mode": "TERMINAL_HOME_MODE",
                 "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
                 "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-                "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
-                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-                "docker_network": "TERMINAL_DOCKER_NETWORK",
-                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-                "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-                "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
@@ -2305,12 +2227,12 @@ if _config_path.exists():
                     # Only bridge explicit absolute paths from config.yaml.
                     if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
                         continue
-                    # Expand shell tilde in local/container cwd so subprocess.Popen
+                    # Expand shell tilde in the local cwd so subprocess.Popen
                     # never receives a literal "~/" which the kernel rejects.
                     # SSH cwd is interpreted by the remote shell, so preserve
-                    # "~" / "~/..." for the SSH backend instead of expanding it
-                    # to the Son of Anton host/container HOME (often /opt/data). Shared
-                    # predicate with terminal_tool so the two sites can't drift.
+                    # "~" / "~/..." for the SSH backend instead of expanding it.
+                    # Shared predicate with terminal_tool so the two sites can't
+                    # drift.
                     if _cfg_key == "cwd" and isinstance(_val, str):
                         if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
                             _val = os.path.expanduser(_val)
@@ -2522,8 +2444,8 @@ os.environ["SON_OF_ANTON_QUIET"] = "1"
 # Set terminal working directory for messaging platforms.
 # config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
 # by the config bridge above).  Placeholder values are resolved per-backend —
-# see gateway/cwd_placeholder.py for the three-case contract (local vs docker
-# mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
+# see gateway/cwd_placeholder.py for the contract (local vs other backends).
+# MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
 
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
@@ -2532,10 +2454,6 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
         configured_cwd=_configured_cwd,
         terminal_backend=os.environ.get("TERMINAL_ENV", ""),
         messaging_cwd=os.getenv("MESSAGING_CWD"),
-        docker_mount_cwd_to_workspace=os.getenv(
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false"
-        ).lower()
-        in {"true", "1", "yes"},
         home_fallback=str(Path.home()),
     )
     if _resolved_cwd is None:
@@ -5382,10 +5300,9 @@ class TurnRunner:
 
         # Per-platform skip_context_files — messaging platforms can opt out
         # of filesystem-heavy context-file discovery (SOUL.md, AGENTS.md,
-        # .cursorrules) to cut AIAgent construction latency. Especially
-        # impactful on Windows, where stat() + directory walks are 10-100x
-        # slower than Linux. Off by default; soul identity is preserved so
-        # the persona survives even with minimal context.
+        # .cursorrules) to cut AIAgent construction latency. Off by default;
+        # soul identity is preserved so the persona survives even with minimal
+        # context.
         _platforms_gw_cfg = (ctx.user_config.get("gateway") or {}).get("platforms") or {}
         # ``son-of-anton gateway setup`` writes ``gateway.platforms`` as a LIST of
         # enabled platform names (e.g. ``- discord``), not a dict.  Treat any
@@ -6697,7 +6614,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
-        self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
         # Load ephemeral config from config.yaml / env vars.
@@ -7148,55 +7064,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 inner.close()
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
-
-    def _warn_if_docker_media_delivery_is_risky(self) -> None:
-        """Warn when Docker-backed gateways lack an explicit export mount.
-
-        MEDIA delivery happens in the gateway process, so paths emitted by the model
-        must be readable from the host. A plain container-local path like
-        `/workspace/report.txt` or `/output/report.txt` often exists only inside
-        Docker, so users commonly need a dedicated export mount such as
-        `host-dir:/output`.
-        """
-        if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-            return
-
-        connected = self.config.get_connected_platforms()
-        messaging_platforms = [p for p in connected if p != Platform.LOCAL]
-        if not messaging_platforms:
-            return
-
-        raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
-        volumes: List[str] = []
-        if raw_volumes:
-            try:
-                parsed = json.loads(raw_volumes)
-                if isinstance(parsed, list):
-                    volumes = [str(v) for v in parsed if isinstance(v, str)]
-            except Exception:
-                logger.debug("Could not parse TERMINAL_DOCKER_VOLUMES for gateway media warning", exc_info=True)
-
-        has_explicit_output_mount = False
-        for spec in volumes:
-            match = _DOCKER_VOLUME_SPEC_RE.match(spec)
-            if not match:
-                continue
-            container_path = match.group("container")
-            if container_path in _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS:
-                has_explicit_output_mount = True
-                break
-
-        if has_explicit_output_mount:
-            return
-
-        logger.warning(
-            "Docker backend is enabled for the messaging gateway but no explicit host-visible "
-            "output mount (for example '/home/user/.son-of-anton/cache/documents:/output') is configured. "
-            "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
-            "for container-local paths like '/workspace/...' or '/output/...'."
-        )
-
-
 
     # -- Setup skill availability ----------------------------------------
 
@@ -10805,157 +10672,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         current_pid = os.getpid()
         restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
 
-        # On Windows there's no bash/setsid chain — spawn a tiny Python
-        # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `son-of-anton gateway
-        # restart` with detach flags so the respawn survives the CLI
-        # that triggered the /restart command closing its console.
-        if sys.platform == "win32":
-            import textwrap
-            from son_of_anton_cli._subprocess_compat import (
-                windows_detach_flags_without_breakaway,
-                windows_detach_popen_kwargs,
-            )
-
-            cmd_argv = [*son_of_anton_cmd, "gateway", "restart"]
-            watcher = textwrap.dedent(
-                """
-                import os, subprocess, sys, time
-                from son_of_anton_cli._subprocess_compat import windows_detach_flags_without_breakaway
-                pid = int(sys.argv[1])
-                restart_after_s = float(sys.argv[2])
-                cmd = sys.argv[3:]
-                deadline = time.monotonic() + restart_after_s
-
-                def _alive(p):
-                    # On Windows, os.kill(pid, 0) is NOT a no-op — it maps to
-                    # GenerateConsoleCtrlEvent(0, pid) (bpo-14484). Use the
-                    # Win32 handle-based existence check instead.
-                    if os.name == 'nt':
-                        import ctypes
-                        k32 = ctypes.windll.kernel32
-                        k32.OpenProcess.restype = ctypes.c_void_p
-                        k32.WaitForSingleObject.restype = ctypes.c_uint
-                        k32.GetLastError.restype = ctypes.c_uint
-                        h = k32.OpenProcess(0x1000 | 0x100000, False, int(p))
-                        if not h:
-                            return k32.GetLastError() != 87
-                        try:
-                            return k32.WaitForSingleObject(h, 0) == 0x102
-                        finally:
-                            k32.CloseHandle(h)
-                    try:
-                        os.kill(int(p), 0)
-                        return True
-                    except ProcessLookupError:
-                        return False
-                    except PermissionError:
-                        return True
-                    except OSError:
-                        return False
-
-                while time.monotonic() < deadline:
-                    if not _alive(pid):
-                        break
-                    time.sleep(0.2)
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=windows_detach_flags_without_breakaway(),
-                )
-                """
-            ).strip()
-            from tools.environments.local import build_subprocess_env
-            watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-            # This watcher is intentionally outside the running gateway. If it
-            # inherits the gateway marker, `son-of-anton gateway restart` refuses to
-            # run as a self-restart loop guard and the gateway stays stopped.
-            watcher_env.pop("_SON_OF_ANTON_GATEWAY", None)
-            project_root = Path(__file__).resolve().parent.parent
-            # The watcher runs sys.executable (console python) under the
-            # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
-            # console, inherited by the `son-of-anton gateway restart` child, so
-            # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
-            # a console-less watcher forces every console-subsystem
-            # descendant to allocate a visible conhost (#54220/#56747).
-            watcher_python = sys.executable
-            venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
-            site_packages = venv_dir / "Lib" / "site-packages"
-            if site_packages.exists():
-                watcher_env["VIRTUAL_ENV"] = str(venv_dir)
-                pythonpath = [str(project_root), str(site_packages)]
-                if watcher_env.get("PYTHONPATH"):
-                    pythonpath.append(watcher_env["PYTHONPATH"])
-                watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-            watcher_argv = [
-                watcher_python,
-                "-c",
-                watcher,
-                str(current_pid),
-                str(restart_after_s),
-                *cmd_argv,
-            ]
-            # The watcher process must itself break away from any job object the
-            # parent CLI lives in (Electron/Tauri-wrapped Son of Anton Desktop, Windows
-            # Terminal, schtasks shells); otherwise it is reaped when the CLI
-            # exits and the gateway never respawns.  windows_detach_popen_kwargs()
-            # carries CREATE_BREAKAWAY_FROM_JOB, but a restrictive job object
-            # (no JOB_OBJECT_LIMIT_BREAKAWAY_OK) rejects that bit with
-            # ERROR_ACCESS_DENIED, surfaced as OSError.  Retry once without the
-            # breakaway bit, preserving argv and the scrubbed watcher_env.
-            # Mirrors the canonical fallback in
-            # son_of_anton_cli/gateway_windows.py::_spawn_detached.
-            try:
-                subprocess.Popen(
-                    watcher_argv,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=watcher_env,
-                    **windows_detach_popen_kwargs(),
-                )
-            except OSError:
-                try:
-                    subprocess.Popen(
-                        watcher_argv,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        env=watcher_env,
-                        creationflags=windows_detach_flags_without_breakaway(),
-                    )
-                except OSError as exc:
-                    # Both spawn attempts failed (a breakaway-denying job object
-                    # is the common cause, but OSError covers others too).
-                    # Record a minimal, path-safe diagnostic and return without
-                    # crashing the caller: state plainly that no watcher was
-                    # started, and log only the interpreter basename and a
-                    # numeric error code — never argv, env, watcher source, or
-                    # str(exc) (which can carry a full interpreter path for a
-                    # FileNotFoundError).
-                    winerror = getattr(exc, "winerror", None)
-                    error_code = winerror if winerror is not None else exc.errno
-                    error_field = "winerror" if winerror is not None else "errno"
-                    logger.warning(
-                        "Detached restart watcher was not started after the "
-                        "no-breakaway retry (%s; %s=%r). The gateway will not "
-                        "be respawned by this restart attempt.",
-                        os.path.basename(watcher_python),
-                        error_field,
-                        error_code,
-                    )
-            return
-
         cmd = " ".join(shlex.quote(part) for part in son_of_anton_cmd)
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
-        # Same marker scrub as the Windows watcher above: this watcher runs
-        # `son-of-anton gateway restart` from outside the gateway, but it inherits
-        # _SON_OF_ANTON_GATEWAY=1 from us, and the CLI's self-restart loop guard
-        # refuses to run when that marker is set — silently (DEVNULL), so the
-        # gateway stops and never comes back.
+        # This watcher runs `son-of-anton gateway restart` from outside the
+        # gateway, but it inherits _SON_OF_ANTON_GATEWAY=1 from us, and the CLI's
+        # self-restart loop guard refuses to run when that marker is set —
+        # silently (DEVNULL), so the gateway stops and never comes back.
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_SON_OF_ANTON_GATEWAY", None)
@@ -11800,9 +11526,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """
         logger.info("Starting Son of Anton Gateway...")
         # Enable faulthandler for stack dumps on freezes/crashes (#70344).
-        # Falls back to a log file when sys.stderr is None (Windows VBS /
-        # pythonw / detached service) — otherwise the gateway would die
-        # here and take every adapter offline. See #71671.
+        # Falls back to a log file when sys.stderr is None (detached service)
+        # — otherwise the gateway would die here and take every adapter
+        # offline. See #71671.
         try:
             faulthandler.enable()
         except (RuntimeError, ValueError, OSError):
@@ -11820,9 +11546,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Also dump stacks to a rotating file for off-line analysis when
         # the gateway is running under a service manager that doesn't
         # capture stderr.
-        # faulthandler.register() and SIGUSR2 are POSIX-only; skip the
-        # signal-triggered file dump on Windows (faulthandler.enable()
-        # above still covers fatal-error dumps there).
         _sigusr2 = getattr(signal, "SIGUSR2", None)
         if _sigusr2 is not None and hasattr(faulthandler, "register"):
             try:
@@ -17532,9 +17255,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = re.sub(r'[^\w.\- ]', '_', display_name)
 
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
-                # cache directories are auto-mounted at /root/.son-of-anton/cache/* by get_cache_directory_mounts().
+                # Translate host cache path to the sandbox-visible path for
+                # remote (ssh) backends, so the agent receives a path it can
+                # open inside its sandbox. Local backends return it unchanged.
                 agent_path = to_agent_visible_cache_path(path)
 
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
@@ -27881,22 +27604,11 @@ def _run_planned_stop_watcher(
 ) -> None:
     """Poll for the planned-stop marker and trigger graceful shutdown.
 
-    On Windows, ``asyncio.add_signal_handler`` raises NotImplementedError
-    for SIGTERM/SIGINT, so the standard signal-driven shutdown path
-    never runs when ``son-of-anton gateway stop`` signals the gateway. The
-    consequence is that the drain loop is skipped — in-flight agent
-    sessions are killed mid-turn and ``resume_pending`` is never set,
-    so the next gateway boot has no idea those sessions need to be
-    auto-resumed (issue #33778, v0.13.0 session-resume feature broken
-    on native Windows).
-
-    This watcher runs on every platform (cheap, defensive) and bridges
-    the gap on Windows by translating a filesystem marker into the
-    same shutdown-handler invocation a real SIGTERM would have produced
-    on POSIX. The CLI's ``son_of_anton_cli.gateway_windows.stop()`` writes
-    the marker via ``write_planned_stop_marker(pid)`` and then waits
-    for the gateway PID to exit; this watcher is what makes that
-    exit happen cleanly.
+    The CLI's ``son-of-anton gateway stop`` writes the planned-stop marker
+    BEFORE killing, and this thread notices it and drives the same shutdown
+    path the signal handler would have.  Runs on every platform (cheap,
+    defensive) so non-signal-bearing environments (sandboxed CI runners
+    that mask SIGTERM) still get a clean drain.
 
     On POSIX this is a no-op safety net — the signal handler always
     races us to consuming the marker file because it fires synchronously
@@ -28279,10 +27991,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 logger.debug("Could not write takeover marker: %s", e)
             # Snapshot the old gateway's child processes BEFORE signalling it:
             # once it exits, orphans are reparented and can no longer be found
-            # by a parent walk. On POSIX, adapter subprocesses that outlive
-            # the gateway keep holding scoped token locks and block the
-            # replacement (Windows terminate_pid(force=True) already
-            # tree-kills via taskkill /T). Best-effort — [] on any failure.
+            # by a parent walk. Adapter subprocesses that outlive the gateway
+            # keep holding scoped token locks and block the replacement.
+            # Best-effort — [] on any failure.
             try:
                 from gateway.status import _snapshot_gateway_children
                 _old_gateway_children = _snapshot_gateway_children(existing_pid)
@@ -28306,8 +28017,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     pass
                 return False
             # Wait up to 10 seconds for the old process to exit.
-            # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
-            # handle-based existence check instead.
             from gateway.status import _pid_exists
             old_gateway_exited = False
             for _ in range(20):
@@ -28352,9 +28061,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                         pass
                     return False
             # Old gateway confirmed dead — reap any orphaned child processes
-            # it left behind (POSIX; mirrors Windows taskkill /T tree-kill).
-            # Orphaned adapter subprocesses would otherwise keep holding
-            # scoped token locks against us. Best-effort, never raises.
+            # it left behind. Orphaned adapter subprocesses would otherwise
+            # keep holding scoped token locks against us. Best-effort, never
+            # raises.
             try:
                 from gateway.status import reap_gateway_children
                 reap_gateway_children(
@@ -28584,29 +28293,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, shutdown_signal_handler, sig)  # windows-footgun: ok — wrapped in try/except NotImplementedError for Windows
+                loop.add_signal_handler(sig, shutdown_signal_handler, sig)
             except NotImplementedError:
                 pass
         if hasattr(signal, "SIGUSR1"):
             try:
-                loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
+                loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)
             except NotImplementedError:
                 pass
     else:
         logger.info("Skipping signal handlers (not running in main thread).")
 
-    # Windows fallback: asyncio.add_signal_handler raises NotImplementedError
-    # on Windows, so `son-of-anton gateway stop`'s SIGTERM (which Python maps to
-    # TerminateProcess on Windows) never invokes shutdown_signal_handler.
-    # That means the drain loop never runs, mark_resume_pending never fires,
-    # and sessions are silently lost across restarts (issue #33778).
-    #
-    # The fix is a marker-polling thread: `son-of-anton gateway stop` writes the
+    # Marker-polling fallback: `son-of-anton gateway stop` writes the
     # planned-stop marker BEFORE killing, and this thread notices it and
     # drives the same shutdown path the signal handler would have.  Runs
     # on every platform (cheap, defensive) so non-signal-bearing
-    # environments (Windows native, sandboxed CI runners that mask
-    # SIGTERM) still get a clean drain.
+    # environments (sandboxed CI runners that mask SIGTERM) still get a
+    # clean drain.
     _planned_stop_watcher_stop = threading.Event()
     _planned_stop_watcher_thread = threading.Thread(
         target=_run_planned_stop_watcher,
@@ -28657,8 +28360,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _lifecycle_record_startup()
     except Exception as _lc_exc:
         logger.debug("Lifecycle ledger startup record failed: %s", _lc_exc)
-
-    _ensure_windows_gateway_venv_imports()
 
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or
@@ -28888,9 +28589,9 @@ def main():
     os.environ.setdefault("AI_AGENT", "son-of-anton")
     os.environ.setdefault("SON_OF_ANTON_AGENT", "true")
 
-    # Positive process identity: ledger registration + Windows job-object
-    # self-attach, so update-time reapers can identify this gateway (and its
-    # child tree dies with it on Windows). Best-effort — never blocks startup.
+    # Positive process identity: ledger registration + job-object
+    # self-attach, so update-time reapers can identify this gateway.
+    # Best-effort — never blocks startup.
     try:
         from son_of_anton_cli.process_identity import (
             attach_self_to_kill_on_close_job,
@@ -28899,14 +28600,6 @@ def main():
 
         register_self("gateway")
         attach_self_to_kill_on_close_job()
-    except Exception:
-        pass
-
-    # Force UTF-8 stdio on Windows — gateway logs and startup banner would
-    # otherwise UnicodeEncodeError on cp1252 consoles.  No-op on POSIX.
-    try:
-        from son_of_anton_cli.stdio import configure_windows_stdio
-        configure_windows_stdio()
     except Exception:
         pass
 

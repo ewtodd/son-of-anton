@@ -281,10 +281,8 @@ def is_noninteractive() -> bool:
     The dashboard/desktop spawn CLI actions with ``stdin=DEVNULL`` and
     ``SON_OF_ANTON_NONINTERACTIVE=1`` (see ``son_of_anton_cli/web_server.py``). In that
     context an ``input()`` raises ``EOFError`` immediately, so a prompt that
-    aborts on EOF kills the spawned action — this is what made the desktop
-    "restart gateway" fail when the Windows gateway service was not yet
-    installed (the start path asks "Install it now?" with no one to answer).
-    Honour the explicit env flag here so callers fall back to their default.
+    aborts on EOF kills the spawned action. Honour the explicit env flag here
+    so callers fall back to their default.
     """
     return os.environ.get("SON_OF_ANTON_NONINTERACTIVE", "").strip().lower() in {
         "1",
@@ -1028,7 +1026,6 @@ def setup_gateway(config: dict):
     import platform as _platform
 
     _is_macos = _platform.system() == "Darwin"
-    _is_windows = _platform.system() == "Windows"
     supports_systemd = supports_systemd_services()
 
     print()
@@ -1046,9 +1043,6 @@ def setup_gateway(config: dict):
                     systemd_restart()
                 elif _is_macos:
                     launchd_restart()
-                elif _is_windows:
-                    from son_of_anton_cli import gateway_windows
-                    gateway_windows.restart()
             except UserSystemdUnavailableError as e:
                 print_error("  Restart failed — user systemd not reachable:")
                 for line in str(e).splitlines():
@@ -1556,7 +1550,7 @@ def run_setup_wizard(args):
     else:
         _backup_path = None
 
-    # Detect non-interactive environments (headless SSH, Docker, CI/CD)
+    # Detect non-interactive environments (headless SSH, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
         non_interactive = True

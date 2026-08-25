@@ -12,15 +12,14 @@ Usage:
     python cli.py --list-tools             # List available tools and exit
 """
 
-# IMPORTANT: son_of_anton_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See son_of_anton_bootstrap.py for full rationale.
+# IMPORTANT: son_of_anton_bootstrap must be the very first import — it hardens
+# sys.path and activates the durable lazy-install target.  No-op on POSIX.
 try:
     import son_of_anton_bootstrap  # noqa: F401
 except ModuleNotFoundError:
     # Graceful fallback when son_of_anton_bootstrap isn't registered in the venv
     # yet — happens during partial ``son-of-anton update`` where git-reset landed
-    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
-    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    # new code but ``uv pip install -e .`` didn't finish.
     pass
 
 import logging
@@ -971,7 +970,7 @@ def _mark_tui_input_modes_active() -> None:
 
 
 def _prepare_deferred_agent_startup() -> None:
-    """Run Termux-deferred agent discovery before the first real agent turn."""
+    """Run deferred agent discovery before the first real agent turn."""
     global _deferred_agent_startup_done
     if _deferred_agent_startup_done:
         return
@@ -998,7 +997,7 @@ def _prepare_deferred_agent_startup() -> None:
 
         start_background_mcp_discovery(
             logger=logger,
-            thread_name="termux-cli-mcp-discovery",
+            thread_name="cli-mcp-discovery",
         )
     except Exception:
         logger.debug(
@@ -1451,41 +1450,19 @@ _active_worktree: Optional[Dict[str, str]] = None
 
 
 def _normalize_git_bash_path(p: Optional[str]) -> Optional[str]:
-    """Translate a Git Bash-style path (``/c/Users/...``) to the native
-    Windows form (``C:\\Users\\...``) that Python's ``subprocess.Popen``
-    and ``pathlib.Path`` accept.
+    """Identity helper for git output paths (Git Bash path translation removed).
 
-    No-op on non-Windows and for paths that already look native.  Git on
-    native Windows normally emits forward-slash Windows paths
-    (``C:/Users/...``) which both bash and Python handle, but certain
-    configurations (Git Bash shells, MSYS2, WSL-mounted repos) surface
-    ``/c/...`` or ``/cygdrive/c/...`` variants.
+    Kept as a no-op so callers that pipe ``git rev-parse`` output through it
+    keep working unchanged.
     """
-    if not p:
-        return p
-    if sys.platform != "win32":
-        return p
-    import re as _re
-    # /c/Users/... or /C/Users/...
-    m = _re.match(r"^/([a-zA-Z])/(.*)$", p)
-    if m:
-        drive, rest = m.group(1), m.group(2)
-        return f"{drive.upper()}:\\{rest.replace('/', chr(92))}"
-    # /cygdrive/c/... or /mnt/c/...
-    m = _re.match(r"^/(?:cygdrive|mnt)/([a-zA-Z])/(.*)$", p)
-    if m:
-        drive, rest = m.group(1), m.group(2)
-        return f"{drive.upper()}:\\{rest.replace('/', chr(92))}"
     return p
 
 
 def _git_repo_root() -> Optional[str]:
     """Return the git repo root for CWD, or None if not in a repo.
 
-    Runs through :func:`_normalize_git_bash_path` so callers can pass
-    the result directly to ``Path``/``subprocess.Popen(cwd=...)`` on
-    Windows without hitting ``C:\\c\\Users\\...`` style resolution
-    mistakes.
+    Runs through :func:`_normalize_git_bash_path` (an identity no-op) so
+    callers can pass the result directly to ``Path``/``subprocess.Popen``.
     """
     import subprocess
     try:
@@ -1777,10 +1754,9 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
     gitignore = Path(repo_root) / ".gitignore"
     _ignore_entry = ".worktrees/"
     try:
-        # utf-8-sig: git files are UTF-8 and Notepad prepends a BOM, which
+        # utf-8-sig: git files are UTF-8 and editors may prepend a BOM, which
         # would glue to the first line and defeat the membership check below
-        # (duplicating the entry); the locale default also breaks non-ASCII
-        # patterns on Windows. The append below already writes UTF-8.
+        # (duplicating the entry). The append below already writes UTF-8.
         existing = (
             gitignore.read_text(encoding="utf-8-sig", errors="replace")
             if gitignore.exists()
@@ -1858,11 +1834,11 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         try:
             repo_root_resolved = Path(repo_root).resolve()
             wt_path_resolved = wt_path.resolve()
-            # utf-8-sig, not the locale default: on a cp1251/GBK Windows
+            # utf-8-sig, not the locale default: on a legacy-MBCS-locale
             # machine a UTF-8 include list either decodes to mojibake paths
             # (entries silently not copied) or raises UnicodeDecodeError,
             # which the enclosing handler swallows at DEBUG — no include is
-            # copied at all. A Notepad BOM likewise glued to the first entry.
+            # copied at all. A BOM likewise glued to the first entry.
             for line in include_file.read_text(
                 encoding="utf-8-sig", errors="replace"
             ).splitlines():
@@ -1890,39 +1866,10 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(src), str(dst))
                 elif src.is_dir():
-                    # Symlink directories (faster, saves disk).  On Windows,
-                    # symlink creation requires Developer Mode or elevation,
-                    # and fails with OSError otherwise — fall back to a
-                    # recursive copy so the worktree is still usable.  The
-                    # copy is slower and uses disk, but it doesn't require
-                    # admin and matches the Linux/macOS symlink outcome
-                    # functionally.
+                    # Symlink directories (faster, saves disk).
                     if not dst.exists():
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            os.symlink(str(src_resolved), str(dst))
-                        except (OSError, NotImplementedError) as _sym_err:
-                            if sys.platform == "win32":
-                                logger.info(
-                                    ".worktreeinclude: symlink failed (%s) — "
-                                    "falling back to copytree on Windows.",
-                                    _sym_err,
-                                )
-                                try:
-                                    shutil.copytree(
-                                        str(src_resolved),
-                                        str(dst),
-                                        symlinks=True,
-                                        dirs_exist_ok=False,
-                                    )
-                                except Exception as _copy_err:
-                                    logger.warning(
-                                        ".worktreeinclude: copy fallback "
-                                        "also failed for %s -> %s: %s",
-                                        src, dst, _copy_err,
-                                    )
-                            else:
-                                raise
+                        os.symlink(str(src_resolved), str(dst))
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 
@@ -3021,7 +2968,7 @@ def _query_osc11_background() -> str | None:
 
     After the main read + TCSAFLUSH, a short drain window (50 ms) catches
     late-arriving bytes that slipped past the flush — a race observed on VPS
-    and container terminals under load (#40250).
+    and slow terminals under load (#40250).
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return None
@@ -3094,7 +3041,7 @@ def _query_osc11_background() -> str | None:
             termios.tcsetattr(fd, termios.TCSAFLUSH, old)
         except Exception:
             pass
-        # Race guard: on slow terminals (VPS, container, heavy load), the
+        # Race guard: on slow terminals (VPS, heavy load), the
         # OSC 11 reply can arrive *after* TCSAFLUSH completes.  Drain any
         # late bytes with a short post-flush window so they don't leak into
         # prompt_toolkit's input buffer as typed text.
@@ -3135,8 +3082,8 @@ def _heal_cooked_mode_drift(fd: int) -> bool:
     Returns True when drift was detected and healed, False when the tty was
     already raw (or could not be inspected).
 
-    POSIX-only by construction — callers must not invoke this on Windows
-    (no termios; prompt_toolkit uses the win32 console API there instead).
+    POSIX-only by construction — callers must not invoke this on platforms
+    without termios (prompt_toolkit uses the console API there instead).
     """
     try:
         import termios
@@ -3440,7 +3387,6 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     """
     if "\\." not in text:
         return text
-
     def _protect(match: re.Match[str]) -> str:
         return re.sub(r"(?<!\\)\\(?=\.)", r"\\\\", match.group(0))
 
@@ -3655,7 +3601,7 @@ def _cprint(text: str, strip: bool = True):
         except Exception:
             # Fallback when stdout is not a real console (e.g. subprocess
             # worker logging to a file). prompt_toolkit raises
-            # NoConsoleScreenBufferError (Windows) or OSError (other).
+            # NoConsoleScreenBufferError or OSError (other).
             try:
                 print(text)
             except Exception:
@@ -3786,25 +3732,6 @@ _IMAGE_EXTENSIONS = frozenset({
 })
 
 
-from son_of_anton_constants import is_termux as _is_termux_environment
-
-
-def _termux_example_image_path(filename: str = "cat.png") -> str:
-    """Return a realistic example media path for the current Termux setup."""
-    candidates = [
-        os.path.expanduser("~/storage/shared"),
-        "/sdcard",
-        "/storage/emulated/0",
-        "/storage/self/primary",
-    ]
-    # Termux/Android roots are POSIX paths — join with literal forward
-    # slashes so the hint stays correct even when this renders on Windows.
-    for root in candidates:
-        if os.path.isdir(root):
-            return f"{root}/Pictures/{filename}"
-    return f"~/storage/shared/Pictures/{filename}"
-
-
 def _split_path_input(raw: str) -> tuple[str, str]:
     r"""Split a leading file path token from trailing free-form text.
 
@@ -3871,25 +3798,9 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
             parsed = urlparse(token)
             if parsed.scheme == "file":
                 expanded = unquote(parsed.path or "")
-                if parsed.netloc and os.name == "nt":
-                    expanded = f"//{parsed.netloc}{expanded}"
-                elif (
-                    os.name == "nt"
-                    and len(expanded) >= 3
-                    and expanded[0] == "/"
-                    and expanded[1].isalpha()
-                    and expanded[2] == ":"
-                ):
-                    # file:///C:/... parses to path "/C:/..." — drop the
-                    # leading slash so it resolves as a drive-letter path.
-                    expanded = expanded[1:]
         except Exception:
             expanded = token
     expanded = os.path.expandvars(os.path.expanduser(expanded))
-    if os.name != "nt":
-        normalized = expanded.replace("\\", "/")
-        if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
-            expanded = f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
     path = Path(expanded)
     if not path.is_absolute():
         base_dir = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
@@ -3926,7 +3837,7 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     """Detect if *user_input* starts with a real local file path.
 
     This catches dragged/pasted paths before they are mistaken for slash
-    commands, and also supports Termux-friendly paths like ``~/storage/...``.
+    commands.
 
     Returns a dict on match::
 
@@ -3997,7 +3908,7 @@ def _detect_file_drop(user_input: str) -> "dict | None":
 def _format_image_attachment_badges(attached_images: list[Path], image_counter: int, width: int | None = None) -> str:
     """Format the attached-image badge row for the interactive CLI.
 
-    Narrow terminals such as Termux should get a compact summary that fits on a
+    Narrow terminals should get a compact summary that fits on a
     single row, while wider terminals can show the classic per-image badges.
     """
     if not attached_images:
@@ -4244,8 +4155,6 @@ def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = No
         env = os.environ
     term_program = (env.get("TERM_PROGRAM") or "").strip()
     term = (env.get("TERM") or "").strip().lower()
-    if env.get("WT_SESSION"):
-        return True
     if term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}:
         return True
     if env.get("KITTY_WINDOW_ID") or "kitty" in term:
@@ -4345,21 +4254,16 @@ def _apply_backslash_line_continuation(text: str) -> str:
 def _preserve_ctrl_enter_newline() -> bool:
     """Detect environments where Ctrl+Enter must produce a newline, not submit.
 
-    Windows Terminal, WSL, SSH sessions, Ghostty, and some modern terminals
-    deliver Ctrl+Enter/Ctrl+J as bare LF (c-j). On those terminals c-j must
-    NOT be bound to submit;
+    SSH sessions, Ghostty, and some modern terminals deliver Ctrl+Enter/Ctrl+J
+    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
     binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit when
+    submit instead. Local POSIX TTYs that deliver Enter as LF (thin PTYs
+    without SSH) still need c-j bound to submit when
     display.cli_multiline_shortcuts is disabled, so we keep that legacy opt-out.
 
     See issue #22379.
     """
-    if sys.platform == "win32":
-        return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
-        return True
-    if os.environ.get("WT_SESSION"):
         return True
     if os.environ.get("GHOSTTY_RESOURCES_DIR") or os.environ.get("GHOSTTY_BIN_DIR"):
         return True
@@ -4367,16 +4271,6 @@ def _preserve_ctrl_enter_newline() -> bool:
         return True
     if os.environ.get("TERM_PROGRAM", "").lower() == "ghostty":
         return True
-    if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
-        return True
-    # WSL detection — env vars can be scrubbed under sudo, also peek /proc.
-    for p in ("/proc/version", "/proc/sys/kernel/osrelease"):
-        try:
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                if "microsoft" in f.read().lower():
-                    return True
-        except OSError:
-            continue
     return False
 
 
@@ -4395,16 +4289,15 @@ def _bind_prompt_submit_keys(
     plain Enter arrives as LF instead of CR.
 
     Even when the setting is disabled, environments where Ctrl+Enter is known
-    to arrive as c-j (Windows, WSL, SSH, Windows Terminal, Ghostty) keep c-j
-    reserved for newline; otherwise Ctrl+Enter submits instead of composing.
+    to arrive as c-j (SSH, Ghostty) keep c-j reserved for newline; otherwise
+    Ctrl+Enter submits instead of composing.
     See _preserve_ctrl_enter_newline() and issue #22379.
     """
     if multiline_shortcuts_enabled is None:
         multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled()
     kb.add("enter")(handler)
     if (
-        sys.platform != "win32"
-        and not multiline_shortcuts_enabled
+        not multiline_shortcuts_enabled
         and not _preserve_ctrl_enter_newline()
     ):
         kb.add("c-j")(handler)
@@ -4428,15 +4321,9 @@ def _terminal_may_leak_cpr() -> bool:
 
     Policy:
     - ``PROMPT_TOOLKIT_NO_CPR=1`` → always suppress
-    - native Windows (``win32``) → keep prompt_toolkit's default for now
-      (no native-Windows Application coverage yet); still honor NO_CPR
-    - all other platforms → suppress (CPR is only a layout hint; heuristic
+    - all other cases → suppress (CPR is only a layout hint; heuristic
       height is enough). SSH env is no longer required to trigger this.
     """
-    if os.environ.get("PROMPT_TOOLKIT_NO_CPR", "") == "1":
-        return True
-    if sys.platform == "win32":
-        return False
     return True
 
 
@@ -4483,7 +4370,7 @@ def _select_classic_cli_pt_output(stdout):
 
     Returns a CPR-disabled ``Vt100_Output`` when ``_terminal_may_leak_cpr()``
     is true, otherwise ``None`` so Application keeps prompt_toolkit's default
-    output (Windows preserve-default path).
+    output.
     """
     if not _terminal_may_leak_cpr():
         return None
@@ -6430,8 +6317,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Return the live prompt_toolkit width, falling back to ``shutil``.
 
         The TUI layout can be narrower than ``shutil.get_terminal_size()`` reports,
-        especially on Termux/mobile shells, so prefer prompt_toolkit's width whenever
-        an app is active.
+        especially on narrow/mobile shells, so prefer prompt_toolkit's width
+        whenever an app is active.
         """
         try:
             from prompt_toolkit.application import get_app
@@ -8087,7 +7974,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     logger.debug("banner snapshot save failed", exc_info=True)
         
-        # Tool discovery is intentionally deferred on the Termux bare prompt
+        # Tool discovery is intentionally deferred on the bare-prompt fast
         # path; availability warnings are shown once tools are initialized.
         # On the snapshot fast path (warm launch), the check walks every
         # check_fn (~180ms) — run it in the background refresh thread instead
@@ -8585,11 +8472,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         requiring an external ``stty`` rescue.  Skipped while a
         ``run_in_terminal`` window is legitimately holding cooked mode
         (``app._running_in_terminal``), while the agent is running (approval
-        prompts and sudo prompts legitimately manipulate the tty), and on
-        Windows (no termios).
+        prompts and sudo prompts legitimately manipulate the tty).
         """
-        if os.name == "nt":
-            return
         app = getattr(self, "_app", None)
         if app is None or not getattr(app, "_is_running", False):
             return
@@ -8715,7 +8599,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     
     def _show_status(self):
         """Show compact startup status line."""
-        # Avoid pulling the full tool registry into the bare Termux prompt path.
+        # Avoid pulling the full tool registry into the bare-prompt fast path.
         if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") == "1":
             tool_status = "tools deferred"
         else:
@@ -9024,10 +8908,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"\n  {_DIM}Tip: /help skills lists skill commands · /help <text> filters · Ctrl+P opens the command palette{_RST}")
         _cprint(f"  {_DIM}Multi-line: Ctrl+J, Alt+Enter, or \\\\+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
-        if _is_termux_environment():
-            _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
-        else:
-            _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -10059,20 +9940,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         choices visible and lets the normal Enter key binding submit the typed
         or highlighted choice.
 
-        **Platform note (Windows — issue #33961):**
-        Earlier code bypassed the modal on ``sys.platform == "win32"`` and fell
-        back to a raw ``input()`` prompt.  When the confirm was triggered from the
-        ``process_loop`` daemon thread (the normal case) that ``input()`` ran off
-        the main thread and deadlocked against prompt_toolkit's stdin ownership —
-        the user saw a frozen cursor and Ctrl-C was swallowed (bare ``/reset``
-        froze; ``/reset now`` worked only because it skips the prompt entirely).
-
-        Native Windows now uses the same path as Linux/macOS: the modal is set up
-        on ``self._app.loop`` via ``call_soon_threadsafe`` and answered by the
-        normal prompt_toolkit key bindings (the same input channel that already
-        handles ordinary typing on Windows).  The raw ``input()`` fallback is kept
-        only for the genuinely safe cases: no running app (unit tests /
-        non-interactive), no resolvable event loop, or a scheduling failure.
+        **Platform note:**
+        The confirm modal is set up on ``self._app.loop`` via
+        ``call_soon_threadsafe`` and answered by the normal prompt_toolkit key
+        bindings (the same input channel that already handles ordinary
+        typing).  The raw ``input()`` fallback is kept only for the genuinely
+        safe cases: no running app (unit tests / non-interactive), no
+        resolvable event loop, or a scheduling failure.
         """
         import threading
         import time as _time
@@ -10093,13 +9967,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         in_main_thread = threading.current_thread() is threading.main_thread()
 
         def _stdin_fallback() -> str | None:
-            # On native Windows a raw input() from a non-main thread deadlocks
-            # against prompt_toolkit's stdin ownership (#33961).  With an app
-            # running we cannot safely prompt off the main thread, so cancel
-            # cleanly (None) rather than hang the terminal.
-            if sys.platform == "win32" and not in_main_thread:
-                self._invalidate()
-                return None
             return self._prompt_text_input("Choice [1/2/3]: ")
 
         if not in_main_thread and app_loop is None:
@@ -12069,12 +11936,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # has all API keys in os.environ.
                             from tools.environments.local import build_subprocess_env
                             sanitized_env = build_subprocess_env()
-                            from son_of_anton_cli._subprocess_compat import windows_hide_flags
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30, env=sanitized_env,
-                                # No console flash on Windows (#56747).
-                                creationflags=windows_hide_flags(),
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
@@ -13419,7 +13283,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     # A general escape hatch for non-interactive use (scripting/automation) and
     # for the degraded path where the modal can't be marshaled onto the app loop
     # — lets users self-serve without flipping approvals.destructive_slash_confirm
-    # in config. (Native Windows now drives the modal normally — see #33961.)
+    # in config.
     _DESTRUCTIVE_SKIP_TOKENS = frozenset({"now", "--yes", "-y"})
 
     @classmethod
@@ -13478,8 +13342,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ``-y`` as an argument (e.g. ``/reset now``, ``/new --yes My title``),
         the modal is bypassed and ``"once"`` is returned immediately. This is
         an escape hatch for non-interactive use and for the degraded path where
-        the modal can't be marshaled onto the app loop (native Windows itself now
-        drives the modal normally — see #33961). Callers are responsible
+        the modal can't be marshaled onto the app loop. Callers are responsible
         for stripping the skip tokens from any remaining argument parsing
         (see :meth:`_split_destructive_skip`).
 
@@ -15361,11 +15224,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         patch_stdout layer is gone by now).
 
         Sequence: ``ESC[3J`` (erase scrollback) + ``ESC[2J`` (erase visible
-        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux, macOS and
-        Windows (Terminal / conhost with VT processing, which prompt_toolkit
-        already enables) all honor these. Best-effort: skip silently when
-        stdout isn't a real console, and fall back to the platform ``clear`` /
-        ``cls`` command if the escape write fails.
+        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux and macOS
+        all honor these. Best-effort: skip silently when
+        stdout isn't a real console, and fall back to the platform ``clear``
+        command if the escape write fails.
         """
         try:
             stream = sys.stdout
@@ -15382,7 +15244,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Fallback: shell clear command (rarely needed — escapes work on every
         # VT-capable terminal, but this covers exotic stdout wrappers).
         try:
-            os.system("cls" if os.name == "nt" else "clear")
+            os.system("clear")
         except Exception:
             pass
 
@@ -15833,8 +15695,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # (~0.6s, deferred until client construction). Python's import lock
         # makes this safe: if the user submits before the warm finishes, the
         # main thread simply blocks on the remaining import work instead of
-        # redoing it. Skipped when agent startup is explicitly deferred
-        # (Termux) — that path defers heavy work on purpose.
+        # redoing it. Skipped when agent startup is explicitly deferred —
+        # that path defers heavy work on purpose.
         if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") != "1":
             def _prewarm_agent_runtime() -> None:
                 try:
@@ -16360,10 +16222,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input.
 
-            Works on mac/Linux/WSL. On Windows Terminal this keystroke is
+            Works on mac/Linux/WSL. On some terminals this keystroke is
             intercepted at the terminal layer (toggles fullscreen) and never
-            reaches here — Windows users get newline via Ctrl+Enter instead
-            (bound below as c-j, since WT delivers Ctrl+Enter as LF).
+            reaches here — those users get newline via Ctrl+Enter instead
+            (bound below as c-j, since the terminal delivers Ctrl+Enter as LF).
             """
             event.current_buffer.insert_text('\n')
 
@@ -16373,9 +16235,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 """Ctrl+J inserts a newline for multi-line input.
 
                 This is enabled by default to match Claude Code / Codex /
-                OpenCode behavior. On Windows Terminal and similar environments,
-                Ctrl+Enter is delivered as the same c-j key code, so this also
-                covers Ctrl+Enter there. Set display.cli_multiline_shortcuts:
+                OpenCode behavior. On terminals where Ctrl+Enter is delivered
+                as the same c-j key code, this also covers Ctrl+Enter there.
+                Set display.cli_multiline_shortcuts:
                 false to restore legacy c-j submit behavior on unusual POSIX
                 PTYs where plain Enter arrives as LF.
                 """
@@ -17069,10 +16931,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""
-            if sys.platform == 'win32':
-                _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
-                event.app.invalidate()
-                return
             import signal as _sig
             from prompt_toolkit.application import run_in_terminal
             from son_of_anton_cli.skin_engine import get_active_skin
@@ -17105,7 +16963,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _paste_handler_start = time.perf_counter()
             _paste_raw_size = len(event.data or "")
             pasted_text = event.data or ""
-            # Normalise line endings — Windows \r\n and old Mac \r both become \n
+            # Normalise line endings — \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
@@ -18210,7 +18068,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         style = PTStyle.from_dict(self._build_tui_style_dict())
 
         # Select CPR-disabled output when _terminal_may_leak_cpr() says so
-        # (POSIX local + SSH; Windows keeps PT default — see helper docs).
+        # (POSIX local + SSH — see helper docs).
         # None falls back to prompt_toolkit's default output; input scrubbing
         # in _strip_leaked_terminal_responses still guards residual leaks.
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
@@ -18646,36 +18504,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _signal.signal(_signal.SIGTERM, _signal_handler)
             if hasattr(_signal, 'SIGHUP'):
                 _signal.signal(_signal.SIGHUP, _signal_handler)
-
-            # Windows: install a SIGINT handler that absorbs the signal
-            # instead of letting Python's default handler raise
-            # KeyboardInterrupt in MainThread. Windows Terminal / Win32
-            # delivers spurious CTRL_C_EVENT to the son-of-anton process when
-            # child processes are spawned from background threads (agent
-            # subprocess Popen path). The default Python SIGINT handler
-            # would then unwind prompt_toolkit's app.run(), trigger
-            # _run_cleanup mid-turn, and tear down terminal sessions
-            # mid-open — causing "Daemon process exited during startup" errors.
-            #
-            # The handler is a silent no-op. Real user Ctrl+C still works
-            # because prompt_toolkit binds c-c at the TUI layer and never
-            # reaches this OS-signal path. This matches how Claude Code
-            # handles the same Windows quirk (cancellation is driven by
-            # the TUI key handler, not by OS signals).
-            #
-            # POSIX: leave the default SIGINT handler alone. prompt_toolkit
-            # installs its own handler there and it works as expected.
-            if sys.platform == "win32":
-                def _sigint_absorb(signum, frame):
-                    # Absorb silently. Do NOT call agent.interrupt() here:
-                    # Windows fires spurious CTRL_C_EVENT whenever a
-                    # background thread spawns a .cmd subprocess, and
-                    # interrupt() would inject a fake user message each
-                    # time. Real user Ctrl+C routes through prompt_toolkit's
-                    # own c-c key binding at the TUI layer (same pattern as
-                    # Claude Code's Windows handling).
-                    return
-                _signal.signal(_signal.SIGINT, _sigint_absorb)
         except Exception:
             pass  # Signal handlers may fail in restricted environments
         
@@ -18865,8 +18693,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Deferred relaunch: /update sets _pending_relaunch so the exec
         # happens here — after prompt_toolkit has exited and fully restored
         # terminal modes — rather than from the background process_loop
-        # thread (which would skip terminal cleanup on POSIX and only exit
-        # the worker thread on Windows).
+        # thread (which would skip terminal cleanup).
         if getattr(self, '_pending_relaunch', None):
             from son_of_anton_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
@@ -18938,15 +18765,6 @@ def main(
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
     global _active_worktree
-
-    # Force UTF-8 stdio on Windows before any banner/print() runs — the
-    # Rich console prints Unicode box-drawing characters that would
-    # UnicodeEncodeError on cp1252.  No-op on Linux/macOS.
-    try:
-        from son_of_anton_cli.stdio import configure_windows_stdio
-        configure_windows_stdio()
-    except Exception:
-        pass
 
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout

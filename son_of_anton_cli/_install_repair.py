@@ -26,28 +26,11 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 # Single source of truth for the recovery-lock lifecycle and uv lookup —
 # _early_recovery already owns both, and importing it is free (stdlib-only).
 from son_of_anton_cli import _early_recovery as _er
-
-
-def _is_windows() -> bool:
-    return sys.platform == "win32"
-
-
-def _is_termux_env(env: dict | None = None) -> bool:
-    """Stdlib Termux probe (son_of_anton_cli.main's version lives behind imports)."""
-    env = env if env is not None else os.environ
-    try:
-        if env.get("TERMUX_VERSION"):
-            return True
-        prefix = env.get("PREFIX", "")
-        return "com.termux" in prefix
-    except Exception:
-        return False
 
 
 @contextlib.contextmanager
@@ -87,118 +70,27 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     Mirrors ``main.py::_default_venv_install_target`` but without
     ``managed_uv``. ``VIRTUAL_ENV`` steers ``uv pip`` at the project venv even
     when invoked from the base interpreter (the early-recovery case).
-    Termux strips leaked interpreter-path env vars so uv resolves the venv
-    correctly.
     """
     uv_bin = _er._find_uv_binary()
     if uv_bin:
         from son_of_anton_constants import project_venv_dir
 
         env = {**os.environ, "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv")}
-        if _is_termux_env(env):
-            env.pop("PYTHONPATH", None)
-            env.pop("PYTHONHOME", None)
         return [uv_bin, "pip"], env
     return [sys.executable, "-m", "pip"], None
 
 
-def _venv_scripts_dir(root: Path) -> Path | None:
-    """Project venv Scripts/bin dir, when present. stdlib-only."""
-    # son_of_anton_constants is stdlib-only, so the canonical layout helpers are safe
-    # to use from this corrupted-venv repair path (#76105: never open-code
-    # the Scripts/bin split).
-    from son_of_anton_constants import project_venv_dir, venv_bin_dir
-
-    venv_dir = project_venv_dir(root)
-    if venv_dir is None:
-        return None
-
-    scripts = venv_bin_dir(venv_dir, windows=_is_windows())
-    return scripts if scripts.is_dir() else None
-
-
-def _load_console_script_names(root: Path) -> list[str]:
-    """``[project.scripts]`` names from pyproject.toml (tomllib, 3.11+)."""
-    try:
-        import tomllib
-    except ImportError:  # pragma: no cover
-        return []
-    pyproject = root / "pyproject.toml"
-    if not pyproject.is_file():
-        return []
-    try:
-        with open(pyproject, "rb") as f:
-            data = tomllib.load(f)
-        scripts = data.get("project", {}).get("scripts", {}) or {}
-        return [str(name) for name in scripts if name]
-    except Exception:
-        return []
-
-
-def _quarantine_running_son_of_anton_exe(scripts_dir: Path) -> list[tuple[Path, Path]]:
-    """Rename live son-of-anton*.exe shims aside so the installer can rewrite them.
-
-    Windows blocks REPLACE on a running .exe but allows RENAME. Best-effort:
-    silently skips anything that cannot be renamed. Returns (original,
-    quarantined) pairs. stdlib-only — the console-script set comes from
-    pyproject ``[project.scripts]`` (fallback: the well-known trio).
-    """
-    if not _is_windows():
-        return []
-    names = set(_load_console_script_names(scripts_dir.parent.parent)) or {
-        "son-of-anton",
-        "son-of-anton",
-        "son-of-anton-acp",
-    }
-    names.add("son-of-anton-gateway")
-    moved: list[tuple[Path, Path]] = []
-    for name in sorted(names):
-        shim = scripts_dir / f"{name}.exe"
-        if not shim.exists():
-            continue
-        quarantined = shim.with_name(f"{name}.exe.old.{int(time.time() * 1000)}")
-        try:
-            os.rename(shim, quarantined)
-            moved.append((shim, quarantined))
-        except OSError:
-            pass
-    return moved
-
-
-def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
-    """Put quarantined shims back when the installer did not replace them."""
-    for original, quarantined in moved:
-        if original.exists():
-            continue  # installer wrote a fresh shim — the .old one is garbage
-        try:
-            os.rename(quarantined, original)
-        except OSError:
-            pass
-
-
 def _run_install_cmd(cmd: list[str], *, env: dict | None, root: Path) -> None:
-    """Run an install command with quarantine protection for venv shims.
+    """Run an install command.
 
     Raises CalledProcessError on install failure (callers implement the
     per-extra fallback ladder).
     """
-    scripts_dir = _venv_scripts_dir(root) if _is_windows() else None
-    moved = _quarantine_running_son_of_anton_exe(scripts_dir) if scripts_dir else []
-    try:
-        subprocess.run(cmd, cwd=root, check=True, env=env)
-    finally:
-        # Restore runs on success AND failure: a SUCCESSFUL install can still
-        # skip the entry-points step entirely (uv audits an already-satisfied
-        # editable install as a no-op and rewrites nothing), which would leave
-        # the quarantined shims renamed aside and `son-of-anton` gone from PATH
-        # (#75584). _restore_quarantined_exes only renames back when the
-        # installer did NOT write a fresh shim, so this is safe in both cases.
-        if scripts_dir is not None:
-            _restore_quarantined_exes(moved)
+    subprocess.run(cmd, cwd=root, check=True, env=env)
 
 
 def _load_installable_optional_extras(root: Path, group: str) -> list[str]:
-    """Optional extras referenced by a dependency group (all / termux-all)."""
+    """Optional extras referenced by a dependency group (e.g. ``all``)."""
     try:
         import tomllib
 
@@ -229,17 +121,15 @@ def run_core_install(root: Path) -> None:
       pip module at all)
     - prefer ``uv pip`` with VIRTUAL_ENV pointed at the project venv; fall back
       to ``python -m pip`` when no uv binary is available
-    - target ``.[all]`` (or ``.[termux-all]`` on Termux) with the per-extra
-      fallback ladder when the combined extras resolve fails
-    - quarantine live ``son-of-anton*.exe`` shims on Windows so they can be replaced
+    - target ``.[all]`` with the per-extra fallback ladder when the combined
+      extras resolve fails
     - route ALL install output to stderr (acp/JSON-RPC safety)
-    - Termux strips leaked PYTHONPATH/PYTHONHOME from the uv env
 
     Raises ``subprocess.CalledProcessError`` when even the base install fails;
     callers own marker lifecycle (clear on success, keep on failure).
     """
     prefix, env = _resolve_install_target(root)
-    group = "termux-all" if _is_termux_env(env) else "all"
+    group = "all"
 
     with _stdout_to_stderr():
         try:

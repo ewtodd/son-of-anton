@@ -439,7 +439,7 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # box off.
 #
 # Hardline only applies to environments that can actually damage the host
-# (local, ssh, container-host cron).
+# (local, ssh).
 #
 # The list is deliberately tiny — only things with no recovery path:
 # filesystem destruction rooted at /, raw block device overwrites, kernel
@@ -790,67 +790,6 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s'
      r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
      "recursive delete (flags after operands)"),
-    # Windows shell front-ends have destructive built-ins that do not look like
-    # Unix `rm`. Gate only when they are executed through cmd/powershell so
-    # ordinary prose or filenames containing "del"/"rd" do not trip the guard.
-    (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
-    # PowerShell/pwsh: the destructive verb runs as the default positional
-    # argument, so `powershell Remove-Item ...` needs NO explicit -Command.
-    # Anchor the verb to the command position (right after the shell name,
-    # after any leading `-Flag` switches, and optionally after -Command/-c)
-    # so bare invocations are caught while a benign path arg containing
-    # "del"/"rm" (e.g. `-File c:\del-logs\run.ps1`) is not.
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
-    # ── Windows destructive tier (#69472) ────────────────────────────────
-    # These are native Windows EXEs / cmdlets reachable from ANY Son of Anton
-    # terminal backend on a Windows host — including the default git-bash
-    # backend (taskkill.exe, icacls.exe, reg.exe, vssadmin.exe, bcdedit.exe,
-    # cipher.exe are ordinary PATH executables there). Detection input is
-    # lowercased by the variant loop, so patterns are written lowercase.
-    # Each pattern requires the destructive flag/verb so benign usage
-    # (`taskkill /IM app.exe` graceful kill, `reg query`, `icacls file`)
-    # does NOT prompt.
-    # Bare PowerShell destructive delete: Remove-Item/ri with -Recurse or
-    # -Force. The cmd/powershell-prefixed forms are covered above; this
-    # catches the bare form (ACP clients, pwsh-default SSH hosts, or
-    # `powershell` invoked earlier in a compound command).
-    (r'\bremove-item\b[^\n;|&]*\s-(?:recurse|force)\b', "PowerShell destructive delete (Remove-Item)"),
-    # cmd builtins with destructive switches, bare form: del/erase/rd/rmdir
-    # with /s (recurse) or /q (quiet). Requires the switch so `del file.txt`
-    # inside a cmd /c string stays covered by the prefixed rule only.
-    (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
-    # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
-    (r'\b(?:iwr|invoke-webrequest|invoke-restmethod|irm|curl|wget)\b[^\n]*\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr | iex)"),
-    (r'\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b', "execute remote content via Invoke-Expression"),
-    # Force process kills — Windows analogue of pkill -9.
-    (r'\btaskkill\b[^\n]*\s/f\b', "force kill processes (taskkill /F)"),
-    (r'\bstop-process\b[^\n]*\s-force\b', "force kill processes (Stop-Process -Force)"),
-    # Volume/disk destruction — Windows analogue of mkfs / dd.
-    (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
-    (r'\bclear-disk\b', "wipe disk (Clear-Disk)"),
-    (r'\bdiskpart\b', "disk partitioning (diskpart)"),
-    (r'\bformat(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
-    (r'\bcipher\s+/w\b', "wipe free space (cipher /w)"),
-    # ACL destruction — Windows analogue of chmod 777.
-    (r'\bicacls\b[^\n]*\s/grant\b[^\n]*\b(?:everyone|todos|jeder|tout\s+le\s+monde|\*s-1-1-0)\b', "grant Everyone access (icacls)"),
-    (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
-    # Backup/recovery destruction — classic ransomware prep, no benign
-    # agent use case.
-    (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
-    (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
-    (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
-    # Registry deletion with force flag.
-    (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
-    (r'\bremove-itemproperty\b[^\n]*\s-force\b', "registry value delete (Remove-ItemProperty -Force)"),
-    # Windows service/system stop — analogue of systemctl stop.
-    (r'\bstop-service\b[^\n]*\s-force\b', "force stop service (Stop-Service -Force)"),
-    (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
-    # Credential/key paths in Windows form — the POSIX ~/.ssh patterns never
-    # match drive-letter or backslash spellings. Match both separators.
-    (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
-    (r'\bappdata[\\/](?:local|roaming)[\\/]son-of-anton[^\n]*\.env\b', "access to Son of Anton secrets (Windows path)"),
-    # ─────────────────────────────────────────────────────────────────────
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
@@ -1232,7 +1171,7 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
 
     *replacement* has no trailing separator (``~`` / ``~/.son-of-anton``); the matched
     path tail (with its backslashes normalized to ``/``) supplies it. Longest
-    candidate first so a deeper home (e.g. an explicit HOME under USERPROFILE)
+    candidate first so a deeper home (e.g. an explicit HOME)
     folds before a shorter overlapping one that would otherwise clobber it.
     """
     seen: set[str] = set()
@@ -1255,10 +1194,9 @@ def _rewrite_resolved_user_home(command: str) -> str:
     Resolves the home at detection time — its expanduser form, symlink-resolved
     form, and an explicitly set ``HOME`` — so absolute home paths are checked by
     the same static patterns as tilde and ``$HOME`` forms. ``HOME`` is consulted
-    directly because Windows' ``os.path.expanduser`` resolves ``~`` from
-    ``USERPROFILE`` and ignores ``HOME``, unlike POSIX. Matches both POSIX
-    (``/home/alice``) and Windows (``C:\\Users\\alice`` or ``C:/Users/alice``)
-    separators. No-op when the home is unset or degenerate.
+    directly alongside the ``~`` expanduser form. Matches both
+    ``/home/alice`` and ``/Users/alice`` separators. No-op when the home is
+    unset or degenerate.
     """
     try:
         home = os.path.expanduser("~")
@@ -1278,7 +1216,7 @@ def _rewrite_resolved_son_of_anton_home(command: str) -> str:
     Resolves the active ``SON_OF_ANTON_HOME`` at call time (and its symlink-resolved
     form) and folds an occurrence of ``<home>/`` in *command* into
     ``~/.son-of-anton/`` so the static ``_SON_OF_ANTON_CONFIG_PATH`` / ``_SON_OF_ANTON_ENV_PATH``
-    patterns match. In Docker and gateway deployments the agent often references
+    patterns match. In gateway deployments the agent often references
     the resolved absolute path directly (e.g. ``sed -i ...
     /home/son-of-anton/.son-of-anton/config.yaml``) rather than ``~``, ``$HOME``, or
     ``$SON_OF_ANTON_HOME``. Matches both POSIX and Windows separators. No-op when the
@@ -1578,17 +1516,17 @@ def _grep_safe_detection_variant(command: str) -> tuple[str, bool]:
 
 def _interpreter_family(executable: str) -> str | None:
     name = os.path.basename(executable).lower()
-    if re.fullmatch(r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?", name):
+    if re.fullmatch(r"py|python[23]?(?:\.\d+)*", name):
         return "python"
-    if re.fullmatch(r"node(?:js)?(?:\.exe)?", name):
+    if re.fullmatch(r"node(?:js)?", name):
         return "node"
-    if re.fullmatch(r"perl[0-9]*(?:\.\d+)*(?:\.exe)?", name):
+    if re.fullmatch(r"perl[0-9]*(?:\.\d+)*", name):
         return "perl"
-    if re.fullmatch(r"ruby[0-9.]*(?:\.exe)?", name):
+    if re.fullmatch(r"ruby[0-9.]*", name):
         return "ruby"
-    if re.fullmatch(r"php(?:\.exe)?", name):
+    if re.fullmatch(r"php", name):
         return "php"
-    if re.fullmatch(r"powershell(?:\.exe)?|pwsh(?:\.exe)?", name):
+    if re.fullmatch(r"powershell|pwsh", name):
         return "powershell"
     return None
 

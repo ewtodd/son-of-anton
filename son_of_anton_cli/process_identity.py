@@ -1,7 +1,6 @@
-"""Process identity: spawn tags, the machine-wide spawn ledger, and the
-Windows job-object self-attach.
+"""Process identity: spawn tags and the machine-wide spawn ledger.
 
-Three layers that make every long-lived Son of Anton process positively
+Two layers that make every long-lived Son of Anton process positively
 identifiable, so reapers (``son-of-anton update``, Desktop startup sweeps) never
 have to guess lineage from PPID archaeology or cmdline pattern-matching:
 
@@ -14,16 +13,7 @@ have to guess lineage from PPID archaeology or cmdline pattern-matching:
    long-lived process (serve/dashboard backend, gateway) self-registers
    ``pid + create_time + purpose + spawner`` at startup. ``pid`` alone is
    forgeable by reuse; the ``(pid, create_time)`` pair is not. Reapers
-   cross-check live processes against the ledger for positive identification
-   even when environment reads are denied (Windows frequently denies
-   ``Process.environ()`` cross-session).
-
-3. **Job object self-attach** (Windows): a backend places itself in a job with
-   ``KILL_ON_JOB_CLOSE`` so its whole child tree dies atomically with it —
-   no launcher→worker two-hop chains left holding ``.pyd`` locks after the
-   visible root is killed. ``BREAKAWAY_OK`` is set so the existing
-   ``CREATE_BREAKAWAY_FROM_JOB`` spawns (gateway relaunch during update,
-   watchers that must outlive their spawner) keep working unchanged.
+   cross-check live processes against the ledger for positive identification.
 
 All of it is best-effort and fail-safe: identity failures degrade to the
 legacy heuristics, they never block startup or updates. The ledger tolerates
@@ -38,7 +28,6 @@ import hashlib
 import json
 import logging
 import os
-import platform
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -55,11 +44,6 @@ LEDGER_FILENAME = "spawn-ledger.json"
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
 REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway"})
 
-_IS_WINDOWS = platform.system() == "Windows"
-
-# Module-global job handle: must live exactly as long as this process so the
-# kernel closes it (and kills the job) when we die. Never close it manually.
-_JOB_HANDLE = None
 _LEDGER_LOCK = threading.Lock()
 
 
@@ -341,81 +325,12 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
 
 
 # ---------------------------------------------------------------------------
-# Layer 3 — Windows job-object self-attach
+# Layer 3 — Windows job-object self-attach (removed with Windows support)
 # ---------------------------------------------------------------------------
 
 def attach_self_to_kill_on_close_job() -> bool:
-    """Place this process in a job that dies (whole tree) when we die.
+    """Windows-only job-object self-attach; always a no-op on Nix platforms.
 
-    Windows-only, best-effort, idempotent. ``BREAKAWAY_OK`` is included so
-    children spawned with ``CREATE_BREAKAWAY_FROM_JOB`` (gateway relaunch
-    during update, detached watchers) keep escaping exactly as they do today.
-    Nested jobs are supported since Windows 8, so being inside another job
-    (Terminal, CI runners) does not prevent the attach on any supported OS.
+    Kept importable: ``gateway/run.py`` calls it during gateway startup.
     """
-    global _JOB_HANDLE
-    if not _IS_WINDOWS or _JOB_HANDLE is not None:
-        return _JOB_HANDLE is not None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800
-        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000
-        JobObjectExtendedLimitInformation = 9
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [(n, ctypes.c_ulonglong) for n in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
-                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
-                ("LimitFlags", wintypes.DWORD),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.POINTER(wintypes.ULONG)),
-                ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ("IoInfo", IO_COUNTERS),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t),
-            ]
-
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return False
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        info.BasicLimitInformation.LimitFlags = (
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | JOB_OBJECT_LIMIT_BREAKAWAY_OK
-            | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
-        )
-        ok = kernel32.SetInformationJobObject(
-            job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
-        )
-        if not ok:
-            kernel32.CloseHandle(job)
-            return False
-        if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
-            kernel32.CloseHandle(job)
-            return False
-        _JOB_HANDLE = job  # keep alive for the life of the process — never close
-        logger.debug("attached to kill-on-close job object")
-        return True
-    except Exception:
-        logger.debug("job object self-attach failed", exc_info=True)
-        return False
+    return False

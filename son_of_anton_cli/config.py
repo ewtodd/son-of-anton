@@ -19,7 +19,6 @@ from son_of_anton_cli.cli_output import line_input
 import json
 import logging
 import os
-import platform
 import re
 import shutil
 import stat
@@ -156,7 +155,6 @@ def _warn_config_parse_failure(
     except Exception:
         pass
 
-_IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Env var names that influence how the next subprocess executes —
@@ -398,15 +396,14 @@ def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Son of Anton was installed: 'apt', 'docker', 'nix', 'nixos',
-    'home-manager', 'git', or 'unknown'.
+    """Detect how Son of Anton was installed: 'nix', 'nixos', 'home-manager',
+    'git', or 'unknown'.
 
     Resolution order:
     1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
        running code) — the authoritative marker.
     2. Legacy home-scoped stamp ``$SON_OF_ANTON_HOME/.install_method`` — read for
-       backward compatibility, but a ``docker`` value is IGNORED when we are
-       not actually running inside a container (see below).
+       backward compatibility.
     3. SON_OF_ANTON_MANAGED env / .managed marker (NixOS managed mode)
     4. /nix/store/ path detection -> 'nix' (nix run / nix profile install)
     5. .git directory presence -> 'git'
@@ -415,42 +412,19 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     Why the stamp is code-scoped, not home-scoped (issue: shared ``~/.son-of-anton``)
     --------------------------------------------------------------------------
     The install method describes *the binary that is running*, but
-    ``$SON_OF_ANTON_HOME`` is a shared DATA directory — the Docker docs deliberately
-    bind-mount it (``~/.son-of-anton:/opt/data``) so config/sessions/memory persist
-    and can be shared with a host-side Desktop/CLI install. When a
-    containerised gateway and a host install share one ``$SON_OF_ANTON_HOME``, a
-    home-scoped stamp is a single slot describing two different installs:
-    the container stamps ``docker`` on every boot, the host install then reads
-    ``docker`` and ``son-of-anton update`` refuses to run ("doesn't apply inside the
-    Docker container") even though the host binary is a perfectly updatable
-    git/pip install. Scoping the stamp to the install tree gives each install
-    its own truthful marker.
+    ``$SON_OF_ANTON_HOME`` is a shared DATA directory, so a home-scoped stamp is a
+    single slot describing two different installs. Scoping the stamp to the
+    install tree gives each install its own truthful marker.
 
-    Self-healing for already-poisoned homes: a legacy ``docker`` value in the
-    home-scoped stamp is only honoured when we are genuinely in a container.
-    On a host install that read a contaminating ``docker`` stamp, we fall
-    through to managed/.git detection instead — so existing shared-home
-    setups recover without the user touching anything.
-
-    Note: running inside a container is NOT treated as "docker" on its own.
-    The supported installs self-identify via the code-scoped stamp:
-      - the curl installer (scripts/install.sh, the README/website install
-        command) git-clones the repo and stamps ``git`` next to the code;
-      - the published ``nousresearch/son-of-anton`` image bakes a ``docker``
-        stamp into ``/opt/son-of-anton`` at build time.
-    An unsupported manual install dropped into a container (no stamp) falls
-    through to the ``.git`` checks and behaves like any off-path install.
-    See issue #34397.
+    Note: only Nix distributions (nix run / nix profile / NixOS / home-manager)
+    and git checkouts (dev workflow) are recognized. Docker, apt/Termux, and
+    Homebrew are no longer supported distribution methods.
     """
     root = _install_method_project_root(project_root)
-    # "apt" is intentionally the Termux APT distribution identifier, not a
-    # generic Debian/Ubuntu APT signal. If another APT-managed distribution is
-    # added, give it a distinct install method or make update-command selection
-    # platform-aware instead of silently reusing Termux's `pkg` command.
     # "home-manager" is here because step 3 can return it. A stamp must name
     # every method that this function returns. Without it, the stamp of a
     # home-manager install gives "unknown".
-    supported_methods = {"apt", "docker", "nix", "nixos", "home-manager", "git", "unknown"}
+    supported_methods = {"nix", "nixos", "home-manager", "git", "unknown"}
 
     # 1. Code-scoped stamp — authoritative, immune to shared $SON_OF_ANTON_HOME.
     try:
@@ -460,10 +434,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     except OSError:
         pass
 
-    # 2. Legacy home-scoped stamp — back-compat. Ignore a ``docker`` value
-    #    when we are not actually containerised: that is the signature of a
-    #    host install whose shared $SON_OF_ANTON_HOME was stamped by a co-located
-    #    container, and honouring it wrongly blocks ``son-of-anton update``.
+    # 2. Legacy home-scoped stamp — back-compat.
     try:
         method = (
             (get_son_of_anton_home() / ".install_method")
@@ -471,7 +442,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
             .strip()
             .lower()
         )
-        if method in supported_methods and not (method == "docker" and not _running_in_container()):
+        if method in supported_methods:
             return method
     except OSError:
         pass
@@ -507,16 +478,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     return "unknown"
 
 
-def _running_in_container() -> bool:
-    """Thin wrapper around ``son_of_anton_constants.is_container`` (import-safe)."""
-    try:
-        from son_of_anton_constants import is_container
-
-        return is_container()
-    except Exception:
-        return False
-
-
 def stamp_install_method(method: str, project_root: Optional[Path] = None) -> None:
     """Write the install method next to the running code (code-scoped stamp).
 
@@ -525,10 +486,8 @@ def stamp_install_method(method: str, project_root: Optional[Path] = None) -> No
     do not overwrite each other's marker. See ``detect_install_method`` for
     the full rationale.
 
-    Best-effort: if the install tree is read-only (e.g. the immutable
-    ``/opt/son-of-anton`` in the published image, which instead bakes the stamp at
-    build time) the write silently no-ops and detection falls back to its
-    other signals.
+    Best-effort: if the install tree is read-only the write silently no-ops
+    and detection falls back to its other signals.
     """
     root = _install_method_project_root(project_root)
     try:
@@ -552,12 +511,6 @@ def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
     if is_nix_install_method(method):
         return _NIX_UPDATE_MSG
-    if method == "docker":
-        return "docker pull nousresearch/son-of-anton:latest"
-    if method == "apt":
-        # By contract, the current "apt" install method is the Termux APT
-        # distribution. It deliberately uses Termux's `pkg` frontend.
-        return "pkg upgrade son-of-anton"
     return "son-of-anton update"
 
 
@@ -573,58 +526,6 @@ def recommended_update_command() -> str:
     return recommended_update_command_for_method(method)
 
 
-# Long-form text for ``son-of-anton update`` / ``--check`` when running inside the
-# Docker image.  Surfaced by ``cmd_update`` and ``_cmd_update_check`` in
-# son_of_anton_cli/main.py; lives here so the wording stays consistent and we
-# don't grow two slightly-different copies.
-#
-# Why this matters:
-#   - The published image excludes ``.git`` (see .dockerignore), so the
-#     git-based update path can never succeed inside the container.
-#   - The pre-existing fallback message ("✗ Not a git repository. Please
-#     reinstall: curl ... install.sh") is actively misleading inside Docker
-#     — that script installs a *new* host-side Son of Anton, it doesn't update
-#     the running container.
-#   - The right action is ``docker pull`` + restart the container; this
-#     helper spells that out, with notes on tag pinning and config
-#     persistence so users don't get blindsided.
-_DOCKER_UPDATE_MESSAGE = """\
-✗ ``son-of-anton update`` doesn't apply inside the Docker container.
-
-Son of Anton Agent runs as a published image (nousresearch/son-of-anton), not a
-git checkout — the container has no working tree to pull into.  Update by
-pulling a fresh image and restarting your container instead:
-
-  docker pull nousresearch/son-of-anton:latest
-  # then restart whatever started the container, e.g.:
-  docker compose up -d --force-recreate son-of-anton
-  # or, for ad-hoc runs, exit the current container and `docker run` again
-
-Verify the new version after restart:
-  docker run --rm nousresearch/son-of-anton:latest --version
-
-Notes:
-  • If you pinned a specific tag (e.g. ``:v0.14.0``) the ``:latest`` tag
-    won't move your container — pull the newer tag you actually want, or
-    switch to ``:latest`` / ``:main`` for rolling updates.  See available
-    tags at https://hub.docker.com/r/nousresearch/son-of-anton/tags
-  • Your config and session history live under ``$SON_OF_ANTON_HOME`` (``/opt/data``
-    in the container, typically bind-mounted from the host) and persist
-    across image upgrades — re-pulling doesn't lose any state.
-  • Running a fork?  Build your own image with this repo's ``Dockerfile``
-    and replace the ``docker pull`` step with your build/push pipeline."""
-
-
-def format_docker_update_message() -> str:
-    """Return the user-facing message for ``son-of-anton update`` inside Docker.
-
-    Centralised so ``cmd_update`` (the apply path) and ``_cmd_update_check``
-    (the dry-run path) share the same wording.  See ``_DOCKER_UPDATE_MESSAGE``
-    above for the full rationale.
-    """
-    return _DOCKER_UPDATE_MESSAGE
-
-
 def format_managed_message(action: str = "modify this Son of Anton installation") -> str:
     """Build a user-facing error for managed installs."""
     managed_system = get_managed_system() or "a package manager"
@@ -636,61 +537,6 @@ def format_managed_message(action: str = "modify this Son of Anton installation"
 def managed_error(action: str = "modify configuration"):
     """Print user-friendly error for managed mode."""
     print(format_managed_message(action), file=sys.stderr)
-
-
-# =============================================================================
-# Container-aware CLI (NixOS container mode)
-# =============================================================================
-
-def get_container_exec_info() -> Optional[dict]:
-    """Read container mode metadata from SON_OF_ANTON_HOME/.container-mode.
-
-    Returns a dict with keys: backend, container_name, exec_user, son_of_anton_bin
-    or None if container mode is not active, we're already inside the
-    container, or SON_OF_ANTON_DEV=1 is set.
-
-    The .container-mode file is written by the NixOS activation script when
-    container.enable = true. It tells the host CLI to exec into the container
-    instead of running locally.
-    """
-    if os.environ.get("SON_OF_ANTON_DEV") == "1":
-        return None
-
-    from son_of_anton_constants import is_container
-    if is_container():
-        return None
-
-    container_mode_file = get_son_of_anton_home() / ".container-mode"
-
-    try:
-        info = {}
-        with open(container_mode_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    key, _, value = line.partition("=")
-                    info[key.strip()] = value.strip()
-    except FileNotFoundError:
-        return None
-    except PermissionError:
-        # Container mode is an optional deployment feature. A stale/cross-user
-        # SON_OF_ANTON_HOME makes the marker unreadable; treat that as "not
-        # configured" and let the CLI continue (it will surface its own
-        # permission problem elsewhere if the home is truly wrong).
-        return None
-    # All other exceptions propagate
-
-    backend = info.get("backend", "docker")
-    container_name = info.get("container_name", "son-of-anton")
-    exec_user = info.get("exec_user", "son-of-anton")
-    son_of_anton_bin = info.get("son_of_anton_bin", "/data/current-package/bin/son-of-anton")
-
-    return {
-        "backend": backend,
-        "container_name": container_name,
-        "exec_user": exec_user,
-        "son_of_anton_bin": son_of_anton_bin,
-    }
 
 
 # =============================================================================
@@ -713,67 +559,8 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
-def _resolve_son_of_anton_uid_gid() -> tuple[Optional[int], Optional[int]]:
-    """Read the SON_OF_ANTON_UID / SON_OF_ANTON_GID env vars set by Docker deployments.
-
-    Docker containers running Son of Anton commonly set these to map the in-container
-    user to a host user so volume-mounted state files end up with the right
-    ownership. The entrypoint chowns the top-level SON_OF_ANTON_HOME once, but
-    subdirectories created at runtime by ``ensure_son_of_anton_home()`` (especially
-    for profile namespaces under ``profiles/<name>/``) need the same chown
-    or they land as ``root:root`` and block subsequent uid-mapped workers
-    with ``PermissionError [Errno 13]``. See #34107.
-
-    Returns ``(uid, gid)`` parsed from the env vars, or ``(None, None)``
-    when either is missing/invalid. Returns ``(None, None)`` on Windows
-    too (where chown is a no-op anyway).
-    """
-    if sys.platform == "win32":
-        return None, None
-    uid_str = os.environ.get("SON_OF_ANTON_UID", "").strip()
-    gid_str = os.environ.get("SON_OF_ANTON_GID", "").strip()
-    try:
-        uid = int(uid_str) if uid_str else None
-    except ValueError:
-        uid = None
-    try:
-        gid = int(gid_str) if gid_str else None
-    except ValueError:
-        gid = None
-    return uid, gid
-
-
-def _chown_to_son_of_anton_uid(path) -> None:
-    """Chown ``path`` to ``SON_OF_ANTON_UID:SON_OF_ANTON_GID`` if those env vars are set.
-
-    No-op when:
-      - Either env var is unset/invalid
-      - The current process isn't root (chown will EPERM — silently ignored)
-      - On Windows (chown semantics don't apply)
-
-    Used by :func:`_secure_dir` to keep ownership consistent across all
-    directories created by :func:`ensure_son_of_anton_home` on Docker deployments.
-    See #34107.
-    """
-    uid, gid = _resolve_son_of_anton_uid_gid()
-    if uid is None and gid is None:
-        return
-    try:
-        # os.chown with -1 means "don't change" for that field.
-        os.chown(
-            path,
-            uid if uid is not None else -1,
-            gid if gid is not None else -1,
-        )
-    except (OSError, AttributeError, NotImplementedError):
-        # OSError covers EPERM (not running as root) and ENOENT (race),
-        # both of which are non-fatal — the dir is still created and
-        # the entrypoint's startup chown -R will fix it on next restart.
-        pass
-
-
 def _secure_dir(path):
-    """Set directory to owner-only access (0700 by default). No-op on Windows.
+    """Set directory to owner-only access (0700 by default).
 
     Skipped in managed mode — the NixOS module sets group-readable
     permissions (0750) so interactive users in the son-of-anton group can
@@ -784,11 +571,6 @@ def _secure_dir(path):
     caddy, etc.) needs to traverse SON_OF_ANTON_HOME to reach a served subdirectory.
     The execute-only bit on a directory permits cd-through without exposing
     directory listings.
-
-    Also applies ``SON_OF_ANTON_UID``/``SON_OF_ANTON_GID``-based ownership when those env
-    vars are set (#34107 — Docker deployments need this so profile subdirs
-    created at runtime by workers don't land as root:root and block
-    subsequent uid-mapped workers).
     """
     if is_managed():
         return
@@ -801,44 +583,15 @@ def _secure_dir(path):
         os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
-    _chown_to_son_of_anton_uid(path)
-
-
-def _is_container() -> bool:
-    """Detect if we're running inside a Docker/Podman/LXC container.
-
-    When Son of Anton runs in a container with volume-mounted config files, forcing
-    0o600 permissions breaks multi-process setups where the gateway and
-    other processes run as different UIDs or the volume mount requires broader
-    permissions.
-    """
-    # Explicit opt-out
-    if os.environ.get("SON_OF_ANTON_CONTAINER") or os.environ.get("SON_OF_ANTON_SKIP_CHMOD"):
-        return True
-    # Docker / Podman marker file
-    if os.path.exists("/.dockerenv"):
-        return True
-    # LXC / cgroup-based detection
-    try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
-            cgroup_content = f.read()
-        if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
-            return True
-    except (OSError, IOError):
-        pass
-    return False
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows.
+    """Set file to owner-only read/write (0600).
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
-
-    Skipped in containers — Docker/Podman volume mounts often need broader
-    permissions.  Set SON_OF_ANTON_SKIP_CHMOD=1 to force-skip on other systems.
     """
-    if is_managed() or _is_container():
+    if is_managed():
         return
     try:
         if os.path.exists(str(path)):
@@ -851,9 +604,9 @@ def _ensure_default_soul_md(home: Path) -> None:
     """Seed a default SOUL.md into SON_OF_ANTON_HOME, upgrading legacy empty templates.
 
     First run: write DEFAULT_SOUL_MD. Existing installs whose SOUL.md is still
-    the old comment-only scaffold (seeded by older install.sh / install.ps1 /
-    docker images, which shadowed the runtime default) get upgraded in place to
-    DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
+    the old comment-only scaffold (seeded by older installers, which shadowed
+    the runtime default) get upgraded in place to DEFAULT_SOUL_MD. A SOUL.md
+    the user actually customized is never touched.
     """
     soul_path = home / "SOUL.md"
     if soul_path.exists():
@@ -1268,9 +1021,8 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
 # ``_normalize_custom_provider_entry`` runs on every ``load_picker_context()``
 # call (i.e. per interactive picker/inventory request), so any warning it emits
 # fires repeatedly for the same static config. Deduplicate per (provider,
-# signature): on Windows a repeated-warning storm contends on
-# ``concurrent-log-handler``'s cross-process rotation lock and can peg a core /
-# stall the gateway/serve event loop. The cache lives for the process lifetime.
+# signature) — a repeated warning storm would otherwise spam stderr and the
+# log on every picker request. The cache lives for the process lifetime.
 _PROVIDER_NORMALIZE_WARNED: set = set()
 
 
@@ -3470,8 +3222,8 @@ def terminal_config_env_var_for_key(key: str) -> Optional[str]:
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
     """Return whether the remote SSH shell must expand *cwd* itself.
 
-    Expanding ``~`` on the Son of Anton host rewrites it to the host or container
-    home before SSH sees it. Preserve ``~`` and ``~/...`` so they follow the
+    Expanding ``~`` on the Son of Anton host rewrites it to the host home
+    before SSH sees it. Preserve ``~`` and ``~/...`` so they follow the
     user selected by the SSH connection.
     """
     if (backend or "").strip().lower() != "ssh":
@@ -3958,9 +3710,8 @@ def load_env() -> Dict[str, str]:
     env_vars: Dict[str, str] = {}
 
     if env_path.exists():
-        # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
-        # via utf-8-sig since users may edit .env in Notepad which adds one.
+        # Always use explicit UTF-8; tolerate BOM via utf-8-sig since editors
+        # may add one when saving a UTF-8 .env file.
         open_kw = {"encoding": "utf-8-sig", "errors": "replace"}
         with open(env_path, **open_kw) as f:
             raw_lines = f.readlines()
@@ -4172,8 +3923,6 @@ def save_env_value(key: str, value: str):
     ensure_son_of_anton_home()
     env_path = get_env_path()
 
-    # On Windows, open() defaults to the system locale (cp1252) which can
-    # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     write_kw = {"encoding": "utf-8"}
 
@@ -4206,7 +3955,7 @@ def save_env_value(key: str, value: str):
         lines.append(f"{key}={serialized_value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-    # Preserve original permissions so Docker volume mounts aren't clobbered.
+    # Preserve original permissions so volume mounts aren't clobbered.
     original_mode = None
     if env_path.exists():
         try:
@@ -4219,7 +3968,7 @@ def save_env_value(key: str, value: str):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
+        # Preserve the original file mode (e.g. 0640 for volume mounts)
         # instead of letting _secure_file unconditionally tighten to 0600.
         if original_mode is not None:
             try:
@@ -4297,7 +4046,7 @@ def remove_env_value(key: str) -> bool:
 
     if found:
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-        # Preserve original permissions so Docker volume mounts aren't clobbered.
+        # Preserve original permissions so volume mounts aren't clobbered.
         original_mode = None
         try:
             original_mode = stat.S_IMODE(env_path.stat().st_mode)
@@ -4309,7 +4058,7 @@ def remove_env_value(key: str) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
+            # Preserve the original file mode (e.g. 0640 for volume
             # mounts) instead of letting _secure_file unconditionally tighten
             # to 0600. Mirrors save_env_value().
             if original_mode is not None:
@@ -4751,16 +4500,10 @@ def edit_config():
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
 
     if not editor:
-        # Try common editors — order is platform-aware so Windows users
-        # land on a working editor (notepad) even without Git Bash or nano
-        # installed.  On POSIX, prefer nano/vim over code/notepad because
-        # it's more likely to be present on headless / server systems.
+        # Try common editors — order is platform-aware so we land on a
+        # working editor (nano/vim) even on headless / server systems.
         import shutil
-        import sys as _sys
-        if _sys.platform == "win32":
-            candidates = ['notepad', 'code', 'vim', 'vi', 'nano']
-        else:
-            candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
+        candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
         for cmd in candidates:
             if shutil.which(cmd):
                 editor = cmd
@@ -5173,8 +4916,8 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     # A leading underscore on the top-level segment (e.g. ``_test.shim_marker``)
     # signals an intentionally non-schema, internal key. Test harnesses and
     # tooling use these to write a deterministic marker into config.yaml
-    # without polluting the user-facing schema (see the Docker privilege-drop
-    # shim test, which writes ``_test.shim_marker`` to probe file ownership).
+    # without polluting the user-facing schema (a shim test writes
+    # ``_test.shim_marker`` to probe file ownership).
     # Python's own convention treats a leading underscore as "private"; we
     # honour that here so schema validation never blocks deliberately-internal
     # keys. This is narrow: only the FIRST segment is checked, so a real typo

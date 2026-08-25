@@ -33,7 +33,6 @@ import codecs
 import json
 import logging
 import os
-import platform
 import shlex
 import signal
 import subprocess
@@ -42,9 +41,7 @@ import time
 import uuid
 from pathlib import Path
 
-_IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from son_of_anton_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -205,40 +202,39 @@ def _systemd_run_user_scope_available() -> bool:
             return False
 
         available = False
-        if not _IS_WINDOWS:
-            try:
-                import shutil
+        try:
+            import shutil
 
-                binary = shutil.which("systemd-run")
-                if binary:
-                    # Probe: create a transient scope that immediately exits.
-                    # A unique unit avoids collisions; timeout bounds D-Bus.
-                    probe_unit = f"son-of-anton-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-                    result = subprocess.run(
-                        [
-                            binary, "--user", "--scope", "--quiet",
-                            "--unit", probe_unit,
-                            "--collect",
-                            "--property", "MemoryAccounting=yes",
-                            "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-                            "--property", "OOMPolicy=kill",
-                            "--",
-                            "/bin/true",
-                        ],
-                        capture_output=True,
-                        timeout=3,
+            binary = shutil.which("systemd-run")
+            if binary:
+                # Probe: create a transient scope that immediately exits.
+                # A unique unit avoids collisions; timeout bounds D-Bus.
+                probe_unit = f"son-of-anton-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+                result = subprocess.run(
+                    [
+                        binary, "--user", "--scope", "--quiet",
+                        "--unit", probe_unit,
+                        "--collect",
+                        "--property", "MemoryAccounting=yes",
+                        "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+                        "--property", "OOMPolicy=kill",
+                        "--",
+                        "/bin/true",
+                    ],
+                    capture_output=True,
+                    timeout=3,
+                )
+                available = result.returncode == 0
+                if not available:
+                    logger.debug(
+                        "systemd-run --user --scope probe failed (rc=%s): %s",
+                        result.returncode,
+                        (result.stderr or b"").decode(
+                            "utf-8", "replace"
+                        ).strip(),
                     )
-                    available = result.returncode == 0
-                    if not available:
-                        logger.debug(
-                            "systemd-run --user --scope probe failed (rc=%s): %s",
-                            result.returncode,
-                            (result.stderr or b"").decode(
-                                "utf-8", "replace"
-                            ).strip(),
-                        )
-            except Exception as exc:
-                logger.debug("systemd-run --user --scope probe error: %s", exc)
+        except Exception as exc:
+            logger.debug("systemd-run --user --scope probe error: %s", exc)
 
         _SYSTEMD_SCOPE_AVAILABLE = available
         _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
@@ -737,8 +733,8 @@ class ProcessRegistry:
         """Best-effort liveness check for host-visible PIDs."""
         if not pid:
             return False
-        # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use
-        # the cross-platform existence check.
+        # Use the shared existence check rather than ``os.kill(pid, 0)`` so
+        # the identity semantics stay uniform across every host surface.
         from gateway.status import _pid_exists
         return _pid_exists(pid)
 
@@ -838,7 +834,7 @@ class ProcessRegistry:
         recycled onto an unrelated process and we refuse to touch it, so a stale
         background-session PID can never tree-kill a browser or other stranger.
 
-        POSIX: walks the process tree with ``psutil`` and SIGTERMs
+        The process tree is walked with ``psutil`` and SIGTERMed
         children before the parent so subprocess trees (e.g. Chromium
         renderers/GPU helpers spawned by an ``agent-browser`` daemon)
         don't get reparented to init and survive cleanup.  After a bounded
@@ -847,29 +843,8 @@ class ProcessRegistry:
         escalated to SIGKILL so it can't leak indefinitely.  Set the grace to
         0 to disable escalation (SIGTERM only).
 
-        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
-        the documented Microsoft primitive for tree-kill and matches the
-        existing convention in ``gateway.status.terminate_pid``.  ``/F`` is
-        already a hard kill, so no separate escalation step is needed.  We
-        can't reuse the POSIX psutil path on Windows because:
-
-          1. Windows doesn't maintain a Unix-style process tree —
-             ``psutil.Process.children(recursive=True)`` walks PPID
-             links that go stale when intermediate processes exit, so
-             enumeration is best-effort and misses orphaned descendants.
-          2. ``psutil.Process.terminate()`` on Windows is
-             ``TerminateProcess()`` which kills only the target handle
-             and is a hard kill — there is no Windows equivalent of a
-             SIGTERM that cascades through a process group. (See the
-             warning in ``gateway/status.py::terminate_pid``: "os.kill
-             with SIGTERM is not equivalent to a tree-killing hard stop"
-             on Windows.) Headless Chromium has no GUI window, so the
-             softer ``taskkill /T`` without ``/F`` won't reach it either.
-
         ``psutil`` is a hard dependency (see ``pyproject.toml``); the
-        bare-``os.kill`` fallback covers OSError / PermissionError on
-        POSIX and a missing ``taskkill.exe`` on Windows (effectively
-        unreachable on real Windows installs, but cheap insurance).
+        bare-``os.kill`` fallback covers OSError / PermissionError.
         """
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
             # PID was recycled (start time changed) or is gone — never signal a
@@ -880,23 +855,6 @@ class ProcessRegistry:
                 "PID was recycled onto an unrelated process.", pid,
             )
             return
-        if _IS_WINDOWS:
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True, encoding='utf-8', errors='replace',
-                    timeout=10,
-                    creationflags=windows_hide_flags(),
-                    stdin=subprocess.DEVNULL,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError, PermissionError):
-                    pass
-            return
-
         import psutil
         try:
             parent = psutil.Process(pid)
@@ -1012,10 +970,7 @@ class ProcessRegistry:
         if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
-                if _IS_WINDOWS:
-                    from winpty import PtyProcess as _PtyProcessCls
-                else:
-                    from ptyprocess import PtyProcess as _PtyProcessCls
+                from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
@@ -1024,9 +979,7 @@ class ProcessRegistry:
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
-                pty_in_supervised_gateway = (
-                    not _IS_WINDOWS and _is_supervised_gateway_process()
-                )
+                pty_in_supervised_gateway = _is_supervised_gateway_process()
                 pty_use_systemd_scope = (
                     pty_in_supervised_gateway and _systemd_run_user_scope_available()
                 )
@@ -1094,7 +1047,6 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         # Cgroup isolation (#70716): when running in the live, supervised
         # systemd gateway, wrap the worker in its own transient systemd
@@ -1103,7 +1055,7 @@ class ProcessRegistry:
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
-        in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
+        in_supervised_gateway = _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()
         )
@@ -1154,7 +1106,6 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=popen_start_new_session,
-            **_popen_kwargs,
         )
 
         session.process = proc
@@ -1191,14 +1142,11 @@ class ProcessRegistry:
                     # cleanup for the worker cgroup.
                     _stop_systemd_unit(session.systemd_unit)
                     self._terminate_host_pid(proc.pid, session.host_start_time)
-                elif not _IS_WINDOWS:
+                else:
                     try:
-                        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-                        os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
-                else:
-                    proc.kill()
             except Exception:
                 pass
             try:
@@ -1327,12 +1275,10 @@ class ProcessRegistry:
         thread forever, ``session.exited`` would never flip, and
         ``notify_on_complete`` would never fire (``_reconcile_local_exit``
         only runs lazily from poll()/wait(), which an autonomous notification
-        can't rely on). On POSIX we therefore ``select()`` with a short poll
-        interval and stop draining shortly after the direct child exits, even
-        if the pipe hasn't EOF'd — mirroring the foreground fix in
-        ``tools/environments/base.py::_wait_for_process`` (#8340). Windows
-        pipes don't support select(); the blocking path is kept there and the
-        lazy reconcile in poll()/wait() remains the safety net.
+        can't rely on). We therefore ``select()`` with a short poll interval
+        and stop draining shortly after the direct child exits, even if the
+        pipe hasn't EOF'd — mirroring the foreground fix in
+        ``tools/environments/base.py::_wait_for_process`` (#8340).
         """
         first_chunk = True
         # Incremental decoder: raw pipe reads can split a multibyte UTF-8
@@ -1368,7 +1314,7 @@ class ProcessRegistry:
             # (unit tests, adapters) may lack fileno() — fall back to the
             # historical blocking loop for those.
             fd = None
-            if raw_read is not None and not _IS_WINDOWS:
+            if raw_read is not None:
                 fileno = getattr(stdout, "fileno", None)
                 try:
                     candidate = fileno() if callable(fileno) else None
@@ -1522,7 +1468,7 @@ class ProcessRegistry:
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes; pywinpty returns str
+                        # ptyprocess returns bytes; decode incrementally
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
                             _append_text(text)
@@ -1823,7 +1769,7 @@ class ProcessRegistry:
         # available and we stop.
         drained = ""
         stdout = getattr(proc, "stdout", None)
-        if stdout is not None and not _IS_WINDOWS:
+        if stdout is not None:
             try:
                 import fcntl
                 fd = stdout.fileno()
@@ -2118,9 +2064,8 @@ class ProcessRegistry:
                     if session.pid:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the process tree. On Windows this
-                # must be taskkill /T /F; Popen.terminate() only kills the
-                # shell wrapper and leaves Git Bash descendants behind.
+                # Local process -- kill the process tree (the shell wrapper
+                # alone would leave descendants behind).
                 self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
@@ -2201,13 +2146,9 @@ class ProcessRegistry:
         # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
-                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
-                if _IS_WINDOWS:
-                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
-                else:
-                    # surrogateescape: a PTY is a byte stream — round-trip the
-                    # original bytes instead of crashing on surrogate content.
-                    pty_data = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
+                # A PTY is a byte stream — round-trip the original bytes
+                # instead of crashing on surrogate content.
+                pty_data = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
@@ -2226,23 +2167,11 @@ class ProcessRegistry:
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
         """Send data + newline to a running process's stdin (like pressing Enter).
 
-        On a Windows PTY session the Enter key is a carriage return: ConPTY
-        cooked input treats ``\\r`` as end-of-line, and a bare ``\\n`` written
-        through pywinpty is NOT delivered as a line terminator — the child's
-        blocking line read (Python ``readline()``, Go ``bufio.Scanner`` as in
-        ``gh auth login``'s "Press Enter to open the browser" prompt) simply
-        never returns and the process hangs while looking healthy. Verified
-        empirically via pywinpty 2.0.15: ``\\n`` -> no line, ``\\r`` /
-        ``\\r\\n`` -> line delivered. Use ``\\r\\n`` so the child sees both the
-        Enter keypress and a conventional newline; POSIX PTYs and Popen pipes
-        keep the plain ``\\n``.
+        Uses a plain ``\\n`` line ending — correct for POSIX PTYs and Popen
+        pipes.
         """
         session = self.get(session_id)
-        is_windows_pty = bool(
-            _IS_WINDOWS and session is not None
-            and getattr(session, "_pty", None)
-        )
-        line_ending = "\r\n" if is_windows_pty else "\n"
+        line_ending = "\n"
         return self.write_stdin(session_id, data + line_ending)
 
     def request_close_terminal(self, session_id: str) -> dict:

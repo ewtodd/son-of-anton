@@ -20,17 +20,13 @@ import re
 import uuid
 
 # Cross-process advisory file locking for jobs.json critical sections.
-# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
-# in which case _jobs_lock() degrades to in-process locking only (the old
-# behaviour) rather than failing.
+# fcntl may be absent on exotic platforms, in which case _jobs_lock()
+# degrades to in-process locking only (the old behaviour) rather than
+# failing.
 try:
     import fcntl
-except ImportError:  # pragma: no cover - non-Unix
+except ImportError:  # pragma: no cover - fcntl is always present on supported platforms
     fcntl = None
-try:
-    import msvcrt
-except ImportError:  # pragma: no cover - non-Windows
-    msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
 from son_of_anton_constants import get_son_of_anton_home
@@ -282,8 +278,8 @@ def _jobs_lock():
 
     The flock is blocking, but every critical section that uses it is short
     (field updates only — no agent execution), so contention resolves in
-    milliseconds. If neither fcntl nor msvcrt is available the manager still
-    provides in-process locking, matching the historical behaviour.
+    milliseconds. If fcntl is unavailable the manager still provides
+    in-process locking, matching the historical behaviour.
 
     Nested calls in the same thread reuse the held lock so legacy callers that
     invoke save_jobs() inside a broader mutation section don't deadlock or try
@@ -349,8 +345,6 @@ def _jobs_lock():
                                 lock_fd = None
                                 break
                             time.sleep(0.1)
-                elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
             except (OSError, IOError) as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
@@ -363,8 +357,6 @@ def _jobs_lock():
                     try:
                         if fcntl is not None:
                             fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        elif msvcrt is not None:
-                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
                     except (OSError, IOError):
                         pass
                     finally:
@@ -411,12 +403,7 @@ def _fire_job_lock(job_id: str):
                             )
                             break
                         time.sleep(0.1)
-            elif msvcrt is not None:
-                getattr(msvcrt, "locking")(
-                    lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1
-                )
-                acquired = True
-            else:  # pragma: no cover - supported platforms provide one backend
+            else:  # pragma: no cover - fcntl is always present on supported platforms
                 logger.error("No cross-process lock backend for cron fire fence")
         except (OSError, IOError) as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
@@ -428,10 +415,6 @@ def _fire_job_lock(job_id: str):
                 try:
                     if acquired and fcntl is not None:
                         fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                    elif acquired and msvcrt is not None:
-                        getattr(msvcrt, "locking")(
-                            lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-                        )
                 except (OSError, IOError):
                     pass
                 finally:
@@ -603,15 +586,15 @@ def effective_job_state(job: Dict[str, Any]) -> str:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """Set directory to owner-only access (0700)."""
     try:
         os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
-        pass  # Windows or other platforms where chmod is not supported
+        pass  # filesystems where chmod is not supported
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600)."""
     try:
         if path.exists():
             os.chmod(path, 0o600)
@@ -624,18 +607,18 @@ def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> No
 
     The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
     by the *writer's* euid. When a root shell runs a state-writing cron CLI
-    command (``docker exec son-of-anton son-of-anton cron create ...`` — ``docker exec``
-    defaults to root) against a store owned by the unprivileged gateway user,
-    the replace flips ``jobs.json`` to ``root:root`` mode 600 and the gateway's
-    ticker (uid 1000) is silently locked out of every subsequent tick (#68483).
+    command (``sudo son-of-anton cron create ...``) against a store owned by
+    the unprivileged gateway user, the replace flips ``jobs.json`` to
+    ``root:root`` mode 600 and the gateway's ticker (uid 1000) is silently
+    locked out of every subsequent tick (#68483).
 
     Root can always hand ownership back, so do exactly that: when the euid is 0
     and the pre-replace owner differs, chown the new file to the previous
     uid/gid. Unprivileged writers are a no-op (their own rewrite already heals
     a root-owned file back to their uid, and they couldn't chown anyway).
-    No-op on Windows. Best-effort: a failure must never break the save.
+    Best-effort: a failure must never break the save.
     """
-    if before is None or os.name != "posix":
+    if before is None:
         return
     geteuid = getattr(os, "geteuid", None)
     getegid = getattr(os, "getegid", None)
@@ -1472,11 +1455,11 @@ def _save_jobs_unlocked(
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     # Snapshot the current owner BEFORE the atomic replace so a privileged
-    # writer (root CLI in Docker) can hand ownership back to the gateway user
+    # writer (root CLI) can hand ownership back to the gateway user
     # afterwards instead of locking its ticker out (#68483). When the file is
-    # being created for the first time, inherit the cron dir's owner — in the
-    # Docker image that is the PUID/PGID gateway user who must be able to
-    # read the store on the next tick.
+    # being created for the first time, inherit the cron dir's owner — the
+    # PUID/PGID gateway user who must be able to read the store on the next
+    # tick.
     try:
         _stat_before = os.stat(jobs_file)
     except OSError:

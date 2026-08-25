@@ -162,13 +162,6 @@ def run_bang_command(
         run_cwd = os.path.expanduser(run_cwd)
 
     try:
-        from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
-        creationflags = windows_hide_flags()
-    except Exception:
-        creationflags = 0
-
-    try:
         # shell=True is intentional and matches quick_commands: this is a
         # command the human typed into their own composer, not model output.
         proc = subprocess.Popen(
@@ -181,7 +174,6 @@ def run_bang_command(
             errors="replace",
             cwd=run_cwd,
             env=_bang_env(),
-            creationflags=creationflags,
         )
     except Exception as exc:
         emit(f"!: failed to run command: {exc}")

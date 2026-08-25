@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from son_of_anton_constants import get_config_path, get_skills_dir, is_termux
+from son_of_anton_constants import get_config_path, get_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 PLATFORM_MAP = {
     "macos": "darwin",
     "linux": "linux",
-    "windows": "win32",
 }
 
 EXCLUDED_SKILL_DIRS = frozenset(
@@ -182,20 +181,10 @@ def skill_matches_platform_list(platforms: Any) -> bool:
     if not isinstance(platforms, list):
         platforms = [platforms]
     current = sys.platform
-    running_in_termux = is_termux()
     for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
-            return True
-        # Termux runs a Linux userland on Android. Accept linux-tagged
-        # skills regardless of whether sys.platform is "linux" (pre-3.13
-        # Termux) or "android" (Python 3.13+ Termux, and any other
-        # Android runtime).
-        if running_in_termux and mapped == "linux":
-            return True
-        # Explicit termux/android tags match a Termux session too.
-        if running_in_termux and mapped in ("termux", "android"):
             return True
     return False
 
@@ -211,14 +200,6 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 
     If the field is absent or empty the skill is compatible with **all**
     platforms (backward-compatible default).
-
-    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
-    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
-    Linux userland riding on the Android kernel, so skills tagged
-    ``linux`` are treated as compatible in Termux regardless of which
-    ``sys.platform`` value Python reports. Individual Linux commands
-    inside a skill may still misbehave (no systemd, BusyBox utils, no
-    apt/dnf, etc.) but that is on the skill, not on platform gating.
     """
     return skill_matches_platform_list(frontmatter.get("platforms"))
 
@@ -232,48 +213,19 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 # never need it — but it can ALWAYS still be loaded explicitly (``skill_view``,
 # ``--skills``), because an explicit request is explicit consent.
 #
-# Detection is cached for the process lifetime via ``_ENV_DETECT_CACHE``.
-_KNOWN_ENVIRONMENTS = frozenset({"docker", "s6"})
-
-_ENV_DETECT_CACHE: Dict[str, bool] = {}
-
-
-def _detect_environment(env: str) -> bool:
-    """Return True when the named runtime environment is currently active."""
-    if env in _ENV_DETECT_CACHE:
-        return _ENV_DETECT_CACHE[env]
-
-    result = True
-    if env == "docker":
-        try:
-            from son_of_anton_constants import is_container
-
-            result = is_container()
-        except Exception:
-            result = False
-    elif env == "s6":
-        # The Son of Anton Docker image runs s6-overlay as PID 1 (/init). s6 plants
-        # its runtime scaffolding under /run/s6 and ships its admin tree under
-        # /package/admin/s6-overlay. Either marker means we're inside an
-        # s6-supervised container.
-        result = os.path.isdir("/run/s6") or os.path.isdir(
-            "/package/admin/s6-overlay"
-        )
-
-    _ENV_DETECT_CACHE[env] = result
-    return result
+# The Docker/s6 environment tags were removed with the Docker distribution;
+# no runtime environments are detected anymore, so every tag fails open.
+_KNOWN_ENVIRONMENTS = frozenset()
 
 
 def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     """Return True when the skill is relevant to the current runtime environment.
 
-    Skills may declare an ``environments`` list in their YAML frontmatter::
-
-        environments: [s6]            # only relevant inside the s6 Docker image
-        environments: [docker]        # only relevant inside any container
-
+    Skills may declare an ``environments`` list in their YAML frontmatter.
     If the field is absent or empty the skill is relevant in **all**
-    environments (backward-compatible default).
+    environments (backward-compatible default). With the Docker/s6
+    environments gone, no known tag matches and every declared environment
+    fails open — no skill is hidden by this filter.
 
     This is an OFFER-time filter: it controls whether a skill shows up in the
     skills index / autocomplete / slash-command list. It is intentionally NOT
@@ -281,9 +233,6 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     explicit consent, and load-bearing force-loads (e.g. a dispatcher pinning
     a task to a specialist skill via ``--skills``) must always succeed
     regardless of how the offer surfaces filter the skill.
-
-    A skill matches when ANY of its declared environments is currently active
-    (OR semantics, mirroring ``platforms``). Unknown env tags fail open.
     """
     environments = frontmatter.get("environments")
     if not environments:
@@ -296,8 +245,6 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
             continue
         if normalized not in _KNOWN_ENVIRONMENTS:
             # Tag we don't understand — don't hide the skill over it.
-            return True
-        if _detect_environment(normalized):
             return True
     return False
 

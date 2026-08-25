@@ -35,39 +35,9 @@ import os
 import queue
 import sys
 import threading
-from logging.handlers import QueueHandler, QueueListener
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
-
-# On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
-# ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
-# another process holds an append-mode handle on ``agent.log`` — which is
-# essentially always in Son of Anton (TUI, gateway, ``hy_memory`` server, MCP
-# servers, and on-demand CLI commands all log from separate processes),
-# pinning ``agent.log`` at the 5 MiB threshold and spamming stderr with
-# a traceback on every emit. ``concurrent-log-handler`` wraps the rename in a
-# cross-process file lock (via ``portalocker``: pywin32 on Windows) so only
-# one process rotates at a time and the others wait their turn.
-#
-# This swap is Windows-ONLY and deliberately so:
-#   * The bug (WinError 32 on rename-while-open) is specific to Windows file
-#     locking semantics — POSIX renames an open file fine, so stdlib already
-#     works correctly on Linux/macOS.
-#   * On POSIX, managed-mode (NixOS) relies on the exact ``_open()`` /
-#     ``doRollover()`` lifecycle of stdlib ``RotatingFileHandler`` (the
-#     ``_ManagedRotatingFileHandler`` subclass chmods 0660 after each). CLH
-#     opens lazily and rotates differently, which breaks the group-writable
-#     guarantee and the eager file-creation those paths depend on.
-# Aliasing keeps every existing ``RotatingFileHandler`` reference in this
-# module (class declaration, ``isinstance`` checks, docstring) working
-# unchanged. See #44873.
-if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
-else:
-    from logging.handlers import RotatingFileHandler  # noqa: E402
-
 
 from son_of_anton_constants import get_config_path, get_son_of_anton_home
 
@@ -89,12 +59,12 @@ _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %
 def _safe_stderr():  # type: ignore[return]
     """Return a stderr stream that tolerates Unicode on all platforms.
 
-    On Windows the console encoding is often a legacy MBCS codec
-    (cp949, cp1252, …) that raises ``UnicodeEncodeError`` for characters
-    like the em-dash (U+2014).  We wrap ``sys.stderr`` in a
-    ``TextIOWrapper`` with ``errors='replace'`` so log lines are never
-    lost — un-encodable characters are replaced with ``?`` instead of
-    crashing the process.
+    When ``sys.stderr`` is bound to a legacy MBCS codec (rare on Nix
+    platforms, possible with a custom locale), it can raise
+    ``UnicodeEncodeError`` for characters like the em-dash (U+2014).  We
+    wrap ``sys.stderr`` in a ``TextIOWrapper`` with ``errors='replace'`` so
+    log lines are never lost — un-encodable characters are replaced with
+    ``?`` instead of crashing the process.
     """
     stream = sys.stderr
     encoding = getattr(stream, "encoding", None) or "utf-8"
@@ -126,17 +96,11 @@ _CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
     """Return True for concurrent-log-handler's Windows lock timeout.
 
-    On Windows Desktop, slash-command workers and the gateway can all write to
-    the same rotating log files. ``concurrent-log-handler`` serializes rollover
-    with a cross-process lock, but when another process holds that lock too
-    long it raises this RuntimeError. Logging failures should not escape into
-    Desktop chat output.
+    Nix platforms use the stdlib ``RotatingFileHandler`` (which never raises
+    this timeout), so this is always False. Kept so the
+    ``_ManagedRotatingFileHandler.handleError`` override stays simple.
     """
-    return (
-        sys.platform == "win32"
-        and isinstance(exc, RuntimeError)
-        and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
-    )
+    return False
 
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
@@ -518,16 +482,16 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().emit(record)
 
     def handleError(self, record: logging.LogRecord) -> None:
-        """Suppress the known Windows ``concurrent-log-handler`` lock timeout
-        instead of printing a traceback.
+        """Suppress the known concurrent-log-handler lock timeout instead of
+        printing a traceback.
 
         CLH's own ``emit()`` wraps its body in ``try/except Exception:
         self.handleError(record)``, so the ``"Cannot acquire lock after N
         attempts"`` RuntimeError raised in ``_do_lock()`` is caught inside CLH
         and routed here — it never propagates out of ``super().emit()``.  This
         override is the single point where that timeout can be silenced before
-        the stdlib handler prints it to stderr (which, under the Desktop
-        slash-worker, is captured and surfaced into chat output)."""
+        the stdlib handler prints it to stderr. On Nix platforms the check is
+        always False, so this reduces to ``super().handleError(record)``."""
         exc = sys.exc_info()[1]
         if _is_windows_concurrent_log_lock_timeout(exc):
             return

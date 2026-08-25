@@ -26,7 +26,7 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
-from son_of_anton_constants import display_son_of_anton_home, is_termux as _is_termux_environment
+from son_of_anton_constants import display_son_of_anton_home
 from agent.turn_context import extract_api_content_sidecar
 
 
@@ -600,18 +600,9 @@ class CLICommandsMixin:
         """Handle /paste — explicitly check clipboard for an image.
 
         This is the reliable fallback for terminals where BracketedPaste
-        doesn't fire for image-only clipboard content (e.g., VSCode terminal,
-        Windows Terminal with WSL2).
+        doesn't fire for image-only clipboard content (e.g., VSCode terminal).
         """
-        from cli import _DIM, _RST, _cprint, _termux_example_image_path
-        if _is_termux_environment():
-            _cprint(
-                f"  {_DIM}Clipboard image paste is not available on Termux — "
-                f"use /image <path> or paste a local image path like "
-                f"{_termux_example_image_path()}{_RST}"
-            )
-            return
-
+        from cli import _DIM, _RST, _cprint
         from son_of_anton_cli.clipboard import has_clipboard_image
         if has_clipboard_image():
             if self._try_attach_clipboard_image():
@@ -685,10 +676,10 @@ class CLICommandsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input, _termux_example_image_path
+        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
-            hint = _termux_example_image_path() if _is_termux_environment() else "/path/to/image.png"
+            hint = "/path/to/image.png"
             _cprint(f"  {_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}")
             return
 
@@ -705,8 +696,6 @@ class CLICommandsMixin:
         _cprint(f"  📎 Attached image: {image_path.name}")
         if _remainder:
             _cprint(f"  {_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}")
-        elif _is_termux_environment():
-            _cprint(f"  {_DIM}Tip: type your next message, or run son-of-anton chat -q --image {_termux_example_image_path(image_path.name)} \"What do you see?\"{_RST}")
 
     def _handle_tools_command(self, cmd: str):
         """Handle /tools [list|disable|enable] slash commands.
@@ -2729,7 +2718,7 @@ class CLICommandsMixin:
 
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
         if not editor:
-            editor = "notepad" if os.name == "nt" else "nano"
+            editor = "nano"
 
         header = (
             "#! Compose your prompt below. Lines starting with '#!' are ignored.\n"

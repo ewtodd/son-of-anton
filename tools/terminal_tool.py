@@ -27,7 +27,6 @@ Usage:
 import json
 import logging
 import os
-import platform
 import re
 import shlex
 import stat
@@ -296,13 +295,13 @@ def _check_all_guards(command: str, env_type: str,
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
-# Covers Unicode letters/digits, path separators, Windows drive/UNC separators,
-# tilde, dot, hyphen, underscore, space, plus, at, equals, and comma.  Shell
-# metacharacters remain rejected.  This intentionally fixes the old ASCII-only
-# guard that blocked perfectly normal workdirs such as Chinese Obsidian vault
-# paths while preserving the injection boundary around command execution
-# (the cwd is additionally shlex-quoted before it reaches the shell; this
-# allowlist is defense-in-depth).
+# Covers Unicode letters/digits, path separators, tilde, dot, hyphen,
+# underscore, space, plus, at, equals, and comma.  Shell metacharacters remain
+# rejected.  This intentionally fixes the old ASCII-only guard that blocked
+# perfectly normal workdirs such as Chinese Obsidian vault paths while
+# preserving the injection boundary around command execution (the cwd is
+# additionally shlex-quoted before it reaches the shell; this allowlist is
+# defense-in-depth).
 _WORKDIR_SAFE_ASCII_CHARS = frozenset('/\\:_-.~ +@=,')
 
 
@@ -425,35 +424,23 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     result = {"password": None, "done": False}
     
     def read_password_thread():
-        """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
+        """Read password with echo disabled from /dev/tty."""
         tty_fd = None
         old_attrs = None
         try:
-            if platform.system() == "Windows":
-                import msvcrt
-                chars = []
-                while True:
-                    c = msvcrt.getwch()
-                    if c in {"\r", "\n"}:
-                        break
-                    if c == "\x03":
-                        raise KeyboardInterrupt
-                    chars.append(c)
-                result["password"] = "".join(chars)
-            else:
-                import termios
-                tty_fd = os.open("/dev/tty", os.O_RDONLY)
-                old_attrs = termios.tcgetattr(tty_fd)
-                new_attrs = termios.tcgetattr(tty_fd)
-                new_attrs[3] = new_attrs[3] & ~termios.ECHO
-                termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-                chars = []
-                while True:
-                    b = os.read(tty_fd, 1)
-                    if not b or b in {b"\n", b"\r"}:
-                        break
-                    chars.append(b)
-                result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+            import termios
+            tty_fd = os.open("/dev/tty", os.O_RDONLY)
+            old_attrs = termios.tcgetattr(tty_fd)
+            new_attrs = termios.tcgetattr(tty_fd)
+            new_attrs[3] = new_attrs[3] & ~termios.ECHO
+            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
+            chars = []
+            while True:
+                b = os.read(tty_fd, 1)
+                if not b or b in {b"\n", b"\r"}:
+                    break
+                chars.append(b)
+            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
         except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
@@ -1309,13 +1296,11 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
 
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home.
+    # remote home.  (Any unknown env_type is rejected by _create_environment.)
     if env_type == "local":
         default_cwd = _safe_getcwd()
-    elif env_type == "ssh":
-        default_cwd = "~"
     else:
-        default_cwd = "/root"
+        default_cwd = "~"
 
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     from son_of_anton_cli.config import _is_ssh_remote_tilde_cwd
@@ -2344,10 +2329,9 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
-        # Windows-only: NTFS locks loaded module files, so rewriting the local
-        # checkout backing this interpreter can corrupt the running process.
-        # POSIX keeps old inodes alive for open handles, so the guard is off
-        # there. Remote backends cannot reach that checkout.
+        # Guard against the agent mutating the Son of Anton checkout that backs
+        # this interpreter — a self-inflicted ``git reset --hard`` would corrupt
+        # the running process. Remote backends cannot reach that checkout.
         if env_type == "local":
             from tools.self_repo_guard import (
                 detect_self_repo_git_mutation,

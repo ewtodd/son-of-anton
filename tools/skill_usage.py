@@ -38,16 +38,10 @@ from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 
 logger = logging.getLogger(__name__)
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking.
-msvcrt = None
 try:
     import fcntl
-except ImportError:  # pragma: no cover - platform-specific fallback
+except ImportError:  # pragma: no cover - fcntl is always present on supported platforms
     fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        pass
 
 
 STATE_ACTIVE = "active"
@@ -92,33 +86,19 @@ def _usage_file_lock():
     lock_path = _usage_file().with_suffix(".json.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if fcntl is None and msvcrt is None:
+    if fcntl is None:
         yield
         return
 
-    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
-
-    fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
+    fd = open(lock_path, "a+", encoding="utf-8")
     try:
-        if fcntl:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        else:
-            fd.seek(0)
-            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
         fd.close()
 
 

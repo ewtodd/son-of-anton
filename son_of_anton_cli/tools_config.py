@@ -30,37 +30,14 @@ logger = logging.getLogger(__name__)
 
 
 def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
-    """Win32 creationflags that stop post-setup children flashing a console.
+    """Return 0 — the Win32 console-flash guard is obsolete on Nix platforms.
 
-    The GUI runs post-setup hooks through a detached, console-less
-    ``son-of-anton tools post-setup <key>`` child. On Windows, every console child
-    (npm.cmd, npx, pip, powershell, curl) spawned from that console-less
-    parent materializes a brand-new console window — the "terminal flash"
-    users see when clicking "Run setup". ``CREATE_NO_WINDOW`` (via
-    :func:`son_of_anton_cli._subprocess_compat.windows_hide_flags`) suppresses it
-    without breaking ``capture_output`` — unlike ``DETACHED_PROCESS``, stdio
-    handles stay inheritable. Returns 0 on POSIX, so passing the result
-    unconditionally is safe.
-
-    ``streams_to_console=True`` marks children spawned WITHOUT stdio
-    redirection (live installer output, e.g. the verbose cua-driver install).
-    Hiding those in an interactive console session would silently swallow
-    their output into an invisible console, so the flag is only applied when
-    the current process has no usable console of its own (stdout is a
-    pipe/log file — exactly the GUI-spawn case that flashes).
+    Historically this returned ``CREATE_NO_WINDOW`` so console-less GUI-spawned
+    post-setup children (npm, npx, pip) didn't flash a console window on
+    Windows. Nix platforms have no console flash, so the flag is always 0;
+    callers pass it unconditionally and it is inert.
     """
-    from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
-    flags = windows_hide_flags()
-    if not flags:
-        return 0
-    if streams_to_console:
-        try:
-            if sys.stdout is not None and sys.stdout.isatty():
-                return 0
-        except Exception:
-            pass
-    return flags
+    return 0
 
 # Platforms already warned about an all-invalid platform_toolsets list, so the
 # runtime check in _get_platform_tools warns once per platform instead of on
@@ -331,10 +308,10 @@ def _pip_install(
     3. ``python -m ensurepip --upgrade`` then retry pip — covers ``uv venv``
        which creates a venv WITHOUT pip.
 
-    Why this exists: the Windows installer creates the venv via ``uv venv``,
-    which doesn't seed pip. Post-setup hooks that shelled out to
-    ``[sys.executable, '-m', 'pip', 'install', ...]`` failed with
-    ``No module named pip`` on every fresh install. uv-first sidesteps that.
+    Why this exists: a ``uv venv``-created environment does not seed pip.
+    Post-setup hooks that shelled out to ``[sys.executable, '-m', 'pip',
+    'install', ...]`` failed with ``No module named pip`` on every fresh
+    install. uv-first sidesteps that.
 
     Returns the ``subprocess.CompletedProcess`` from whichever tier succeeded
     (or the last failure for the caller to inspect).
@@ -345,8 +322,8 @@ def _pip_install(
     # Managed uv first: $SON_OF_ANTON_HOME/bin is never on PATH, so a bare which()
     # misses the uv Son of Anton installed and prefers a system one when both exist.
     # ensure_uv() rather than a pure lookup because this runs during setup,
-    # where installing uv is in scope — and tier 2 is a pip that the Windows
-    # installer's `uv venv` does not seed, so failing to find uv here is the
+    # where installing uv is in scope — and tier 2 is a pip that a
+    # ``uv venv`` does not seed, so failing to find uv here is the
     # difference between a working post-setup hook and "No module named pip".
     from son_of_anton_cli.managed_uv import ensure_uv
 

@@ -579,10 +579,6 @@ class CopilotACPClient:
             )
 
         try:
-            # Hide the console the CLI child would otherwise flash on Windows
-            # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.
-            from son_of_anton_cli._subprocess_compat import windows_hide_flags
-
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
                 stdin=subprocess.PIPE,
@@ -592,7 +588,6 @@ class CopilotACPClient:
                 bufsize=1,
                 cwd=self._acp_cwd,
                 env=_build_subprocess_env(),
-                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

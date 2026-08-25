@@ -24,7 +24,7 @@ Architecture (two transports):
 In both cases, only the script's stdout is returned to the LLM; intermediate
 tool results never enter the context window.
 
-Platform: Linux / macOS only (Unix domain sockets for local). Disabled on Windows.
+Platform: Linux / macOS only (Unix domain sockets for local).
 Remote execution additionally requires Python 3 in the terminal backend.
 """
 
@@ -32,7 +32,6 @@ import base64
 import json
 import logging
 import os
-import platform
 import re
 import secrets
 import shlex
@@ -44,16 +43,11 @@ import threading
 import time
 import uuid
 
-_IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.thread_context import propagate_context_to_thread
 from agent.thread_scoped_output import thread_scoped_silence
 
-# Availability gate.  On Windows we fall back to loopback TCP for the
-# sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
-# ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
-# available on every platform Son of Anton itself runs on.
 logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = True
@@ -135,11 +129,10 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
-# match a safe prefix, the operational SON_OF_ANTON_ allowlist, or (on Windows) an
-# OS-essential name.  Delegate-task child context is also an exact-name
-# operational marker: without it, a sandbox script that spawns/imports Son of Anton
-# code can lose the DB-layer Kanban mutation guard while still inheriting
-# SON_OF_ANTON_HOME.
+# match a safe prefix or the operational SON_OF_ANTON_ allowlist.  Delegate-task
+# child context is also an exact-name operational marker: without it, a
+# sandbox script that spawns/imports Son of Anton code can lose the DB-layer
+# Kanban mutation guard while still inheriting SON_OF_ANTON_HOME.
 #
 # NB: the broad "SON_OF_ANTON_" prefix was deliberately removed (#27303) — it leaked
 # SON_OF_ANTON_*-named config that lacks a secret substring (e.g. SON_OF_ANTON_BASE_URL,
@@ -173,39 +166,8 @@ _SON_OF_ANTON_CHILD_ALLOWED = frozenset({
     "SON_OF_ANTON_DELEGATED_CHILD_CONTEXT",
 })
 
-# Windows-only: a handful of variables are required by the OS/CRT itself.
-# Without them, even stdlib calls like ``socket.socket()`` fail with
-# WinError 10106 (Winsock can't locate mswsock.dll) and ``subprocess``
-# can't resolve cmd.exe.  These are well-known OS paths, not secrets, so
-# we allow them through by exact name.  The _SECRET_SUBSTRINGS block
-# still runs as a safety net (none of these names match those substrings).
-_WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
-    "SYSTEMROOT",       # %SYSTEMROOT%\System32 — Winsock needs this
-    "SYSTEMDRIVE",      # C: (or wherever Windows lives)
-    "WINDIR",           # usually same as SYSTEMROOT
-    "COMSPEC",          # cmd.exe path — subprocess shell=True needs it
-    "PATHEXT",          # .COM;.EXE;.BAT;... — shell lookup
-    "OS",               # "Windows_NT" — some tools gate on this
-    "PROCESSOR_ARCHITECTURE",
-    "NUMBER_OF_PROCESSORS",
-    "PUBLIC",           # C:\Users\Public
-    "ALLUSERSPROFILE",  # C:\ProgramData — some stdlib paths use it
-    "PROGRAMDATA",      # C:\ProgramData
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "PROGRAMW6432",
-    "APPDATA",          # %USERPROFILE%\AppData\Roaming — Python uses it
-    "LOCALAPPDATA",     # %USERPROFILE%\AppData\Local
-    "USERPROFILE",      # C:\Users\<name> — Python's expanduser uses it
-    "USERDOMAIN",
-    "USERNAME",
-    "HOMEDRIVE",        # C:
-    "HOMEPATH",         # \Users\<name>
-    "COMPUTERNAME",
-})
 
-
-def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
+def _scrub_child_env(source_env, is_passthrough=None):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules (order matters):
@@ -215,9 +177,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
       2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
       3. Names matching a safe prefix pass.
       4. Operational SON_OF_ANTON_* vars (_SON_OF_ANTON_CHILD_ALLOWED) pass by exact name.
-      5. On Windows, a small OS-essential allowlist passes by exact name
-         — without these the child can't even create a socket or spawn a
-         subprocess.
 
     Extracted into a helper so tests can exercise the logic without
     spawning a subprocess.
@@ -238,8 +197,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             from tools.env_passthrough import resolve_passthrough_value
         except Exception:
             resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
-    if is_windows is None:
-        is_windows = _IS_WINDOWS
 
     scrubbed = {}
     # Non-secret SON_OF_ANTON_* vars dropped by the tightened allowlist (#27303). The
@@ -262,9 +219,6 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             scrubbed[k] = v
             continue
         if k in _SON_OF_ANTON_CHILD_ALLOWED:
-            scrubbed[k] = v
-            continue
-        if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
             scrubbed[k] = v
             continue
         if k.startswith("SON_OF_ANTON_"):
@@ -519,25 +473,14 @@ _call_lock = threading.Lock()
 def _connect():
     """Connect to the parent's RPC server via the transport it picked.
 
-    SON_OF_ANTON_RPC_SOCKET can be either:
-      - a filesystem path (POSIX Unix domain socket — the default on
-        Linux and macOS)
-      - a string of the form ``tcp://127.0.0.1:<port>`` (Windows, where
-        AF_UNIX is unreliable — the parent falls back to loopback TCP)
+    SON_OF_ANTON_RPC_SOCKET is a filesystem path (Unix domain socket — the
+    default on Linux and macOS).
     """
     global _sock
     if _sock is None:
         endpoint = os.environ["SON_OF_ANTON_RPC_SOCKET"]
-        if endpoint.startswith("tcp://"):
-            # tcp://host:port  (host is always 127.0.0.1 in practice — we
-            # only bind loopback server-side)
-            _host_port = endpoint[len("tcp://"):]
-            _host, _, _port = _host_port.rpartition(":")
-            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            _sock.connect((_host or "127.0.0.1", int(_port)))
-        else:
-            _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            _sock.connect(endpoint)
+        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        _sock.connect(endpoint)
         _sock.settimeout(300)
     return _sock
 
@@ -595,9 +538,9 @@ def _call(tool_name, args):
     res_file = os.path.join(_RPC_DIR, f"res_{seq_str}")
 
     # Write request atomically (write to .tmp, then rename).
-    # encoding="utf-8" is critical: on Windows-hosted remote backends
-    # (or any non-UTF-8 locale) the default open() mode would mangle
-    # non-ASCII chars in tool args when encoding them as JSON.
+    # encoding="utf-8" is critical: on a non-UTF-8 locale the default open()
+    # mode would mangle non-ASCII chars in tool args when encoding them as
+    # JSON.
     tmp = req_file + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({
@@ -1316,22 +1259,9 @@ def execute_code(
     # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
     # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
     # On Linux, tempfile.gettempdir() already returns /tmp.
-    #
-    # Windows: Python 3.9+ added partial AF_UNIX support but the file-backed
-    # variant is flaky across Windows builds (requires Windows 10 1803+,
-    # still fails under some configurations, and the socket file can't live
-    # on the same temp drive as the script).  Fall back to loopback TCP —
-    # same ephemeral port, same 1-connection listen queue, same serialized
-    # request/response framing.  The generated client reads the transport
-    # selector from SON_OF_ANTON_RPC_SOCKET (path vs. ``tcp://host:port``).
     _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
-    _use_tcp_rpc = _IS_WINDOWS
-    if _use_tcp_rpc:
-        sock_path = None  # not used on Windows; TCP endpoint stored below
-        rpc_endpoint = None  # set after bind()
-    else:
-        sock_path = os.path.join(_sock_tmpdir, f"son_of_anton_rpc_{uuid.uuid4().hex}.sock")
-        rpc_endpoint = sock_path
+    sock_path = os.path.join(_sock_tmpdir, f"son_of_anton_rpc_{uuid.uuid4().hex}.sock")
+    rpc_endpoint = sock_path
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -1341,15 +1271,11 @@ def execute_code(
 
     try:
         # Write the auto-generated son_of_anton_tools module.
-        # encoding="utf-8" is required on Windows — the stub and user code
-        # both contain non-ASCII characters (em-dashes in docstrings, plus
-        # whatever the user script carries).  Python's default open() uses
-        # the system locale on Windows (cp1252 typically), which corrupts
-        # those bytes; the child then fails to import with a SyntaxError
-        # ("'utf-8' codec can't decode byte 0x97 in position ...") because
-        # Python source files are decoded as UTF-8 by default (PEP 3120).
-        # sandbox_tools is already the correct set (intersection with session
-        # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
+        # encoding="utf-8" is required — the stub and user code both contain
+        # non-ASCII characters (em-dashes in docstrings, plus whatever the
+        # user script carries).  sandbox_tools is already the correct set
+        # (intersection with session tools, or SANDBOX_ALLOWED_TOOLS as
+        # fallback — see lines above).
         tools_src = generate_son_of_anton_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "son_of_anton_tools.py"), "w", encoding="utf-8") as f:
             f.write(tools_src)
@@ -1360,23 +1286,11 @@ def execute_code(
 
         # --- Start RPC server ---
         rpc_token = secrets.token_urlsafe(32)
-        # Two transports:
-        #   POSIX: AF_UNIX stream socket on sock_path, chmod 0600 for
-        #   owner-only access.  Filesystem permissions gate the socket.
-        #   Windows: AF_INET stream socket on 127.0.0.1 with an ephemeral
-        #   port.  No filesystem permission story, but loopback-only bind
-        #   means only the current user's processes (not remote) can
-        #   connect.  SON_OF_ANTON_RPC_SOCKET is set to ``tcp://127.0.0.1:<port>``
-        #   which the generated client parses to pick AF_INET.
-        if _use_tcp_rpc:
-            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_sock.bind(("127.0.0.1", 0))  # ephemeral port
-            _host, _port = server_sock.getsockname()[:2]
-            rpc_endpoint = f"tcp://{_host}:{_port}"
-        else:
-            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server_sock.bind(sock_path)
-            os.chmod(sock_path, 0o600)
+        # AF_UNIX stream socket on sock_path, chmod 0600 for owner-only
+        # access.  Filesystem permissions gate the socket.
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(sock_path)
+        os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         # Wrapped so the thread inherits the turn's approval context + callbacks
@@ -1398,22 +1312,13 @@ def execute_code(
         # generated scripts. The child accesses tools via RPC, not direct API.
         # Exception: env vars declared by loaded skills (via env_passthrough
         # registry) or explicitly allowed by the user in config.yaml
-        # (terminal.env_passthrough) are passed through.  On Windows, a small
-        # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
-        # passed through — without those, the child can't create a socket
-        # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
+        # (terminal.env_passthrough) are passed through.  See
+        # ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)
         child_env["SON_OF_ANTON_RPC_SOCKET"] = rpc_endpoint
         child_env["SON_OF_ANTON_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Force UTF-8 for the child's stdio and default file encoding.
-        #
-        # Without this, on Windows sys.stdout is bound to the console code
-        # page (cp1252 on US-locale installs), and any script that does
-        # ``print("café")`` or ``print("→")`` crashes with:
-        #
-        #   UnicodeEncodeError: 'charmap' codec can't encode character
-        #   '\u2192' in position N: character maps to <undefined>
         #
         # PYTHONIOENCODING fixes sys.stdin/stdout/stderr.
         # PYTHONUTF8=1 enables "UTF-8 mode" (PEP 540) which additionally
@@ -1422,7 +1327,7 @@ def execute_code(
         #
         # On POSIX both values usually match the locale default already,
         # so setting them is harmless belt-and-suspenders for environments
-        # with a C/POSIX locale (containers, minimal base images).
+        # with a C/POSIX locale.
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
         # Inject user's configured timezone so datetime.now() in sandboxed
@@ -1490,7 +1395,6 @@ def execute_code(
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
@@ -1876,7 +1780,6 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
             timeout=5,
             capture_output=True,
             text=text,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL,
             env=delegated_child_subprocess_env(),
         )
@@ -1935,12 +1838,8 @@ def _resolve_child_python(mode: str) -> str:
     if mode != "project":
         return sys.executable
 
-    if _IS_WINDOWS:
-        exe_names = ("python.exe", "python3.exe")
-        subdirs = ("Scripts",)
-    else:
-        exe_names = ("python", "python3")
-        subdirs = ("bin",)
+    exe_names = ("python", "python3")
+    subdirs = ("bin",)
 
     for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
         root = os.environ.get(var, "").strip()
