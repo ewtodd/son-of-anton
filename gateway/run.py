@@ -2170,9 +2170,22 @@ os.environ["SON_OF_ANTON_TURN_LEASE_TIMEOUT"] = str(
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
+#
+# IMPORTANT: this module is also imported lazily by the CLI agent on its first
+# turn (agent/relay_runtime._segments_config → gateway.run), where the CLI has
+# already bridged its own terminal contract (TERMINAL_CWD = launch dir). These
+# config→env bridges are gateway-process behavior only, so they are skipped
+# unless the process is actually a gateway (the _SON_OF_ANTON_GATEWAY marker
+# is set by this module itself at import time, line ~1918, in the gateway).
+class _SkipGatewayBridge(Exception):
+    pass
+
+
 _config_path = _son_of_anton_home / 'config.yaml'
 if _config_path.exists():
     try:
+        if os.environ.get("_SON_OF_ANTON_GATEWAY") != "1":
+            raise _SkipGatewayBridge()
         # Presence-sensitive env bridge: raw read is deliberate — only keys the
         # user actually wrote may be bridged (a defaults merge would export the
         # whole DEFAULT_CONFIG into the env). Overlay + expansion applied below.
@@ -2391,6 +2404,8 @@ if _config_path.exists():
                 os.environ["SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT"] = str(
                     _gateway_cfg["platform_connect_timeout"]
                 )
+    except _SkipGatewayBridge:
+        pass
     except Exception as _bridge_err:
         # Previously this was silent (`except Exception: pass`), which
         # hid partial bridge failures and let .env defaults shadow
@@ -2448,18 +2463,19 @@ os.environ["SON_OF_ANTON_QUIET"] = "1"
 # MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
 
-_configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
-    _resolved_cwd = resolve_placeholder_terminal_cwd(
-        configured_cwd=_configured_cwd,
-        terminal_backend=os.environ.get("TERMINAL_ENV", ""),
-        messaging_cwd=os.getenv("MESSAGING_CWD"),
-        home_fallback=str(Path.home()),
-    )
-    if _resolved_cwd is None:
-        os.environ.pop("TERMINAL_CWD", None)
-    else:
-        os.environ["TERMINAL_CWD"] = _resolved_cwd
+if os.environ.get("_SON_OF_ANTON_GATEWAY") == "1":
+    _configured_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
+        _resolved_cwd = resolve_placeholder_terminal_cwd(
+            configured_cwd=_configured_cwd,
+            terminal_backend=os.environ.get("TERMINAL_ENV", ""),
+            messaging_cwd=os.getenv("MESSAGING_CWD"),
+            home_fallback=str(Path.home()),
+        )
+        if _resolved_cwd is None:
+            os.environ.pop("TERMINAL_CWD", None)
+        else:
+            os.environ["TERMINAL_CWD"] = _resolved_cwd
 
 from gateway.config import (
     ChannelOverride,

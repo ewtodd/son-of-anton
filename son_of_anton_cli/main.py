@@ -6534,9 +6534,12 @@ class _CwdEnvTrace(dict):
                 import logging
                 import traceback
                 logging.getLogger("son_of_anton_cwd_debug").info(
-                    "ENV WRITE %s: %r -> %r @\n%s",
+                    "ENV WRITE %s: %r -> %r @ %s",
                     key, old, value,
-                    "".join(traceback.format_stack(limit=9)),
+                    " | ".join(
+                        line.strip()
+                        for line in traceback.format_stack(limit=9)[:-1]
+                    ),
                 )
         return dict.__setitem__(self, key, value)
 
@@ -6545,9 +6548,12 @@ class _CwdEnvTrace(dict):
             import logging
             import traceback
             logging.getLogger("son_of_anton_cwd_debug").info(
-                "ENV DELETE %s: %r @\n%s",
+                "ENV DELETE %s: %r @ %s",
                 key, dict.get(self, key),
-                "".join(traceback.format_stack(limit=9)),
+                " | ".join(
+                    line.strip()
+                    for line in traceback.format_stack(limit=9)[:-1]
+                ),
             )
         return dict.__delitem__(self, key)
 

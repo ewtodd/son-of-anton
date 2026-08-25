@@ -324,7 +324,20 @@ What the user is still hitting:
    — the guard removes the crash-on-startup noise, it does not make a
    cross-user home a valid workspace.
 
-2. **Working dir — code hardened, e-work root cause still unconfirmed.**
+2. **Working dir — RESOLVED (this round). Root cause: the first agent
+   turn lazy-imports ``gateway.run`` (``agent/relay_runtime._segments_config``),
+   whose module-level config→env bridge re-bridged ``terminal.cwd``
+   (``TERMINAL_CWD=/home/e-work``) over the CLI's launch-dir contract — a ~2s
+   window between the correct startup bridging and the system prompt, invisible
+   to startup sims and the import sweep. Traced with a stack-logging
+   ``SON_OF_ANTON_DEBUG_CWD=1`` env writer; fixed by gating the gateway bridge
+   (and the placeholder cwd resolver) on ``_SON_OF_ANTON_GATEWAY``, which only
+   the gateway process sets. Regression: the debug trace stays gated for future
+   cwd-class diagnosis.
+
+   History (kept for context): the ``114a8483`` local-backend guard + the
+   round-1 dotenv reload protection were correct but insufficient — neither
+   covered the gateway-bridge import.
    The `114a8483` local-backend guard skips bridging `terminal.cwd` when the
    backend is detected as local, and the STATUS's "verified" claim was based
    on the same import simulation used here — which produces the correct
@@ -342,12 +355,7 @@ What the user is still hitting:
      around `override=True` loads: a launcher that already claimed the
      contract keeps it; the first load (legacy config-less `.env` seeds)
      is untouched.
-   **Still needed to close:** one diagnostic from the e-work side
-   (the working account, which this agent session cannot read):
-   `grep -iE '^TERMINAL' ~/.son-of-anton/.env`; `env | grep -E '^TERMINAL'`;
-   `grep -n -A4 terminal: ~/.son-of-anton/config.yaml`. A stale
-   `TERMINAL_ENV`/`TERMINAL_CWD` in e-work's `.env` (pre-fork hermes setup)
-   or shell is the remaining candidate.
+
 
 3. **Titling garbage (fixed in code + infra, user hasn't confirmed).**
    supra-title looped/truncated and the raw `{"title" : "Response Response
