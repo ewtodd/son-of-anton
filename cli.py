@@ -18049,7 +18049,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             'status-bar-bad': 'bg:default bold red',
             'status-bar-critical': 'bg:default bold red',
             'status-bar-yolo': 'bg:default bold red',
-            'status-bar-session-title': 'bg:yellow default bold',
+            # Foreground-only, like every other status-bar segment. A
+            # `bg:` here paints the space-padded badge as a solid block,
+            # which reads as a highlighter smear next to the rest of the bar.
+            'status-bar-session-title': 'bg:default bold yellow',
             # Bronze horizontal rules around the input area
             'input-rule': 'yellow',
             # Clipboard image attachment badges

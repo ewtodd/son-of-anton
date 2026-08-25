@@ -1145,7 +1145,12 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         # Far-right session-title badge and the YOLO flag: previously
         # hardcoded in the CLI's base style (bg:yellow / bold red), so
         # skins could not drive them at all.
-        "status-bar-session-title": f"bg:{input_rule} default bold",
+        #
+        # The badge is space-padded (" title "), so painting it with its own
+        # background turns it into a solid block against the status bar's
+        # background — the "highlighted yellow" smear. Style it like
+        # status-bar-strong instead: same bar background, emphasised text.
+        "status-bar-session-title": f"bg:{status_bg} {status_strong} bold",
         "status-bar-yolo": f"{error} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
