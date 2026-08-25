@@ -16,12 +16,11 @@ guidance-laden prompt instructing it to:
      content and merge in what's missing, never blow it away.
 
 There is no engine and no model-tool footprint: the agent does the work with
-its existing toolset, so this works identically on local, Docker, and remote
-terminal backends. Every surface (CLI ``/init``, gateway ``/init``, TUI
-``/init``) calls :func:`build_init_prompt` and feeds the result to the agent
-as a normal user turn — the same prompt-injection pattern as ``/learn`` and
-``/blueprint``, which preserves prompt-cache invariants (no system-prompt or
-history mutation).
+its existing toolset, so this works identically on the local and SSH terminal
+backends. Both surfaces (CLI ``/init`` and gateway ``/init``) call
+:func:`build_init_prompt` and feed the result to the agent as a normal user
+turn — the same prompt-injection pattern as ``/learn``, which preserves
+prompt-cache invariants (no system-prompt or history mutation).
 """
 
 from __future__ import annotations
