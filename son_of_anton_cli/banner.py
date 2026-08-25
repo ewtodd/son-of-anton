@@ -67,20 +67,22 @@ def _skin_color(key: str, fallback: str) -> str:
 
 from son_of_anton_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗       █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
-██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝      ██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
-███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗        ███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
-╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝        ██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
-███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║           ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
-╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝           ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
+SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗
+██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝
+███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗
+╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝
+███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║
+╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝
+
+ █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
+██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
+███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
+██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
+██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
+╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
 
 
 
-SON_OF_ANTON_CADUCEUS = """        ◈        
-      ◈   ◈      
-    ◈   ◉   ◈    
-      ◈   ◈      
-        ◈        """
 
 
 
@@ -992,9 +994,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     disabled_tools = set(availability.get("disabled_tools", []))
     _enabled_ts = {str(t) for t in enabled_toolsets}
 
+    # Single centred column. The old two-column grid existed to park the
+    # per-category tool/skill listings beside the model info; with those gone
+    # a second column just pushes the counts away from what they describe.
     layout_table = Table.grid(padding=(0, 2))
-    layout_table.add_column("left", justify="center")
-    layout_table.add_column("right", justify="left")
+    layout_table.add_column("body", justify="center")
 
     # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "yellow")
@@ -1002,15 +1006,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     text = _skin_color("banner_text", "default")
     session_color = _skin_color("session_border", "default")
 
-    # Use skin's custom caduceus art if provided
+    # A skin may still supply hero art; the built-in diamond cluster is gone.
     try:
         from son_of_anton_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
-        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else SON_OF_ANTON_CADUCEUS
+        _hero = getattr(_bskin, "banner_hero", "") or ""
     except Exception:
         _bskin = None
-        _hero = SON_OF_ANTON_CADUCEUS
-    left_lines = ["", _hero, ""]
+        _hero = ""
+    left_lines = ["", _hero, ""] if _hero else [""]
     if not (model or "").strip() or (model or "").strip().lower() == "unknown":
         # Unconfigured install: say so in red instead of a blank/"unknown"
         # slug — this is the single clearest place to tell the user what
@@ -1026,7 +1030,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         if len(model_short) > 28:
             model_short = model_short[:25] + "..."
         ctx_str = f" [{dim}]· [{dim}]{_format_context_length(context_length)} context" if context_length else ""
-        left_lines.append(f"[{accent}]{model_short}{ctx_str} [{dim}]· [{dim}]")
+        left_lines.append(f"[{accent}]{model_short}{ctx_str}")
 
     if os.getenv("SON_OF_ANTON_YOLO_MODE"):
         left_lines.append(f"[bold red]YOLO mode [{dim}]— all approval prompts bypassed")
@@ -1035,70 +1039,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         left_lines.append(f"[dim {session_color}]Session: {session_id}")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools"]
-    toolsets_dict: Dict[str, list] = {}
+    # The per-category tool and skill listings used to live here. They were
+    # already truncated ("+N more", "and N more toolsets...") at any normal
+    # terminal width, so they told the user less than the counts below while
+    # filling most of the screen on every launch. /tools, /toolsets and
+    # /skills show the real lists on demand.
+    right_lines: list[str] = []
 
-    for tool in tools:
-        tool_name = tool["function"]["name"]
-        toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
-        toolsets_dict.setdefault(toolset, []).append(tool_name)
-
-    for item in unavailable_toolsets:
-        toolset_id = item.get("id", item.get("name", "unknown"))
-        display_name = _display_toolset_name(toolset_id)
-        if display_name not in toolsets_dict:
-            toolsets_dict[display_name] = []
-        for tool_name in item.get("tools", []):
-            if tool_name not in toolsets_dict[display_name]:
-                toolsets_dict[display_name].append(tool_name)
-
-    sorted_toolsets = sorted(toolsets_dict.keys())
-    display_toolsets = sorted_toolsets[:8]
-    remaining_toolsets = len(sorted_toolsets) - 8
-
-    for toolset in display_toolsets:
-        tool_names = toolsets_dict[toolset]
-        colored_names = []
-        for name in sorted(tool_names):
-            if name in disabled_tools:
-                colored_names.append(f"[red]{name}")
-            elif name in lazy_tools:
-                colored_names.append(f"[yellow]{name}")
-            else:
-                colored_names.append(f"[{text}]{name}")
-
-        tools_str = ", ".join(colored_names)
-        if len(", ".join(sorted(tool_names))) > 45:
-            short_names = []
-            length = 0
-            for name in sorted(tool_names):
-                if length + len(name) + 2 > 42:
-                    short_names.append("...")
-                    break
-                short_names.append(name)
-                length += len(name) + 2
-            colored_names = []
-            for name in short_names:
-                if name == "...":
-                    colored_names.append("[dim]...")
-                elif name in disabled_tools:
-                    colored_names.append(f"[red]{name}")
-                elif name in lazy_tools:
-                    colored_names.append(f"[yellow]{name}")
-                else:
-                    colored_names.append(f"[{text}]{name}")
-            tools_str = ", ".join(colored_names)
-
-        right_lines.append(f"[{dim}]{toolset}: {tools_str}")
-
-    if remaining_toolsets > 0:
-        right_lines.append(f"[{dim}](and {remaining_toolsets} more toolsets...)")
-
-    # MCP Servers section (only if configured). Probe cheaply first: the
-    # full get_mcp_status() path resolves portable plugin MCP servers,
-    # which JOINS the in-flight background plugin discovery (~100ms on the
-    # startup path). When neither config.yaml nor the persisted plugin
-    # key cache mentions any MCP server, skip the section outright.
+    # MCP server count for the summary line. Probe cheaply first: the full
+    # get_mcp_status() path JOINS the in-flight background plugin discovery
+    # (~100ms on the startup path), so skip it when nothing declares a server.
     mcp_status = []
     try:
         from son_of_anton_cli.config import load_config as _load_cfg
@@ -1111,7 +1061,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             from son_of_anton_cli.plugins import get_portable_mcp_server_names_nowait
             _has_portable_mcp = bool(get_portable_mcp_server_names_nowait())
         except Exception:
-            _has_portable_mcp = True  # can't tell — take the full path
+            _has_portable_mcp = True
     if _has_native_mcp or _has_portable_mcp:
         try:
             from tools.mcp_tool import get_mcp_status
@@ -1119,43 +1069,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         except Exception:
             mcp_status = []
 
-    if mcp_status:
-        right_lines.append("")
-        right_lines.append(f"[bold {accent}]MCP Servers")
-        for srv in mcp_status:
-            status = srv.get("status")
-            if srv["connected"]:
-                right_lines.append(
-                    f"[{dim}]{srv['name']} [{text}]({srv['transport']}) "
-                    f"[{dim}]— [{text}]{srv['tools']} tool(s)"
-                )
-            elif srv.get("disabled") or status == "disabled":
-                right_lines.append(
-                    f"[{dim}]{srv['name']} [dim]({srv['transport']}) "
-                    f"[{dim}]— disabled"
-                )
-            elif status == "connecting":
-                right_lines.append(
-                    f"[{dim}]{srv['name']} [dim]({srv['transport']}) "
-                    f"[yellow]— connecting"
-                )
-            elif status == "configured":
-                right_lines.append(
-                    f"[{dim}]{srv['name']} [dim]({srv['transport']}) "
-                    f"[{dim}]— configured"
-                )
-            else:
-                right_lines.append(
-                    f"[red]{srv['name']} [dim]({srv['transport']}) "
-                    f"[red]— failed"
-                )
-
-    right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills")
-    # The skills catalog is only reachable when the `skills` toolset is enabled
-    # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
-    # Slate install — the agent literally cannot load any skill, so advertising
-    # the on-disk catalog here is misleading. Reflect the real state instead.
     _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
     if _skills_enabled:
         if skills_by_category is None:
@@ -1164,38 +1077,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     else:
         skills_by_category = {}
         total_skills = 0
-
-    # Dynamically size skills display based on terminal width.
-    # Rich grid with 2 columns; right column gets roughly 60% of terminal.
-    _term_cols = shutil.get_terminal_size().columns
-    _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
-
-    if not _skills_enabled:
-        right_lines.append(f"[{dim}]Skills toolset disabled")
-    elif skills_by_category:
-        for category in sorted(skills_by_category.keys()):
-            skill_names = sorted(skills_by_category[category])
-            # Account for "category: " prefix
-            _prefix_len = len(category) + 2
-            _avail = max(_right_col_width - _prefix_len, 20)
-            # Accumulate skills until we run out of space
-            parts, length = [], 0
-            for i, name in enumerate(skill_names):
-                _sep = ", " if parts else ""
-                _needed = len(_sep) + len(name)
-                # Estimate indicator size IF we were to add this skill then stop
-                _after = len(skill_names) - (i + 1)  # remaining after adding this
-                _ind_len = len(f", +{_after} more") if _after > 0 else 0
-                if parts and length + _needed + _ind_len > _avail:
-                    remaining = len(skill_names) - len(parts)
-                    parts.append(f"+{remaining} more")
-                    break
-                parts.append(name)
-                length += _needed
-            skills_str = ", ".join(parts)
-            right_lines.append(f"[{dim}]{category}: [{text}]{skills_str}")
-    else:
-        right_lines.append(f"[{dim}]No skills installed")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
@@ -1244,7 +1125,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         pass  # Never break the banner over an update check
 
     right_content = "\n".join(right_lines)
-    layout_table.add_row(left_content, right_content)
+    layout_table.add_row("\n".join([left_content, right_content]).strip("\n"))
 
     title_color = _skin_color("banner_title", "bold yellow")
     border_color = _skin_color("banner_border", "yellow")
@@ -1255,8 +1136,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         title_markup = f"[{title_color}][link={_url}]{version_label}"
     else:
         title_markup = f"[{title_color}]{version_label}"
+    from rich.align import Align
+
     outer_panel = Panel(
-        layout_table,
+        Align.center(layout_table),
         title=title_markup,
         border_style=border_color,
         padding=(0, 2),

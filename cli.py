@@ -4582,21 +4582,23 @@ class ChatConsole:
         yield self
 
 # ASCII Art - SON_OF_ANTON wordmark (block letters, ~50 char terminal)
-SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗       █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
-██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝      ██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
-███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗        ███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
-╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝        ██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
-███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║           ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
-╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝           ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
+SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗
+██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝
+███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗
+╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝
+███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║
+╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝
+
+ █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
+██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
+███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
+██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
+██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
+╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
 
 
 
 # ASCII Art - Son of Anton nucleus (compact, fits in left panel)
-SON_OF_ANTON_CADUCEUS = """        ◈        
-      ◈   ◈      
-    ◈   ◉   ◈    
-      ◈   ◈      
-        ◈        """
 
 
 
@@ -5914,62 +5916,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "critical": "class:status-bar-critical",
         }.get(category, "class:status-bar-dim")
 
-    def _handle_battery_command(self, cmd_original: str) -> None:
-        """Toggle the status-bar battery read-out.
-
-        ``/battery`` toggles, ``/battery on|off`` sets explicitly, and
-        ``/battery status`` reports the current setting plus a live reading.
-        The choice is persisted to ``display.battery`` so it survives restarts.
-        """
-        parts = (cmd_original or "").split()
-        arg = parts[1].strip().lower() if len(parts) > 1 else ""
-
-        try:
-            from agent.battery import format_battery, read_battery
-            reading = read_battery(use_cache=False)
-        except Exception:
-            reading = None
-
-        if arg in ("status", "show"):
-            state = "on" if self._battery_visible else "off"
-            if reading is not None and reading.available:
-                self._console_print(
-                    f"  Battery indicator {state} — currently {format_battery(reading)}"
-                )
-            elif reading is not None:
-                self._console_print(
-                    f"  Battery indicator {state} — no battery detected on this machine"
-                )
-            else:
-                self._console_print(f"  Battery indicator {state}")
-            return
-
-        if arg in ("on", "true", "yes"):
-            target = True
-        elif arg in ("off", "false", "no"):
-            target = False
-        elif arg in ("", "toggle"):
-            target = not self._battery_visible
-        else:
-            self._console_print("  Usage: /battery [on|off|status]")
-            return
-
-        self._battery_visible = target
-        save_config_value("display.battery", target)
-
-        if target:
-            if reading is not None and not reading.available:
-                self._console_print(
-                    "  Battery indicator on — no battery detected, so nothing will show here"
-                )
-            elif reading is not None and reading.available:
-                self._console_print(
-                    f"  Battery indicator on — {format_battery(reading)}"
-                )
-            else:
-                self._console_print("  Battery indicator on")
-        else:
-            self._console_print("  Battery indicator off")
 
     @staticmethod
     def _compression_count_style(count: int) -> str:
@@ -8995,21 +8941,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
     
 
-    def _handle_whoami_command(self):
-        """Display slash-command access for the local CLI surface."""
-        import getpass
-
-        try:
-            user_name = getpass.getuser() or "?"
-        except Exception:
-            user_name = "?"
-
-        print()
-        print("  You:            cli (local terminal)")
-        print(f"  User:           {user_name}")
-        print("  Tier:           unrestricted")
-        print("  Slash commands: all available")
-        print()
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
@@ -11486,8 +11417,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.show_help(_help_parts[1].strip() if len(_help_parts) > 1 else "")
         elif canonical == "palette":
             self._open_command_palette()
-        elif canonical == "whoami":
-            self._handle_whoami_command()
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":
@@ -11635,9 +11564,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 from son_of_anton_state import format_session_db_unavailable
                 _cprint(f"  {format_session_db_unavailable()}")
-        elif canonical == "handoff":
-            if not self._handle_handoff_command(cmd_original):
-                return False
         elif canonical == "new":
             # Strip inline-skip tokens (now/--yes/-y) before deriving the title
             # so "/new now My Session" yields title="My Session" instead of
@@ -11662,12 +11588,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_mode_command(cmd_original)
         elif canonical == "perm":
             self._handle_perm_command(cmd_original)
-        elif canonical == "codex-runtime":
-            self._handle_codex_runtime(cmd_original)
 
-        elif canonical == "personality":
-            # Use original case (handler lowercases the personality name itself)
-            self._handle_personality_command(cmd_original)
         elif canonical == "retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
@@ -11704,18 +11625,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             ) is None:
                 return True  # confirmation cancelled — command handled, keep REPL alive
             self.undo_last(_undo_n)
-        elif canonical == "branch":
-            self._handle_branch_command(cmd_original)
         elif canonical == "worktree":
             self._handle_worktree_command(cmd_original)
         elif canonical == "save":
             self.save_conversation(cmd_original)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
-        elif canonical == "suggestions":
-            self._handle_suggestions_command(cmd_original)
-        elif canonical == "blueprint":
-            self._handle_blueprint_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
         elif canonical == "skills":
@@ -11733,37 +11648,24 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_session_status()
         elif canonical == "context":
             self._show_context_breakdown(cmd_original)
-        elif canonical == "egress":
-            from son_of_anton_cli.slash_exec import CommandContext, execute_command
-
-            self._console_print(
-                execute_command("egress", CommandContext(surface="cli")).text,
-                highlight=False, markup=False,
-            )
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self._console_print(f"  Status bar {state}")
         elif canonical == "diff":
             self._handle_diff_command(cmd_original)
-        elif canonical == "battery":
-            self._handle_battery_command(cmd_original)
         elif canonical == "timestamps":
             self._handle_timestamps_command(cmd_original)
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "focus":
             self._handle_focus_command(cmd_original)
-        elif canonical == "footer":
-            self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "approvals":
             self._handle_approvals_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
-        elif canonical == "fast":
-            self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -11772,11 +11674,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_insights(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
-        elif canonical == "debug":
-            self._handle_debug_command(cmd_original)
-        elif canonical == "update":
-            if self._handle_update_command():
-                return False
         elif canonical == "version":
             from son_of_anton_cli.main import _print_version_info
 
@@ -11865,18 +11762,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"Plugin system error: {e}")
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
-        elif canonical == "snapshot":
-            self._handle_snapshot_command(cmd_original)
-        elif canonical == "export":
-            self._handle_export_command(cmd_original)
-        elif canonical == "import":
-            self._handle_import_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
-        elif canonical == "journey":
-            self._handle_journey_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -11918,20 +11807,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
-        elif canonical == "heartbeat":
-            self._handle_heartbeat_command(cmd_original)
         elif canonical == "refine":
             self._handle_refine_command(cmd_original)
-        elif canonical == "loop":
-            self._handle_loop_command(cmd_original)
-        elif canonical == "subgoal":
-            self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
-        elif canonical == "indicator":
-            self._handle_indicator_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]

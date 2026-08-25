@@ -15265,9 +15265,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "new": self._busy_new_command,
                 "queue": self._busy_queue_command,
                 "steer": self._busy_steer_command,
-                "egress": self._busy_egress_command,
                 "goal": self._busy_goal_command,
-                "loop": self._busy_loop_command,
             }.get(handler_key)
             if special is not None:
                 return await special(event, quick_key, source)
@@ -15285,15 +15283,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "pause": self._handle_pause_command,
                 "agents": self._handle_agents_command,
                 "background": self._handle_background_command,
-                "subgoal": self._handle_subgoal_command,
-                "heartbeat": self._handle_heartbeat_command,
                 "yolo": self._handle_yolo_command,
                 "verbose": self._handle_verbose_command,
-                "footer": self._handle_footer_command,
                 "help": self._handle_help_command,
                 "commands": self._handle_commands_command,
                 "profile": self._handle_profile_command,
-                "update": self._handle_update_command,
                 "version": self._handle_version_command,
             }.get(name)
             if plain is not None:
@@ -15348,10 +15342,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         logger.info("Ignoring /start platform ping for active session %s", quick_key)
         return ""
 
-    async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
-        from son_of_anton_cli.proxy_cli import format_status_text
-
-        return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # /stop must hard-kill the session when an agent is running.
@@ -15497,14 +15487,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return await self._handle_goal_command(event)
         return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
-    async def _busy_loop_command(self, event: MessageEvent, quick_key: str, source):
-        # /loop mirrors /goal: control verbs are safe mid-run (state
-        # only — read at the next idle boundary); setting a new loop
-        # mid-run is rejected so we don't race the current turn.
-        _loop_arg = (event.get_command_args() or "").strip().lower()
-        if not _loop_arg or _loop_arg in {"status", "pause", "resume", "stop", "clear", "cancel", "help", "--help", "-h"}:
-            return await self._handle_loop_command(event)
-        return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
 
     def _pinned_profile_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the pinned profile for this source's chat, or None.
@@ -16440,16 +16422,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
-        if canonical == "whoami":
-            return await self._handle_whoami_command(event)
 
         if canonical == "status":
             return await self._handle_status_command(event)
 
-        if canonical == "egress":
-            from son_of_anton_cli.proxy_cli import format_status_text
-
-            return format_status_text()
 
         if canonical == "context":
             return await self._handle_context_command(event)
@@ -16531,14 +16507,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             event.text = _init_prompt
             # fall through to agent processing
 
-        if canonical == "fast":
-            return await self._handle_fast_command(event)
 
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
-        if canonical == "footer":
-            return await self._handle_footer_command(event)
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -16555,42 +16527,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "perm":
             return await self._handle_perm_command(event)
 
-        if canonical == "codex-runtime":
-            return await self._handle_codex_runtime_command(event)
 
-        if canonical == "personality":
-            return await self._handle_personality_command(event)
 
-        if canonical == "suggestions":
-            return await self._handle_suggestions_command(event)
 
-        if canonical == "blueprint":
-            _blueprint_result = await self._handle_blueprint_command(event)
-            _blueprint_seed = getattr(_blueprint_result, "agent_seed", None)
-            if _blueprint_seed:
-                # Blueprint matched — rewrite the turn to the seed and fall
-                # through to _handle_message_with_agent so the agent asks the
-                # user for each slot value conversationally and then calls the
-                # cronjob tool (the /steer fall-through pattern). The seed
-                # enters as a normal user turn, preserving role alternation.
-                # Send the "Setting up X…" ack first so the user gets the same
-                # immediate feedback CLI users see, instead of silence until
-                # the agent's first question.
-                _ack = getattr(_blueprint_result, "text", "") or ""
-                if _ack:
-                    try:
-                        adapter = self._adapter_for_source(source)
-                        if adapter:
-                            _ack_meta = self._thread_metadata_for_source(source)
-                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
-                    except Exception:
-                        logger.debug("blueprint ack send failed", exc_info=True)
-                try:
-                    event.text = _blueprint_seed
-                except Exception:
-                    return getattr(_blueprint_result, "text", "") or None
-            else:
-                return getattr(_blueprint_result, "text", "") or None
 
         if canonical == "save":
             return await self._handle_save_command(event)
@@ -16648,14 +16587,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "deny":
             return await self._handle_deny_command(event)
 
-        if canonical == "update":
-            return await self._handle_update_command(event)
 
         if canonical == "version":
             return await self._handle_version_command(event)
 
-        if canonical == "debug":
-            return await self._handle_debug_command(event)
 
         if canonical == "title":
             return await self._handle_title_command(event)
@@ -16666,8 +16601,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "sessions":
             return await self._handle_sessions_command(event)
 
-        if canonical == "branch":
-            return await self._handle_branch_command(event)
 
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
@@ -16705,16 +16638,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "goal":
             return await self._handle_goal_command(event)
 
-        if canonical == "loop":
-            return await self._handle_loop_command(event)
 
-        if canonical == "heartbeat":
-            return await self._handle_heartbeat_command(event)
         if canonical == "refine":
             return await self._handle_refine_command(event)
 
-        if canonical == "subgoal":
-            return await self._handle_subgoal_command(event)
 
         if self._draining:
             return f"Gateway is {self._status_action_gerund()} and is not accepting new work right now."
@@ -19999,70 +19926,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
 
 
-    async def _handle_suggestions_command(self, event: MessageEvent) -> str:
-        """Handle /suggestions in the gateway.
 
-        Delegates to the shared handler so CLI and gateway never drift. The
-        origin is built from the event source so an accepted suggestion's job
-        delivers back to this chat/thread.
-        """
-        args = (event.get_command_args() or "").strip()
-        source = event.source
-        origin = None
-        try:
-            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
-            chat_id = getattr(source, "chat_id", None)
-            if platform and chat_id:
-                origin = {
-                    "platform": platform,
-                    "chat_id": str(chat_id),
-                    "chat_name": getattr(source, "chat_name", None),
-                    "thread_id": getattr(source, "thread_id", None),
-                }
-        except Exception:
-            origin = None
-        try:
-            from son_of_anton_cli.suggestions_cmd import handle_suggestions_command
-
-            return handle_suggestions_command(args, origin=origin, surface="gateway")
-        except Exception as e:
-            logger.debug("suggestions command failed: %s", e)
-            return f"Suggestions command failed: {e}"
-
-    async def _handle_blueprint_command(self, event: MessageEvent):
-        """Handle /blueprint in the gateway.
-
-        Delegates to the shared handler so CLI, TUI, and gateway never drift.
-        Returns a BlueprintCommandResult: ``text`` is shown to the user, and if
-        ``agent_seed`` is set the dispatch site rewrites ``event.text`` to the
-        seed and falls through to the agent (the ``/steer`` pattern) so the
-        agent gathers the slot values conversationally. Origin is built from the
-        event source so a directly created blueprint job delivers back to this chat.
-        """
-        args = (event.get_command_args() or "").strip()
-        source = event.source
-        origin = None
-        try:
-            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
-            chat_id = getattr(source, "chat_id", None)
-            if platform and chat_id:
-                origin = {
-                    "platform": platform,
-                    "chat_id": str(chat_id),
-                    "chat_name": getattr(source, "chat_name", None),
-                    "thread_id": getattr(source, "thread_id", None),
-                }
-        except Exception:
-            origin = None
-        try:
-            from son_of_anton_cli.blueprint_cmd import handle_blueprint_command
-
-            return handle_blueprint_command(args, origin=origin, surface="gateway")
-        except Exception as e:
-            logger.debug("blueprint command failed: %s", e)
-            from son_of_anton_cli.blueprint_cmd import BlueprintCommandResult
-
-            return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
