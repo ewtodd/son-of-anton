@@ -150,14 +150,34 @@ def classify_complexity(text: str) -> str:
     return "default"
 
 
-def resolve_mode(override: Optional[str], text: str) -> str:
+def resolve_mode(
+    override: Optional[str],
+    text: str,
+    *,
+    is_first_turn: bool = True,
+) -> str:
     """Resolve the agent mode for one request.
 
     *override* is the session's ``/mode`` pin (``None`` or ``"auto"`` means
     classify); the result is always one of the three concrete modes.
+
+    *is_first_turn* gates keyword classification. physics/research are
+    one-shot loops that receive ONLY the current message — no conversation
+    history — so routing a mid-conversation turn into one silently drops
+    everything said so far and the run answers as if it had never spoken to
+    the user. A follow-up like "and the cross-section?" is enough to trigger
+    it, and for anyone who talks about this subject matter routinely that is
+    most follow-ups.
+
+    So auto-classification applies to the FIRST turn of a session only.
+    Later turns stay in the standard loop, which is the one that carries
+    history. An explicit ``/mode physics`` still wins on any turn — the user
+    asking for it is unambiguous in a way a keyword match is not.
     """
     if override and override != "auto":
         return override
+    if not is_first_turn:
+        return "standard"
     return classify_mode(text)
 
 

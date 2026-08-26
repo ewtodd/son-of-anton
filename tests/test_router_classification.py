@@ -81,3 +81,46 @@ def test_router_disabled_falls_back_to_default_slot() -> None:
 
 def test_agent_modes_are_the_four_documented_values() -> None:
     assert set(AGENT_MODES) == {"auto", "standard", "physics", "research"}
+
+
+def test_followups_do_not_reroute_into_stateless_modes() -> None:
+    """Auto-classification is first-turn only.
+
+    physics/research are one-shot loops fed ONLY the current message
+    (gateway.run._run_physics_mode_sync takes ``problem_text``, no history),
+    so re-classifying a mid-conversation turn silently discards the exchange
+    and the run answers as if it had never spoken to the user. For anyone who
+    discusses this subject matter routinely, ordinary follow-ups trip the
+    keyword list constantly.
+    """
+    from son_of_anton_cli.router import resolve_mode
+
+    followups = [
+        "what about the half-life though",
+        "ok now fit the histogram",
+        "and the cross-section?",
+        "what does that mean for the isotope",
+        "how about pulse shape discrimination",
+    ]
+    for text in followups:
+        # First turn: classification is what the router is for.
+        assert resolve_mode(None, text, is_first_turn=True) == "physics", text
+        # Mid-conversation: stay in the loop that carries history.
+        assert resolve_mode(None, text, is_first_turn=False) == "standard", text
+
+
+def test_explicit_mode_pin_wins_on_any_turn() -> None:
+    """A /mode pin is unambiguous; only keyword guessing is gated."""
+    from son_of_anton_cli.router import resolve_mode
+
+    for turn in (True, False):
+        assert resolve_mode("physics", "hello there", is_first_turn=turn) == "physics"
+        assert resolve_mode("research", "hello there", is_first_turn=turn) == "research"
+        assert resolve_mode("standard", "fit the histogram", is_first_turn=turn) == "standard"
+
+
+def test_first_turn_default_preserves_legacy_callers() -> None:
+    """Callers that don't pass is_first_turn still classify (back-compat)."""
+    from son_of_anton_cli.router import resolve_mode
+
+    assert resolve_mode(None, "fit the histogram") == "physics"

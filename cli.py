@@ -14470,8 +14470,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from son_of_anton_cli.router import resolve_mode
             _router_cfg = (self.config or {}).get("router") or {}
             if _router_cfg.get("enabled", True):
+                # Keyword classification is first-turn only: physics/research
+                # receive no conversation history, so re-routing a follow-up
+                # into one silently discards the exchange so far.
                 _resolved_mode = resolve_mode(
-                    getattr(self, "_agent_mode", None), message
+                    getattr(self, "_agent_mode", None),
+                    message,
+                    is_first_turn=not getattr(self, "conversation_history", None),
                 )
                 if _resolved_mode == "physics":
                     return self._run_physics_mode(message)

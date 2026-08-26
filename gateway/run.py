@@ -17723,7 +17723,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not router_cfg.get("enabled", True):
             return "standard"
         override = getattr(self, "_session_mode_overrides", {}).get(session_key)
-        return resolve_mode(override, text)
+        # Keyword classification is first-turn only. physics/research run as
+        # one-shot loops fed ONLY the current message (see
+        # _run_physics_mode_sync), so re-classifying a follow-up drops the
+        # conversation and the run answers with no idea what was said. In a
+        # chat about detector work, "and the cross-section?" is enough to
+        # trigger it. An explicit /mode still wins on any turn.
+        _is_first_turn = True
+        try:
+            store = getattr(self, "session_store", None)
+            entry = store._entries.get(session_key) if store is not None else None  # noqa: SLF001
+            if entry is not None and int(getattr(entry, "total_tokens", 0) or 0) > 0:
+                _is_first_turn = False
+        except Exception:
+            logger.debug("mode routing: session-activity probe failed", exc_info=True)
+        return resolve_mode(override, text, is_first_turn=_is_first_turn)
 
     async def _run_physics_mode_turn(self, event, source, session_key, mode: str):
         """Run a physics/research mode turn and deliver the result to the chat.
