@@ -77,6 +77,23 @@ HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before conc
 # ---------------------------------------------------------------------------
 
 
+DM_MODES = frozenset({"allow", "ignore"})
+
+
+def resolve_dm_mode(raw: Optional[str]) -> str:
+    """Normalize SIGNAL_DM_MODE; unknown values fall back to "allow".
+
+    Fail-open is deliberate. A typo here would otherwise make the gateway
+    silently deaf to direct messages, which looks identical to the bot being
+    down and is far harder to diagnose than one extra reply.
+    """
+    mode = (raw or "allow").strip().lower()
+    if mode not in DM_MODES:
+        logger.warning("Signal: unknown SIGNAL_DM_MODE=%r; falling back to 'allow'", raw)
+        return "allow"
+    return mode
+
+
 def _parse_comma_list(value: str) -> List[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [v.strip() for v in value.split(",") if v.strip()]
@@ -270,6 +287,20 @@ class SignalAdapter(BasePlatformAdapter):
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
+
+        # DM policy — the mirror of the group filter in _handle_envelope.
+        #
+        # Several gateways can serve ONE Signal account, separated by group id
+        # (each subscribes to the same signal-cli SSE stream and drops groups
+        # that are not its own). A DM carries no such routing key, and
+        # SIGNAL_ALLOWED_USERS cannot distinguish the two cases — it gates the
+        # sender for DMs and group messages alike, so the owner's number must
+        # be listed for groups to work at all, which simultaneously authorizes
+        # the owner's DMs on EVERY instance. Without this switch one DM
+        # produces one full agent turn per running gateway.
+        #   "allow"  (default) — dispatch normally; single-gateway behaviour
+        #   "ignore"           — drop at intake, before any session or agent work
+        self.dm_mode = resolve_dm_mode(os.getenv("SIGNAL_DM_MODE"))
 
         # Mention filter — only respond in groups when the bot account is @mentioned.
         # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
@@ -608,6 +639,12 @@ class SignalAdapter(BasePlatformAdapter):
             if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
                 logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
                 return
+        elif self.dm_mode == "ignore" and not is_note_to_self:
+            # Note to Self is exempt: the sync branch above promotes it to a
+            # dataMessage that looks exactly like a DM, but it is the
+            # operator's own channel, not an inbound peer.
+            logger.debug("Signal: dropping DM (SIGNAL_DM_MODE=ignore)")
+            return
 
         # Build chat info
         chat_id = sender if not is_group else f"group:{group_id}"
