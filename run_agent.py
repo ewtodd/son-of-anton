@@ -5352,9 +5352,6 @@ class AIAgent:
         """Cache key covering everything that forces a fresh client: credential
         rotation, base URL / region changes, timeout changes (model switch),
         and the 1M-context beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            return ("bedrock", region)
         return (
             "direct",
             self._anthropic_api_key,
@@ -5416,17 +5413,13 @@ class AIAgent:
             # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
             self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
 
-        if key[0] == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            client = build_anthropic_bedrock_client(key[1])
-        else:
-            from agent.anthropic_adapter import build_anthropic_client
-            client = build_anthropic_client(
-                self._anthropic_api_key,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=key[4],
-            )
+        from agent.anthropic_adapter import build_anthropic_client
+        client = build_anthropic_client(
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(self.provider, self.model),
+            drop_context_1m_beta=key[4],
+        )
         logger.debug(
             "Anthropic request client created (%s, shared=False) provider=%s model=%s",
             reason,
@@ -6883,9 +6876,6 @@ class AIAgent:
         """Cache key covering everything that forces a fresh client: credential
         rotation, base URL / region changes, timeout changes (model switch),
         and the 1M-context beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            return ("bedrock", region)
         return (
             "direct",
             self._anthropic_api_key,
@@ -6947,17 +6937,13 @@ class AIAgent:
             # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
             self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
 
-        if key[0] == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            client = build_anthropic_bedrock_client(key[1])
-        else:
-            from agent.anthropic_adapter import build_anthropic_client
-            client = build_anthropic_client(
-                self._anthropic_api_key,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=key[4],
-            )
+        from agent.anthropic_adapter import build_anthropic_client
+        client = build_anthropic_client(
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(self.provider, self.model),
+            drop_context_1m_beta=key[4],
+        )
         logger.debug(
             "Anthropic request client created (%s, shared=False) provider=%s model=%s",
             reason,
@@ -7666,7 +7652,7 @@ class AIAgent:
         # custom_providers[].extra_headers) — applied last so the most
         # specific config level survives credential swaps and rebuilds too.
         # SECURITY: values may carry credentials — never log them.
-        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
+        if self.api_mode != "anthropic_messages":
             try:
                 from son_of_anton_cli.config import (
                     apply_custom_provider_extra_headers_to_client_kwargs,
@@ -7699,7 +7685,7 @@ class AIAgent:
         No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
         and when no overrides are configured.
         """
-        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
+        if self.api_mode == "anthropic_messages":
             return
         from agent.auxiliary_client import (
             _apply_user_default_headers as _merge_user_headers,
@@ -7832,18 +7818,13 @@ class AIAgent:
         rebuilt client carries the reduced beta set.
         """
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            self._anthropic_client = build_anthropic_bedrock_client(region)
-        else:
-            from agent.anthropic_adapter import build_anthropic_client
-            self._anthropic_client = build_anthropic_client(
-                self._anthropic_api_key,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=_drop_1m,
-            )
+        from agent.anthropic_adapter import build_anthropic_client
+        self._anthropic_client = build_anthropic_client(
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(self.provider, self.model),
+            drop_context_1m_beta=_drop_1m,
+        )
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
@@ -8804,7 +8785,7 @@ class AIAgent:
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
-            "zai", "bedrock",
+            "zai",
             "xiaomi",
         }:
             return True
@@ -8820,9 +8801,6 @@ class AIAgent:
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
             # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
             or base_url_host_matches(base, "aiplatform.googleapis.com")
-            # AWS Bedrock runtime endpoints — defense-in-depth when
-            # ``provider`` is unset but ``base_url`` still names Bedrock.
-            or host.startswith("bedrock-runtime.")
         )
 
     def _is_qwen_portal(self) -> bool:

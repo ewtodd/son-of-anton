@@ -1814,7 +1814,6 @@ def resolve_provider(
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
         "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
-        "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
@@ -1973,15 +1972,6 @@ def resolve_provider(
                 _oauth_active,
             )
         return _oauth_active
-
-    # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
-    # This runs after API-key providers so explicit keys always win.
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
-            return "bedrock"
-    except ImportError:
-        pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'son-of-anton model' to choose a "
@@ -6882,97 +6872,13 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
-    if target == "azure-foundry":
-        return _get_azure_foundry_auth_status()
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
-    # AWS SDK providers (Bedrock) — check via boto3 credential chain
-    if pconfig and pconfig.auth_type == "aws_sdk":
-        try:
-            from agent.bedrock_adapter import has_aws_credentials
-            return {"logged_in": has_aws_credentials(), "provider": target}
-        except ImportError:
-            return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
     return {"logged_in": False}
 
 
-def _get_azure_foundry_auth_status() -> Dict[str, Any]:
-    """Return structural auth status for Azure Foundry.
-
-    ``logged_in`` is structural, matching other non-OAuth provider status
-    checks:
-
-      * ``auth_mode == "entra_id"`` AND ``azure-identity`` is importable
-        (we do NOT mint a token here; ``son-of-anton doctor`` runs the live
-        probe and reports whether the credential chain can acquire one).
-      * ``auth_mode == "api_key"`` (default) AND ``AZURE_FOUNDRY_API_KEY``
-        is set with a usable value.
-
-    Never invokes the Entra credential chain — keeps CLI startup latency
-    flat regardless of token-service / az login state.
-    """
-    info: Dict[str, Any] = {"provider": "azure-foundry"}
-    try:
-        from son_of_anton_cli.config import load_config, get_env_value_prefer_dotenv
-        cfg = load_config()
-    except Exception:
-        cfg = {}
-
-    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
-    auth_mode = "api_key"
-    base_url = ""
-    if isinstance(model_cfg, dict):
-        auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
-        base_url = str(model_cfg.get("base_url") or "").strip()
-    info["auth_mode"] = auth_mode
-    info["base_url"] = base_url
-
-    if auth_mode == "entra_id":
-        try:
-            from agent.azure_identity_adapter import (
-                EntraIdentityConfig,
-                SCOPE_AI_AZURE_DEFAULT,
-                has_azure_identity_installed,
-            )
-            installed = has_azure_identity_installed()
-            entra_cfg = {}
-            if isinstance(model_cfg, dict) and isinstance(model_cfg.get("entra"), dict):
-                entra_cfg = model_cfg["entra"]
-            identity_config = EntraIdentityConfig.from_dict(
-                entra_cfg,
-                default_scope=SCOPE_AI_AZURE_DEFAULT,
-            )
-            info["azure_identity_installed"] = installed
-            info["scope"] = identity_config.scope
-            info["credential_probe"] = "not_run"
-            info["credential_verified"] = False
-            info["logged_in"] = bool(installed)
-            if not installed:
-                info["hint"] = (
-                    "azure-identity not installed. Install with: "
-                    "pip install azure-identity  (or rely on Son of Anton' "
-                    "lazy-install at first use)."
-                )
-            else:
-                info["hint"] = (
-                    "azure-identity is installed; live credential validation "
-                    "is skipped here. Run `son-of-anton doctor` to verify token acquisition."
-                )
-            return info
-        except Exception as exc:
-            info["logged_in"] = False
-            info["error"] = f"azure-identity check failed: {exc}"
-            return info
-
-    # api_key mode (default)
-    try:
-        api_key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
-    except Exception:
-        api_key = os.getenv("AZURE_FOUNDRY_API_KEY", "")
-    info["logged_in"] = has_usable_secret(api_key)
-    return info
 
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:

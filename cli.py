@@ -8957,10 +8957,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
-        # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
-        # provider). Never invoke it; just identify the auth surface.
-        from agent.azure_identity_adapter import is_token_provider
-
         # Prefer the LIVE agent's credential when one exists: SonOfAntonCLI's
         # constructor seeds self.api_key from OPENAI/OPENROUTER env vars
         # before provider resolution runs, so on non-OpenAI providers (Nous,
@@ -8972,9 +8968,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         agent = getattr(self, "agent", None)
         if agent is not None and getattr(agent, "api_key", None):
             display_key = agent.api_key
-        if is_token_provider(display_key):
-            api_key_display = "Microsoft Entra ID"
-        elif isinstance(display_key, str) and len(display_key) > 12:
+        if isinstance(display_key, str) and len(display_key) > 12:
             api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
         else:
             api_key_display = "Not set!"

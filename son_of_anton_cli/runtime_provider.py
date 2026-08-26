@@ -402,7 +402,6 @@ _VALID_API_MODES = {
     "chat_completions",
     "codex_responses",
     "anthropic_messages",
-    "bedrock_converse",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
     # instead of Son of Anton' tool dispatch. Gated behind config key
@@ -528,32 +527,6 @@ def _resolve_runtime_from_pool_entry(
             target_model=effective_model,
         )
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
-    elif provider == "azure-foundry":
-        # Azure Foundry: read api_mode and base_url from config
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        if cfg_provider == "azure-foundry":
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
-                api_mode = configured_mode
-        # Model-family inference for GPT-5.x / codex / o1-o4: Azure rejects
-        # /chat/completions on these with 400 "operation unsupported" — see
-        # azure_foundry_model_api_mode() for rationale.  Skip when the user
-        # explicitly picked anthropic_messages (Anthropic-style endpoint).
-        if effective_model and api_mode != "anthropic_messages":
-            try:
-                from son_of_anton_cli.models import azure_foundry_model_api_mode
-
-                inferred = azure_foundry_model_api_mode(effective_model)
-            except Exception:
-                inferred = None
-            if inferred:
-                api_mode = inferred
-        # For Anthropic-style endpoints, strip /v1 suffix
-        if api_mode == "anthropic_messages":
-            base_url = re.sub(r"/v1/?$", "", base_url)
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -1413,173 +1386,6 @@ def _resolve_openrouter_runtime(
     }
 
 
-def _resolve_azure_foundry_runtime(
-    *,
-    requested_provider: str,
-    model_cfg: Dict[str, Any],
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-    target_model: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Resolve an Azure Foundry runtime entry.
-
-    Reads ``model.base_url`` + ``model.api_mode`` from config.yaml (or
-    explicit overrides), pulls the API key from ``.env`` / env var, and
-    strips a trailing ``/v1`` for Anthropic-style endpoints because the
-    Anthropic SDK appends ``/v1/messages`` internally.
-
-    When ``model.auth_mode == "entra_id"`` (and the model is OpenAI-style),
-    the returned ``api_key`` is a zero-arg callable produced by
-    :func:`agent.azure_identity_adapter.build_token_provider` rather than
-    a string. Downstream code that constructs an OpenAI SDK client passes
-    this through unchanged (the SDK accepts ``Callable[[], str]`` for
-    ``api_key`` and calls it before every request). Code paths that need
-    a string (logging, manual HTTP probes, header injection) must use the
-    helpers in ``agent.azure_identity_adapter``.
-
-    Raises :class:`AuthError` when required values are missing.
-    """
-    explicit_api_key = str(explicit_api_key or "").strip()
-    explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
-
-    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-    cfg_base_url = ""
-    cfg_api_mode = "chat_completions"
-    cfg_auth_mode = "api_key"
-    cfg_entra: Dict[str, Any] = {}
-    if cfg_provider == "azure-foundry":
-        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-        cfg_api_mode = _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions"
-        cfg_auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
-        _entra = model_cfg.get("entra")
-        if isinstance(_entra, dict):
-            cfg_entra = _entra
-
-    # Model-family inference: Azure Foundry deploys GPT-5.x / codex / o1-o4
-    # reasoning models as Responses-API-only.  Calling /chat/completions
-    # against them returns 400 "The requested operation is unsupported."
-    # Upgrade api_mode when the model name matches, unless the user has
-    # explicitly chosen anthropic_messages (Anthropic-style endpoint).
-    effective_model = str(target_model or model_cfg.get("default") or "").strip()
-    if effective_model and cfg_api_mode != "anthropic_messages":
-        try:
-            from son_of_anton_cli.models import azure_foundry_model_api_mode
-
-            inferred = azure_foundry_model_api_mode(effective_model)
-        except Exception:
-            inferred = None
-        if inferred:
-            cfg_api_mode = inferred
-
-    env_base_url = _getenv("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")
-    base_url = explicit_base_url_clean or cfg_base_url or env_base_url
-    if not base_url:
-        raise AuthError(
-            "Azure Foundry requires a base URL. Set it via 'son-of-anton model' or "
-            "the AZURE_FOUNDRY_BASE_URL environment variable."
-        )
-
-    # Anthropic SDK appends /v1/messages itself, so strip any trailing /v1
-    # we inherited from the configured base_url to avoid double-/v1 paths.
-    if cfg_api_mode == "anthropic_messages":
-        base_url = re.sub(r"/v1/?$", "", base_url)
-
-    # ── Entra ID (Microsoft Foundry recommended path) ──────────────────
-    #
-    # OpenAI-style endpoints use the OpenAI SDK's native callable
-    # ``api_key=`` contract — the SDK mints a fresh JWT per request
-    # automatically.
-    #
-    # Anthropic-style endpoints (Claude on Foundry) take the callable
-    # too: :func:`agent.anthropic_adapter.build_anthropic_client`
-    # detects the callable and constructs an ``httpx.Client`` with a
-    # request event hook that injects a fresh ``Authorization: Bearer``
-    # header per request (the Anthropic SDK does not accept callables
-    # natively). From the runtime resolver's perspective both modes
-    # are identical — return the callable api_key and let the
-    # downstream SDK wrapper handle the contract difference.
-    if cfg_auth_mode == "entra_id":
-        if explicit_api_key:
-            # User passed --api-key on the CLI while config says entra_id —
-            # honour the explicit string (escape hatch for one-off testing).
-            api_key: Any = explicit_api_key
-            source = "explicit"
-            auth_mode = "api_key"
-        else:
-            try:
-                from agent.azure_identity_adapter import (
-                    EntraIdentityConfig,
-                    SCOPE_AI_AZURE_DEFAULT,
-                    build_token_provider,
-                )
-            except Exception as exc:
-                raise AuthError(
-                    "Azure Foundry Entra ID auth requires the 'azure-identity' "
-                    "package. Install it with: pip install azure-identity "
-                    f"(import failed: {exc})"
-                ) from exc
-
-            scope = (
-                str(cfg_entra.get("scope") or "").strip()
-                or SCOPE_AI_AZURE_DEFAULT
-            )
-            try:
-                entra_config = EntraIdentityConfig(
-                    scope=scope,
-                )
-                token_provider = build_token_provider(config=entra_config)
-            except ImportError as exc:
-                raise AuthError(str(exc)) from exc
-            api_key = token_provider
-            source = "entra_id"
-            auth_mode = "entra_id"
-
-        clean_entra = {}
-        if auth_mode == "entra_id":
-            configured_scope = str(cfg_entra.get("scope") or "").strip()
-            if configured_scope:
-                clean_entra["scope"] = configured_scope
-
-        return {
-            "provider": "azure-foundry",
-            "api_mode": cfg_api_mode,
-            "base_url": base_url,
-            "api_key": api_key,
-            "auth_mode": auth_mode,
-            "entra": clean_entra,
-            "source": source,
-            "requested_provider": requested_provider,
-        }
-
-    # ── Static API key (legacy / default) ──────────────────────────────
-    api_key = explicit_api_key
-    if not api_key:
-        try:
-            from son_of_anton_cli.config import get_env_value
-            api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
-        except Exception:
-            api_key = ""
-    if not api_key:
-        api_key = _getenv("AZURE_FOUNDRY_API_KEY", "").strip()
-    if not api_key:
-        raise AuthError(
-            "Azure Foundry requires an API key. Set AZURE_FOUNDRY_API_KEY in "
-            "~/.son-of-anton/.env or run 'son-of-anton model' to configure. To use "
-            "keyless Microsoft Entra ID auth instead, set "
-            "model.auth_mode: entra_id in config.yaml (or pick "
-            "'Microsoft Entra ID' in 'son-of-anton model')."
-        )
-
-    source = "explicit" if (explicit_api_key or explicit_base_url) else "config"
-    return {
-        "provider": "azure-foundry",
-        "api_mode": cfg_api_mode,
-        "base_url": base_url,
-        "api_key": api_key,
-        "auth_mode": "api_key",
-        "source": source,
-        "requested_provider": requested_provider,
-    }
 
 
 def _resolve_explicit_runtime(
@@ -1683,13 +1489,6 @@ def _resolve_explicit_runtime(
         }
 
     # Azure Foundry: user-configured endpoint with selectable API mode
-    if provider == "azure-foundry":
-        return _resolve_azure_foundry_runtime(
-            requested_provider=requested_provider,
-            model_cfg=model_cfg,
-            explicit_api_key=explicit_api_key,
-            explicit_base_url=explicit_base_url,
-        )
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
@@ -1820,15 +1619,6 @@ def resolve_runtime_provider(
     # Resolve before the custom-runtime / pool / generic paths so Azure
     # config is always picked up from model.base_url + model.api_mode,
     # regardless of whether the caller passed explicit_* args.
-    if requested_provider == "azure-foundry":
-        azure_runtime = _resolve_azure_foundry_runtime(
-            requested_provider=requested_provider,
-            model_cfg=_get_model_config(),
-            explicit_api_key=explicit_api_key,
-            explicit_base_url=explicit_base_url,
-            target_model=target_model,
-        )
-        return azure_runtime
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
@@ -2179,82 +1969,6 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    # AWS Bedrock (native Converse API via boto3)
-    if provider == "bedrock":
-        from agent.bedrock_adapter import (
-            has_aws_credentials,
-            resolve_aws_auth_env_var,
-            resolve_bedrock_region,
-            is_anthropic_bedrock_model,
-        )
-        # When the user explicitly selected bedrock (not auto-detected),
-        # trust boto3's credential chain — it handles IMDS, ECS task roles,
-        # Lambda execution roles, SSO, and other implicit sources that our
-        # env-var check can't detect.
-        is_explicit = requested_provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"}
-        if not is_explicit and not has_aws_credentials():
-            raise AuthError(
-                "No AWS credentials found for Bedrock. Configure one of:\n"
-                "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
-                "  - AWS_PROFILE (for SSO / named profiles)\n"
-                "  - IAM instance role (EC2, ECS, Lambda)\n"
-                "Or run 'aws configure' to set up credentials.",
-                code="no_aws_credentials",
-            )
-        # Read bedrock-specific config from config.yaml
-        _bedrock_cfg = load_config().get("bedrock", {})
-        # Region priority: config.yaml bedrock.region → env var → us-east-1
-        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
-        auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
-        # Build guardrail config if configured
-        _gr = _bedrock_cfg.get("guardrail", {})
-        guardrail_config = None
-        if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
-            guardrail_config = {
-                "guardrailIdentifier": _gr["guardrail_identifier"],
-                "guardrailVersion": _gr["guardrail_version"],
-            }
-            if _gr.get("stream_processing_mode"):
-                guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
-            if _gr.get("trace"):
-                guardrail_config["trace"] = _gr["trace"]
-        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
-        #
-        # Exception: Bearer Token auth (AWS_BEARER_TOKEN_BEDROCK) is NOT
-        # supported by the AnthropicBedrock SDK (it only does SigV4 signing —
-        # a bearer-only setup fails at runtime with "could not resolve
-        # credentials from session"). Route these users through the Converse
-        # API regardless of model. Ref: #28156.
-        _current_model = str(target_model or model_cfg.get("default") or "").strip()
-        _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
-            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
-            runtime = {
-                "provider": "bedrock",
-                "api_mode": "anthropic_messages",
-                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
-                "api_key": "aws-sdk",
-                "source": auth_source,
-                "region": region,
-                "bedrock_anthropic": True,  # Signal to use AnthropicBedrock client
-                "requested_provider": requested_provider,
-            }
-        else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
-            runtime = {
-                "provider": "bedrock",
-                "api_mode": "bedrock_converse",
-                "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
-                "api_key": "aws-sdk",
-                "source": auth_source,
-                "region": region,
-                "requested_provider": requested_provider,
-            }
-        if guardrail_config:
-            runtime["guardrail_config"] = guardrail_config
-        return runtime
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)

@@ -57,8 +57,48 @@ def test_openai_alias_resolves_to_openai_api() -> None:
 def test_removed_providers_no_longer_resolve_offline() -> None:
     # Pruned providers must not resolve through overlays; with models.dev
     # unreachable (isolated test home, no cache) they resolve to None.
-    for slug in ("nous", "openrouter", "gemini", "copilot", "bedrock"):
+    for slug in (
+        "nous", "openrouter", "gemini", "copilot",
+        # Removed 2026-08-25: the dead-provider sweep. Each had a full
+        # adapter + auth + pricing + runtime-resolution surface that could
+        # never fire, because none of them are in SON_OF_ANTON_OVERLAYS.
+        "bedrock", "aws", "aws-bedrock",
+        "vertex", "google-vertex", "vertex-ai",
+        "azure-foundry", "foundry",
+    ):
         assert get_provider(slug, allow_network=False) is None, f"{slug} still resolves"
+
+
+def test_removed_provider_adapters_are_gone() -> None:
+    """The dead-provider adapters must not come back as importable modules.
+
+    Each of these was reachable only through a provider id that
+    ``get_provider`` rejects, so re-adding the module without re-adding the
+    provider would recreate ~2,700 lines of unreachable code.
+    """
+    import importlib
+
+    for mod in (
+        "agent.bedrock_adapter",
+        "agent.azure_identity_adapter",
+        "agent.vertex_adapter",
+        "agent.transports.bedrock",
+        "son_of_anton_cli.azure_detect",
+    ):
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            continue
+        raise AssertionError(f"{mod} is importable again — dead provider resurrected")
+
+
+def test_no_dead_provider_auth_types_registered() -> None:
+    """PROVIDER_REGISTRY must not carry auth flows with no provider behind them."""
+    from son_of_anton_cli.auth import PROVIDER_REGISTRY
+
+    auth_types = {p.auth_type for p in PROVIDER_REGISTRY.values()}
+    assert "aws_sdk" not in auth_types, "aws_sdk auth survives without Bedrock"
+    assert "vertex" not in auth_types, "vertex auth survives without the adapter"
 
 
 def test_api_mode_for_fork_providers() -> None:

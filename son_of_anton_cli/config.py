@@ -1071,8 +1071,6 @@ _API_MODE_ALIASES = {
     "anthropic": "anthropic_messages",
     "anthropic-messages": "anthropic_messages",
     "messages": "anthropic_messages",
-    "bedrock": "bedrock_converse",
-    "bedrock-converse": "bedrock_converse",
 }
 
 

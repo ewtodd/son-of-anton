@@ -239,17 +239,12 @@ def _content_cache_key(
 def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
     """Return True for Microsoft Foundry's OpenAI-compatible Responses API.
 
-    Matched on the registered provider id first, then on the endpoint host.
-    Host matching goes through ``base_url_host_matches`` rather than a
+    Matched on the endpoint host. Matching goes through ``base_url_host_matches`` rather than a
     substring test, so a path or query segment carrying the Foundry domain
     (``https://proxy.example.com/.services.ai.azure.com/v1``) is not
     misclassified as Foundry.
     """
     from utils import base_url_host_matches
-
-    provider = str(params.get("provider") or "").strip().lower()
-    if provider == "azure-foundry":
-        return True
 
     return base_url_host_matches(
         str(params.get("base_url") or ""), "services.ai.azure.com"

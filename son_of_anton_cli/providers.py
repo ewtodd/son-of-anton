@@ -118,7 +118,6 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
-    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -357,8 +356,6 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     # cache-cold (0% vs 93-99% measured). Exact-hostname match per #32243.
     if hostname == "api.meta.ai":
         return "codex_responses"
-    if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
-        return "bedrock_converse"
     return None
 
 
@@ -394,10 +391,6 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     pdef = get_provider(provider)
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
-
-    # Direct provider checks for providers not in SON_OF_ANTON_OVERLAYS
-    if provider == "bedrock":
-        return "bedrock_converse"
 
     return "chat_completions"
 

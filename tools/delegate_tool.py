@@ -4443,7 +4443,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     # so the proper SDK path is taken. The configured base_url is still
     # forwarded through runtime-provider resolution when applicable (e.g. a
     # custom Bedrock regional endpoint).
-    _NATIVE_SDK_PROVIDERS = {"bedrock", "google", "google-genai"}
+    _NATIVE_SDK_PROVIDERS = {"google", "google-genai"}
     _provider_lower = (configured_provider or "").strip().lower()
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 

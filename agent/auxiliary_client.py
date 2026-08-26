@@ -2248,102 +2248,13 @@ class AsyncAnthropicAuxiliaryClient:
         self._real_client = sync_wrapper._real_client
 
 
-class _BedrockCompletionsAdapter:
-    """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
-
-    def __init__(self, region: str, model: str):
-        self._region = region
-        self._model = model
-
-    def create(self, **kwargs) -> Any:
-        from agent.bedrock_adapter import call_converse
-
-        messages = kwargs.get("messages", [])
-        model = kwargs.get("model", self._model)
-        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
-        # OpenAI accepts ``stop`` as str or list; Converse requires a list.
-        stop = kwargs.get("stop")
-        if isinstance(stop, str):
-            stop = [stop]
-        if kwargs.get("tool_choice") is not None:
-            # Converse's toolChoice isn't wired through call_converse();
-            # no in-tree auxiliary caller passes tool_choice today. Surface
-            # the drop instead of silently ignoring it.
-            logger.debug(
-                "BedrockAuxiliaryClient: tool_choice=%r not supported by the "
-                "Converse shim — ignored.", kwargs.get("tool_choice"),
-            )
-        if kwargs.get("stream"):
-            # Converse streaming isn't wired through this shim. Return a
-            # complete response instead — call_llm's streaming consumer
-            # detects a final object and downgrades to non-live output.
-            logger.debug(
-                "BedrockAuxiliaryClient: stream=True requested for %s — "
-                "returning a complete response (Converse shim does not "
-                "stream); caller downgrades to non-streaming.",
-                model,
-            )
-        return call_converse(
-            region=self._region,
-            model=model,
-            messages=messages,
-            tools=kwargs.get("tools"),
-            # Omitted/None caller cap → None: build_converse_kwargs then omits
-            # inferenceConfig.maxTokens so Bedrock uses the model's maximum
-            # allowed output, matching the no-cap-by-default policy every
-            # other aux wire already follows (#10809: vision descriptions
-            # stayed capped at the shim's old hardcoded 4096 on Bedrock).
-            # Truthiness (not `is None`) is deliberate — it matches the
-            # sibling Anthropic shim's reading of max_tokens above, so a
-            # nonsense explicit 0 is treated as "no cap" on both wires.
-            max_tokens=int(max_tokens) if max_tokens else None,
-            temperature=kwargs.get("temperature"),
-            top_p=kwargs.get("top_p"),
-            stop_sequences=stop,
-        )
 
 
-class _BedrockChatShim:
-    def __init__(self, adapter: "_BedrockCompletionsAdapter"):
-        self.completions = adapter
 
 
-class BedrockAuxiliaryClient:
-    """OpenAI-client-compatible wrapper over AWS Bedrock Converse API."""
-
-    def __init__(self, region: str, model: str):
-        self._region = region
-        self._model = model
-        adapter = _BedrockCompletionsAdapter(region, model)
-        self.chat = _BedrockChatShim(adapter)
-        self.api_key = "aws-sdk"
-        self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-
-    def close(self):
-        pass
 
 
-class _AsyncBedrockCompletionsAdapter:
-    def __init__(self, sync_adapter: _BedrockCompletionsAdapter):
-        self._sync = sync_adapter
 
-    async def create(self, **kwargs) -> Any:
-        import asyncio
-        return await asyncio.to_thread(self._sync.create, **kwargs)
-
-
-class _AsyncBedrockChatShim:
-    def __init__(self, adapter: _AsyncBedrockCompletionsAdapter):
-        self.completions = adapter
-
-
-class AsyncBedrockAuxiliaryClient:
-    def __init__(self, sync_wrapper: "BedrockAuxiliaryClient"):
-        sync_adapter = sync_wrapper.chat.completions
-        async_adapter = _AsyncBedrockCompletionsAdapter(sync_adapter)
-        self.chat = _AsyncBedrockChatShim(async_adapter)
-        self.api_key = sync_wrapper.api_key
-        self.base_url = sync_wrapper.base_url
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
@@ -2405,8 +2316,6 @@ def _maybe_wrap_anthropic(
         # modules (copilot_acp_client pulls in openai.types) on the probe path.
         return client_obj
     if _safe_isinstance(client_obj, AnthropicAuxiliaryClient):
-        return client_obj
-    if _safe_isinstance(client_obj, BedrockAuxiliaryClient):
         return client_obj
     # Other specialized adapters we should never re-dispatch.
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
@@ -3776,119 +3685,6 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     )
     return CodexAuxiliaryClient(real_client, model), model
 
-
-def _try_azure_foundry(
-    *,
-    model: Optional[str] = None,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-    api_mode: Optional[str] = None,
-) -> Tuple[Optional[Any], Optional[str]]:
-    """Resolve an Azure Foundry auxiliary client via the runtime resolver.
-
-    Mirrors the ``_try_anthropic`` / ``_try_nous`` shape but delegates to
-    :func:`son_of_anton_cli.runtime_provider._resolve_azure_foundry_runtime` —
-    the same resolver the main agent uses — so:
-
-    * ``auth_mode: api_key`` (default) gets the static
-      ``AZURE_FOUNDRY_API_KEY`` string.
-    * ``auth_mode: entra_id`` gets a callable bearer-token provider
-      (``Callable[[], str]`` from
-      :mod:`agent.azure_identity_adapter`).
-    * Per-model ``api_mode`` auto-routing for GPT-5.x / o-series /
-      codex models works.
-    * ``model.entra.{tenant_id,client_id,authority,scope}`` config
-      fields propagate.
-    * Non-default ``model.base_url`` overrides are honored.
-
-    The OpenAI SDK accepts both shapes for ``api_key`` so the caller
-    can forward the result without coercion.
-
-    Returns ``(client, model)`` or ``(None, None)`` on failure.
-    """
-    try:
-        from son_of_anton_cli.runtime_provider import _resolve_azure_foundry_runtime
-        from son_of_anton_cli.auth import AuthError
-        from son_of_anton_cli.config import load_config_readonly
-    except ImportError:
-        return None, None
-
-    try:
-        cfg = load_config_readonly()
-        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-    except Exception:
-        model_cfg = {}
-
-    try:
-        runtime = _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg=model_cfg,
-            explicit_api_key=explicit_api_key,
-            explicit_base_url=explicit_base_url,
-            target_model=model,
-        )
-    except AuthError as exc:
-        logger.debug("Auxiliary azure-foundry: %s", exc)
-        return None, None
-    except Exception as exc:
-        logger.debug("Auxiliary azure-foundry runtime error: %s", exc)
-        return None, None
-
-    api_key = runtime.get("api_key")
-    base_url = str(runtime.get("base_url", "") or "")
-    runtime_api_mode = api_mode or runtime.get("api_mode") or "chat_completions"
-
-    # Empty-string check on api_key here would be wrong for callable
-    # token providers (callables are truthy and non-empty by definition).
-    # Bail only when api_key is None / empty string.
-    _has_key = bool(api_key) if not callable(api_key) else True
-    if not _has_key or not base_url:
-        return None, None
-
-    final_model = _normalize_resolved_model(
-        model or str(model_cfg.get("default") or ""),
-        "azure-foundry",
-    )
-    if not final_model:
-        # No fallback aux model for Azure — the user must have a
-        # deployment name. Surface that as "no client" so the auto
-        # chain falls through to the next provider rather than 404ing.
-        logger.debug(
-            "Auxiliary azure-foundry: no model resolved (model=%r, default=%r)",
-            model, model_cfg.get("default"),
-        )
-        return None, None
-
-    # Azure pre-v1 endpoints sometimes carry api-version query params
-    # in the base URL; the OpenAI SDK drops them when joining paths,
-    # so lift them out and pass via default_query.
-    extra: Dict[str, Any] = {}
-    _clean_base, _dq = _extract_url_query_params(base_url)
-    if _dq:
-        extra["default_query"] = _dq
-
-    client = _create_openai_client(api_key=api_key, base_url=_clean_base, **extra)
-
-    if runtime_api_mode == "codex_responses":
-        # GPT-5.x / o-series / codex models on Azure Foundry are
-        # Responses-API-only — wrap so chat.completions.create() is
-        # translated to /responses behind the scenes.
-        return CodexAuxiliaryClient(client, final_model), final_model
-
-    if runtime_api_mode == "anthropic_messages":
-        # Forward ``api_key`` verbatim — for static keys it's a string,
-        # for Entra ID it's a callable. ``_maybe_wrap_anthropic`` →
-        # ``build_anthropic_client`` detects the callable and installs
-        # the bearer-injecting httpx hook.
-        return _maybe_wrap_anthropic(
-            client, final_model, api_key,
-            base_url, runtime_api_mode,
-        ), final_model
-
-    # chat_completions — return the plain OpenAI client.
-    return client, final_model
 
 
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
@@ -6132,8 +5928,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
-    if isinstance(sync_client, BedrockAuxiliaryClient):
-        return AsyncBedrockAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -6719,39 +6513,6 @@ def resolve_provider_client(
     except ImportError:
         pass
 
-    # ── Azure Foundry (delegates to runtime resolver for auth_mode-aware routing) ─
-    #
-    # The generic PROVIDER_REGISTRY path below uses
-    # ``resolve_api_key_provider_credentials`` which only knows about the
-    # static ``AZURE_FOUNDRY_API_KEY`` env var. That misses two important
-    # cases for the ``azure-foundry`` provider:
-    #
-    #   1. ``model.auth_mode: entra_id`` — no static key exists; we need
-    #      a callable bearer-token provider from ``azure_identity_adapter``.
-    #   2. Non-default ``model.base_url`` (Foundry projects path) — the
-    #      env-var-only resolver doesn't apply config-yaml-driven URL
-    #      overrides.
-    #
-    # Delegate to the same runtime resolver the main agent uses so
-    # auxiliary tasks (title generation, compression, vision, embedding,
-    # session search) inherit the user's full Azure config.
-    if provider == "azure-foundry":
-        client, default_model = _try_azure_foundry(
-            model=model,
-            explicit_api_key=explicit_api_key,
-            explicit_base_url=explicit_base_url,
-            api_mode=api_mode,
-        )
-        if client is None:
-            logger.warning(
-                "resolve_provider_client: azure-foundry requested but "
-                "runtime resolution failed (run: son-of-anton doctor for "
-                "diagnostics)"
-            )
-            return None, None
-        final_model = _normalize_resolved_model(model or default_model, provider)
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
@@ -6951,51 +6712,6 @@ def resolve_provider_client(
         return None, None
 
 
-    elif pconfig.auth_type == "aws_sdk":
-        # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
-        try:
-            from agent.bedrock_adapter import (
-                has_aws_credentials,
-                is_anthropic_bedrock_model,
-                resolve_bedrock_region,
-            )
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-        except ImportError:
-            logger.warning("resolve_provider_client: bedrock requested but "
-                           "boto3 or anthropic SDK not installed")
-            return None, None
-
-        if not has_aws_credentials():
-            logger.debug("resolve_provider_client: bedrock requested but "
-                         "no AWS credentials found")
-            return None, None
-
-        region = resolve_bedrock_region()
-        default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-        final_model = _normalize_resolved_model(model or default_model, provider)
-        base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-
-        if is_anthropic_bedrock_model(final_model):
-            try:
-                real_client = build_anthropic_bedrock_client(region)
-            except ImportError as exc:
-                logger.warning("resolve_provider_client: cannot create Bedrock "
-                               "client: %s", exc)
-                return None, None
-            client = AnthropicAuxiliaryClient(
-                real_client, final_model, api_key="aws-sdk",
-                base_url=base_url,
-            )
-            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
-                         final_model, region)
-        else:
-            client = BedrockAuxiliaryClient(region, final_model)
-            logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
-                         final_model, region)
-
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
 
     elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
@@ -8905,7 +8621,6 @@ def _client_streams_internally(client: Any) -> bool:
     return isinstance(client, (
         CodexAuxiliaryClient,
         AnthropicAuxiliaryClient,
-        BedrockAuxiliaryClient,
     ))
 
 
@@ -10344,7 +10059,6 @@ async def _async_call_llm_impl(
             and not isinstance(client, (
                 AsyncCodexAuxiliaryClient,
                 AsyncAnthropicAuxiliaryClient,
-                AsyncBedrockAuxiliaryClient,
             ))
         )
 

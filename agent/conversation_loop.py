@@ -3188,14 +3188,6 @@ def run_conversation(
                             error_details.append("response is None")
                         else:
                             error_details.append("response.content invalid (not a non-empty list)")
-                elif agent.api_mode == "bedrock_converse":
-                    _btv = agent._get_transport()
-                    if not _btv.validate_response(response):
-                        response_invalid = True
-                        if response is None:
-                            error_details.append("response is None")
-                        else:
-                            error_details.append("Bedrock response invalid (no output or choices)")
                 else:
                     _ctv = agent._get_transport()
                     if not _ctv.validate_response(response):
@@ -3416,11 +3408,6 @@ def run_conversation(
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
-                elif agent.api_mode == "bedrock_converse":
-                    # Bedrock response already normalized at dispatch — use transport
-                    _bt_fr = agent._get_transport()
-                    _bedrock_result = _bt_fr.normalize_response(response)
-                    finish_reason = _bedrock_result.finish_reason
                 else:
                     _cc_fr = agent._get_transport()
                     _finish_result = _cc_fr.normalize_response(response)
@@ -3689,7 +3676,7 @@ def run_conversation(
                             "error": _rep_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──
                         # When the provider's output-layer safety filter (e.g.
@@ -3856,7 +3843,7 @@ def run_conversation(
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
@@ -4560,30 +4547,6 @@ def run_conversation(
                     continue
 
                 # ── Bedrock AnthropicBedrock SDK streaming failure ──
-                # The Anthropic SDK's stream accumulator raises RuntimeError
-                # "Unexpected event order" when Bedrock returns an error event
-                # before message_start (throttling, overload, validation).
-                # Fall back to the native Converse API path for the rest of
-                # this session — it handles these errors gracefully.  Ref: #28156.
-                if (
-                    isinstance(api_error, RuntimeError)
-                    and "unexpected event order" in str(api_error).lower()
-                    and getattr(agent, "provider", "") == "bedrock"
-                    and agent.api_mode == "anthropic_messages"
-                    and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
-                ):
-                    agent._bedrock_converse_fallback_attempted = True
-                    agent.api_mode = "bedrock_converse"
-                    agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
-                    agent.client = None  # Drop the AnthropicBedrock client
-                    agent._client_kwargs = {}
-                    agent._vprint(
-                        f"{agent.log_prefix}⚠️  AnthropicBedrock SDK streaming failed — "
-                        f"falling back to native Converse API for this session.",
-                        force=True,
-                    )
-                    continue
-
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
 
@@ -4741,26 +4704,15 @@ def run_conversation(
                 ):
                     _retry.anthropic_auth_retry_attempted = True
                     from agent.anthropic_adapter import _is_oauth_token
-                    from agent.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
                         agent._safe_print(f"{agent.log_prefix}Anthropic credentials refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info
                     key = agent._anthropic_api_key
                     agent._safe_print(f"{agent.log_prefix}Anthropic 401 — authentication failed.")
-                    if is_token_provider(key):
-                        # Azure Foundry Entra ID — the bearer token is
-                        # minted per-request by an httpx event hook on a
-                        # custom http_client passed to the SDK. The 401
-                        # means Azure rejected the JWT (RBAC role missing,
-                        # az login expired, IMDS unreachable, etc.).
-                        print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
-                        print(f"{agent.log_prefix}   Run `son-of-anton doctor` for credential-chain diagnostics, or")
-                        print(f"{agent.log_prefix}   `az login` if your developer session expired.")
-                    else:
-                        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-                        print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                        print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
+                    auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
+                    print(f"{agent.log_prefix}   Auth method: {auth_method}")
+                    print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     from son_of_anton_constants import display_son_of_anton_home as _dhh_fn
                     _dhh = _dhh_fn()

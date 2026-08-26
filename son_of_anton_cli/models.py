@@ -594,22 +594,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # unavailable (no boto3, no credentials, or API error).  The agent
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
-    "bedrock": [
-        "us.anthropic.claude-sonnet-5",
-        "us.anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-opus-4-6-v1",
-        "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "us.amazon.nova-pro-v1:0",
-        "us.amazon.nova-lite-v1:0",
-        "us.amazon.nova-micro-v1:0",
-        "deepseek.v3.2",
-        "us.meta.llama4-maverick-17b-instruct-v1:0",
-        "us.meta.llama4-scout-17b-instruct-v1:0",
-    ],
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
-    "azure-foundry": [],
     "novita": [
         "moonshotai/kimi-k2.5",
         "minimax/minimax-m2.7",
@@ -1319,10 +1305,6 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
-    "aws": "bedrock",
-    "aws-bedrock": "bedrock",
-    "amazon-bedrock": "bedrock",
-    "amazon": "bedrock",
     "grok": "xai",
     "grok-oauth": "xai-oauth",
     "xai-oauth": "xai-oauth",
@@ -3785,14 +3767,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
     # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge
     # below — bedrock is not expected to appear in that table.
-    if normalized == "bedrock":
-        try:
-            from agent.bedrock_adapter import bedrock_model_ids_or_none
-            ids = bedrock_model_ids_or_none()
-            if ids is not None:
-                return ids
-        except Exception:
-            pass
 
     # OpenCode Free: curated keyless list only. models.dev's cost.input==0
     # filter lags reality (deepseek-v4-flash-free stayed "free" there after
@@ -4999,50 +4973,6 @@ def copilot_model_api_mode(
     return "chat_completions"
 
 
-# Azure Foundry model families that require the Responses API.  Azure
-# rejects /chat/completions against these deployments with
-# ``400 "The requested operation is unsupported."`` — the same payload Bob
-# Dobolina hit in April 2026 on ``gpt-5.3-codex`` while ``gpt-4o-pure`` on
-# the same endpoint worked fine.  Keep the patterns broad enough to cover
-# vendor-renamed deployments (e.g. ``gpt-5.3-codex``, ``gpt-5-codex``,
-# ``gpt-5.4``, ``o1-preview``) but tight enough to leave GPT-4 / 3.5 / Llama /
-# Mistral / Grok deployments on chat completions.
-_AZURE_FOUNDRY_RESPONSES_PREFIXES = (
-    "codex",       # codex-*, codex-mini
-    "gpt-5",       # gpt-5, gpt-5.x, gpt-5-codex, gpt-5.x-codex
-    "o1",          # o1, o1-preview, o1-mini
-    "o3",          # o3, o3-mini
-    "o4",          # o4, o4-mini
-)
-
-
-def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
-    """Infer Azure Foundry api_mode from a deployment/model name.
-
-    Returns ``"codex_responses"`` when the model name matches a family that
-    only accepts the Responses API on Azure Foundry (GPT-5.x, codex, o1/o3/o4
-    reasoning models).  Returns ``None`` otherwise — the caller should fall
-    back to the configured/default api_mode (typically ``chat_completions``)
-    so GPT-4o, GPT-4 Turbo, Llama, Mistral, etc. keep working.
-
-    Intentionally does NOT return ``anthropic_messages``; Anthropic-style
-    Azure endpoints are disambiguated by URL (``/anthropic`` suffix) in
-    ``runtime_provider._detect_api_mode_for_url`` and by the user setting
-    ``model.api_mode: anthropic_messages`` explicitly.
-    """
-    raw = str(model_name or "").strip().lower()
-    if not raw:
-        return None
-    # Strip any vendor/ prefix a user may have copied from OpenRouter / Copilot.
-    if "/" in raw:
-        raw = raw.rsplit("/", 1)[-1]
-    # gpt-5-mini speaks chat completions on Copilot but Azure Foundry deploys
-    # the full gpt-5 family uniformly on Responses API — don't carve an
-    # exception here.
-    for prefix in _AZURE_FOUNDRY_RESPONSES_PREFIXES:
-        if raw.startswith(prefix):
-            return "codex_responses"
-    return None
 
 
 def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
@@ -6400,37 +6330,6 @@ def validate_requested_model(
     # Bedrock: use our own discovery instead of HTTP /models endpoint.
     # Bedrock's bedrock-runtime URL doesn't support /models — it uses the
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
-    if normalized == "bedrock":
-        try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
-            region = resolve_bedrock_region()
-            discovered = discover_bedrock_models(region)
-            discovered_ids = {m["id"] for m in discovered}
-            if requested in discovered_ids:
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "message": None,
-                }
-            # Not in discovered list — still accept (user may have custom
-            # inference profiles or cross-account access), but warn.
-            suggestions = get_close_matches(requested, list(discovered_ids), n=3, cutoff=0.4)
-            suggestion_text = ""
-            if suggestions:
-                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            return {
-                "accepted": True,
-                "persist": True,
-                "recognized": False,
-                "message": (
-                    f"Note: `{requested}` was not found in Bedrock model discovery for {region}. "
-                    f"It may still work with custom inference profiles or cross-account access."
-                    f"{suggestion_text}"
-                ),
-            }
-        except Exception:
-            pass  # Fall through to generic warning
 
     # Static-catalog fallback: when the /models probe was unreachable,
     # validate against the curated list from provider_model_ids() — same

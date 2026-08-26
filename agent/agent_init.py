@@ -654,7 +654,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -677,13 +677,6 @@ def init_agent(
         # use a URL convention ending in /anthropic. Auto-detect these so the
         # Anthropic Messages API adapter is used instead of chat completions.
         agent.api_mode = "anthropic_messages"
-    elif agent.provider == "bedrock" or (
-        agent._base_url_hostname.startswith("bedrock-runtime.")
-        and base_url_host_matches(agent._base_url_lower, "amazonaws.com")
-    ):
-        # AWS Bedrock — auto-detect from provider name or base URL
-        # (bedrock-runtime.<region>.amazonaws.com).
-        agent.api_mode = "bedrock_converse"
     elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire: anthropic/* → Messages, everything else →
         # chat_completions. Callers that already pass api_mode win above;
@@ -1087,109 +1080,56 @@ def init_agent(
 
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-        # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
-        # (prompt caching, thinking budgets, adaptive thinking).
-        _is_bedrock_anthropic = agent.provider == "bedrock"
-        if _is_bedrock_anthropic:
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-            _br_region = _region_match.group(1) if _region_match else "us-east-1"
-            agent._bedrock_region = _br_region
-            agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
-            agent._anthropic_api_key = "aws-sdk"
-            agent._anthropic_base_url = base_url
-            agent._is_anthropic_oauth = False
-            agent.api_key = "aws-sdk"
-            agent.client = None
-            agent._client_kwargs = {}
-            if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
-        else:
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-            # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-            _is_native_anthropic = agent.provider == "anthropic"
-            effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+        # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+        # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
+        # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
+        _is_native_anthropic = agent.provider == "anthropic"
+        effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
 
-            # MiniMax OAuth issues short-lived (~15-min) access tokens. The
-            # Anthropic SDK caches ``api_key`` as a static string at client
-            # construction time, so a session that resolves the bearer once
-            # at startup will keep sending the same token until MiniMax
-            # returns 401 mid-session. Swap the static string for a callable
-            # token provider — ``build_anthropic_client`` recognizes the
-            # callable and installs an httpx event hook that mints a fresh
-            # bearer per outbound request (re-reading auth.json so a refresh
-            # persisted by another process is visible immediately).
-            # The cached refresh path is a no-op when the token still has
-            # ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS`` of life left, so steady-
-            # state cost is one file read + one timestamp compare per request.
-            if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-                try:
-                    from son_of_anton_cli.auth import build_minimax_oauth_token_provider
-                    effective_key = build_minimax_oauth_token_provider()
-                except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
-                    import logging as _logging
-                    _logging.getLogger(__name__).warning(
-                        "MiniMax OAuth: failed to install per-request token provider "
-                        "(%s); falling back to static bearer that will expire ~15min in.",
-                        _mm_exc,
-                    )
+        # MiniMax OAuth issues short-lived (~15-min) access tokens. The
+        # Anthropic SDK caches ``api_key`` as a static string at client
+        # construction time, so a session that resolves the bearer once
+        # at startup will keep sending the same token until MiniMax
+        # returns 401 mid-session. Swap the static string for a callable
+        # token provider — ``build_anthropic_client`` recognizes the
+        # callable and installs an httpx event hook that mints a fresh
+        # bearer per outbound request (re-reading auth.json so a refresh
+        # persisted by another process is visible immediately).
+        # The cached refresh path is a no-op when the token still has
+        # ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS`` of life left, so steady-
+        # state cost is one file read + one timestamp compare per request.
+        if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+            try:
+                from son_of_anton_cli.auth import build_minimax_oauth_token_provider
+                effective_key = build_minimax_oauth_token_provider()
+            except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "MiniMax OAuth: failed to install per-request token provider "
+                    "(%s); falling back to static bearer that will expire ~15min in.",
+                    _mm_exc,
+                )
 
-            agent.api_key = effective_key
-            agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = base_url
-            # Only mark the session as OAuth-authenticated when the token
-            # genuinely belongs to native Anthropic.  Third-party providers
-            # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
-            # Anthropic protocol must never trip OAuth code paths — doing
-            # so injects Claude-Code identity headers and system prompts
-            # that cause 401/403 on their endpoints.  Guards #1739 and
-            # the third-party identity-injection bug.
-            from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
-            # No OpenAI client needed for Anthropic mode
-            agent.client = None
-            agent._client_kwargs = {}
-            if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
-                # ``effective_key`` may be a callable Entra ID bearer
-                # provider for Azure Foundry anthropic_messages mode.
-                # The Anthropic adapter installs an httpx event hook
-                # that mints a fresh JWT per request — we never
-                # invoke or inspect the callable in the banner.
-                from agent.azure_identity_adapter import is_token_provider
-
-                if is_token_provider(effective_key):
-                    print("🔑 Using credentials: Microsoft Entra ID")
-                elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
-    elif agent.api_mode == "bedrock_converse":
-        # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
-        # Region is extracted from the base_url or defaults to us-east-1.
-        _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-        agent._bedrock_region = _region_match.group(1) if _region_match else "us-east-1"
-        # Guardrail config — read from config.yaml at init time.
-        agent._bedrock_guardrail_config = None
-        try:
-            from son_of_anton_cli.config import load_config_readonly as _load_br_cfg
-            _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
-            if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
-                agent._bedrock_guardrail_config = {
-                    "guardrailIdentifier": _gr["guardrail_identifier"],
-                    "guardrailVersion": _gr["guardrail_version"],
-                }
-                if _gr.get("stream_processing_mode"):
-                    agent._bedrock_guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
-                if _gr.get("trace"):
-                    agent._bedrock_guardrail_config["trace"] = _gr["trace"]
-        except Exception:
-            pass
+        agent.api_key = effective_key
+        agent._anthropic_api_key = effective_key
+        agent._anthropic_base_url = base_url
+        # Only mark the session as OAuth-authenticated when the token
+        # genuinely belongs to native Anthropic.  Third-party providers
+        # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
+        # Anthropic protocol must never trip OAuth code paths — doing
+        # so injects Claude-Code identity headers and system prompts
+        # that cause 401/403 on their endpoints.  Guards #1739 and
+        # the third-party identity-injection bug.
+        from agent.anthropic_adapter import _is_oauth_token as _is_oat
+        agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+        agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+        # No OpenAI client needed for Anthropic mode
         agent.client = None
         agent._client_kwargs = {}
         if not agent.quiet_mode:
-            _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
+            if isinstance(effective_key, str) and len(effective_key) > 12:
+                print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
@@ -1430,16 +1370,8 @@ def init_agent(
                 print(f"🤖 AI Agent initialized with model: {agent.model}")
                 if base_url:
                     print(f"🔗 Using custom base URL: {base_url}")
-                # ``api_key`` may be a callable Entra ID bearer
-                # provider (Azure Foundry). The OpenAI SDK mints a
-                # fresh JWT per request internally — the banner
-                # never invokes or inspects the callable.
-                from agent.azure_identity_adapter import is_token_provider
-
                 key_used = client_kwargs.get("api_key", "none")
-                if is_token_provider(key_used):
-                    print("🔑 Using credentials: Microsoft Entra ID")
-                elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
+                if isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
                     print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")

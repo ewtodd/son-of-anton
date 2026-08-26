@@ -747,84 +747,6 @@ def _common_betas_for_base_url(
     return betas
 
 
-def _build_anthropic_client_with_bearer_hook(
-    token_provider,
-    base_url: str = None,
-    timeout: float = None,
-    *,
-    drop_context_1m_beta: bool = False,
-):
-    """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
-
-    Anthropic SDK 0.86.0 stores ``api_key`` / ``auth_token`` as static
-    strings; there is no callable-token contract. To get per-request
-    bearer refresh (Microsoft's documented Foundry pattern), we hand
-    the SDK a custom ``httpx.Client`` whose request event hook mints a
-    fresh JWT from the Entra credential chain and rewrites
-    ``Authorization: Bearer <jwt>`` on every outbound request. The SDK
-    ignores its own auth logic when ``http_client`` is provided (the
-    hook strips any pre-set Authorization).
-
-    The placeholder ``auth_token`` is required because the SDK raises
-    ``AnthropicError`` at construction if neither ``api_key`` nor
-    ``auth_token`` is set — but the hook overrides it per-request so
-    the placeholder value never reaches Azure.
-    """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for Azure Foundry Anthropic-style "
-            "endpoints with Entra ID auth. Install with: pip install 'anthropic>=0.39.0'"
-        )
-
-    normalize_proxy_env_vars()
-
-    from httpx import Timeout
-    from agent.azure_identity_adapter import build_bearer_http_client
-
-    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
-    timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
-
-    # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
-    normalized_base_url = _normalize_base_url_text(base_url)
-    if normalized_base_url:
-        import re as _re
-        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
-
-    http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
-
-    kwargs = {
-        "timeout": timeout_obj,
-        "http_client": http_client,
-        # Delegate retry to son-of-anton's outer loop (honors Retry-After); the SDK
-        # default max_retries=2 ignores it and double-retries. (#26293)
-        "max_retries": 0,
-        # The SDK requires *something* for api_key/auth_token. Our
-        # event hook overrides Authorization per request so this value
-        # is never sent. The sentinel string makes accidental leaks
-        # diagnosable in logs.
-        "auth_token": "entra-id-bearer-via-http-hook",
-    }
-
-    if normalized_base_url:
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
-            kwargs["base_url"] = normalized_base_url
-            kwargs["default_query"] = {"api-version": "2025-04-15"}
-        else:
-            kwargs["base_url"] = normalized_base_url
-
-    common_betas = _common_betas_for_base_url(
-        normalized_base_url,
-        drop_context_1m_beta=drop_context_1m_beta,
-    )
-    if common_betas:
-        kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
-
-    client = _anthropic_sdk.Anthropic(**kwargs)
-    # Same env-inference trap as build_anthropic_client: auth_token-only
-    # construction would otherwise also send ANTHROPIC_API_KEY as X-Api-Key.
-    client.api_key = None
-    return client
 
 
 def build_anthropic_client(
@@ -866,14 +788,6 @@ def build_anthropic_client(
         raise ImportError(
             "The 'anthropic' package is required for the Anthropic provider. "
             "Install it with: pip install 'anthropic>=0.39.0'"
-        )
-
-    # Callable api_key → Entra ID bearer provider path. Delegated to a
-    # helper so the existing static-key code below stays unchanged.
-    if callable(api_key) and not isinstance(api_key, str):
-        return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout,
-            drop_context_1m_beta=drop_context_1m_beta,
         )
 
     normalize_proxy_env_vars()
@@ -983,43 +897,6 @@ def build_anthropic_client(
     return client
 
 
-def build_anthropic_bedrock_client(region: str):
-    """Create an AnthropicBedrock client for Bedrock Claude models.
-
-    Uses the Anthropic SDK's native Bedrock adapter, which provides full
-    Claude feature parity: prompt caching, thinking budgets, adaptive
-    thinking, fast mode — features not available via the Converse API.
-
-    Attaches the common Anthropic beta headers as client-level defaults so
-    that Bedrock-hosted Claude models get the same enhanced features as
-    native Anthropic. The ``context-1m-2025-08-07`` beta in particular
-    unlocks the 1M context window for Opus 4.6/4.7 on Bedrock — without
-    it, Bedrock caps these models at 200K even though the Anthropic API
-    serves them with 1M natively.
-
-    Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
-    """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for the Bedrock provider. "
-            "Install it with: pip install 'anthropic>=0.39.0'"
-        )
-    if not hasattr(_anthropic_sdk, "AnthropicBedrock"):
-        raise ImportError(
-            "anthropic.AnthropicBedrock not available. "
-            "Upgrade with: pip install 'anthropic>=0.39.0'"
-        )
-    from httpx import Timeout
-
-    return _anthropic_sdk.AnthropicBedrock(
-        aws_region=region,
-        timeout=Timeout(timeout=900.0, connect=10.0),
-        # Delegate retry to son-of-anton's outer loop (honors Retry-After); the SDK
-        # default max_retries=2 ignores it and double-retries. (#26293)
-        max_retries=0,
-        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
-    )
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
@@ -3200,10 +3077,6 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
     err_lower = str(exc).lower()
     if "stream" in err_lower and "not supported" in err_lower:
         return True
-    if "invokemodelwithresponsestream" in err_lower:
-        from agent.bedrock_adapter import is_streaming_access_denied_error
-
-        return is_streaming_access_denied_error(exc)
     return False
 
 

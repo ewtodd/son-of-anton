@@ -843,84 +843,12 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     else:
         _timeout = _base
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-    # Resolve the model id from BOTH the OpenAI/Anthropic key (``model``) and
-    # the Bedrock key (``modelId``). OpenAI/Anthropic wins first via the ``or``
-    # chain, so those paths are unchanged. Bedrock carries the model as a
-    # dotted, region-prefixed inference-profile id (e.g.
-    # ``us.anthropic.claude-opus-4-6-v1:0``) that the floor's start-of-slug
-    # regex cannot match directly — normalize it to a canonical slug first.
-    _model_id = api_kwargs.get("model") or api_kwargs.get("modelId") or ""
+    _model_id = api_kwargs.get("model") or ""
     _reasoning_floor = get_reasoning_stale_timeout_floor(_model_id)
-    if _reasoning_floor is None and api_kwargs.get("modelId"):
-        _reasoning_floor = _bedrock_reasoning_stale_floor(api_kwargs["modelId"])
     if _reasoning_floor is not None:
         _timeout = max(_timeout, _reasoning_floor)
     return _timeout
 
-
-def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
-    """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
-
-    Bedrock carries the model as a dotted, region-prefixed id such as
-    ``us.anthropic.claude-opus-4-6-v1:0``, whereas
-    :func:`get_reasoning_stale_timeout_floor` anchors its slug patterns at the
-    start of a bare slug (``claude-opus-4``). Strip the region prefix
-    (``us.``/``eu.``/``apac.``/...) and try two candidate slugs against the
-    floor:
-
-    * the segment after the provider namespace (``claude-opus-4-6-v1:0``) —
-      matches Anthropic-style slugs whose floor key excludes the provider
-      (``claude-opus-4``); and
-    * the region-stripped id with the provider dot rewritten to a dash
-      (``deepseek-r1-v1:0``) — matches provider-qualified floor keys
-      (``deepseek-r1``).
-
-    The floor's right-anchor (``$`` or ``-``/``.``/``_``) tolerates the
-    trailing date-stamp / ``-v1:0`` version suffix, so no suffix stripping is
-    needed. First non-None wins; returns None for unknown models.
-
-    The floor table mixes version-separator conventions: some keys are
-    keyed with a dashed version (``claude-opus-4``) while others embed a
-    dotted version (``claude-sonnet-4.5``, ``claude-sonnet-4.6``). Bedrock
-    always dashes the version (``claude-sonnet-4-5-v1:0``), so for every
-    candidate slug we also try the alternate version-separator form —
-    digit-dash-digit rewritten to digit-dot-digit and vice-versa — so a
-    dashed Bedrock id matches a dotted floor key (and the reverse). The
-    rewrite only touches version-number separators (a dash/dot flanked by
-    digits), never other dashes in the slug, so ``claude-sonnet`` is left
-    intact while ``4-5`` becomes ``4.5``.
-    """
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-
-    if not model_id or not isinstance(model_id, str):
-        return None
-    name = model_id.strip().lower()
-    for prefix in (
-        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
-        "ca.", "sa.", "me.", "af.",
-    ):
-        if name.startswith(prefix):
-            name = name[len(prefix):]
-            break
-    base_candidates = [name]
-    if "." in name:
-        base_candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
-        base_candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
-    candidates: list[str] = []
-    for cand in base_candidates:
-        # Try the slug as-is plus both alternate version-separator forms.
-        # ``4-5`` <-> ``4.5`` only; a dash/dot not flanked by digits is
-        # left alone (e.g. ``claude-sonnet`` stays dashed).
-        dashed_to_dotted = re.sub(r"(?<=\d)-(?=\d)", ".", cand)
-        dotted_to_dashed = re.sub(r"(?<=\d)\.(?=\d)", "-", cand)
-        for form in (cand, dashed_to_dotted, dotted_to_dashed):
-            if form not in candidates:
-                candidates.append(form)
-    for cand in candidates:
-        floor = get_reasoning_stale_timeout_floor(cand)
-        if floor is not None:
-            return floor
-    return None
 
 
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
@@ -954,29 +882,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             "anthropic_messages_request", kind="anthropic_messages"
         )
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
-    if agent.api_mode == "bedrock_converse":
-        # Bedrock uses boto3 directly — no OpenAI client needed.
-        # normalize_converse_response produces an OpenAI-compatible
-        # SimpleNamespace so the rest of the agent loop can treat
-        # bedrock responses like chat_completions responses.
-        from agent.bedrock_adapter import (
-            _get_bedrock_runtime_client,
-            invalidate_runtime_client,
-            is_stale_connection_error,
-            normalize_converse_response,
-        )
-        region = api_kwargs.pop("__bedrock_region__", "us-east-1")
-        api_kwargs.pop("__bedrock_converse__", None)
-        client = _get_bedrock_runtime_client(region)
-        try:
-            raw_response = client.converse(**api_kwargs)
-        except Exception as _bedrock_exc:
-            # Evict the cached client on stale-connection failures
-            # so the outer retry loop builds a fresh client/pool.
-            if is_stale_connection_error(_bedrock_exc):
-                invalidate_runtime_client(region)
-            raise
-        return normalize_converse_response(raw_response)
     if agent.provider == "moa":
         # MoA is a virtual chat-completions provider backed by the
         # in-process MoAClient facade. Do not rebuild a request-local
@@ -1857,18 +1762,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.
-    if agent.api_mode == "bedrock_converse":
-        _bt = agent._get_transport()
-        region = getattr(agent, "_bedrock_region", None) or "us-east-1"
-        guardrail = getattr(agent, "_bedrock_guardrail_config", None)
-        return _bt.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            max_tokens=agent.max_tokens or 4096,
-            region=region,
-            guardrail_config=guardrail,
-        )
 
     # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
     # below (codex + both chat_completions paths). Memoized on the agent —
@@ -2634,11 +2527,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # provider-specific exceptions like Copilot gpt-5-mini on
                 # chat completions.
                 fb_api_mode = "codex_responses"
-            elif fb_provider == "bedrock" or (
-                base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-                and base_url_host_matches(fb_base_url, "amazonaws.com")
-            ):
-                fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
         old_provider = agent.provider
@@ -3354,266 +3242,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     # Bedrock Converse uses boto3's converse_stream() with real-time delta
     # callbacks — same UX as Anthropic and chat_completions streaming.
-    if agent.api_mode == "bedrock_converse":
-        result = {"response": None, "error": None}
-        first_delta_fired = {"done": False}
-        deltas_were_sent = {"yes": False}
-        # Wire-level liveness for the boto3 converse_stream worker: the worker
-        # thread blocks inside ``for event in event_stream`` with NO read
-        # timeout, so a provider that opens the stream then stops yielding
-        # events wedges the thread forever. on_event stamps this on EVERY
-        # yielded Bedrock event (text/tool/metadata) — the poll loop below
-        # trips a watchdog when the gap exceeds the stale timeout.
-        _bedrock_started_at = time.time()
-        _bedrock_last_event = {"t": _bedrock_started_at}
-        _bedrock_response_started = {"yes": False}
-        # Region captured for the poll-loop client eviction below.  Read
-        # (not popped) here so the worker's own pop inside _bedrock_call still
-        # resolves the same value.
-        _bedrock_region = api_kwargs.get("__bedrock_region__", "us-east-1")
-        # Same patience budget as the OpenAI/Anthropic stale detector.
-        _bedrock_stale_timeout = _derive_stream_stale_timeout(agent, api_kwargs)
-
-        # Cross-turn stale-stream circuit breaker (#58962): a pre-elevated
-        # streak from prior wedged turns aborts before we even start — mirrors
-        # the entry check on the OpenAI/Anthropic path below.
-        _check_stale_giveup(agent)
-
-        def _fire_first():
-            if not first_delta_fired["done"] and on_first_delta:
-                first_delta_fired["done"] = True
-                try:
-                    on_first_delta()
-                except Exception:
-                    pass
-
-        def _bedrock_call():
-            stream = None
-            try:
-                from agent import relay_llm
-                from agent.bedrock_adapter import (
-                    _get_bedrock_runtime_client,
-                    invalidate_runtime_client,
-                    is_stale_connection_error,
-                    is_streaming_access_denied_error,
-                    normalize_converse_response,
-                    stream_converse_with_callbacks,
-                )
-                intercepted_events = []
-                writer_token = {"value": None}
-
-                def _open_bedrock_stream(next_api_kwargs: dict[str, Any]):
-                    final_kwargs = dict(next_api_kwargs)
-                    region = final_kwargs.pop("__bedrock_region__", "us-east-1")
-                    final_kwargs.pop("__bedrock_converse__", None)
-                    client = _get_bedrock_runtime_client(region)
-                    try:
-                        raw_response = client.converse_stream(**final_kwargs)
-                    except Exception as _bedrock_exc:
-                        # InvokeModel-only policies cannot open a stream. Keep
-                        # the fallback inside the same managed Relay attempt so
-                        # the real provider request and terminal response still
-                        # share one lifecycle boundary.
-                        if is_streaming_access_denied_error(_bedrock_exc):
-                            agent._disable_streaming = True
-                            agent._safe_print(
-                                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
-                                "falling back to non-streaming InvokeModel.\n"
-                                "   Grant that action to restore streaming output.\n"
-                            )
-                            logger.info(
-                                "bedrock: converse_stream denied by IAM (%s) — "
-                                "using non-streaming converse() for this session.",
-                                type(_bedrock_exc).__name__,
-                            )
-                            return normalize_converse_response(
-                                client.converse(**final_kwargs)
-                            )
-                        if is_stale_connection_error(_bedrock_exc):
-                            invalidate_runtime_client(region)
-                        raise
-                    return raw_response.get("stream", [])
-
-                def _on_text(text):
-                    _bedrock_response_started["yes"] = True
-                    _fire_first()
-                    agent._fire_stream_delta(text)
-                    deltas_were_sent["yes"] = True
-
-                def _on_tool(name):
-                    _bedrock_response_started["yes"] = True
-                    _fire_first()
-                    agent._fire_tool_gen_started(name)
-
-                def _on_reasoning(text):
-                    _bedrock_response_started["yes"] = True
-                    _fire_first()
-                    agent._fire_reasoning_delta(text)
-
-                def _finalize_bedrock_stream():
-                    return stream_converse_with_callbacks(
-                        {"stream": list(intercepted_events)}
-                    )
-
-                def _bedrock_stream_created(_stream: Any) -> None:
-                    writer_token["value"] = claim_stream_writer(agent)
-
-                def _accept_bedrock_event(_event: Any) -> bool:
-                    token = writer_token["value"]
-                    return token is None or stream_writer_is_current(agent, token)
-
-                try:
-                    from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
-
-                    plugin_reasoning_observer = has_reasoning_stream_observer_hooks()
-                except Exception:
-                    logger.debug("plugin reasoning stream observer check failed", exc_info=True)
-                    plugin_reasoning_observer = False
-
-                stream = relay_llm.stream(
-                    dict(api_kwargs),
-                    _open_bedrock_stream,
-                    session_id=str(getattr(agent, "session_id", "") or ""),
-                    name=str(getattr(agent, "provider", "") or "bedrock"),
-                    model_name=str(getattr(agent, "model", "") or ""),
-                    finalizer=_finalize_bedrock_stream,
-                    on_stream_created=_bedrock_stream_created,
-                    on_chunk=intercepted_events.append,
-                    chunk_adapter=lambda chunk: chunk,
-                    accept_chunk=_accept_bedrock_event,
-                    completed_response_predicate=lambda response: bool(
-                        getattr(response, "choices", None)
-                    ),
-                    metadata={
-                        "api_mode": "custom",
-                        "api_request_id": getattr(
-                            agent, "_current_api_request_id", None
-                        ),
-                        "call_role": (
-                            "delegated"
-                            if getattr(agent, "is_subagent", False)
-                            else "fallback"
-                            if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                            else "primary"
-                        ),
-                    },
-                    defer_logical_completion=True,
-                )
-                streamed_response = stream_converse_with_callbacks(
-                    {"stream": stream},
-                    on_text_delta=_on_text if agent._has_stream_consumers() else None,
-                    on_tool_start=_on_tool,
-                    on_reasoning_delta=_on_reasoning
-                    if agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
-                    else None,
-                    on_interrupt_check=lambda: agent._interrupt_requested,
-                    on_event=lambda: _bedrock_last_event.__setitem__("t", time.time()),
-                )
-                result["response"] = stream.final_response or streamed_response
-            except Exception as e:
-                result["error"] = e
-            finally:
-                if stream is not None:
-                    stream.close()
-
-        _emit_stream_start()
-        try:
-            t = threading.Thread(
-                target=_context_thread_target(_bedrock_call), daemon=True
-            )
-            t.start()
-            while t.is_alive():
-                t.join(timeout=0.3)
-                if agent._interrupt_requested:
-                    _record_interrupted_provider_wait(
-                        agent,
-                        time.time() - _bedrock_started_at,
-                        response_started=_bedrock_response_started["yes"],
-                    )
-                    # #81521 (sibling of the main streaming-path fix): give
-                    # the Bedrock worker a bounded window to unwind its
-                    # Relay-managed stream scopes before surfacing
-                    # InterruptedError. No-op when Relay managed execution
-                    # is not live.
-                    _join_worker_for_relay_teardown(t, label="Bedrock streaming")
-                    raise InterruptedError("Agent interrupted during Bedrock API call")
-                # Liveness watchdog: no Bedrock event for longer than the stale
-                # timeout means the stream has wedged (open socket, keep-alives but
-                # no data, or a silently hung provider).  Without this the worker
-                # blocks in ``for event in event_stream`` indefinitely.
-                _stale_elapsed = time.time() - _bedrock_last_event["t"]
-                if _stale_elapsed > _bedrock_stale_timeout:
-                    logger.warning(
-                        "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
-                        "received. region=%s model=%s. Aborting call.",
-                        _stale_elapsed, _bedrock_stale_timeout,
-                        _bedrock_region, api_kwargs.get("modelId", "unknown"),
-                    )
-                    agent._buffer_status(
-                        f"⚠️ No events from Bedrock for {int(_stale_elapsed)}s "
-                        f"(model: {api_kwargs.get('modelId', 'unknown')}). Aborting..."
-                    )
-                    # Count the stale kill in the SAME cross-turn breaker as the
-                    # OpenAI/Anthropic path (#58962).
-                    _bump_stale_streak(agent)
-                    # Best-effort: evict the region's cached bedrock-runtime client
-                    # so the NEXT call reconnects with a fresh pool.  NOTE: this does
-                    # NOT abort the in-flight botocore EventStream the worker thread
-                    # is blocked on — botocore exposes no external cancellation for
-                    # it — so the daemon worker keeps reading until its socket read
-                    # ultimately errors.  We therefore end THIS call by raising
-                    # below and let the streak+give-up breaker escalate across turns.
-                    try:
-                        from agent.bedrock_adapter import invalidate_runtime_client
-                        invalidate_runtime_client(_bedrock_region)
-                    except Exception as _inval_exc:
-                        logger.debug(
-                            "bedrock: stale client eviction failed: %s", _inval_exc
-                        )
-                    # Reset the timer so a repeated trip (should the worker somehow
-                    # survive) waits a fresh interval rather than re-firing instantly.
-                    _bedrock_last_event["t"] = time.time()
-                    # Escalate across turns: raises RuntimeError once the streak
-                    # crosses SON_OF_ANTON_STREAM_STALE_GIVEUP, so a persistently wedged
-                    # Bedrock provider aborts fast instead of re-waiting the timeout.
-                    _check_stale_giveup(agent)
-                    # Streak still under the give-up threshold: end THIS call with a
-                    # TimeoutError so the outer retry loop / next turn re-evaluates
-                    # and the streak carries forward.  Break rather than keep polling
-                    # a worker we cannot abort.
-                    result["error"] = TimeoutError(
-                        f"Bedrock stream produced no events for {int(_stale_elapsed)}s "
-                        f"(threshold {int(_bedrock_stale_timeout)}s) — aborting stalled "
-                        f"stream so the retry/fallback path can recover."
-                    )
-                    break
-            # Worker exited before the poll loop observed the interrupt flag. The
-            # Bedrock stream callback breaks out and returns a PARTIAL response
-            # without raising on interrupt (see bedrock_adapter.py
-            # stream_converse_with_callbacks / on_interrupt_check), so result[
-            # "response"] is populated with error=None and the in-loop raise above
-            # never fires. Re-check here so /stop is not silently swallowed on the
-            # Bedrock path — mirrors the post-worker guard on the main streaming
-            # loop. (#59999 area)
-            if agent._interrupt_requested:
-                _record_interrupted_provider_wait(
-                    agent,
-                    time.time() - _bedrock_started_at,
-                    response_started=_bedrock_response_started["yes"],
-                )
-                raise InterruptedError("Agent interrupted during Bedrock API call (post-worker)")
-            if result["error"] is not None:
-                raise result["error"]
-            # Success — clear the cross-turn breaker (#58962): Bedrock proved
-            # responsive.  Mirrors the OpenAI/Anthropic success reset below so a
-            # recovered provider doesn't carry a stale streak into later turns.
-            if result["response"] is not None:
-                _reset_stale_streak(agent)
-            _emit_stream_end(final_text=_stream_final_text(result["response"]), finished=True, error=None)
-            return result["response"]
-        except Exception as exc:
-            _emit_stream_end(final_text="", finished=False, error=str(exc))
-            raise
 
     result = {"response": None, "error": None, "partial_tool_names": []}
 
@@ -4963,34 +4591,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
-                        # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
-                        # with bedrock:InvokeModel but not
-                        # InvokeModelWithResponseStream reject messages.stream()
-                        # with a permission error naming the streaming action.
-                        # Permanent for the session — flip to non-streaming
-                        # (messages.create() maps to bedrock:InvokeModel).
-                        _is_bedrock_stream_denied = False
-                        if (
-                            not _is_stream_unsupported
-                            and "invokemodelwithresponsestream" in _err_lower
-                        ):
-                            # Cheap message pre-check before importing the
-                            # adapter — bedrock_adapter triggers a lazy boto3
-                            # install at import time, which must not run for
-                            # unrelated providers' stream errors.
-                            from agent.bedrock_adapter import (
-                                is_streaming_access_denied_error,
-                            )
-                            _is_bedrock_stream_denied = (
-                                is_streaming_access_denied_error(e)
-                            )
-                        if _is_stream_unsupported or _is_bedrock_stream_denied:
+                        if _is_stream_unsupported:
                             agent._disable_streaming = True
                             agent._safe_print(
-                                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
-                                "Switching to non-streaming.\n"
-                                "   Grant that action to restore streaming output.\n"
-                                if _is_bedrock_stream_denied else
                                 "\n⚠  Streaming is not supported for this "
                                 "model/provider. Switching to non-streaming.\n"
                                 "   To avoid this delay, set display.streaming: false "
