@@ -3503,13 +3503,28 @@ def _load_gateway_runtime_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+    """Read the gateway's model from config.yaml — single source of truth.
+
+    ``gateway.model`` wins over ``model.default`` when set. One
+    SON_OF_ANTON_HOME is now shared by a Signal service and that account's own
+    CLI (that shared home is what makes a Signal session resumable from the
+    terminal), so the two surfaces need separate defaults out of ONE
+    config.yaml: ``model.default`` is what the CLI opens with, ``gateway.model``
+    is what the service answers with. Unset, both get ``model.default`` and
+    nothing changes.
 
     Without this, temporary AIAgent instances (e.g. /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
     cfg = config if config is not None else _load_gateway_config()
+
+    gateway_cfg = cfg.get("gateway")
+    if isinstance(gateway_cfg, dict):
+        gateway_model = gateway_cfg.get("model")
+        if isinstance(gateway_model, str) and gateway_model.strip():
+            return gateway_model.strip()
+
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg
