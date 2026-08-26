@@ -870,11 +870,49 @@ class GatewayConfig:
         return False
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
-        """Get the home channel for a platform."""
+        """Get the home channel for a platform.
+
+        A home channel is the default destination for output not tied to a
+        chat — cron results, cross-platform messages. On Discord or Slack, where
+        one bot sits in many channels, choosing one is a real decision and the
+        operator makes it with ``/sethome``.
+
+        Signal has no such choice to make. Each gateway answers exactly one
+        group (``SIGNAL_GROUP_ALLOWED_USERS`` is the routing key that makes one
+        instance respond and its siblings stay silent), so that group IS the
+        only place it can talk. Asking for it produced a first-turn notice on
+        every new Signal session telling the operator to run ``/sethome`` in
+        the one conversation the bot already had. Derive it instead.
+        """
         config = self.platforms.get(platform)
-        if config:
+        if config and config.home_channel:
             return config.home_channel
+        if platform == Platform.SIGNAL:
+            return self._derived_signal_home_channel()
         return None
+
+    @staticmethod
+    def _derived_signal_home_channel() -> Optional[HomeChannel]:
+        """The single allowed Signal group as this gateway's home channel.
+
+        Only when exactly one concrete group is allowed. ``*`` (every group)
+        and a multi-group allowlist are genuinely ambiguous, and an unset
+        allowlist means no group is served at all — those keep returning None
+        so the operator's explicit ``/sethome`` is still what decides.
+
+        ``group:`` prefix: that is the chat_id form the Signal adapter builds
+        on intake and the form ``send()`` parses back into a groupId. A bare
+        id would be treated as a phone number and fail to deliver.
+        """
+        raw = _getenv_str("SIGNAL_GROUP_ALLOWED_USERS", "")
+        groups = [part.strip() for part in raw.split(",") if part.strip()]
+        if len(groups) != 1 or groups[0] == "*":
+            return None
+        return HomeChannel(
+            platform=Platform.SIGNAL,
+            chat_id=f"group:{groups[0]}",
+            name="Signal group",
+        )
     
     def get_reset_policy(
         self, 
