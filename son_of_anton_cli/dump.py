@@ -293,12 +293,7 @@ def run_dump(args):
 
     model, provider = _get_model_and_provider(config)
 
-    # Profile
-    try:
-        from son_of_anton_cli.profiles import get_active_profile_name
-        profile = get_active_profile_name() or "(default)"
-    except Exception:
-        profile = "(default)"
+    profile = "(default)"
 
     # Terminal backend — report the EFFECTIVE backend, not just config.yaml.
     # ``terminal.backend`` in config.yaml is bridged to the TERMINAL_ENV env var,

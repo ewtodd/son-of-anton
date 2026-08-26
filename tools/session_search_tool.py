@@ -344,26 +344,14 @@ def _shape_message(
 
 
 def _resolve_profile_db(profile: str):
-    """Open another profile's ``state.db`` read-only, or None for the current one.
+    """Always None — every session lives in this home's ``state.db``.
 
-    The desktop's ``@session:<profile>/<id>`` links always carry the source
-    profile, so a linked session from profile B can be read while the agent
-    runs in profile A. ``read_only=True`` (mode=ro) takes no write lock — safe
-    to point at a live profile's DB, including our own. Returns None when no
-    profile is given (use the caller's default db).
+    The desktop's ``@session:<profile>/<id>`` link format still carries a
+    profile segment, and older links carry a real name. Both resolve against
+    the caller's own db now: one process serves one SON_OF_ANTON_HOME, so
+    there is no other database to open.
     """
-    if profile is None or not str(profile).strip():
-        return None
-
-    from son_of_anton_cli import profiles as profiles_mod
-    from son_of_anton_state import SessionDB
-
-    canon = profiles_mod.normalize_profile_name(profile)
-    profiles_mod.validate_profile_name(canon)
-    if not profiles_mod.profile_exists(canon):
-        raise ValueError(f"profile '{canon}' does not exist")
-
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return None
 
 
 def _session_link(session_id: str, profile: str = None) -> str:
@@ -375,60 +363,17 @@ def _session_link(session_id: str, profile: str = None) -> str:
     id still resolves, it just can't disambiguate across profiles.
     """
     name = (profile or "").strip()
-    if not name:
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-
-            resolved = get_active_profile_name()
-            name = "" if resolved == "custom" else resolved
-        except Exception:
-            logging.debug("get_active_profile_name failed for session link", exc_info=True)
-            name = ""
-
     return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
 def _locate_session_db(session_id: str):
-    """Scan every profile's ``state.db`` (read-only) for a session id.
+    """Always ``(None, None)`` — the caller's own db is the only store.
 
-    Returns ``(db, profile_name)`` for the first profile that owns the id, or
-    ``(None, None)``. Session ids are globally unique (timestamp + random hex),
-    so the first hit is authoritative. This is the safety net for linked-session
-    reads where the model dropped the owning profile from the link and passed a
-    bare id — we find it wherever it actually lives instead of failing.
+    This used to scan every profile's ``state.db`` as the safety net for a
+    linked-session read whose link had lost its owning profile. With one home
+    per process the caller's default db already is that store, so callers fall
+    through to it.
     """
-    from pathlib import Path
-
-    try:
-        from son_of_anton_cli import profiles as profiles_mod
-        from son_of_anton_state import SessionDB
-    except Exception:
-        return None, None
-
-    targets = [("default", profiles_mod.get_profile_dir("default"))]
-    try:
-        targets += [(info.name, info.path) for info in profiles_mod.list_profiles()]
-    except Exception:
-        logging.debug("list_profiles failed during session locate", exc_info=True)
-
-    seen: set = set()
-    for name, home in targets:
-        db_path = Path(home) / "state.db"
-        key = str(db_path)
-        if key in seen or not db_path.exists():
-            continue
-        seen.add(key)
-        try:
-            pdb = SessionDB(db_path=db_path, read_only=True)
-        except Exception:
-            continue
-        try:
-            if pdb.get_session(session_id):
-                return pdb, name
-        except Exception:
-            logging.debug("get_session probe failed for %s in %s", session_id, name, exc_info=True)
-        pdb.close()
-
     return None, None
 
 

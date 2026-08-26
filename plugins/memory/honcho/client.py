@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from agent.secret_scope import get_secret
 from son_of_anton_constants import get_son_of_anton_home
-from son_of_anton_cli.profiles import _get_default_son_of_anton_home
+from son_of_anton_constants import get_default_son_of_anton_root
 from plugins.plugin_utils import SingletonSlot
 from typing import Any, TYPE_CHECKING
 
@@ -79,37 +79,24 @@ def resolve_active_host() -> str:
 
     Resolution order:
       1. SON_OF_ANTON_HONCHO_HOST env var (explicit override)
-      2. Active profile name via profiles system -> ``son_of_anton_<profile>``
-      3. defaultHost from the active config, but only for the default profile
-      4. Fallback: ``"son-of-anton"`` (default profile)
+      2. defaultHost from the active config
+      3. Fallback: ``"son-of-anton"``
     """
     explicit = os.environ.get("SON_OF_ANTON_HONCHO_HOST", "").strip()
     if explicit:
         return explicit
 
     try:
-        from son_of_anton_cli.profiles import get_active_profile_name
-        profile = get_active_profile_name()
-        profile_host = profile_host_key(profile)
+        path = resolve_config_path()
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            default_host = str(raw.get("defaultHost", "")).strip()
+            if default_host:
+                return default_host
     except Exception:
-        profile_host = HOST
+        pass
 
-    # Honcho's generic config can carry a defaultHost (for example "local"),
-    # but applying it before profile resolution makes every named Son of Anton
-    # profile share that same host.  Keep named profiles isolated; only the
-    # default Son of Anton profile may opt into the config's default host.
-    if profile_host == HOST:
-        try:
-            path = resolve_config_path()
-            if path.exists():
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                default_host = str(raw.get("defaultHost", "")).strip()
-                if default_host:
-                    return default_host
-        except Exception:
-            pass
-
-    return profile_host
+    return HOST
 
 
 def resolve_global_config_path() -> Path:
@@ -132,7 +119,7 @@ def resolve_config_path() -> Path:
         return local_path
 
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = _get_default_son_of_anton_home() / "honcho.json"
+    default_path = get_default_son_of_anton_root() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 

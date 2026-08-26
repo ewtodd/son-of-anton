@@ -143,30 +143,19 @@ def collect_runtime_inventory() -> UpdatePlan:
     except Exception as exc:
         logger.debug("Code-identity probe failed: %s", exc)
 
-    # --- profiles ----------------------------------------------------------
+    # This process's own home is the only one it can inventory. Sibling
+    # gateways run as other accounts under their own SON_OF_ANTON_HOME and are
+    # not reachable from here.
     profile_homes: list[tuple[str, Path]] = []
     try:
-        from son_of_anton_cli.profiles import (
-            _get_default_son_of_anton_home,
-            _get_profiles_root,
-            _PROFILE_ID_RE,
-        )
+        from son_of_anton_constants import get_son_of_anton_home
 
-        default_home = _get_default_son_of_anton_home()
-        if default_home.is_dir():
-            profile_homes.append(("default", default_home))
-        root = _get_profiles_root()
-        if root.is_dir():
-            for entry in sorted(root.iterdir()):
-                if (
-                    entry.is_dir()
-                    and entry.name != "default"
-                    and _PROFILE_ID_RE.match(entry.name)
-                ):
-                    profile_homes.append((entry.name, entry))
+        home = Path(get_son_of_anton_home())
+        if home.is_dir():
+            profile_homes.append(("default", home))
         plan.profiles = [name for name, _ in profile_homes]
     except Exception as exc:
-        logger.debug("Profile enumeration failed: %s", exc)
+        logger.debug("Home enumeration failed: %s", exc)
 
     # --- service-managed PIDs (fleet-wide) ---------------------------------
     service_pids: set = set()

@@ -3605,14 +3605,7 @@ def compress_context(
                     # NULL). publish_compression_child additionally COALESCEs
                     # from the parent row, covering app-global remote sessions
                     # whose thread lacks the SON_OF_ANTON_HOME context.
-                    try:
-                        from son_of_anton_cli.profiles import get_active_profile_name
-
-                        _profile_for_child = get_active_profile_name()
-                        if _profile_for_child == "default":
-                            _profile_for_child = None
-                    except Exception:
-                        _profile_for_child = None
+                    _profile_for_child = None
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     new_session_id = (
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"

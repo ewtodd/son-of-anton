@@ -217,7 +217,6 @@ def build_gateway_parser(
     )
 
     # gateway list
-    gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
 
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")

@@ -278,18 +278,8 @@ def _is_default_son_of_anton_home(son_of_anton_home: Path) -> bool:
 
 
 def _discover_named_profiles():
-    """Return a list of ``ProfileInfo`` for every non-default profile, or ``[]``
-    if profile support is unavailable or nothing is installed beyond the
-    default root."""
-    try:
-        from son_of_anton_cli.profiles import list_profiles
-    except Exception:
-        return []
-    try:
-        return [p for p in list_profiles() if not getattr(p, "is_default", False)]
-    except Exception as e:
-        log_warn(f"Could not enumerate profiles: {e}")
-        return []
+    """Always ``[]`` — named profiles no longer exist."""
+    return []
 
 
 def _uninstall_profile(profile) -> None:

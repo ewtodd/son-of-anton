@@ -199,15 +199,6 @@ gateway:
     set_to:                "Personality set to **{name}**\n_(takes effect on next message)_"
     unknown:               "Unknown personality: `{name}`\n\nAvailable: {available}"
 
-  profile:
-    header:                "**Profile:** `{profile}`"
-    home:                  "**Home:** `{home}`"
-    switched:              "Session switched to profile `{profile}` — messages in this chat now run as that profile (its own history, skills, and memory)."
-    reset:                 "Profile pin cleared — this chat returns to the default profile."
-    unknown:               "Unknown profile `{profile}` — served profiles: {served}."
-    multiplex_off:         "Profile switching needs `gateway.multiplex_profiles: true` in config.yaml."
-    no_source:             "Could not resolve this chat's identity — cannot switch profiles here."
-
   reasoning:
     level_default:             "medium (default)"
     level_disabled:            "none (disabled)"

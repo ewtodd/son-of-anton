@@ -15,68 +15,6 @@ from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_
 from son_of_anton_cli.config import cfg_get
 
 
-def clone_honcho_for_profile(profile_name: str) -> bool:
-    """Auto-clone Honcho config for a new profile from the default host block.
-
-    Called during profile creation. If Honcho is configured on the default
-    host, creates a new host block for the profile with inherited settings
-    and auto-derived workspace/aiPeer.
-
-    Returns True if a host block was created, False if Honcho isn't configured.
-    """
-    cfg = _read_config()
-    if not cfg:
-        return False
-
-    hosts = cfg.get("hosts", {})
-    default_block = hosts.get(HOST, {})
-
-    # No default host block and no root-level API key = Honcho not configured
-    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
-    if not default_block and not has_key:
-        return False
-
-    new_host = profile_host_key(profile_name)
-    if new_host in hosts:
-        return False  # already exists
-
-    # Clone settings from default block, override identity fields.
-    # Identity-mapping keys (pinUserPeer, userPeerAliases, runtimePeerPrefix)
-    # carry the operator's runtime-to-peer routing intent from #27371.
-    new_block = {}
-    for key in ("recallMode", "writeFrequency", "sessionStrategy",
-                "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
-                "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
-                "dialecticMaxInputChars", "saveMessages", "observation",
-                "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
-        val = default_block.get(key)
-        if val is not None:
-            new_block[key] = val
-    # Carry a legacy default-block pinPeerName forward under the canonical key.
-    if "pinUserPeer" not in new_block and default_block.get("pinPeerName") is not None:
-        new_block["pinUserPeer"] = default_block["pinPeerName"]
-
-    # Inherit peer name from default
-    peer_name = default_block.get("peerName") or cfg.get("peerName")
-    if peer_name:
-        new_block["peerName"] = peer_name
-
-    # AI peer is profile-specific; workspace is shared so all profiles
-    # see the same user context, sessions, and project history.
-    # Use the bare profile name as the peer identity (not the host key)
-    # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
-    new_block["aiPeer"] = profile_name
-    new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
-    new_block["enabled"] = default_block.get("enabled", True)
-
-    cfg.setdefault("hosts", {})[new_host] = new_block
-    _write_config(cfg)
-
-    # Eagerly create the peer in Honcho so it exists before first message
-    _ensure_peer_exists(new_host)
-    return True
-
-
 def _ensure_peer_exists(host_key: str | None = None) -> bool:
     """Create the AI peer in Honcho if it doesn't already exist.
 
@@ -156,81 +94,6 @@ def cmd_disable(args) -> None:
     _write_config(cfg)
     print(f"  {label}Honcho disabled.")
     print(f"  Saved to {_config_path()}\n")
-
-
-def cmd_sync(args) -> None:
-    """Sync Honcho config to all existing profiles.
-
-    Scans all Son of Anton profiles and creates host blocks for any that don't
-    have one yet. Inherits settings from the default host block.
-    """
-    try:
-        from son_of_anton_cli.profiles import list_profiles
-        profiles = list_profiles()
-    except Exception as e:
-        print(f"  Could not list profiles: {e}\n")
-        return
-
-    cfg = _read_config()
-    if not cfg:
-        print("  No Honcho config found. Run 'son_of_anton honcho setup' first.\n")
-        return
-
-    hosts = cfg.get("hosts", {})
-    default_block = hosts.get(HOST, {})
-    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
-
-    if not default_block and not has_key:
-        print("  Honcho not configured on default profile. Run 'son_of_anton honcho setup' first.\n")
-        return
-
-    created = 0
-    skipped = 0
-    for p in profiles:
-        if p.name == "default":
-            continue
-        if clone_honcho_for_profile(p.name):
-            print(f"  + {p.name} -> {profile_host_key(p.name)}")
-            created += 1
-        else:
-            skipped += 1
-
-    if created:
-        print(f"\n  {created} profile(s) synced.")
-    else:
-        print("  All profiles already have Honcho config.")
-    if skipped:
-        print(f"  {skipped} profile(s) already configured (skipped).")
-    print()
-
-
-def sync_honcho_profiles_quiet() -> int:
-    """Sync Honcho host blocks for all profiles. Returns count of newly created blocks.
-
-    Called from `son_of_anton update` -- no output, no exceptions.
-    """
-    try:
-        from son_of_anton_cli.profiles import list_profiles
-        profiles = list_profiles()
-    except Exception:
-        return 0
-
-    cfg = _read_config()
-    if not cfg:
-        return 0
-
-    default_block = cfg_get(cfg, "hosts", HOST, default={})
-    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
-    if not default_block and not has_key:
-        return 0
-
-    created = 0
-    for p in profiles:
-        if p.name == "default":
-            continue
-        if clone_honcho_for_profile(p.name):
-            created += 1
-    return created
 
 
 _profile_override: str | None = None
@@ -1078,14 +941,8 @@ def _apply_grant_to_host(son_of_anton_host: dict, cred) -> None:
 
 
 def _active_profile_name() -> str:
-    """Return the active Son of Anton profile name (respects --target-profile override)."""
-    if _profile_override:
-        return _profile_override
-    try:
-        from son_of_anton_cli.profiles import get_active_profile_name
-        return get_active_profile_name()
-    except Exception:
-        return "default"
+    """Return the Honcho profile name (respects --target-profile override)."""
+    return _profile_override or "default"
 
 
 def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
@@ -1093,30 +950,9 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
 
     Reads honcho.json once and maps each profile to its host block.
     """
-    try:
-        from son_of_anton_cli.profiles import list_profiles
-        profiles = list_profiles()
-    except Exception:
-        return [(_active_profile_name(), _host_key(), {})]
-
     cfg = _read_config()
     hosts = cfg.get("hosts", {})
-    results = []
-
-    # Default profile
-    default_block = hosts.get(HOST, {})
-    results.append(("default", HOST, default_block))
-
-    for p in profiles:
-        if p.name == "default":
-            continue
-        h = profile_host_key(p.name)
-        # _host_block (not hosts.get) so legacy dot-form keys
-        # ("son-of-anton.work") stay readable per the README's back-compat
-        # promise — the canonical key resolves first, legacy falls back.
-        results.append((p.name, h, _host_block(cfg, h)))
-
-    return results
+    return [("default", HOST, hosts.get(HOST, {}))]
 
 
 def cmd_status(args) -> None:
@@ -1869,11 +1705,9 @@ def honcho_command(args) -> None:
         cmd_enable(args)
     elif sub == "disable":
         cmd_disable(args)
-    elif sub == "sync":
-        cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable\n")
 
 
 def register_cli(subparser) -> None:
@@ -1971,6 +1805,5 @@ def register_cli(subparser) -> None:
     )
     subs.add_parser("enable", help="Enable Honcho for the active profile")
     subs.add_parser("disable", help="Disable Honcho for the active profile")
-    subs.add_parser("sync", help="Sync Honcho config to all existing profiles")
 
     subparser.set_defaults(func=honcho_command)

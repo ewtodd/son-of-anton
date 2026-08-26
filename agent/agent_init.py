@@ -1767,14 +1767,8 @@ def init_agent(
                     # Thread gateway session key for stable per-chat Honcho session isolation
                     if agent._gateway_session_key:
                         _init_kwargs["gateway_session_key"] = agent._gateway_session_key
-                    # Profile identity for per-profile provider scoping
-                    try:
-                        from son_of_anton_cli.profiles import get_active_profile_name
-                        _profile = get_active_profile_name()
-                        _init_kwargs["agent_identity"] = _profile
-                        _init_kwargs["agent_workspace"] = "son-of-anton"
-                    except Exception:
-                        pass
+                    _init_kwargs["agent_identity"] = "default"
+                    _init_kwargs["agent_workspace"] = "son-of-anton"
                     # NOTE: status_callback (for the deterministic retain
                     # indicator) is wired above, CLI-only — gateway status is
                     # delivered on a different path (see the platform=="cli"

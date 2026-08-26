@@ -11411,8 +11411,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.show_help(_help_parts[1].strip() if len(_help_parts) > 1 else "")
         elif canonical == "palette":
             self._open_command_palette()
-        elif canonical == "profile":
-            self._handle_profile_command()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
@@ -15278,16 +15276,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Session IDs are profile-constrained, so the resume hint must
             # include `-p <profile>` for non-default profiles. Without this,
             # copying the hint from a non-default profile fails to find the
-            # session on the next invocation. The "default" and "custom"
-            # profile names use the standard SON_OF_ANTON_HOME, so no -p needed.
-            try:
-                from son_of_anton_cli.profiles import get_active_profile_name
-                _active_profile = get_active_profile_name()
-            except Exception:
-                _active_profile = "default"
-            profile_flag = (
-                "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
-            )
+            # session on the next invocation.
+            profile_flag = ""
             print(f"  son-of-anton --resume {self.session_id}{profile_flag}")
             if session_title:
                 print(f"  son-of-anton -c \"{session_title}\"{profile_flag}")
@@ -15323,14 +15313,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         symbol = (symbol or "❯ ").rstrip() + " "
 
-        # Prepend profile name when not default
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-            profile = get_active_profile_name()
-            if profile not in {"default", "custom"}:
-                symbol = f"{profile} {symbol}"
-        except Exception:
-            pass
         stripped = symbol.rstrip()
         if not stripped:
             return "❯ ", "❯ "

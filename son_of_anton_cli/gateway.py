@@ -662,36 +662,22 @@ def find_gateway_pids(
 def find_profile_gateway_processes(
     exclude_pids: set | None = None,
 ) -> list[ProfileGatewayProcess]:
-    """Return running gateway PIDs mapped to Son of Anton profiles via PID files."""
-    _exclude = set(exclude_pids or set())
-    processes: list[ProfileGatewayProcess] = []
-    try:
-        from gateway.status import get_running_pid
-        from son_of_anton_cli.profiles import list_profiles
-    except Exception:
-        return processes
+    """Always empty — this install has one gateway, found via its own PID file.
 
-    seen: set[int] = set()
-    for profile in list_profiles():
-        try:
-            pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
-        except Exception:
-            continue
-        if pid is None or pid <= 0 or pid in _exclude or pid in seen:
-            continue
-        seen.add(pid)
-        processes.append(
-            ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid)
-        )
-    return processes
+    This used to walk every profile's ``gateway.pid``. Sibling gateways now run
+    as separate accounts under their own SON_OF_ANTON_HOME; their PID files are
+    not readable from here and their processes are not ours to restart. Callers
+    keep the call site and fall through to the single-home paths.
+    """
+    return []
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
-    args = [get_python_path(), "-m", "son_of_anton_cli.main"]
-    if profile != "default":
-        args.extend(["--profile", profile])
-    args.extend(["gateway", "run", "--replace"])
-    return args
+    """Argv that restarts this home's gateway. ``profile`` is vestigial."""
+    return [
+        get_python_path(), "-m", "son_of_anton_cli.main",
+        "gateway", "run", "--replace",
+    ]
 
 
 def _capture_gateway_argv(pid: int) -> list[str] | None:
@@ -1395,72 +1381,6 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
         print("  This is usually a manual foreground/tmux/nohup run, so `son-of-anton gateway`")
         print("  can refuse to start another copy until this process stops.")
-
-
-def _print_other_profiles_gateway_status() -> None:
-    """Print a summary of gateway status across all profiles.
-
-    Shown at the bottom of ``son-of-anton gateway status`` output so users with
-    multiple profiles can tell at a glance which gateways are running and
-    avoid confusing another profile's process with the current one.
-    """
-    try:
-        from son_of_anton_cli.profiles import get_active_profile_name
-
-        current = get_active_profile_name()
-        other_processes = [
-            p for p in find_profile_gateway_processes() if p.profile != current
-        ]
-        if not other_processes:
-            return
-
-        print()
-        print("Other profiles:")
-        for proc in other_processes:
-            print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
-    except Exception:
-        pass
-
-
-def _gateway_list() -> None:
-    """List all profiles and their gateway running status.
-
-    Provides a single-command overview of every known profile and whether
-    its gateway is currently running, so multi-profile users don't have to
-    check each profile individually.
-    """
-    try:
-        from son_of_anton_cli.profiles import list_profiles, get_active_profile_name
-    except Exception:
-        print("Unable to list profiles.")
-        return
-
-    profiles = list_profiles()
-    if not profiles:
-        print("No profiles found.")
-        return
-
-    current = get_active_profile_name()
-
-    print("Gateways:")
-    for prof in profiles:
-        marker = "✓" if prof.gateway_running else "✗"
-        label = prof.name
-        if prof.name == current:
-            label += " (current)"
-        parts = [f"  {marker} {label:<24s}"]
-        if prof.gateway_running:
-            try:
-                from gateway.status import get_running_pid
-
-                pid = get_running_pid(prof.path / "gateway.pid", cleanup_stale=False)
-                if pid:
-                    parts.append(f"PID {pid}")
-            except Exception:
-                pass
-        else:
-            parts.append("not running")
-        print(" — ".join(parts))
 
 
 def kill_gateway_processes(
@@ -2564,33 +2484,14 @@ def get_launchd_plist_path() -> Path:
 
 
 def launchd_gateway_labels_for_install() -> list[str]:
-    """Return the launchd gateway label for every profile of THIS install.
+    """Return this install's launchd gateway label.
 
-    Derived from the install's profile layout (rooted at
-    ``get_default_son_of_anton_root()``), NOT by globbing ``~/Library/LaunchAgents``:
-    the LaunchAgents directory is shared per-user, so a sandboxed
-    ``SON_OF_ANTON_HOME`` (tests, capture sandboxes, side-by-side installs) must
-    never enumerate — let alone restart — another install's fleet.
-
-    Root label first, then profile labels sorted by name.  Profile names
-    that cannot map to a service suffix (see ``_profile_suffix``'s naming
-    rule) are skipped — ``gateway install`` could never have created a
-    predictable label for them.  Profiles without an installed gateway are
-    harmless to include: their labels simply aren't bootstrapped and
-    callers skip them after a failed locate.
+    NOT derived by globbing ``~/Library/LaunchAgents``: that directory is
+    shared per-user, so a sandboxed ``SON_OF_ANTON_HOME`` (tests, capture
+    sandboxes, side-by-side installs) must never enumerate — let alone
+    restart — another install's services.
     """
-    import re as _re
-
-    from son_of_anton_cli.profiles import list_profiles
-
-    root_label: list[str] = []
-    profile_labels: list[str] = []
-    for profile in list_profiles():
-        if profile.is_default:
-            root_label.append("ai.son-of-anton.gateway")
-        elif _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile.name):
-            profile_labels.append(f"ai.son-of-anton.gateway-{profile.name}")
-    return root_label + sorted(profile_labels)
+    return ["ai.son-of-anton.gateway"]
 
 
 def _detect_venv_dir() -> Path | None:
@@ -4916,121 +4817,6 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
-def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
-    """Refuse a named-profile gateway when a multiplexer is already serving it.
-
-    When the default profile's gateway runs with gateway.multiplex_profiles=on,
-    it is the sole inbound process for EVERY profile on the host. Starting a
-    separate gateway for a named profile would double-bind that profile's
-    platforms (two pollers on one bot token, port fights). In that mode a
-    named-profile ``son-of-anton gateway run`` is always a misconfiguration, so we
-    hard-error with a pointer to the multiplexer. ``--force`` overrides.
-
-    Inert unless ALL of: (a) this invocation is a named profile, (b) a default-
-    profile gateway is running, (c) that gateway's config has multiplexing on.
-    """
-    if force:
-        return
-    # (a) Are we a named profile? Default/custom-hash homes return "".
-    try:
-        suffix = _profile_suffix()
-    except Exception:
-        return
-    if not suffix:
-        return  # default profile (or unrecognized) — this guard doesn't apply
-
-    try:
-        from son_of_anton_constants import get_default_son_of_anton_root
-        default_root = get_default_son_of_anton_root()
-        # (b) Is the default-profile gateway running?
-        from gateway.status import get_running_pid as _default_running_pid  # noqa
-    except Exception:
-        return
-
-    try:
-        import yaml as _yaml
-        from gateway.status import _read_pid_record  # type: ignore
-
-        # (b) default gateway PID file present + alive
-        default_pid_path = default_root / "gateway.pid"
-        rec = _read_pid_record(default_pid_path)
-        if not rec:
-            return
-        from gateway.status import _pid_exists, _pid_from_record
-        pid = _pid_from_record(rec)
-        if not pid or not _pid_exists(pid):
-            return
-
-        # (c) multiplexing is on for the default gateway. Precedence mirrors
-        # gateway.config: the GATEWAY_MULTIPLEX_PROFILES env override wins over
-        # config.yaml when set to a recognized value, so a hosted gateway that
-        # forces multiplex on via env (with no multiplex_profiles in config.yaml)
-        # still trips this guard. A blank/unrecognized env value falls through
-        # to config.yaml.
-        from gateway.config import _env_multiplex_profiles_override
-
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            # Raw read of the DEFAULT root's config (not the active profile
-            # home, so load_config() is the wrong owner here); whole probe is
-            # fail-open via the enclosing except.
-            from son_of_anton_cli.config import read_user_config_raw
-
-            cfg = read_user_config_raw(cfg_path)
-
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
-            return  # explicitly forced OFF by the operator env override
-        if env_multiplex is True:
-            multiplex = True
-        else:
-            if not cfg_path.exists():
-                return
-            multiplex = bool(
-                cfg.get("multiplex_profiles")
-                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-            )
-        if not multiplex:
-            return
-
-        gateway_cfg = cfg.get("gateway", {}) or {}
-        if "multiplex_profile_allowlist" in cfg:
-            raw_allowlist = cfg.get("multiplex_profile_allowlist")
-        else:
-            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
-        from gateway.config import _normalize_multiplex_profile_allowlist
-        from son_of_anton_cli.profiles import normalize_profile_name
-
-        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
-        if (
-            profile_allowlist is not None
-            and normalize_profile_name(suffix) not in profile_allowlist
-        ):
-            return
-    except Exception:
-        logger.debug("Multiplexer-conflict probe failed", exc_info=True)
-        return
-
-    print_error(
-        f"The default gateway is running as a profile multiplexer and already "
-        f"serves profile '{suffix}'."
-    )
-    print(
-        "  When gateway.multiplex_profiles is on, the default gateway is the\n"
-        "  single inbound process for every profile. Starting a separate\n"
-        "  gateway for this profile would double-bind its platforms (two\n"
-        "  pollers on one bot token, port conflicts).\n"
-    )
-    print("  Manage the multiplexer instead (from the default profile):")
-    print()
-    print("    son-of-anton gateway restart")
-    print()
-    print("  Pass --force to start a separate profile gateway anyway (not")
-    print("  recommended while the multiplexer is running).")
-    sys.exit(1)
-
-
 def _guard_supervised_gateway_conflict(force: bool = False) -> None:
     """Refuse a foreground gateway when a service manager already supervises one.
 
@@ -5115,7 +4901,6 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         force: Skip the supervised-gateway conflict guard and start even when a
                systemd/launchd service is already supervising this profile.
     """
-    _guard_named_profile_under_multiplexer(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -6429,12 +6214,6 @@ def _gateway_command_inner(args):
                 print(
                     "  sudo son-of-anton gateway install --system  # Install as boot-time system service"
                 )
-
-        # Show other profiles' gateway status for multi-profile awareness
-        _print_other_profiles_gateway_status()
-
-    elif subcmd == "list":
-        _gateway_list()
 
     elif subcmd == "migrate-legacy":
         # Stop, disable, and remove legacy Son of Anton gateway unit files from

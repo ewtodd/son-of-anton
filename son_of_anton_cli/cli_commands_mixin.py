@@ -583,20 +583,6 @@ class CLICommandsMixin:
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
-    def _handle_profile_command(self):
-        """Display active profile name and home directory."""
-        from son_of_anton_cli.slash_exec import CommandContext, execute_command
-
-        reply = execute_command("profile", CommandContext(surface="cli"))
-        profile_name = reply.data["profile"]
-        display = reply.data["home"]
-
-        print()
-        print(f"  Profile: {profile_name}")
-        print(f"  Home:    {display}")
-        print()
-
-
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         from cli import _cprint, _sync_process_session_id

@@ -14439,7 +14439,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "verbose": self._handle_verbose_command,
                 "help": self._handle_help_command,
                 "commands": self._handle_commands_command,
-                "profile": self._handle_profile_command,
                 "version": self._handle_version_command,
             }.get(name)
             if plain is not None:
@@ -15493,10 +15492,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
-        if canonical == "profile":
-            return await self._handle_profile_command(event)
-
-
         if canonical == "status":
             return await self._handle_status_command(event)
 
@@ -23732,7 +23727,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             str(src.chat_topic or ""),
             str(src.user_name or ""),
             str(src.user_id or ""),
-            str(getattr(src, "profile", None) or ""),
             bool(context.shared_multi_user_session),
             discord_ids,
             discord_tools,

@@ -803,36 +803,6 @@ class SonOfAntonConsoleEngine:
                 [("manifest",)],
                 set(),
             ),
-            "profile": (
-                "son_of_anton_cli.subcommands.profile",
-                "build_profile_parser",
-                "cmd_profile",
-                [
-                    ("list",),
-                    ("show",),
-                    ("info",),
-                    ("create",),
-                    ("use",),
-                    ("describe",),
-                    ("rename",),
-                    ("delete",),
-                    ("export",),
-                    ("import",),
-                    ("install",),
-                    ("update",),
-                ],
-                {
-                    ("create",),
-                    ("use",),
-                    ("describe",),
-                    ("rename",),
-                    ("delete",),
-                    ("export",),
-                    ("import",),
-                    ("install",),
-                    ("update",),
-                },
-            ),
             "cron": (
                 "son_of_anton_cli.subcommands.cron",
                 "build_cron_parser",
@@ -901,12 +871,6 @@ class SonOfAntonConsoleEngine:
             confirmation="Repair the session database?",
         )
 
-        self.register(
-            ("profile",),
-            "profile",
-            "Show active profile status.",
-            _profile_status,
-        )
         self.register(
             ("send",),
             "send --to <target> <message>",
@@ -1187,7 +1151,6 @@ class SonOfAntonConsoleEngine:
         blocked_pairs = {
             ("config", "edit"): "`config edit` opens an editor and is not available in Son of Anton Console.",
             ("mcp", "serve"): "`mcp serve` starts a server and is not available in Son of Anton Console.",
-            ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Son of Anton Console.",
             ("skills", "config"): "`skills config` is interactive and is not available in Son of Anton Console.",
             ("skills", "publish"): "`skills publish` is not available in Son of Anton Console.",
             ("portal", "login"): "`portal login` is interactive and is not available in Son of Anton Console.",
@@ -1539,18 +1502,6 @@ def _sessions_repair(_engine: SonOfAntonConsoleEngine, args: list[str]) -> str:
         raise ConsoleCommandError(f"Repair failed: {report.get('error')}")
 
     return _capture_output(_run)
-
-
-def _profile_status(_engine: SonOfAntonConsoleEngine, args: list[str]) -> str:
-    _expect_no_args(args, "profile")
-    return _dispatch_extracted_subcommand(
-        root="profile",
-        fixed=(),
-        args=(),
-        module_name="son_of_anton_cli.subcommands.profile",
-        builder_name="build_profile_parser",
-        main_handler_name="cmd_profile",
-    )
 
 
 def _cron_list(_engine: SonOfAntonConsoleEngine, args: list[str]) -> str:

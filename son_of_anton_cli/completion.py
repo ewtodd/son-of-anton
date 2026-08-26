@@ -59,26 +59,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
     cases: list[str] = []
     for cmd in sorted(tree["subcommands"]):
         info = tree["subcommands"][cmd]
-        if cmd == "profile" and info["subcommands"]:
-            # Profile subcommand: complete actions, then profile names for
-            # actions that accept a profile argument.
-            subcmds = " ".join(sorted(info["subcommands"]))
-            profile_actions = "use delete show alias rename export"
-            cases.append(
-                f"        profile)\n"
-                f"            case \"$prev\" in\n"
-                f"                profile)\n"
-                f"                    COMPREPLY=($(compgen -W \"{subcmds}\" -- \"$cur\"))\n"
-                f"                    return\n"
-                f"                    ;;\n"
-                f"                {profile_actions.replace(' ', '|')})\n"
-                f"                    COMPREPLY=($(compgen -W \"$(_son_of_anton_profiles)\" -- \"$cur\"))\n"
-                f"                    return\n"
-                f"                    ;;\n"
-                f"            esac\n"
-                f"            ;;"
-            )
-        elif info["subcommands"]:
+        if info["subcommands"]:
             subcmds = " ".join(sorted(info["subcommands"]))
             cases.append(
                 f"        {cmd})\n"
@@ -101,28 +82,11 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
 # Add to ~/.bashrc:
 #   eval "$(son-of-anton completion bash)"
 
-_son_of_anton_profiles() {{
-    local profiles_dir="$HOME/.son-of-anton/profiles"
-    local profiles="default"
-    if [ -d "$profiles_dir" ]; then
-        for f in "$profiles_dir"/*/; do
-            [ -d "$f" ] && profiles="$profiles $(basename "$f")"
-        done
-    fi
-    echo "$profiles"
-}}
-
 _son_of_anton_completion() {{
     local cur prev
     COMPREPLY=()
     cur="${{COMP_WORDS[COMP_CWORD]}}"
     prev="${{COMP_WORDS[COMP_CWORD-1]}}"
-
-    # Complete profile names after -p / --profile
-    if [[ "$prev" == "-p" || "$prev" == "--profile" ]]; then
-        COMPREPLY=($(compgen -W "$(_son_of_anton_profiles)" -- "$cur"))
-        return
-    fi
 
     if [[ $COMP_CWORD -ge 2 ]]; then
         case "${{COMP_WORDS[1]}}" in
@@ -157,61 +121,27 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
         info = tree["subcommands"][cmd]
         if not info["subcommands"]:
             continue
-        if cmd == "profile":
-            # Profile subcommand: complete actions, then profile names for
-            # actions that accept a profile argument.
-            sub_lines: list[str] = []
-            for sc in sorted(info["subcommands"]):
-                sh = _clean(info["subcommands"][sc].get("help", ""))
-                sub_lines.append(f"                        '{sc}:{sh}'")
-            sub_str = "\n".join(sub_lines)
-            sub_cases.append(
-                f"                profile)\n"
-                f"                    case ${{line[2]}} in\n"
-                f"                        use|delete|show|alias|rename|export)\n"
-                f"                            _son_of_anton_profiles\n"
-                f"                            ;;\n"
-                f"                        *)\n"
-                f"                            local -a profile_cmds\n"
-                f"                            profile_cmds=(\n"
-                f"{sub_str}\n"
-                f"                            )\n"
-                f"                            _describe 'profile command' profile_cmds\n"
-                f"                            ;;\n"
-                f"                    esac\n"
-                f"                    ;;"
-            )
-        else:
-            sub_lines = []
-            for sc in sorted(info["subcommands"]):
-                sh = _clean(info["subcommands"][sc].get("help", ""))
-                sub_lines.append(f"                    '{sc}:{sh}'")
-            sub_str = "\n".join(sub_lines)
-            safe = cmd.replace("-", "_")
-            sub_cases.append(
-                f"                {cmd})\n"
-                f"                    local -a {safe}_cmds\n"
-                f"                    {safe}_cmds=(\n"
-                f"{sub_str}\n"
-                f"                    )\n"
-                f"                    _describe '{cmd} command' {safe}_cmds\n"
-                f"                    ;;"
-            )
+        sub_lines: list[str] = []
+        for sc in sorted(info["subcommands"]):
+            sh = _clean(info["subcommands"][sc].get("help", ""))
+            sub_lines.append(f"                    '{sc}:{sh}'")
+        sub_str = "\n".join(sub_lines)
+        safe = cmd.replace("-", "_")
+        sub_cases.append(
+            f"                {cmd})\n"
+            f"                    local -a {safe}_cmds\n"
+            f"                    {safe}_cmds=(\n"
+            f"{sub_str}\n"
+            f"                    )\n"
+            f"                    _describe '{cmd} command' {safe}_cmds\n"
+            f"                    ;;"
+        )
     sub_cases_str = "\n".join(sub_cases)
 
     return f"""#compdef son-of-anton
 # Son of Anton Agent zsh completion
 # Add to ~/.zshrc:
 #   eval "$(son-of-anton completion zsh)"
-
-_son_of_anton_profiles() {{
-    local -a profiles
-    profiles=(default)
-    if [[ -d "$HOME/.son-of-anton/profiles" ]]; then
-        profiles+=($HOME/.son-of-anton/profiles/*(N/:t))
-    fi
-    _describe 'profile' profiles
-}}
 
 _son_of_anton() {{
     local context state line
@@ -220,7 +150,6 @@ _son_of_anton() {{
     _arguments -C \\
         '(-)'{{-h,--help}}'[Show help and exit]' \\
         '(-)'{{-V,--version}}'[Show version and exit]' \\
-        '(-)'{{-p,--profile}}'[Profile name]:profile:_son_of_anton_profiles' \\
         '1:command:->commands' \\
         '*::arg:->args'
 
@@ -258,22 +187,8 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
         "# Add to your config:",
         "#   son-of-anton completion fish | source",
         "",
-        "# Helper: list available profiles",
-        "function __son_of_anton_profiles",
-        "    echo default",
-        "    if test -d $HOME/.son-of-anton/profiles",
-        "        for d in $HOME/.son-of-anton/profiles/*/",
-        "            basename $d",
-        "        end",
-        "    end",
-        "end",
-        "",
         "# Disable file completion by default",
         "complete -c son-of-anton -f",
-        "",
-        "# Complete profile names after -p / --profile",
-        "complete -c son-of-anton -f -s p -l profile"
-        " -d 'Profile name' -xa '(__son_of_anton_profiles)'",
         "",
         "# Top-level subcommands",
     ]
@@ -290,8 +205,6 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
     lines.append("")
     lines.append("# Subcommand completions")
 
-    profile_name_actions = {"use", "delete", "show", "alias", "rename", "export"}
-
     for cmd in top_cmds:
         info = tree["subcommands"][cmd]
         if not info["subcommands"]:
@@ -305,15 +218,6 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
                 f"-n '__fish_seen_subcommand_from {cmd}' "
                 f"-a {sc} -d '{sh}'"
             )
-        # For profile subcommand, complete profile names for relevant actions
-        if cmd == "profile":
-            for action in sorted(profile_name_actions):
-                lines.append(
-                    f"complete -c son-of-anton -f "
-                    f"-n '__fish_seen_subcommand_from {action}; "
-                    f"and __fish_seen_subcommand_from profile' "
-                    f"-a '(__son_of_anton_profiles)' -d 'Profile name'"
-                )
 
     lines.append("")
     return "\n".join(lines)

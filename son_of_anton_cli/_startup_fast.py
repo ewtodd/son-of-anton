@@ -26,7 +26,6 @@ __all__ = [
     "project_root_str",
     "ensure_project_root_on_path",
     "is_global_fast_version_argv",
-    "active_profile_may_override_home",
     "read_openai_version",
     "read_install_method",
     "print_fast_version_info",
@@ -54,19 +53,6 @@ def ensure_project_root_on_path() -> None:
 
 def is_global_fast_version_argv(argv: list[str]) -> bool:
     return argv in (["--version"], ["-V"])
-
-
-def active_profile_may_override_home(son_of_anton_root: str) -> bool:
-    """Cheap probe: does an active non-default profile redirect SON_OF_ANTON_HOME?"""
-    active_profile = os.path.join(son_of_anton_root, "active_profile")
-    try:
-        if os.path.exists(active_profile):
-            with open(active_profile, encoding="utf-8") as handle:
-                active = handle.read().strip()
-            return bool(active and active != "default")
-    except (OSError, UnicodeDecodeError):
-        pass
-    return False
 
 
 def _resolved_home() -> str:

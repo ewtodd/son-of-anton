@@ -196,8 +196,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
-    CommandDef("profile", "Show active profile name and home directory", "Info",
-               busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -585,7 +583,7 @@ GATEWAY_HELP_CORE: frozenset[str] = frozenset({
     # Knowledge
     "memory",
     # Info
-    "usage", "profile", "help", "commands",
+    "usage", "help", "commands",
 })
 
 

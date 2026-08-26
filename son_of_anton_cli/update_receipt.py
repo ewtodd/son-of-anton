@@ -302,21 +302,12 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
 
     try:
         from gateway.status import _pid_exists, read_runtime_status
-        from son_of_anton_cli.profiles import (
-            _get_default_son_of_anton_home,
-            _get_profiles_root,
-            _PROFILE_ID_RE,
-        )
+        from son_of_anton_constants import get_son_of_anton_home
 
         homes: list[tuple[str, Path]] = []
-        default_home = _get_default_son_of_anton_home()
+        default_home = Path(get_son_of_anton_home())
         if default_home.is_dir():
             homes.append(("default", default_home))
-        profiles_root = _get_profiles_root()
-        if profiles_root.is_dir():
-            for entry in sorted(profiles_root.iterdir()):
-                if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name):
-                    homes.append((entry.name, entry))
 
         for profile, home in homes:
             status_path = home / "gateway_state.json"

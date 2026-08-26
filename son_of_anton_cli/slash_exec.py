@@ -75,47 +75,6 @@ def _exec_version(ctx: CommandContext) -> CommandReply:
 
 
 
-def _exec_profile(ctx: CommandContext) -> CommandReply:
-    """Core /profile data — active profile name + home directory.
-
-    A multiplexed gateway may pre-resolve the per-source profile/home and pass
-    them via ``options`` (``profile_name`` / ``home_display``); otherwise the
-    process-level values are used (identical to the old CLI + non-multiplex
-    gateway behavior).
-    """
-    profile_name = str(ctx.options.get("profile_name") or "").strip()
-    home_display = str(ctx.options.get("home_display") or "").strip()
-
-    if not profile_name:
-        from son_of_anton_cli.profiles import get_active_profile_name
-
-        profile_name = get_active_profile_name()
-    if not home_display:
-        from son_of_anton_constants import display_son_of_anton_home
-
-        home_display = display_son_of_anton_home()
-
-    # Presentation-only display name (profile.yaml). `data.profile` stays
-    # the canonical id — consumers route on it; only the text gets the label.
-    label = profile_name
-    try:
-        from son_of_anton_cli.profiles import (
-            format_profile_label,
-            get_profile_dir,
-            read_profile_meta,
-        )
-
-        display = read_profile_meta(get_profile_dir(profile_name)).get("display_name", "")
-        label = format_profile_label(profile_name, display)
-    except Exception:
-        pass
-
-    return CommandReply(
-        f"Profile: {label}\nHome: {home_display}",
-        data={"profile": profile_name, "home": home_display},
-    )
-
-
 def _exec_bundles(ctx: CommandContext) -> CommandReply:
     """Core /bundles data — installed skill bundles listing."""
     try:
@@ -249,7 +208,6 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "version": _exec_version,
-    "profile": _exec_profile,
     "bundles": _exec_bundles,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands,

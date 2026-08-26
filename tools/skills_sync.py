@@ -99,9 +99,7 @@ def _manifest_file() -> Path:
 # and by the installer's `--no-skills` flag (the default ~/.son-of-anton profile).
 # When present in SON_OF_ANTON_HOME, sync_skills() is a no-op so neither the
 # installer, `son-of-anton update`, nor a direct sync re-injects bundled skills.
-# Delete the file to opt back in. Mirrors
-# son_of_anton_cli.profiles.NO_BUNDLED_SKILLS_MARKER (kept as a literal here to
-# avoid importing the CLI layer into this low-level sync module).
+# Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 

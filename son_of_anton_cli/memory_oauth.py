@@ -30,28 +30,19 @@ def _resolve_flow(provider: str):
 
 @contextmanager
 def _scope_to_profile(profile: Optional[str]):
-    """Scope config resolution to ``profile`` so the flow's eager path resolve
-    targets that profile's honcho.json. None/""/"current" leaves it untouched."""
+    """No-op. One process serves one SON_OF_ANTON_HOME.
+
+    The ``profile`` query parameter is still accepted so existing desktop
+    callers do not 400; anything other than the current home is rejected
+    rather than silently resolving against the wrong config.
+    """
     requested = (profile or "").strip()
-    if not requested or requested.lower() == "current":
-        yield
-        return
-
-    from son_of_anton_cli import profiles as profiles_mod
-    from son_of_anton_constants import reset_son_of_anton_home_override, set_son_of_anton_home_override
-
-    try:
-        profiles_mod.validate_profile_name(requested)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(requested):
-        raise HTTPException(status_code=404, detail=f"Profile '{requested}' does not exist.")
-
-    token = set_son_of_anton_home_override(str(profiles_mod.get_profile_dir(requested)))
-    try:
-        yield
-    finally:
-        reset_son_of_anton_home_override(token)
+    if requested and requested.lower() not in {"current", "default"}:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Profile '{requested}' does not exist.",
+        )
+    yield
 
 
 @router.post("/{provider}/oauth/start")

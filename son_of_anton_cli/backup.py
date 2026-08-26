@@ -1167,58 +1167,11 @@ def run_import(args) -> None:
             if len(skipped_runtime) > 10:
                 print(f"    ... and {len(skipped_runtime) - 10} more")
 
-        # Post-import: restore profile wrapper scripts
-        profiles_dir = son_of_anton_root / "profiles"
-        restored_profiles = []
-        if profiles_dir.is_dir():
-            try:
-                from son_of_anton_cli.profiles import (
-                    create_wrapper_script, check_alias_collision,
-                    _is_wrapper_dir_in_path, _get_wrapper_dir,
-                )
-                for entry in sorted(profiles_dir.iterdir()):
-                    if not entry.is_dir():
-                        continue
-                    profile_name = entry.name
-                    # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
-                        continue
-                    collision = check_alias_collision(profile_name)
-                    if collision:
-                        print(f"  Skipped alias '{profile_name}': {collision}")
-                        restored_profiles.append((profile_name, False))
-                    else:
-                        wrapper = create_wrapper_script(profile_name)
-                        restored_profiles.append((profile_name, wrapper is not None))
-
-                if restored_profiles:
-                    created = [n for n, ok in restored_profiles if ok]
-                    skipped = [n for n, ok in restored_profiles if not ok]
-                    if created:
-                        print(f"\n  Profile aliases restored: {', '.join(created)}")
-                    if skipped:
-                        print(f"  Profile aliases skipped:  {', '.join(skipped)}")
-                    if not _is_wrapper_dir_in_path():
-                        print(f"\n  Note: {_get_wrapper_dir()} is not in your PATH.")
-                        print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
-                        print('    export PATH="$HOME/.local/bin:$PATH"')
-            except ImportError:
-                # son_of_anton_cli.profiles might not be available (fresh install)
-                if any(profiles_dir.iterdir()):
-                    print("\n  Profiles detected but aliases could not be created.")
-                    print("  Run: son-of-anton profile list  (after installing son-of-anton)")
-
         # Guidance
         print()
         if not (son_of_anton_root / "son-of-anton").is_dir():
             print("Note: The son-of-anton codebase was not included in the backup.")
             print("  If this is a fresh install, run: son-of-anton update")
-
-        if restored_profiles:
-            gw_profiles = [n for n, _ in restored_profiles]
-            print("\nTo re-enable gateway services for profiles:")
-            for pname in gw_profiles:
-                print(f"  son-of-anton -p {pname} gateway install")
 
         # Bring the restored install to life: the backup may contain bot
         # tokens and registered cron jobs, but they're inert without a

@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 # Per-session skill discovery cache.  _find_all_skills() re-reads every
 # SKILL.md on every call; with hundreds of skills this is wasteful.
-# Cache validation (mirrors son_of_anton_cli/profiles.py::_count_skills, d5eee133e):
+# Cache validation:
 #   - signature = per-dir max mtime of the dir AND its immediate children
 #     (one scandir per dir; catches skill add/remove inside categories,
 #     which does NOT bump the root dir's mtime), plus the disabled-set

@@ -149,25 +149,20 @@ def _same_son_of_anton_home(left: Path | str, right: Path | str) -> bool:
     )
 
 
-# Mirrors son_of_anton_cli.profiles._PROFILE_ID_RE — duplicated here because gateway
-# identity code must stay import-light (son_of_anton_constants + stdlib only).
-_PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
-    """Best-effort profile label for a SON_OF_ANTON_HOME path.
+    """Best-effort owner label for a SON_OF_ANTON_HOME path.
 
-    Returns the profile name for ``<root>/profiles/<name>`` layouts (both
-    ``~/.son-of-anton/profiles/coder`` and Docker ``/opt/data/profiles/coder``),
-    ``"default"`` for the deployment's root home, and ``None`` when no label
-    can be inferred.  Never raises — this feeds diagnostics only.
+    Scoped credential locks are machine-global, so a lock the caller did not
+    take may be held by a gateway serving a DIFFERENT home — under the
+    per-account services that is the common case, several gateways sharing one
+    Signal account. The home path is what distinguishes them, so it is the
+    label: ``"default"`` for this deployment's root home, otherwise the
+    canonical path. Never raises — this feeds diagnostics only.
     """
     try:
         canonical = _canonical_son_of_anton_home(home)
     except Exception:
         return None
-    if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
-        return canonical.name
     try:
         from son_of_anton_constants import get_default_son_of_anton_root
 
@@ -180,26 +175,27 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
             return "default"
     except Exception:
         pass
-    return None
+    return str(canonical)
 
 
 def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
-    """Profile label for the gateway that owns a scoped credential lock.
+    """Label for the gateway that owns a scoped credential lock.
 
-    Scoped locks are machine-global, so the holder may belong to a different
-    SON_OF_ANTON_HOME profile than the caller.  Prefers the explicit ``profile``
-    field stamped by :func:`acquire_scoped_lock`; falls back to inferring the
-    label from the persisted ``son_of_anton_home`` for locks written before the
-    profile field existed.  Returns ``None`` for legacy or malformed records
-    so callers keep their PID-only wording.
+    Scoped locks are machine-global, so the holder is often a gateway serving a
+    DIFFERENT SON_OF_ANTON_HOME — with one service per account that is the
+    normal case.  Prefers the explicit ``profile`` field stamped by
+    :func:`acquire_scoped_lock`; falls back to the persisted
+    ``son_of_anton_home``.  Returns ``None`` for legacy or malformed records so
+    callers keep their PID-only wording.
     """
     if not isinstance(record, dict):
         return None
     profile = record.get("profile")
-    if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
-        # Validate the persisted label — lock files are plain JSON on disk,
-        # and this string flows into log lines and a suggested CLI command.
-        return profile.strip()
+    if isinstance(profile, str) and profile.strip():
+        # Lock files are plain JSON on disk and this string flows into log
+        # lines, so keep it to one line of printable text.
+        label = profile.strip().splitlines()[0]
+        return label[:200] or None
     home = record.get("son_of_anton_home")
     if isinstance(home, str) and home.strip():
         return _profile_label_for_home(home)
@@ -518,38 +514,20 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """Return True when a gateway command line belongs to ``profile_home``.
 
-    Mirrors ``son_of_anton_cli.gateway._matches_current_profile`` so the dashboard's
-    cross-profile liveness fallback scopes a live PID to the *right* profile.
-    In a per-profile container, one profile's stale ``gateway_state.json`` can
-    record a PID that the OS has since recycled onto a DIFFERENT profile's live
-    gateway.  That recycled PID's command line still ``looks_like_gateway`` —
-    so without a profile check the dead profile is reported running.  A named
-    profile gateway carries ``-p <name>``/``--profile <name>`` (or, rarely, an
-    explicit ``SON_OF_ANTON_HOME=<path>``) on its argv; the default/root gateway runs
-    bare with no profile flag.
+    A stale ``gateway_state.json`` can record a PID that the OS has since
+    recycled onto a DIFFERENT home's live gateway.  That recycled PID's command
+    line still ``looks_like_gateway``, so without this check the dead home is
+    reported running.
+
+    SON_OF_ANTON_HOME is normally passed through the environment and is not
+    visible on the command line, so its absence is not disqualifying — only a
+    conflicting explicit ``SON_OF_ANTON_HOME=`` on the argv is.
     """
     # Normalize separators before the substring match: str(Path) may render
     # backslashes while a SON_OF_ANTON_HOME= value on the argv may carry
     # forward slashes (Git Bash, JSON configs) — and vice versa.
     command_lc = command.lower().replace("\\", "/")
-    profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/")
-
-    if profile_name is not None and profile_name != "default":
-        profile_lc = profile_name.lower()
-        return (
-            f"--profile {profile_lc}" in command_lc
-            or f"-p {profile_lc}" in command_lc
-            or f"son_of_anton_home={home_lc}" in command_lc
-        )
-
-    # Default/root profile: the gateway runs with no profile flag. Accept unless
-    # the command advertises *some other* profile (an explicit -p/--profile) or
-    # a non-matching explicit SON_OF_ANTON_HOME= on the argv. SON_OF_ANTON_HOME is usually
-    # passed via the environment (not visible on the command line), so its mere
-    # absence is not disqualifying — only a conflicting explicit value is.
-    if "--profile " in command_lc or " -p " in command_lc:
-        return False
     if "son_of_anton_home=" in command_lc and f"son_of_anton_home={home_lc}" not in command_lc:
         return False
     return True

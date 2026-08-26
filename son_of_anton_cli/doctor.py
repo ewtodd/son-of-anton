@@ -2596,48 +2596,6 @@ def run_doctor(args):
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
-    try:
-        from son_of_anton_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
-        import re as _re
-
-        named_profiles = [p for p in list_profiles() if not p.is_default]
-        if named_profiles:
-            _section("Profiles")
-            check_ok(f"{len(named_profiles)} profile(s) found")
-            wrapper_dir = _get_wrapper_dir()
-            for p in named_profiles:
-                parts = []
-                if p.gateway_running:
-                    parts.append("gateway running")
-                if p.model:
-                    parts.append(p.model[:30])
-                if not (p.path / "config.yaml").exists():
-                    parts.append("⚠ missing config")
-                if not (p.path / ".env").exists():
-                    parts.append("no .env")
-                wrapper = wrapper_dir / p.name
-                if not wrapper.exists():
-                    parts.append("no alias")
-                status = ", ".join(parts) if parts else "configured"
-                check_ok(f"  {p.name}: {status}")
-
-            # Check for orphan wrappers
-            if wrapper_dir.is_dir():
-                for wrapper in wrapper_dir.iterdir():
-                    if not wrapper.is_file():
-                        continue
-                    try:
-                        content = wrapper.read_text(encoding="utf-8")
-                        if "son-of-anton -p" in content:
-                            _m = _re.search(r"son-of-anton -p (\S+)", content)
-                            if _m and not profile_exists(_m.group(1)):
-                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
-                    except Exception:
-                        pass
-    except ImportError:
-        pass
-    except Exception:
-        pass
 
     # Opt-in live backend probes run AFTER all static checks, only with
     # `son-of-anton doctor --live` (real network calls; bounded + read-only).

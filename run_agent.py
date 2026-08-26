@@ -637,13 +637,7 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
-            try:
-                from son_of_anton_cli.profiles import get_active_profile_name
-                _profile_for_session = get_active_profile_name()
-                if _profile_for_session == "default":
-                    _profile_for_session = None
-            except Exception:
-                _profile_for_session = None
+            _profile_for_session = None
             # Carry the live YOLO bypass into the creation-time model_config so
             # a session whose /yolo was toggled BEFORE the row existed (the row
             # is created lazily on the first turn) still persists the flag for

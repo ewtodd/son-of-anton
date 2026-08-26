@@ -251,11 +251,8 @@ def _version() -> str:
 
 
 def _profile() -> str:
-    try:
-        from son_of_anton_cli.profiles import get_active_profile_name
-        return str(get_active_profile_name() or "default")
-    except Exception:
-        return "default"
+    """Health-metric label. One gateway per home, so always "default"."""
+    return "default"
 
 
 def _install_id(config: Dict[str, Any]) -> str:

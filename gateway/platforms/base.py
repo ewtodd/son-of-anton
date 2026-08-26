@@ -3376,17 +3376,15 @@ class BasePlatformAdapter(ABC):
                     return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-        # OOF-3: scoped locks are machine-global, so the holder can be a
-        # different profile's gateway. A bare PID gives an operator no way to
-        # tell WHICH profile owns the credential — name it when we can.
+        # OOF-3: scoped locks are machine-global, so the holder is often a
+        # gateway serving a different SON_OF_ANTON_HOME — with one service per
+        # account that is the normal case. A bare PID gives an operator no way
+        # to tell WHICH gateway owns the credential — name its home when we can.
         owner_profile = scoped_lock_owner_label(existing)
         if owner_profile:
-            holder = f" by the '{owner_profile}' profile gateway"
+            holder = f" by the gateway for {owner_profile}"
             holder += f" (PID {owner_pid})" if owner_pid else ""
-            remedy = (
-                f" Stop that gateway first "
-                f"(son-of-anton --profile {owner_profile} gateway stop)."
-            )
+            remedy = " Stop that gateway first."
         else:
             holder = f" (PID {owner_pid})" if owner_pid else ""
             remedy = " Stop the other gateway first."

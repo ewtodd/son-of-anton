@@ -39,7 +39,7 @@ Example config::
           Authorization: "Bearer sk-..."
         identity_header:       # optional per-user identity header attached
           name: "X-User-Id"    # to this server's HTTP/SSE requests
-          value_from: "static" # "static" (default) or "profile"
+          value_from: "static" # "static" (the only mode)
           value: "alice"       # required for static; profile mode uses the
                                # active Son of Anton profile name
         timeout: 180
@@ -1501,14 +1501,12 @@ def _resolve_identity_header(server_name: str, config: dict):
 
         identity_header:
           name: "X-User-Id"
-          value_from: "static"   # or "profile"; default: static
-          value: "alice"         # required when value_from is static
+          value_from: "static"   # the only supported mode
+          value: "alice"         # required
 
     Returns a ``(header_name, header_value)`` tuple, or ``None`` when the
     key is unset or invalid. Invalid configs warn and are ignored — an
-    identity header must never break the server connection. ``profile``
-    mode resolves the value to the active Son of Anton profile name once at
-    connect time; there is no per-call mutation.
+    identity header must never break the server connection.
     """
     raw = config.get("identity_header")
     if raw is None:
@@ -1538,12 +1536,9 @@ def _resolve_identity_header(server_name: str, config: dict):
             )
             return None
         return (name.strip(), value)
-    if value_from == "profile":
-        from son_of_anton_cli.profiles import get_active_profile_name
-        return (name.strip(), get_active_profile_name())
     logger.warning(
-        "MCP server '%s': identity_header value_from must be 'static' or "
-        "'profile' (got %r) — ignoring", server_name, value_from,
+        "MCP server '%s': identity_header value_from must be 'static' "
+        "(got %r) — ignoring", server_name, value_from,
     )
     return None
 

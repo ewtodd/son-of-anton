@@ -1590,23 +1590,12 @@ class PluginContext:
 
     @property
     def profile_name(self) -> str:
-        """Return the active Son of Anton profile name (e.g. ``"default"``).
+        """Return the profile name plugins see. Always ``"default"``.
 
-        Derived from ``SON_OF_ANTON_HOME`` via
-        :func:`son_of_anton_cli.profiles.get_active_profile_name`, so it works in
-        every execution context — interactive CLI, gateway, and
-        kanban-spawned worker sessions alike — without depending on
-        ``_cli_ref`` (which is ``None`` outside an interactive CLI run).
-
-        Returns ``"default"`` for the default profile, the profile id when
-        running under ``~/.son-of-anton/profiles/<name>``, or ``"custom"`` when
-        ``SON_OF_ANTON_HOME`` points somewhere unrecognized.
+        Kept on the plugin API for compatibility: one process serves one
+        SON_OF_ANTON_HOME, so there is nothing else it could return.
         """
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-            return get_active_profile_name()
-        except Exception:
-            return "default"
+        return "default"
 
     # -- lifecycle: unload callbacks and supervised tasks --------------------
 

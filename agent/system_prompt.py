@@ -170,9 +170,7 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
         if _home is not None:
             profile_name = _profile_name_for_home(_home)
         else:
-            from son_of_anton_cli.profiles import get_active_profile_name
-
-            profile_name = str(get_active_profile_name() or "default")
+            profile_name = "default"
     except Exception:
         profile_name = "default"
     return {
