@@ -29,7 +29,7 @@
                 fsType = "ext4";
               };
             }
-            { services.son-of-anton = settings; }
+            { services.son-of-anton.instances = settings; }
           ];
         };
 
@@ -53,8 +53,8 @@
       # ExecStart of the gateway unit, normalized to a string.
       execStr = exec: if builtins.isList exec then lib.concatStringsSep " " exec else exec;
 
-      nixosGatewayExec = eval:
-        eval.config.systemd.services.son-of-anton.serviceConfig.ExecStart;
+      nixosGatewayExec = eval: name:
+        eval.config.systemd.services."son-of-anton-${name}".serviceConfig.ExecStart;
 
       homeGatewayExec = eval:
         eval.config.systemd.user.services.son-of-anton.Service.ExecStart;
@@ -134,11 +134,53 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # ── The NixOS module ─────────────────────────────────────────────
         nixos-module =
           let
-            exec = execStr (nixosGatewayExec (evalNixosModule { enable = true; }));
+            single = evalNixosModule { main.enable = true; };
+            exec = execStr (nixosGatewayExec single "main");
+
+            # Two instances must coexist: distinct units, distinct homes,
+            # distinct users. That is the whole point of the multi-instance
+            # shape — one gateway per account, each with its own state.db.
+            pair = evalNixosModule {
+              work = {
+                enable = true;
+                user = "e-work";
+                createUser = false;
+                managedAccount = true;
+                son-of-antonHome = "/home/e-work/.son-of-anton";
+                workingDirectory = "/home/e-work";
+              };
+              play = {
+                enable = true;
+                user = "e-play";
+                createUser = false;
+                managedAccount = true;
+                son-of-antonHome = "/home/e-play/.son-of-anton";
+                workingDirectory = "/home/e-play";
+              };
+            };
+            units = pair.config.systemd.services;
+            workUnit = units."son-of-anton-work";
+            playUnit = units."son-of-anton-play";
+            rules = pair.config.systemd.tmpfiles.rules;
           in
           assert lib.hasInfix "bin/son-of-anton gateway" exec;
+          assert units ? "son-of-anton-work" && units ? "son-of-anton-play";
+          assert workUnit.environment.SON_OF_ANTON_HOME == "/home/e-work/.son-of-anton";
+          assert playUnit.environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton";
+          assert workUnit.serviceConfig.User == "e-work";
+          assert playUnit.serviceConfig.User == "e-play";
+          # managedAccount must not loosen a human home: owner-only umask...
+          assert workUnit.serviceConfig.UMask == "0077";
+          # Each instance needs its own signal-phone lock namespace, or the
+          # second gateway on a shared Signal account never starts Signal.
+          assert workUnit.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR
+              != playUnit.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR;
+          # ...and must never emit a tmpfiles rule for the home itself, which
+          # would set 2770 and make sshd StrictModes reject authorized_keys.
+          assert !(lib.any (r: lib.hasInfix "d /home/e-work " r) rules);
+          assert !(lib.any (r: lib.hasInfix "d /home/e-play " r) rules);
           pkgs.runCommand "son-of-anton-nixos-module" { } ''
-            echo "PASS: NixOS module gateway unit is correct"
+            echo "PASS: NixOS module units correct (single + two-instance isolation)"
             mkdir -p $out
           '';
 

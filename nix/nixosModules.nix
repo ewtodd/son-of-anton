@@ -3,17 +3,24 @@
 # This module shares its options, its renderers for config.yaml, .env and
 # documents, and its state setup with the Home Manager module
 # (nix/homeManagerModules.nix). The shared code is in nix/moduleCommon.nix.
-# This file holds only the parts that need root: the service user, a system
-# state directory, and the systemd service.
+# This file holds only the parts that need root: service users, state
+# directories, and the systemd services.
 #
-# For one-agent-per-user deployments (separate work/play accounts), prefer
-# the Home Manager module: each account then runs its own gateway under its
-# own systemd user service with its own ~/.son-of-anton state.
+# MULTI-INSTANCE. Each entry under `instances` becomes its own systemd system
+# service with its own user and its own SON_OF_ANTON_HOME. That is the
+# one-agent-per-account shape: a service can run AS a real login account, so
+# its Signal sessions and that account's own CLI sessions share one state.db.
+# System services (not Home Manager user services) because they must start at
+# boot without a login and without lingering.
 #
 # Usage:
-#   services.son-of-anton = {
+#   services.son-of-anton.instances.work = {
 #     enable = true;
-#     settings.model.default = "...";
+#     user = "e-work";
+#     createUser = false;
+#     managedAccount = true;                 # runs as a pre-existing human account
+#     son-of-antonHome = "/home/e-work/.son-of-anton";
+#     workingDirectory = "/home/e-work";
 #     environmentFiles = [ config.age.secrets."son-of-anton-env".path ];
 #   };
 #
@@ -29,227 +36,410 @@
     }:
 
     let
+      outerConfig = config;
       cfg = config.services.son-of-anton;
       common = import ./moduleCommon.nix { inherit lib; };
 
-      effectivePackage = common.effectivePackage cfg;
       son-of-anton = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
-      son-of-antonHome = "${cfg.stateDir}/.son-of-anton";
+      enabledInstances = lib.filterAttrs (_: inst: inst.enable) cfg.instances;
 
-      # config.yaml mode: group-writable (0660) when interactive users share this
-      # SON_OF_ANTON_HOME via addToSystemPackages, so they can save settings through the
-      # CLI/TUI without hitting EACCES; otherwise group-read-only (0640). Secrets
-      # (.env) stay 0640 regardless.
-      configYamlMode = if cfg.addToSystemPackages then "0660" else "0640";
+      # ── One instance's option set ─────────────────────────────────────────
+      instanceModule =
+        {
+          name,
+          config,
+          options,
+          ...
+        }:
+        {
+          options =
+            common.sharedOptions {
+              defaultPackage = son-of-anton;
+              defaultPackageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
+              # Derived from `name`, NOT from config.stateDir: an option
+              # default that reads its own submodule's config is an infinite
+              # recursion (the config cannot resolve before the options it is
+              # defined by). Instances that relocate state set these
+              # explicitly, and keeping the default config-free preserves the
+              # `highestPrio` check workspaceFilesAssertions relies on.
+              defaultWorkingDirectory = "/var/lib/son-of-anton-${name}/workspace";
+              defaultWorkingDirectoryText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/workspace"'';
+            }
+            // (
+              with lib;
+              {
+                # ── Service identity ───────────────────────────────────────
+                user = mkOption {
+                  type = types.str;
+                  default = "son-of-anton-${name}";
+                  defaultText = lib.literalExpression ''"son-of-anton-''${name}"'';
+                  description = "System user running this gateway instance.";
+                };
 
-      # The hardening and the environment that the gateway unit shares.
-      commonServiceConfig = {
-        User = cfg.user;
-        Group = cfg.group;
-        WorkingDirectory = cfg.workingDirectory;
+                group = mkOption {
+                  type = types.str;
+                  default = "son-of-anton";
+                  description = "Primary group for this gateway instance.";
+                };
 
-        Restart = cfg.restart;
-        RestartSec = cfg.restartSec;
+                createUser = mkOption {
+                  type = types.bool;
+                  default = true;
+                  description = ''
+                    Create the user/group automatically. Set false when the
+                    instance runs as a pre-existing login account.
+                  '';
+                };
 
-        # Shared-state: files created by the service should be group-writable
-        # so interactive users in the son-of-anton group can read/write them.
-        UMask = "0007";
+                managedAccount = mkOption {
+                  type = types.bool;
+                  default = false;
+                  description = ''
+                    The instance runs as a pre-existing HUMAN login account.
+
+                    This is not cosmetic. When false the module treats the
+                    state directory as its own and makes it setgid +
+                    group-writable (2770) so a shared service group can reach
+                    it. Applied to a real home that would (a) make sshd's
+                    StrictModes reject ~/.ssh/authorized_keys and (b) hand
+                    every other member of the account's primary group write
+                    access to the whole home.
+
+                    When true the module touches ONLY son-of-antonHome and its
+                    subdirectories, never the parent home and never
+                    workingDirectory; state is owner-only (0700/0600) and the
+                    unit runs with UMask 0077.
+                  '';
+                };
+
+                # ── Directories ────────────────────────────────────────────
+                stateDir = mkOption {
+                  type = types.str;
+                  default = "/var/lib/son-of-anton-${name}";
+                  defaultText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}"'';
+                  description = ''
+                    State directory owned by this instance. Used as HOME for
+                    the unit. Ignored for directory creation when
+                    managedAccount is set.
+                  '';
+                };
+
+                son-of-antonHome = mkOption {
+                  type = types.str;
+                  default = "/var/lib/son-of-anton-${name}/.son-of-anton";
+                  defaultText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/.son-of-anton"'';
+                  description = ''
+                    SON_OF_ANTON_HOME for this instance: config, skills,
+                    memory, sessions (state.db). Point it at a login account's
+                    ~/.son-of-anton to share sessions with that account's CLI.
+                  '';
+                };
+
+                addToSystemPackages = mkOption {
+                  type = types.bool;
+                  default = false;
+                  description = ''
+                    Add the son-of-anton CLI to environment.systemPackages and
+                    export SON_OF_ANTON_HOME system-wide. At most one instance
+                    may set this: environment.variables is global, so a second
+                    would silently point every interactive shell at the wrong
+                    home.
+                  '';
+                };
+
+                # Assertions are built inside the submodule because
+                # workspaceFilesAssertions inspects option METADATA
+                # (options.workingDirectory.highestPrio), which has no
+                # addressable path under attrsOf submodule. Lifted to the
+                # top level by the config block below.
+                _assertions = mkOption {
+                  type = types.listOf types.attrs;
+                  internal = true;
+                  default = [ ];
+                };
+              }
+            );
+
+          config = {
+            settings = lib.mkIf (config.mcpServers != { }) {
+              mcp_servers = common.mcpServersToConfig config.mcpServers;
+            };
+
+            _assertions =
+              common.pluginNameAssertions {
+                cfg = config;
+                optionPath = "services.son-of-anton.instances.${name}";
+              }
+              ++ common.workspaceFilesAssertions {
+                cfg = config;
+                opt = options.workingDirectory;
+                optionPath = "services.son-of-anton.instances.${name}";
+              };
+          };
+        };
+
+      # ── Per-instance renderers ────────────────────────────────────────────
+
+      # config.yaml mode: group-writable (0660) when interactive users share
+      # this SON_OF_ANTON_HOME via addToSystemPackages. A managedAccount owns
+      # its home outright, so everything stays owner-only.
+      configYamlMode =
+        inst:
+        if inst.managedAccount then
+          "0600"
+        else if inst.addToSystemPackages then
+          "0660"
+        else
+          "0640";
+
+      envMode = inst: if inst.managedAccount then "0600" else "0640";
+
+      dirMode = inst: if inst.managedAccount then "0700" else "2770";
+
+      serviceConfigFor = inst: {
+        User = inst.user;
+        Group = inst.group;
+        WorkingDirectory = inst.workingDirectory;
+
+        Restart = inst.restart;
+        RestartSec = inst.restartSec;
+
+        # Shared-state deployments want group-writable files so interactive
+        # users in the service group can reach them. A managedAccount is the
+        # sole owner of its home, so its files stay private.
+        UMask = if inst.managedAccount then "0077" else "0007";
 
         # Hardening
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = false;
-        ReadWritePaths = [
-          cfg.stateDir
-          cfg.workingDirectory
+        ReadWritePaths = lib.unique [
+          inst.stateDir
+          inst.son-of-antonHome
+          inst.workingDirectory
         ];
         PrivateTmp = true;
       };
 
-      commonUnitEnvironment = {
-        HOME = cfg.stateDir;
-      }
-      // common.processEnvironment { inherit son-of-antonHome; };
+      unitEnvironmentFor = inst: {
+        HOME = if inst.managedAccount then inst.workingDirectory else inst.stateDir;
 
-      unitPath = common.processPath { inherit pkgs cfg; };
+        # REQUIRED for multi-instance on one Signal account.
+        #
+        # gateway/platforms/signal.py acquires a scoped lock keyed on
+        # sha256(SIGNAL_ACCOUNT) — it exists precisely to stop two gateways
+        # listening to one Signal number, and connect() returns False when it
+        # cannot take it, so the losing instance never starts Signal at all.
+        # Here we deliberately DO run several gateways on one account and
+        # separate them by group id instead, so each needs its own lock
+        # namespace. gateway/status.py:_get_lock_dir falls back to
+        # $XDG_STATE_HOME (i.e. $HOME/.local/state), which is only accidentally
+        # distinct and is not guaranteed writable under ProtectSystem=strict.
+        # Pin it inside SON_OF_ANTON_HOME, which is always in ReadWritePaths.
+        SON_OF_ANTON_GATEWAY_LOCK_DIR = "${inst.son-of-antonHome}/locks";
+      }
+      // common.processEnvironment { son-of-antonHome = inst.son-of-antonHome; };
 
     in
     {
-      options.services.son-of-anton =
-        common.sharedOptions {
-          defaultPackage = son-of-anton;
-          defaultPackageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
-          defaultWorkingDirectory = "${cfg.stateDir}/workspace";
-          defaultWorkingDirectoryText = lib.literalExpression ''"''${cfg.stateDir}/workspace"'';
-        }
-        // (
-          with lib;
-          {
-            # ── Service identity ───────────────────────────────────────────
-            user = mkOption {
-              type = types.str;
-              default = "son-of-anton";
-              description = "System user running the gateway.";
-            };
+      options.services.son-of-anton.instances = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.submodule instanceModule);
+        default = { };
+        description = ''
+          Gateway instances. Each becomes systemd.services.son-of-anton-<name>
+          with its own user and its own SON_OF_ANTON_HOME.
+        '';
+      };
 
-            group = mkOption {
-              type = types.str;
-              default = "son-of-anton";
-              description = "System group running the gateway.";
-            };
+      # Top-level keys are STATIC. Building `config` as
+      # `mkMerge (mapAttrsToList ...)` makes the SHAPE of config depend on
+      # config values, and the module system cannot resolve the option set
+      # (it needs _module.freeformType) before that shape is known — an
+      # infinite recursion. Keying each attribute individually keeps the
+      # structure fixed and lets only the VALUES depend on instances.
+      config = {
+        assertions =
+          lib.concatMap (inst: inst._assertions) (lib.attrValues enabledInstances)
+          ++ (
+            let
+              users = lib.mapAttrsToList (_: i: i.user) enabledInstances;
+              homes = lib.mapAttrsToList (_: i: i.son-of-antonHome) enabledInstances;
+              exporters = lib.attrNames (lib.filterAttrs (_: i: i.addToSystemPackages) enabledInstances);
+            in
+            [
+              {
+                assertion = (lib.length users) == (lib.length (lib.unique users));
+                message = ''
+                  Two son-of-anton instances share a Unix user.
 
-            createUser = mkOption {
-              type = types.bool;
-              default = true;
-              description = "Create the user/group automatically.";
-            };
+                  users.users.<name>.home would then get conflicting
+                  definitions, and both gateways would write each other's
+                  state. Give each instance its own `user`.
+                '';
+              }
+              {
+                assertion = (lib.length homes) == (lib.length (lib.unique homes));
+                message = ''
+                  Two son-of-anton instances share a SON_OF_ANTON_HOME.
 
-            # ── Directories ────────────────────────────────────────────────
-            stateDir = mkOption {
-              type = types.str;
-              default = "/var/lib/son-of-anton";
-              description = "State directory. Contains .son-of-anton/ subdir (SON_OF_ANTON_HOME).";
-            };
+                  They would write the same state.db, the same session routing
+                  index and the same .env. Give each instance its own
+                  `son-of-antonHome`.
+                '';
+              }
+              {
+                assertion = (lib.length exporters) <= 1;
+                message = ''
+                  More than one son-of-anton instance sets addToSystemPackages
+                  (${lib.concatStringsSep ", " exporters}).
 
-            addToSystemPackages = mkOption {
-              type = types.bool;
-              default = false;
-              description = ''
-                Add the son-of-anton CLI to environment.systemPackages and export
-                SON_OF_ANTON_HOME system-wide (via environment.variables) so interactive
-                shells share state with the gateway service.
-              '';
-            };
-          }
+                  It exports SON_OF_ANTON_HOME through the global
+                  environment.variables, so only one instance can own it.
+                '';
+              }
+            ]
+          );
+
+        users.groups = lib.listToAttrs (
+          map (inst: lib.nameValuePair inst.group { }) (
+            lib.attrValues (lib.filterAttrs (_: i: i.createUser) enabledInstances)
+          )
         );
 
-      config = lib.mkIf cfg.enable (
-        lib.mkMerge [
+        users.users = lib.listToAttrs (
+          lib.mapAttrsToList (
+            _: inst:
+            lib.nameValuePair inst.user (
+              (lib.optionalAttrs inst.createUser {
+                isSystemUser = true;
+                group = inst.group;
+                home = inst.stateDir;
+                createHome = true;
+                shell = pkgs.bashInteractive;
+              })
+              // (lib.optionalAttrs (inst.extraPackages != [ ]) {
+                packages = inst.extraPackages;
+              })
+            )
+          ) (lib.filterAttrs (_: i: i.createUser || i.extraPackages != [ ]) enabledInstances)
+        );
 
-          # ── Merge MCP servers into settings ────────────────────────────────
-          (lib.mkIf (cfg.mcpServers != { }) {
-            services.son-of-anton.settings.mcp_servers = common.mcpServersToConfig cfg.mcpServers;
-          })
+        environment.systemPackages = lib.concatMap (inst: [ (common.effectivePackage inst) ]) (
+          lib.attrValues (lib.filterAttrs (_: i: i.addToSystemPackages) enabledInstances)
+        );
 
-          # ── User / group ──────────────────────────────────────────────────
-          (lib.mkIf cfg.createUser {
-            users.groups.${cfg.group} = { };
-            users.users.${cfg.user} = {
-              isSystemUser = true;
-              group = cfg.group;
-              home = cfg.stateDir;
-              createHome = true;
-              shell = pkgs.bashInteractive;
-            };
-          })
+        environment.variables = lib.listToAttrs (
+          map (inst: lib.nameValuePair "SON_OF_ANTON_HOME" inst.son-of-antonHome) (
+            lib.attrValues (lib.filterAttrs (_: i: i.addToSystemPackages) enabledInstances)
+          )
+        );
 
-          # ── Host CLI ──────────────────────────────────────────────────────
-          (lib.mkIf cfg.addToSystemPackages {
-            environment.systemPackages = [ effectivePackage ];
-            environment.variables.SON_OF_ANTON_HOME = son-of-antonHome;
-          })
-
-          # ── Assertions ─────────────────────────────────────────────────────
-          {
-            assertions =
-              common.pluginNameAssertions {
-                inherit cfg;
-                optionPath = "services.son-of-anton";
-              }
-              ++ common.workspaceFilesAssertions {
-                inherit cfg;
-                opt = options.services.son-of-anton.workingDirectory;
-                optionPath = "services.son-of-anton";
-              };
-          }
-
-          # ── Per-user profile for extraPackages ─────────────────────────────
-          (lib.mkIf (cfg.extraPackages != [ ]) {
-            users.users.${cfg.user}.packages = cfg.extraPackages;
-          })
-
-          # ── Directories ───────────────────────────────────────────────────
-          {
-            systemd.tmpfiles.rules = [
-              "d ${cfg.stateDir}                2770 ${cfg.user} ${cfg.group} - -"
-              "d ${son-of-antonHome}                  2770 ${cfg.user} ${cfg.group} - -"
-              "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
-              "d ${cfg.workingDirectory}        2770 ${cfg.user} ${cfg.group} - -"
+        # managedAccount instances get SON_OF_ANTON_HOME and its subdirs only.
+        # Creating or chmod-ing the parent home or workingDirectory of a login
+        # account breaks sshd StrictModes and leaks the home to the account's
+        # primary group.
+        systemd.tmpfiles.rules = lib.concatLists (
+          lib.mapAttrsToList (
+            _: inst:
+            (lib.optionals (!inst.managedAccount) [
+              "d ${inst.stateDir} 2770 ${inst.user} ${inst.group} - -"
+              "d ${inst.stateDir}/home 0750 ${inst.user} ${inst.group} - -"
+              "d ${inst.workingDirectory} 2770 ${inst.user} ${inst.group} - -"
+            ])
+            ++ [
+              "d ${inst.son-of-antonHome} ${dirMode inst} ${inst.user} ${inst.group} - -"
+              "d ${inst.son-of-antonHome}/locks 0700 ${inst.user} ${inst.group} - -"
             ]
-            ++ map (d: "d ${son-of-antonHome}/${d} 2770 ${cfg.user} ${cfg.group} - -") common.stateSubdirs;
-          }
+            ++ map (d: "d ${inst.son-of-antonHome}/${d} ${dirMode inst} ${inst.user} ${inst.group} - -")
+              common.stateSubdirs
+          ) enabledInstances
+        );
 
-          # ── Activation: link config + auth + documents ────────────────────
-          {
-            system.activationScripts."son-of-anton-setup" =
+        system.activationScripts = lib.listToAttrs (
+          lib.mapAttrsToList (
+            name: inst:
+            lib.nameValuePair "son-of-anton-setup-${name}" (
               lib.stringAfter
                 (
-                  [ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets"
+                  [ "users" ]
+                  ++ lib.optional (outerConfig.system.activationScripts ? setupSecrets) "setupSecrets"
                 )
                 ''
-                  # Ensure directories exist (activation runs before tmpfiles)
-                  mkdir -p ${son-of-antonHome}
-                  mkdir -p ${cfg.stateDir}/home
-                  mkdir -p ${cfg.workingDirectory}
-                  chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${son-of-antonHome} ${cfg.stateDir}/home ${cfg.workingDirectory}
-                  chmod 2770 ${cfg.stateDir} ${son-of-antonHome} ${cfg.workingDirectory}
-                  chmod 0750 ${cfg.stateDir}/home
+                  # Activation runs before tmpfiles, so create what we own.
+                  mkdir -p ${inst.son-of-antonHome}
+                  chown ${inst.user}:${inst.group} ${inst.son-of-antonHome}
+                  chmod ${dirMode inst} ${inst.son-of-antonHome}
+                  ${lib.optionalString (!inst.managedAccount) ''
+                    mkdir -p ${inst.stateDir}/home
+                    mkdir -p ${inst.workingDirectory}
+                    chown ${inst.user}:${inst.group} ${inst.stateDir} ${inst.stateDir}/home ${inst.workingDirectory}
+                    chmod 2770 ${inst.stateDir} ${inst.workingDirectory}
+                    chmod 0750 ${inst.stateDir}/home
 
-                  # Create subdirs, set setgid + group-writable, migrate existing files.
-                  # Nix-managed .env/.managed stay 0640/0644; config.yaml uses
-                  # configYamlMode (0660 under addToSystemPackages, else 0640).
-                  find ${son-of-antonHome} -maxdepth 1 \
-                    \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
-                    -exec chmod g+rw {} + 2>/dev/null || true
-                  for _subdir in ${lib.concatStringsSep " " common.stateSubdirs}; do
-                    mkdir -p "${son-of-antonHome}/$_subdir"
-                    chown ${cfg.user}:${cfg.group} "${son-of-antonHome}/$_subdir"
-                    chmod 2770 "${son-of-antonHome}/$_subdir"
-                    find "${son-of-antonHome}/$_subdir" -type f \
+                    find ${inst.son-of-antonHome} -maxdepth 1 \
+                      \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
                       -exec chmod g+rw {} + 2>/dev/null || true
+                  ''}
+                  for _subdir in ${lib.concatStringsSep " " common.stateSubdirs}; do
+                    mkdir -p "${inst.son-of-antonHome}/$_subdir"
+                    chown ${inst.user}:${inst.group} "${inst.son-of-antonHome}/$_subdir"
+                    chmod ${dirMode inst} "${inst.son-of-antonHome}/$_subdir"
+                    ${lib.optionalString (!inst.managedAccount) ''
+                      find "${inst.son-of-antonHome}/$_subdir" -type f \
+                        -exec chmod g+rw {} + 2>/dev/null || true
+                    ''}
                   done
 
                   ${common.mkStateScript {
-                    inherit pkgs cfg son-of-antonHome;
-                    workingDirectory = cfg.workingDirectory;
-                    configWorkingDirectory = cfg.workingDirectory;
-                    owner = "${cfg.user}:${cfg.group}";
+                    inherit pkgs;
+                    cfg = inst;
+                    son-of-antonHome = inst.son-of-antonHome;
+                    workingDirectory = inst.workingDirectory;
+                    configWorkingDirectory = inst.workingDirectory;
+                    owner = "${inst.user}:${inst.group}";
                     stateDirs = common.stateSubdirs;
                     modes = {
-                      config = configYamlMode;
-                      env = "0640";
+                      config = configYamlMode inst;
+                      env = envMode inst;
                       managed = "0644";
                       auth = "0600";
-                      document = "0640";
+                      document = envMode inst;
                     };
                   }}
 
-                  chown -h ${cfg.user}:${cfg.group} ${son-of-antonHome}/plugins/nix-managed-* 2>/dev/null || true
-                '';
-          }
+                  chown -h ${inst.user}:${inst.group} ${inst.son-of-antonHome}/plugins/nix-managed-* 2>/dev/null || true
+                ''
+            )
+          ) enabledInstances
+        );
 
-          # ── The gateway: the one long-running service ────────────────────
-          {
-            systemd.services.son-of-anton = {
-              description = "Son of Anton Agent Gateway";
+        systemd.services = lib.listToAttrs (
+          lib.mapAttrsToList (
+            name: inst:
+            lib.nameValuePair "son-of-anton-${name}" {
+              description = "Son of Anton Agent Gateway (${name})";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
 
-              # cfg.environment and cfg.environmentFiles are written to
-              # $SON_OF_ANTON_HOME/.env by the activation script. load_son_of_anton_dotenv()
-              # reads them at Python startup — no systemd EnvironmentFile needed.
-              environment = commonUnitEnvironment;
+              # inst.environment and inst.environmentFiles are written to
+              # $SON_OF_ANTON_HOME/.env by the activation script.
+              # load_son_of_anton_dotenv() reads them at Python startup — no
+              # systemd EnvironmentFile needed.
+              environment = unitEnvironmentFor inst;
 
-              serviceConfig = commonServiceConfig // {
-                ExecStart = lib.escapeShellArgs (common.gatewayArgv cfg);
+              serviceConfig = (serviceConfigFor inst) // {
+                ExecStart = lib.escapeShellArgs (common.gatewayArgv inst);
               };
 
-              path = unitPath;
-            };
-          }
-        ]
-      );
+              path = common.processPath {
+                inherit pkgs;
+                cfg = inst;
+              };
+            }
+          ) enabledInstances
+        );
+      };
     };
 }
