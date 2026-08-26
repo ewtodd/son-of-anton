@@ -64,6 +64,12 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
+# Cap for the inline (data: URI) attachment fallback, used when signal-cli runs
+# on another host and cannot open our paths. Deliberately far below the 100 MB
+# attachment ceiling: inlining base64-encodes the file (+33%) and carries it in
+# a single JSON body, so the process holds several copies at once. Documents —
+# the thing this fallback exists for — are orders of magnitude smaller.
+SIGNAL_MAX_INLINE_ATTACHMENT_SIZE = 16 * 1024 * 1024  # 16 MB
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 SSE_RETRY_DELAY_INITIAL = 2.0
@@ -972,6 +978,7 @@ class SignalAdapter(BasePlatformAdapter):
         log_failures: bool = True,
         raise_on_rate_limit: bool = False,
         timeout: float = 30.0,
+        error_out: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli daemon.
 
@@ -985,6 +992,13 @@ class SignalAdapter(BasePlatformAdapter):
         ``RateLimitException`` response raises ``SignalRateLimitError``
         instead of being swallowed — lets callers (multi-attachment send)
         opt into backoff-retry without changing default behaviour.
+
+        ``error_out``: an optional dict the caller supplies to receive the
+        JSON-RPC ``error`` object under ``"error"``. Failures otherwise
+        collapse to ``None`` here, which is enough for "did it work" but not
+        for a caller that must distinguish WHICH failure it got — the
+        attachment path needs that to tell "the daemon cannot read this file"
+        apart from a transient send failure it must not retry.
         """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
@@ -1011,6 +1025,8 @@ class SignalAdapter(BasePlatformAdapter):
 
             if "error" in data:
                 err = data["error"]
+                if error_out is not None:
+                    error_out["error"] = err
                 if raise_on_rate_limit:
                     if _is_signal_rate_limit_error(err):
                         err_msg = str(err.get("message", "")) if isinstance(err, dict) else str(err)
@@ -1450,6 +1466,42 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
 
+    @staticmethod
+    def _is_unreadable_attachment_error(err: Any) -> bool:
+        """Whether signal-cli rejected an attachment it could not open.
+
+        Distinguishing this from any other send failure is what makes the
+        inline retry safe: a transient failure (timeout, network) must NOT be
+        retried, because the first send may actually have gone through and the
+        user would get the file twice.
+        """
+        if not err:
+            return False
+        message = err.get("message", "") if isinstance(err, dict) else str(err)
+        message = str(message)
+        return "AttachmentInvalidException" in message or "No such file" in message
+
+    def _inline_attachment_uri(self, file_path: str) -> Optional[str]:
+        """Encode a file as an RFC 2397 data URI for signal-cli.
+
+        Format per signal-cli's own ``--attachment`` help:
+        ``data:<MIME-TYPE>;filename=<FILENAME>;base64,<DATA>``. The filename is
+        what Signal shows the recipient; without it the attachment arrives
+        unnamed.
+        """
+        import mimetypes
+
+        path = Path(file_path)
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        try:
+            payload = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            logger.warning("Signal: could not read %s for inline send: %s", file_path, exc)
+            return None
+        # quote() the filename: it lands in a ';'-delimited URI field, so a
+        # name containing ';' or ',' would otherwise truncate the payload.
+        return f"data:{mime};filename={quote(path.name)};base64,{payload}"
+
     async def _send_attachment(
         self,
         chat_id: str,
@@ -1483,7 +1535,40 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        result = await self._rpc("send", params)
+        rpc_error: Dict[str, Any] = {}
+        result = await self._rpc("send", params, error_out=rpc_error)
+
+        # signal-cli opens the attachment path on ITS OWN filesystem. When the
+        # daemon runs on another host (SIGNAL_HTTP_URL pointing off-box) every
+        # path we hand it is unreadable, even though we just stat()ed the file
+        # successfully above — so "file exists here, missing there" is exactly
+        # the remote-daemon case. Retry the same send with the bytes inline as
+        # an RFC 2397 data URI, which signal-cli accepts in place of a path.
+        #
+        # Gated on that specific error: a transient failure must not be
+        # retried, because the first send may have gone through and the
+        # recipient would get the file twice.
+        if result is None and self._is_unreadable_attachment_error(rpc_error.get("error")):
+            if file_size > SIGNAL_MAX_INLINE_ATTACHMENT_SIZE:
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"{media_label} is on this host but signal-cli cannot read "
+                        f"{file_path}, and at {file_size} bytes it is too large to "
+                        f"send inline (limit {SIGNAL_MAX_INLINE_ATTACHMENT_SIZE}). "
+                        f"Put the file on the signal-cli host, or point "
+                        f"SIGNAL_HTTP_URL at a local daemon."
+                    ),
+                )
+            data_uri = self._inline_attachment_uri(file_path)
+            if data_uri:
+                logger.info(
+                    "Signal: %s not readable by the daemon, resending inline (%d bytes)",
+                    file_path, file_size,
+                )
+                params["attachments"] = [data_uri]
+                result = await self._rpc("send", params)
+
         if result is not None:
             success, err_msg = self._validate_send_result(result)
             if not success:
