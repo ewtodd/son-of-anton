@@ -252,8 +252,13 @@
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = false;
+        # `unitHomeFor`, NOT stateDir. Under ProtectSystem=strict systemd
+        # refuses to start when a ReadWritePaths entry does not exist, and a
+        # managedAccount's stateDir is never created — the tmpfiles block that
+        # would create it is gated off precisely so the module never touches a
+        # login account's home. Listing it cost 226/NAMESPACE on every start.
         ReadWritePaths = lib.unique [
-          inst.stateDir
+          (unitHomeFor inst)
           inst.son-of-antonHome
           inst.workingDirectory
         ];

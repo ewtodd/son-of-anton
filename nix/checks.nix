@@ -188,6 +188,25 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           # would set 2770 and make sshd StrictModes reject authorized_keys.
           assert !(lib.any (r: lib.hasInfix "d /home/e-work " r) rules);
           assert !(lib.any (r: lib.hasInfix "d /home/e-play " r) rules);
+          # Every writable path must actually exist at start. ProtectSystem=
+          # strict makes systemd refuse to start on a missing ReadWritePaths
+          # entry (226/NAMESPACE), and the two rules above are exactly why a
+          # managedAccount has directories the module deliberately never
+          # creates. So each entry must be either the account's own
+          # pre-existing home or something tmpfiles does create.
+          assert (
+            let
+              created = map (r: lib.elemAt (lib.splitString " " r) 1) (
+                lib.filter (r: lib.hasPrefix "d " r) rules
+              );
+              guaranteed = inst: created ++ [ inst.workingDirectory ];
+              ok =
+                inst: unit:
+                lib.all (p: lib.elem p (guaranteed inst)) unit.serviceConfig.ReadWritePaths;
+              insts = pair.config.services.son-of-anton.instances;
+            in
+            ok insts.work workUnit && ok insts.play playUnit
+          );
           pkgs.runCommand "son-of-anton-nixos-module" { } ''
             echo "PASS: NixOS module units correct (single + two-instance isolation)"
             mkdir -p $out
