@@ -136,6 +136,44 @@
                   '';
                 };
 
+                protectedPaths = mkOption {
+                  type = types.listOf types.str;
+                  default = [
+                    ".gnupg"
+                    ".aws"
+                    ".age"
+                    ".git-credentials"
+                    ".config/sops"
+                  ];
+                  description = ''
+                    Credential stores the agent must not be able to reach,
+                    rendered to systemd InaccessiblePaths. Relative entries
+                    resolve against the unit's HOME; absolute ones pass
+                    through. Missing paths are ignored.
+
+                    This is a DENYLIST on purpose. The predecessor design
+                    enumerated the directories the agent was allowed to touch
+                    and enforced it with recursive ACLs. That list was long and
+                    changed every time a project was added, and it stopped
+                    being a boundary at all once the gateway ran AS the account
+                    it serves — you own those files. What is actually worth
+                    protecting is a short, stable set of credential stores.
+
+                    Enforcement is a mount namespace, not discretionary bits,
+                    so it also covers the terminal tool and every subprocess it
+                    spawns — which ACLs never did. agent/file_safety.py keeps
+                    its own app-layer deny for the same class of file; that
+                    layer has the nuance (~/.ssh/config is approval-gated
+                    rather than denied), this one is the backstop.
+
+                    ~/.ssh is deliberately NOT in the default: blocking it
+                    breaks git push over SSH. Its key files stay covered by
+                    the app-layer deny only, which a determined terminal
+                    command could bypass. Add ".ssh" here if that trade is
+                    not worth it for a given instance.
+                  '';
+                };
+
                 addToSystemPackages = mkOption {
                   type = types.bool;
                   default = false;
@@ -219,11 +257,19 @@
           inst.son-of-antonHome
           inst.workingDirectory
         ];
+        # Applied after ReadWritePaths, so a denied subpath of a writable home
+        # stays denied. "-" prefix: ignore entries that do not exist.
+        InaccessiblePaths = map (
+          p:
+          "-" + (if lib.hasPrefix "/" p then p else "${unitHomeFor inst}/${p}")
+        ) inst.protectedPaths;
         PrivateTmp = true;
       };
 
+      unitHomeFor = inst: if inst.managedAccount then inst.workingDirectory else inst.stateDir;
+
       unitEnvironmentFor = inst: {
-        HOME = if inst.managedAccount then inst.workingDirectory else inst.stateDir;
+        HOME = unitHomeFor inst;
 
         # REQUIRED for multi-instance on one Signal account.
         #

@@ -175,6 +175,15 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           # second gateway on a shared Signal account never starts Signal.
           assert workUnit.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR
               != playUnit.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR;
+          # Credential stores are denied in the kernel, resolved against the
+          # instance's own home (an ACL allowlist stopped being a boundary once
+          # the gateway runs AS the account it serves).
+          assert lib.elem "-/home/e-work/.gnupg" workUnit.serviceConfig.InaccessiblePaths;
+          assert lib.elem "-/home/e-work/.git-credentials" workUnit.serviceConfig.InaccessiblePaths;
+          assert lib.elem "-/home/e-play/.gnupg" playUnit.serviceConfig.InaccessiblePaths;
+          # ...but ~/.ssh stays reachable so git over SSH keeps working; its
+          # key files are covered by agent/file_safety.py at the app layer.
+          assert !(lib.any (p: lib.hasSuffix "/.ssh" p) workUnit.serviceConfig.InaccessiblePaths);
           # ...and must never emit a tmpfiles rule for the home itself, which
           # would set 2770 and make sshd StrictModes reject authorized_keys.
           assert !(lib.any (r: lib.hasInfix "d /home/e-work " r) rules);
