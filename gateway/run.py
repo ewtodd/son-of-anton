@@ -1965,20 +1965,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     settings such as agent.max_turns; otherwise a stale SON_OF_ANTON_MAX_ITERATIONS in
     .env can replace the startup bridge on later turns.
 
-    In multiplex mode this is a NO-OP for the credential reload: secrets come
-    from the per-turn ``set_secret_scope`` (installed by ``_profile_runtime_scope``)
-    which loads the routed profile's ``.env`` into an isolated mapping. Mutating
-    the process-global ``os.environ`` here would defeat that isolation and leak
-    the default profile's keys to every profile's turns and subprocesses.
     """
-    from agent.secret_scope import is_multiplex_active
-    if is_multiplex_active():
-        # Credentials are resolved from the active profile's secret scope, not
-        # os.environ. Still honor config.yaml's agent.max_turns bridge below
-        # using the scoped home, but never reload .env into global env.
-        _bridge_max_turns_from_config(_son_of_anton_home)
-        return
-
     load_son_of_anton_dotenv(
         son_of_anton_home=_son_of_anton_home,
         project_env=Path(__file__).resolve().parents[1] / '.env',
@@ -2051,115 +2038,15 @@ def _current_max_iterations() -> int:
 from contextlib import contextmanager as _contextmanager
 
 
-# Platforms that bind a host TCP port (HTTP listeners). In a profile
-# multiplexer the default profile owns the single shared listener and serves
-# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
-# enabling one of these is always a misconfiguration. We skip that secondary
-# profile (SecondaryPortBindingConfigError) so a single bad profile cannot
-# take down the whole multiplexer. The set lives in gateway.config so the
-# dashboard's pre-write validation enforces the same policy.
-from gateway.config import (
-    PORT_BINDING_PLATFORM_VALUES as _PORT_BINDING_PLATFORM_VALUES,
-    platform_binds_port as _platform_binds_port,
-)
-
-
-class MultiplexConfigError(RuntimeError):
-    """A profile multiplexer config is invalid.
-
-    Distinct from a transient adapter-connect failure: a config error means the
-    operator must fix config.yaml. Fatal configuration errors propagate to the
-    startup guard instead of being treated as retryable adapter noise.
-    """
-
-
-class SecondaryPortBindingConfigError(MultiplexConfigError):
-    """A secondary profile conflicts with the multiplexer's shared listener."""
-
-
-def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
-    """Return the authoritative profile set for one multiplex gateway config."""
-    from son_of_anton_cli.profiles import profiles_to_serve
-
-    return list(
-        profiles_to_serve(
-            multiplex=True,
-            profile_allowlist=getattr(config, "multiplex_profile_allowlist", None),
-        )
-    )
-
-
-@_contextmanager
-def _profile_runtime_scope(profile_home: "Path"):
-    """Scope config/skills/memory AND credentials to a profile for one turn.
-
-    Combines the two seams the multiplexer needs:
-      1. ``set_son_of_anton_home_override`` — redirects ``get_son_of_anton_home()`` (config,
-         skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
-         it propagates into the agent worker thread via ``copy_context()``.
-      2. ``set_secret_scope`` — installs the profile's ``.env`` secrets as the
-         authoritative credential source, so ``get_secret`` reads this profile's
-         keys and never the process-global ``os.environ`` (which in a
-         multiplexer may hold another profile's values).
-
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
-    ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
-    from inheriting cross-profile secrets.
-    """
-    from son_of_anton_constants import set_son_of_anton_home_override, reset_son_of_anton_home_override
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        set_secret_scope,
-        reset_secret_scope,
-    )
-    from son_of_anton_cli.env_loader import hydrate_profile_secret_sources
-
-    home_token = set_son_of_anton_home_override(str(profile_home))
-    hydrate_profile_secret_sources(Path(profile_home))
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-    try:
-        yield
-    finally:
-        reset_secret_scope(secret_token)
-        reset_son_of_anton_home_override(home_token)
-
-
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.
 
-    When ``gateway.multiplex_profiles`` is off, this is identical to
-    ``load_gateway_config()`` (legacy single-profile path).
-
-    When multiplexing is on, reload under the default/active profile's
-    ``_profile_runtime_scope`` so platform tokens in that profile's ``.env``
-    resolve through the secret scope — the same path secondary profiles use
-    in ``_start_one_profile_adapters``. Without this, primary startup calls
-    ``load_gateway_config()`` unscoped: ``_getenv`` falls through to
-    ``os.environ``, which often has no platform token once it
-    lives only under ``profiles/<name>/.env`` (#64674).
-
-    Single-profile gateways never set ``multiplex_profiles``, so they keep the
-    unscoped load and are unaffected.
+    Each gateway process serves exactly one SON_OF_ANTON_HOME, so this is a
+    plain load. It previously reloaded under a profile scope so that platform
+    tokens living only in a profile's .env resolved through the secret scope;
+    with one home per process the process's own .env is already the right one.
     """
-    cfg = load_gateway_config()
-    if not getattr(cfg, "multiplex_profiles", False):
-        return cfg
-    try:
-        home = get_son_of_anton_home()
-    except Exception:
-        return cfg
-    try:
-        with _profile_runtime_scope(Path(home)):
-            return load_gateway_config()
-    except Exception:
-        logger.debug(
-            "multiplex default-scope config reload failed; using unscoped load",
-            exc_info=True,
-        )
-        return cfg
-
+    return load_gateway_config()
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
     """Return True when a token-authenticated platform has a usable bot credential.
@@ -4145,7 +4032,7 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
 
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
-    be nested closures inside ``GatewayRunner._run_agent_inner``.
+    be nested closures inside ``GatewayRunner._run_agent``.
 
     The bodies are byte-identical to the original closures modulo
     ``local_name`` -> ``ctx.field`` rewrites (closed-over locals now travel on
@@ -5199,7 +5086,7 @@ class TurnRunner:
         # make `message` function-local and break the earlier read at
         # `_resolve_turn_agent_config(message, …)`.  As a method the turn
         # message lives on the shared TurnContext instead: every rebind
-        # writes `ctx.message`, so the outer `_run_agent_inner` body observes
+        # writes `ctx.message`, so the outer `_run_agent` body observes
         # the updated value exactly as it did through the closure cell.
 
         # session_key is propagated via contextvars in _set_session_env()
@@ -6558,7 +6445,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
-    _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
 
@@ -6649,32 +6535,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
-        # When multiplex_profiles is on, load under the default profile secret
-        # scope so bot tokens in that profile's .env resolve the same way
-        # secondary profiles do (#64674). Explicit config= injection (tests)
-        # is left untouched.
+        # Explicit config= injection (tests) is left untouched.
         self.config = config if config is not None else load_gateway_config_for_runner()
-        # Mark the process as a profile multiplexer when configured. This flips
-        # agent.secret_scope.get_secret() to fail-closed on any unscoped
-        # credential read, so a missed migration crashes loudly instead of
-        # leaking a cross-profile value (Workstream A). Inert when off.
-        try:
-            from agent.secret_scope import set_multiplex_active
-            set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
-        except Exception:
-            logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         # When non-None, SessionDB init failed — the gateway broadcasts a
         # one-time warning to the home channel(s) after connecting, so the
         # user knows persistence is broken instead of discovering it later
         # via a missing /resume or empty history (#88235).
         self._session_db_init_error: Optional[str] = None
-        # Multi-profile multiplexing: adapters for NON-default profiles live
-        # here, keyed by profile name then Platform. self.adapters stays the
-        # default/active profile's map so the ~93 existing self.adapters[...]
-        # sites are untouched when multiplexing is off (this dict is empty).
-        # Populated by _start_secondary_profile_adapters().
-        self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
         _gateway_runner_ref = _weakref.ref(self)
 
         # Load ephemeral config from config.yaml / env vars.
@@ -6689,8 +6557,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Secondary-profile busy modes are snapshotted during multiplex
         # startup. Busy-message handlers consult these maps by routed source
         # without rereading config or mutating process-global environment.
-        self._busy_input_modes_by_profile: Dict[str, str] = {}
-        self._busy_text_modes_by_profile: Dict[str, str] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
@@ -6728,7 +6594,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
-        self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
         self._systemd_watchdog = None
         # External (NAS-driven) drain state — distinct from the shutdown
         # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
@@ -7017,15 +6882,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception as exc:
             logger.debug("checkpoint auto-maintenance skipped: %s", exc)
 
-        # DM pairing store for code-based user authorization.
-        # ``pairing_store`` stays as the global/default store for the
-        # ``son-of-anton pairing`` CLI and any caller without a profile context.
-        # ``pairing_stores`` is the per-profile map used by
-        # ``authz_mixin._is_user_authorized`` to route checks to the right
-        # whitelist (one per profile in multiplex mode).
+        # DM pairing store for code-based user authorization. One store per
+        # gateway process, shared by the runner and the
+        # ``son-of-anton pairing`` CLI.
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
-        self.pairing_stores: Dict[str, "PairingStore"] = {}
         
         # Event hook system
         from gateway.hooks import HookRegistry
@@ -7196,7 +7057,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
 
     async def _bounded_adapter_teardown(
-        self, adapter, platform, *, profile: Optional[str] = None
+        self, adapter, platform
     ) -> None:
         """Tear down one adapter on the shutdown path with bounded awaits.
 
@@ -7214,7 +7075,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         raises.
         """
         timeout = self._adapter_disconnect_timeout_secs()
-        suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
         try:
             cancelled = await self._await_adapter_cleanup_with_timeout(
@@ -7222,29 +7082,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
             if not cancelled:
                 logger.warning(
-                    "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
-                    platform.value, timeout, suffix,
+                    "✗ %s background-task cancel timed out after %.1fs - forcing continue",
+                    platform.value, timeout,
                 )
         except Exception as e:
-            logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
+            logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
         try:
             disconnected = await self._await_adapter_cleanup_with_timeout(
                 adapter.disconnect(), timeout
             )
             if disconnected:
                 logger.info(
-                    "✓ %s disconnected (%.2fs)%s",
-                    platform.value, time.monotonic() - started_at, suffix,
+                    "✓ %s disconnected (%.2fs)",
+                    platform.value, time.monotonic() - started_at,
                 )
             else:
                 logger.warning(
-                    "✗ %s disconnect timed out after %.1fs - forcing continue%s",
-                    platform.value, timeout, suffix,
+                    "✗ %s disconnect timed out after %.1fs - forcing continue",
+                    platform.value, timeout,
                 )
         except Exception as e:
             logger.error(
-                "✗ %s disconnect error after %.2fs%s: %s",
-                platform.value, time.monotonic() - started_at, suffix, e,
+                "✗ %s disconnect error after %.2fs: %s",
+                platform.value, time.monotonic() - started_at, e,
             )
 
     def _adapter_disconnect_timeout_secs(self) -> float:
@@ -7370,24 +7230,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception:
                 pass
         config = getattr(self, "config", None)
-        # Mirror SessionStore._resolve_profile_for_key so this fallback path
-        # produces the same namespace as the primary path: None (legacy
-        # agent:main) unless multiplexing is on, then the active profile.
-        _profile = None
-        if getattr(config, "multiplex_profiles", False):
-            if source.profile:
-                _profile = source.profile
-            else:
-                try:
-                    from son_of_anton_cli.profiles import get_active_profile_name
-                    _profile = get_active_profile_name() or "default"
-                except Exception:
-                    _profile = None
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile,
         )
 
     def _resolve_session_agent_runtime(
@@ -8977,47 +8823,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             text_mode = fallback_text
         return input_mode, text_mode
 
-    def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
-        """Cache a routed profile's busy policy for this gateway lifetime."""
-        input_mode, text_mode = self._busy_modes_from_config(
-            config,
-            fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
-            fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
-        )
-        input_modes = self.__dict__.setdefault("_busy_input_modes_by_profile", {})
-        text_modes = self.__dict__.setdefault("_busy_text_modes_by_profile", {})
-        input_modes[profile_name] = input_mode
-        text_modes[profile_name] = text_mode
-
-    def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Return the routed profile whose busy policy applies, if any."""
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return None
-        name = str(getattr(source, "profile", "") or "").strip()
-        if not name:
-            try:
-                name = str(self._profile_name_for_source(source) or "").strip()
-            except Exception:
-                name = ""
-        return name or None
-
     def _effective_busy_input_mode(self, source: SessionSource) -> str:
-        """Resolve busy input mode from the routed profile startup snapshot."""
-        fallback = getattr(self, "_busy_input_mode", "interrupt")
-        profile_name = self._busy_profile_name_for_source(source)
-        if not profile_name:
-            return fallback
-        modes = getattr(self, "_busy_input_modes_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        """Resolve busy input mode. One config per gateway, so source-independent."""
+        return getattr(self, "_busy_input_mode", "interrupt")
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
-        """Resolve legacy busy text mode from the routed profile snapshot."""
-        fallback = getattr(self, "_busy_text_mode", "interrupt")
-        profile_name = self._busy_profile_name_for_source(source)
-        if not profile_name:
-            return fallback
-        modes = getattr(self, "_busy_text_modes_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        """Resolve legacy busy text mode. One config per gateway."""
+        return getattr(self, "_busy_text_mode", "interrupt")
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -11694,13 +11506,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             pass
         try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-            _profile = get_active_profile_name()
-            if _profile and _profile != "default":
-                logger.info("Active profile: %s", _profile)
-        except Exception:
-            pass
-        try:
             from gateway.status import write_runtime_status
             write_runtime_status(
                 gateway_state="starting",
@@ -12186,52 +11991,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         if await self._abort_startup_if_shutdown_requested():
             return True
-        # Multi-profile multiplexing: bring up adapters for every OTHER profile
-        # this gateway serves. Each profile's adapters connect under that
-        # profile's home + credential scope and stamp their inbound events with
-        # the profile so the agent turn resolves correctly. No-op when off.
-        try:
-            _secondary_connected = await self._start_secondary_profile_adapters()
-            connected_count += _secondary_connected
-        except MultiplexConfigError as e:
-            # Invalid multiplexer config — abort startup cleanly so the operator
-            # fixes config.yaml rather than running a half-wired gateway.
-            reason = str(e)
-            logger.error("Gateway multiplexer config error: %s", reason)
-            try:
-                from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-            except Exception:
-                pass
-            self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
-            self._request_clean_exit(reason)
-            self._startup_restore_in_progress = False
-            return True
-        except Exception as e:
-            logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
-        finally:
-            # Startup authority is one phase, not a persistent runner mode.
-            # From this point onward every adapter retry is non-evicting.
-            self._platform_lock_takeover_on_start = False
 
-        # A platform we skipped on the primary for a missing credential was
-        # supposed to be picked up by a secondary profile that owns the token.
-        # If none did, the platform is enabled in config.yaml yet silently
-        # unserved — surface it loudly so the operator sees a config problem
-        # instead of a quiet dead channel (#64674 follow-up).
-        for _skipped in _multiplex_skipped_platforms:
-            _served_by_secondary = any(
-                _skipped in _profile_map
-                for _profile_map in self._profile_adapters.values()
-            )
-            if not _served_by_secondary:
-                logger.warning(
-                    "%s is enabled but no profile (default or secondary) "
-                    "provided a bot credential for it — the platform is not "
-                    "being served. Add its token to the profile that should "
-                    "own it, or disable the platform.",
-                    _skipped.value,
-                )
+        # Startup authority is one phase, not a persistent runner mode. From
+        # this point onward every adapter retry is non-evicting: several
+        # gateways can share one platform account (separated by group id), so a
+        # retry that took the platform lock by force would knock a sibling
+        # instance off the wire.
+        self._platform_lock_takeover_on_start = False
 
         if connected_count == 0:
             if startup_nonretryable_errors and not startup_retryable_errors:
@@ -13071,15 +12837,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 continue
             seen.add(aid)
             yield adapter
-        for amap in list(getattr(self, "_profile_adapters", {}).values()):
-            for adapter in list(amap.values()):
-                if adapter is None:
-                    continue
-                aid = id(adapter)
-                if aid in seen:
-                    continue
-                seen.add(aid)
-                yield adapter
 
     def _session_activity_for_stall(self, session_key: str) -> Optional[dict]:
         """Return the shared activity snapshot for stall progress (#72039).
@@ -13305,14 +13062,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if not self._running:
                     break
                 await asyncio.sleep(1)
-
-    def _active_profile_name(self) -> str:
-        """Return the profile name this gateway represents."""
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-            return get_active_profile_name() or "default"
-        except Exception:
-            return "default"
 
     def _ensure_reconnect_watcher_running(self) -> None:
         """Ensure the platform reconnect watcher background task is alive.
@@ -13577,38 +13326,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     return
                 await asyncio.sleep(1)
 
-    async def _cancel_secondary_profile_reconnect_tasks(self) -> None:
-        """Cancel profile-scoped reconnects before tearing down their registry.
-
-        A reconnect can be waiting in adapter setup while shutdown begins. It
-        must not republish an adapter after the secondary registry is drained.
-        Waiting is bounded by the same adapter-cleanup budget; if a task does
-        not finish in time, the stopped runner state still prevents it from
-        installing an adapter when it eventually resumes.
-        """
-        pending = self._profile_failed_platforms
-        if not isinstance(pending, dict):
-            return
-        current = asyncio.current_task()
-        tasks: list[asyncio.Task] = []
-        for profile_pending in pending.values():
-            if not isinstance(profile_pending, dict):
-                continue
-            for task in profile_pending.values():
-                if isinstance(task, asyncio.Task) and task is not current and not task.done():
-                    tasks.append(task)
-        for task in tasks:
-            task.cancel()
-        timeout = self._adapter_disconnect_timeout_secs()
-        if tasks and timeout > 0:
-            _done, unfinished = await asyncio.wait(tasks, timeout=timeout)
-            if unfinished:
-                logger.warning(
-                    "Timed out waiting for %d secondary profile reconnect task(s) during shutdown",
-                    len(unfinished),
-                )
-        pending.clear()
-
     def _start_systemd_watchdog(self) -> bool:
         """Start sd_notify only after a configured gateway is truly running."""
         if not self._running or self.config.systemd_watchdog_seconds <= 0:
@@ -13783,8 +13500,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):
                 await stop_watchdog()
-
-            await self._cancel_secondary_profile_reconnect_tasks()
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -14021,15 +13736,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)
 
-            # Disconnect secondary-profile adapters (multiplex mode).
-            for _prof, _amap in list(getattr(self, "_profile_adapters", {}).items()):
-                for platform, adapter in list(_amap.items()):
-                    await self._bounded_adapter_teardown(
-                        adapter, platform, profile=_prof
-                    )
-                _amap.clear()
-            if hasattr(self, "_profile_adapters"):
-                self._profile_adapters.clear()
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
@@ -14250,530 +13956,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
 
-    async def _start_secondary_profile_adapters(self) -> int:
-        """Bring up adapters for every non-active profile this gateway serves.
-
-        Returns the number of secondary adapters that connected. No-op (returns
-        0) unless ``gateway.multiplex_profiles`` is on.
-
-        Each profile's adapters are created and connected under that profile's
-        SON_OF_ANTON_HOME + secret scope (``_profile_runtime_scope``), stored in
-        ``self._profile_adapters[profile]``, and given a message handler that
-        stamps ``source.profile`` before delegating to the shared
-        ``_handle_message`` — so the agent turn resolves that profile's config,
-        skills, and credentials. Same-platform credential collisions (two
-        profiles polling the same bot token) are detected and refused here, the
-        only point that sees every profile's resolved credentials together.
-        """
-        if not getattr(self.config, "multiplex_profiles", False):
-            return 0
-
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-        except Exception:
-            return 0
-
-        active = get_active_profile_name() or "default"
-        connected = 0
-        # Resource claim -> profile that owns it. Credential claims prevent two
-        # profiles polling the same account; listener claims prevent sidecars
-        # with distinct credentials from binding the same endpoint.
-        claimed: Dict[tuple, str] = {}
-        for _plat, _ad in self.adapters.items():
-            fp = self._adapter_credential_fingerprint(_ad)
-            if fp is not None:
-                claimed[(_plat, fp)] = active
-            listener_claim = self._adapter_listener_claim(_plat, _ad)
-            if listener_claim is not None:
-                claimed[listener_claim] = active
-        # A retryable primary still owns its configured credential and listener.
-        # Reserve both while it is queued so a secondary cannot take the endpoint
-        # before the reconnect watcher retries the primary adapter.
-        for retry_info in getattr(self, "_failed_platforms", {}).values():
-            for claim_name in ("credential_claim", "listener_claim"):
-                retry_claim = retry_info.get(claim_name)
-                if isinstance(retry_claim, tuple):
-                    claimed[retry_claim] = active
-
-        profile_homes = _multiplex_profile_homes(self.config)
-        for profile_name, profile_home in profile_homes:
-            if profile_name == active:
-                continue  # handled by the primary startup loop
-            try:
-                connected += await self._start_one_profile_adapters(
-                    profile_name, profile_home, claimed
-                )
-            except SecondaryPortBindingConfigError as e:
-                logger.warning(
-                    "Skipping secondary profile '%s' due to port-binding config error: %s",
-                    profile_name,
-                    e,
-                )
-            except MultiplexConfigError:
-                raise
-            except Exception as e:
-                logger.error(
-                    "Failed to start adapters for profile '%s': %s",
-                    profile_name, e, exc_info=True,
-                )
-
-        # Record the authoritative served set in runtime status for `son-of-anton status`.
-        # "Served" means eligible for shared routing, HTTP prefixes, cron, and
-        # profile runtime scope; it is intentionally broader than profiles with a
-        # successfully connected secondary adapter (or any adapter configured).
-        try:
-            from gateway.status import write_runtime_status
-            from gateway.pairing import PairingStore
-            served = [active] + sorted(
-                name for name, _home in profile_homes if name != active
-            )
-            # Per-profile PairingStores so authz_mixin can route pairing
-            # checks to the right whitelist. The active profile gets a store
-            # at its SON_OF_ANTON_HOME; additional served profiles resolve from
-            # their own profile homes. See gateway.pairing.PairingStore.
-            for name in served:
-                if name and name not in self.pairing_stores:
-                    self.pairing_stores[name] = (
-                        self.pairing_store
-                        if name == active
-                        else PairingStore(profile=name)
-                    )
-            write_runtime_status(served_profiles=served)
-        except Exception:
-            logger.debug("could not record served_profiles", exc_info=True)
-
-        return connected
-
-    async def _start_one_profile_adapters(
-        self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
-    ) -> int:
-        """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.config import load_gateway_config
-
-        with _profile_runtime_scope(profile_home):
-            profile_runtime_cfg = _load_gateway_runtime_config()
-            from son_of_anton_cli.plugins import discover_plugins
-
-            discover_plugins()
-            profile_cfg = load_gateway_config()
-            violation = _own_policy_open_startup_violation(profile_cfg)
-        self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
-        if violation:
-            raise MultiplexConfigError(
-                f"Profile '{profile_name}' enables {violation}. "
-                "Enable GATEWAY_ALLOW_ALL_USERS or the platform allow-all flag "
-                "for that profile, or change dm_policy/group_policy away from "
-                "'open'."
-            )
-
-        port_binding_platforms = sorted(
-            platform.value
-            for platform, platform_config in profile_cfg.platforms.items()
-            if platform_config.enabled
-            and _platform_binds_port(platform.value, platform_config.extra)
-        )
-        if port_binding_platforms:
-            joined = ", ".join(port_binding_platforms)
-            raise SecondaryPortBindingConfigError(
-                f"Profile '{profile_name}' enables port-binding platform(s) "
-                f"{joined}, but gateway.multiplex_profiles is on. The default "
-                f"profile owns the single shared HTTP listener and serves every "
-                f"profile through the /p/{profile_name}/ URL prefix. Remove "
-                f"these platform entries from profile '{profile_name}'s config.yaml "
-                f"or configure them only on the default profile."
-            )
-
-        profile_map = self._profile_adapters.setdefault(profile_name, {})
-        connected = 0
-        for platform, platform_config in profile_cfg.platforms.items():
-            if not platform_config.enabled:
-                continue
-            # Relay is shared process-level ingress in multiplex mode. The
-            # active profile owns the one connection; connector-stamped
-            # source.profile routes inbound turns to secondary profiles.
-            if (
-                getattr(self.config, "multiplex_profiles", False)
-                and platform is Platform.RELAY
-            ):
-                continue
-            try:
-                with _profile_runtime_scope(profile_home):
-                    adapter = self._create_adapter(platform, platform_config)
-            except Exception as e:
-                logger.error(
-                    "[MULTIPLEX] Profile '%s': _create_adapter('%s') raised %s",
-                    profile_name,
-                    platform.value,
-                    e,
-                    exc_info=True,
-                )
-                continue
-            if not adapter:
-                logger.warning(
-                    "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
-                    profile_name,
-                    platform.value,
-                )
-                continue
-
-            # Same-token conflict detection — refuse a duplicate poll.
-            credential_claim = self._adapter_credential_claim(platform, adapter)
-            if credential_claim is not None:
-                owner = claimed.get(credential_claim)
-                if owner is not None:
-                    message = (
-                        f"Profile '{owner}' and '{profile_name}' both configure "
-                        f"{platform.value} with the same credential. Give each "
-                        f"profile its own {platform.value} credential."
-                    )
-                    logger.error(
-                        "Profile '%s' and '%s' both configure %s with the same "
-                        "credential — refusing to start the duplicate (one "
-                        "credential cannot be consumed twice). Give each profile "
-                        "its own %s credential.",
-                        owner, profile_name, platform.value, platform.value,
-                    )
-                    logger.warning(
-                        "[MULTIPLEX] Profile '%s' will not start a %s adapter — "
-                        "profile '%s' owns this %s credential. Inbound messages "
-                        "still reach every profile through profile pins "
-                        "(/profile <name>) and gateway.profile_routes.",
-                        profile_name, platform.value, owner, platform.value,
-                    )
-                    self._update_platform_runtime_status(
-                        f"{profile_name}:{platform.value}",
-                        platform_state="fatal",
-                        error_code="duplicate_credential",
-                        error_message=message,
-                    )
-                    # This adapter has not connected and therefore owns no
-                    # resources to clean up. Calling disconnect here can mutate
-                    # the shared platform state.
-                    continue
-
-            listener_claim = self._adapter_listener_claim(platform, adapter)
-            if listener_claim is not None:
-                owner = claimed.get(listener_claim)
-                if owner is not None:
-                    bind, port = listener_claim[-2:]
-                    message = (
-                        f"Profile '{owner}' and '{profile_name}' both configure "
-                        f"{platform.value} sidecars on the same listener. Configure "
-                        f"a distinct listener for profile '{profile_name}'."
-                    )
-                    logger.error(
-                        "Profile '%s' and '%s' both configure %s sidecars on "
-                        "%s:%s — refusing to start the duplicate listener. "
-                        "Set platforms.%s.extra.sidecar_port to a distinct port "
-                        "for profile '%s'.",
-                        owner,
-                        profile_name,
-                        platform.value,
-                        bind,
-                        port,
-                        platform.value,
-                        profile_name,
-                    )
-                    self._update_platform_runtime_status(
-                        f"{profile_name}:{platform.value}",
-                        platform_state="fatal",
-                        error_code="duplicate_listener",
-                        error_message=message,
-                    )
-                    # Like credential conflicts, this adapter never connected
-                    # and owns no resources that should be disconnected.
-                    continue
-
-            self._configure_profile_adapter(adapter, profile_name, platform)
-
-            try:
-                with _profile_runtime_scope(profile_home):
-                    success = await self._connect_initial_adapter_with_timeout(
-                        adapter, platform
-                    )
-                if success:
-                    profile_map[platform] = adapter
-                    if credential_claim is not None:
-                        claimed[credential_claim] = profile_name
-                    if listener_claim is not None:
-                        claimed[listener_claim] = profile_name
-                    connected += 1
-                    logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
-                else:
-                    logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
-                    await self._safe_adapter_disconnect(adapter, platform)
-            except Exception as e:
-                logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
-                await self._safe_adapter_disconnect(adapter, platform)
-        return connected
-
-    def _configure_profile_adapter(
-        self,
-        adapter: BasePlatformAdapter,
-        profile_name: str,
-        platform: Platform,
-    ) -> None:
-        """Install the profile-scoped handlers shared by startup and reconnect."""
-        # Runtime status is process-scoped even while message/config work is
-        # profile-scoped.  Preserve both dimensions in the key so dashboard
-        # and NAS health aggregation can see which secondary profile failed.
-        adapter._runtime_status_platform_key = f"{profile_name}:{platform.value}"
-        adapter.set_message_handler(self._make_profile_message_handler(profile_name))
-        adapter.set_fatal_error_handler(
-            self._make_profile_fatal_error_handler(profile_name, platform)
-        )
-        adapter.set_session_store(self.session_store)
-        # Declare credential ownership BEFORE any inbound event can be handled.
-        # Adapter-level session keys (text/media batching, _active_sessions, the
-        # busy guard) are derived at ingress, before _make_profile_message_handler
-        # stamps source.profile — without this every secondary bot would key into
-        # the default profile's `agent:main:` lane and share it (see
-        # BasePlatformAdapter._session_key_profile).
-        _set_owner = getattr(adapter, "set_owner_profile", None)
-        if callable(_set_owner):
-            _set_owner(profile_name)
-        adapter.set_busy_session_handler(
-            self._make_profile_busy_session_handler(profile_name)
-        )
-        _set_reaction = getattr(adapter, "set_reaction_handler", None)
-        if callable(_set_reaction):
-            _set_reaction(self._handle_reaction_event)
-        adapter.set_authorization_check(
-            self._make_adapter_auth_check(platform, profile_name=profile_name)
-        )
-        adapter.set_platform_event_handler(
-            self._make_profile_platform_event_handler(profile_name)
-        )
-        text_modes = getattr(self, "_busy_text_modes_by_profile", None)
-        adapter._busy_text_mode = (
-            text_modes.get(profile_name, self._busy_text_mode)
-            if isinstance(text_modes, dict)
-            else self._busy_text_mode
-        )
-
-    async def _run_secondary_profile_reconnect(
-        self, profile_name: str, platform: Platform
-    ) -> None:
-        """Reconnect a retryable secondary adapter under its own profile scope."""
-        attempts = 0
-        current_task = asyncio.current_task()
-        try:
-            while self._running:
-                adapter = None
-                try:
-                    from son_of_anton_cli.profiles import get_profile_dir
-                    from gateway.config import load_gateway_config
-
-                    profile_home = get_profile_dir(profile_name)
-                    with _profile_runtime_scope(profile_home):
-                        profile_config = load_gateway_config().platforms.get(platform)
-                        if profile_config is None or not profile_config.enabled:
-                            return
-                        adapter = self._create_adapter(platform, profile_config)
-                        if adapter is None:
-                            logger.warning(
-                                "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
-                                platform.value,
-                                profile_name,
-                            )
-                            return
-                        self._configure_profile_adapter(
-                            adapter, profile_name, platform
-                        )
-                        success = await self._connect_adapter_with_timeout(
-                            adapter, platform, is_reconnect=True
-                        )
-
-                    if success and self._running:
-                        profile_map = self._profile_adapters.setdefault(profile_name, {})
-                        if platform not in profile_map:
-                            profile_map[platform] = adapter
-                            logger.info(
-                                "✓ %s reconnected (profile: %s)",
-                                platform.value,
-                                profile_name,
-                            )
-                            return
-                        # A newer reconnect already won the slot while this
-                        # attempt was awaiting connect; do not replace it.
-                        await self._safe_adapter_disconnect(adapter, platform)
-                        return
-
-                    # Shutdown can begin while connect() is in flight. Do not
-                    # republish a newly connected adapter after the registry has
-                    # been drained; release its partial resources instead.
-                    if success:
-                        await self._safe_adapter_disconnect(adapter, platform)
-                        return
-
-                    await self._safe_adapter_disconnect(adapter, platform)
-                    if (
-                        getattr(adapter, "has_fatal_error", False)
-                        and not getattr(adapter, "fatal_error_retryable", True)
-                    ):
-                        return
-                except asyncio.CancelledError:
-                    if adapter is not None:
-                        await self._safe_adapter_disconnect(adapter, platform)
-                    raise
-                except Exception:
-                    if adapter is not None:
-                        await self._safe_adapter_disconnect(adapter, platform)
-                    logger.debug(
-                        "Secondary %s reconnect attempt failed (profile: %s)",
-                        platform.value,
-                        profile_name,
-                        exc_info=True,
-                    )
-
-                if not self._running:
-                    return
-                attempts += 1
-                backoff = _reconnect_backoff(attempts)
-                logger.info(
-                    "Secondary %s reconnect retry in %ds (profile: %s)",
-                    platform.value,
-                    backoff,
-                    profile_name,
-                )
-                await asyncio.sleep(backoff)
-        finally:
-            pending = self._profile_failed_platforms
-            if isinstance(pending, dict):
-                profile_pending = pending.get(profile_name)
-                task = profile_pending.get(platform) if isinstance(profile_pending, dict) else None
-                if not isinstance(task, asyncio.Task) or task is current_task:
-                    if isinstance(profile_pending, dict):
-                        profile_pending.pop(platform, None)
-                        if not profile_pending:
-                            pending.pop(profile_name, None)
-
-    def _schedule_secondary_profile_reconnect(
-        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
-    ) -> None:
-        """Schedule one runner-owned reconnect without sharing primary secrets."""
-        if not self._running or not adapter.fatal_error_retryable:
-            return
-        pending = self._profile_failed_platforms
-        if not isinstance(pending, dict):
-            pending = {}
-            self._profile_failed_platforms = pending
-        profile_pending = pending.setdefault(profile_name, {})
-        if platform in profile_pending:
-            return
-        task = asyncio.create_task(
-            self._run_secondary_profile_reconnect(profile_name, platform),
-            name=f"secondary-reconnect:{profile_name}:{platform.value}",
-        )
-        profile_pending[platform] = task
-        background_tasks = getattr(self, "_background_tasks", None)
-        if not isinstance(background_tasks, set):
-            background_tasks = set()
-            self._background_tasks = background_tasks
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
-
-    def _make_profile_fatal_error_handler(
-        self, profile_name: str, platform: Platform
-    ) -> Callable[[BasePlatformAdapter], Awaitable[None]]:
-        """Route a secondary-profile fatal error to that profile's reconnect slot."""
-        async def _handler(adapter: BasePlatformAdapter) -> None:
-            await self._handle_profile_adapter_fatal_error(profile_name, platform, adapter)
-
-        return _handler
-
-    async def _handle_profile_adapter_fatal_error(
-        self,
-        profile_name: str,
-        platform: Platform,
-        adapter: BasePlatformAdapter,
-    ) -> None:
-        """Remove a failed multiplexed adapter without touching the primary slot.
-
-        Secondary adapters are owned by ``_profile_adapters`` rather than
-        ``self.adapters``. The primary-only fatal handler intentionally ignores
-        them; without this route, a fatal secondary Discord client stayed live
-        forever after its liveness sampler stopped.
-        """
-        profile_map = getattr(self, "_profile_adapters", {}).get(profile_name)
-        if not isinstance(profile_map, dict) or profile_map.get(platform) is not adapter:
-            logger.debug(
-                "Ignoring stale fatal error from secondary %s adapter (profile: %s)",
-                platform.value,
-                profile_name,
-            )
-            return
-        profile_map.pop(platform, None)
-        await self._safe_adapter_disconnect(adapter, platform)
-        if not self._running:
-            return
-        self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
-        logger.error(
-            "Fatal %s adapter error for multiplexed profile %s (%s)",
-            platform.value,
-            profile_name,
-            adapter.fatal_error_code or "unknown",
-        )
-        # Reconnect is scoped to the profile's own config and secret mapping;
-        # never rebuild a secondary adapter with the default profile's credentials.
-
-    def _make_profile_message_handler(self, profile_name: str):
-        """Return a message handler that stamps source.profile then delegates.
-
-        Auth runs inside ``_handle_message`` *before* the agent-turn scope is
-        installed. For secondary profiles under multiplex, wrap the whole
-        handler in ``_profile_runtime_scope`` so allowlists/tokens from that
-        profile's ``.env`` are visible to ``get_secret`` / authz.
-        """
-        from son_of_anton_cli.profiles import get_profile_dir
-
-        try:
-            profile_home = get_profile_dir(profile_name)
-        except Exception:
-            profile_home = None
-
-        async def _handler(event):
-            try:
-                if getattr(event, "source", None) is not None and not event.source.profile:
-                    event.source.profile = profile_name
-            except Exception:
-                pass
-            if profile_home is not None:
-                with _profile_runtime_scope(profile_home):
-                    return await self._handle_message(event)
-            return await self._handle_message(event)
-
-        return _handler
-
-    def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile before resolving busy policy."""
-        async def _handler(event, _session_key):
-            try:
-                if getattr(event, "source", None) is not None and not event.source.profile:
-                    event.source.profile = profile_name
-            except Exception:
-                pass
-            routed_session_key = self._session_key_for_source(event.source)
-            return await self._handle_active_session_busy_message(
-                event, routed_session_key
-            )
-
-        return _handler
-
-    def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_son_of_anton_home())
-
-        async def _handler(event):
-            with _profile_runtime_scope(profile_home):
-                return await self._handle_message(event)
-
-        return _handler
-
     def _primary_message_handler(self):
-        """Return the correctly scoped handler for a primary adapter."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return self._make_default_profile_message_handler()
+        """Return the message handler for a primary adapter."""
         return self._handle_message
 
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
@@ -14790,37 +13974,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # Observer failures must never break the adapter's update loop.
             logger.debug("gateway_platform_event hook dispatch failed", exc_info=True)
 
-    def _make_profile_platform_event_handler(self, profile_name: str):
-        """Bind platform-event auth and hook dispatch to one multiplex profile."""
-        from son_of_anton_cli.profiles import get_profile_dir
-
-        try:
-            profile_home = get_profile_dir(profile_name)
-        except Exception:
-            profile_home = None
-
-        async def _handler(event, source):
-            if getattr(source, "profile", None) is None:
-                source.profile = profile_name
-            if profile_home is not None:
-                with _profile_runtime_scope(profile_home):
-                    return await self._handle_gateway_platform_event(event, source)
-            return await self._handle_gateway_platform_event(event, source)
-
-        return _handler
-
-    def _make_default_profile_platform_event_handler(self):
-        """Scope primary-transport events to their routed multiplex profile."""
-
-        async def _handler(event, source):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return await self._handle_gateway_platform_event(event, source)
-
-        return _handler
-
     def _primary_platform_event_handler(self):
-        if getattr(self.config, "multiplex_profiles", False):
-            return self._make_default_profile_platform_event_handler()
         return self._handle_gateway_platform_event
 
     @staticmethod
@@ -14926,12 +14080,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is not None:
                     # Inject a back-reference to the gateway runner so every
-                    # adapter can (a) deliver cross-platform admin alerts and
-                    # (b) resolve inbound profile routing through
-                    # ``runner._profile_name_for_source``. Unconditional:
-                    # ``BasePlatformAdapter`` declares ``gateway_runner``, so
-                    # this reaches ALL platforms (not just the ones that
-                    # pre-declared it), making profile routing platform-generic.
+                    # adapter can deliver cross-platform admin alerts.
+                    # Unconditional: ``BasePlatformAdapter`` declares
+                    # ``gateway_runner``, so this reaches ALL platforms, not
+                    # just the ones that pre-declared it.
                     adapter.gateway_runner = self
                     return adapter
                 # Registered but failed to instantiate — don't silently fall
@@ -15488,37 +14640,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
 
-    def _pinned_profile_for_source(self, source: SessionSource) -> Optional[str]:
-        """Return the pinned profile for this source's chat, or None.
-
-        Only active when ``gateway.multiplex_profiles`` is on; the pin is a
-        per-chat ``/profile <name>`` switch persisted in the gateway home.
-        Pins pointing at profiles this gateway no longer serves are ignored.
-        """
-        config = getattr(self, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            return None
-        try:
-            from gateway.profile_pins import load_pins, resolve_pin
-
-            cache = getattr(self, "_profile_pins_cache", None)
-            if cache is None or cache[0] != get_son_of_anton_home():
-                home = get_son_of_anton_home()
-                cache = (home, load_pins(home))
-                self._profile_pins_cache = cache
-            served = {
-                name for name, _ in _multiplex_profile_homes(config)
-            } | {"default"}
-            return resolve_pin(
-                cache[1],
-                str(getattr(source, "platform", "") or ""),
-                str(getattr(source, "chat_id", "") or ""),
-                served,
-            )
-        except Exception:
-            logger.debug("profile pin lookup failed", exc_info=True)
-            return None
-
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -15550,42 +14671,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             reset_session_vars()
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
-
-        # Most adapters resolve profile routes in build_source(), before they
-        # hand us the event. A few internal/voice paths construct SessionSource
-        # directly, so resolve those here as the shared fail-closed ingress gate
-        # before authorization, hooks, or session side effects.
-        if (
-            getattr(getattr(self, "config", None), "multiplex_profiles", False)
-            and not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-        ):
-            from gateway.profile_routing import ProfileRouteRejected
-
-            try:
-                source.profile = self._profile_name_for_source(source)
-            except ProfileRouteRejected:
-                source.profile_route_rejected = True
-
-        # Command-driven profile switch: /profile <name> pins this chat to a
-        # profile. Routes (above) win; the pin is the fallback for chats with
-        # no matching route.
-        if (
-            getattr(getattr(self, "config", None), "multiplex_profiles", False)
-            and not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-        ):
-            source.profile = self._pinned_profile_for_source(source) or None
-
-        # SessionSource owns a strict boolean marker. Require the literal value
-        # so duck-typed test/internal sources with dynamic attributes are not
-        # mistaken for an explicit matched-route rejection.
-        if getattr(source, "profile_route_rejected", False) is True:
-            logger.warning(
-                "Dropping inbound message because its explicit profile route "
-                "targets an unserved profile"
-            )
-            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -15687,10 +14772,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
                 source.chat_type == "dm"
-                and self._get_unauthorized_dm_behavior(
-                    source.platform,
-                    profile=source.profile,
-                )
+                and self._get_unauthorized_dm_behavior(source.platform)
                 == "pair"
             ):
                 platform_name = source.platform.value if source.platform else "unknown"
@@ -15712,20 +14794,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if code:
                     adapter = self._adapter_for_source(source)
                     if adapter:
-                        store_profile = getattr(pairing_store, "profile", None)
-                        profile_arg = (
-                            f"-p {store_profile} "
-                            if isinstance(store_profile, str)
-                            and store_profile
-                            and store_profile != "default"
-                            else ""
-                        )
                         await adapter.send(
                             source.chat_id,
                             f"Hi~ I don't recognize you yet!\n\n"
                             f"Here's your pairing code: `{code}`\n\n"
                             f"Ask the bot owner to run:\n"
-                            f"`son-of-anton {profile_arg}pairing approve "
+                            f"`son-of-anton pairing approve "
                             f"{platform_name} {code}`"
                         )
                 else:
@@ -17395,30 +16469,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         return message_text
 
-    async def _prepare_profile_scoped_inbound_message_text(
-        self,
-        *,
-        event: MessageEvent,
-        source: SessionSource,
-        history: List[Dict[str, Any]],
-        session_key: Optional[str] = None,
-    ) -> Optional[str]:
-        """Run inbound preprocessing under the routed profile when multiplexed."""
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return await self._prepare_inbound_message_text(
-                    event=event,
-                    source=source,
-                    history=history,
-                    session_key=session_key,
-                )
-        return await self._prepare_inbound_message_text(
-            event=event,
-            source=source,
-            history=history,
-            session_key=session_key,
-        )
-
     async def _prepare_clarify_reply_text(self, event) -> str:
         """Return raw text or successful voice transcripts for a clarify reply."""
         if not self._pending_event_audio_paths(event):
@@ -18002,8 +17052,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
+                            # Still off-loop: resolution can do blocking work
+                            # (credential refresh, context-length probes).
                             session_info = await asyncio.to_thread(
-                                self._reset_notice_session_info, source
+                                self._format_session_info
                             )
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
@@ -18933,20 +17985,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     home_env = "set"
             except Exception:
                 pass
-            # Secondary-profile platforms (e.g. Slack on yolo) may only exist
-            # under that profile's loaded config — check after scope install.
-            if not home_env:
-                try:
-                    from gateway.config import load_gateway_config as _lgc
-                    prof = (getattr(source, "profile", None) or "").strip()
-                    if prof and prof != "default":
-                        # Already inside profile scope for secondary handlers;
-                        # re-read live config for home_channel.
-                        _pcfg = _lgc()
-                        if _pcfg.get_home_channel(source.platform):
-                            home_env = "set"
-                except Exception:
-                    pass
             if not home_env:
                 # Slack dispatches all Son of Anton commands through a single
                 # parent slash command `/son-of-anton`; bare `/sethome` is not
@@ -18991,7 +18029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
+        message_text = await self._prepare_inbound_message_text(
             event=event,
             source=source,
             history=history,
@@ -19785,26 +18823,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
-
-    def _reset_notice_session_info(self, source: SessionSource) -> str:
-        """Session-info block for the auto-reset notice, profile-scoped.
-
-        When multiplexing, resolve model/provider/context inside the profile
-        serving ``source`` — otherwise the banner advertises the base config's
-        model while the session actually runs on the profile's (#59003).
-        Mirrors ``_run_agent``'s gating so single-profile gateways never
-        enter the scope.
-
-        Call via ``asyncio.to_thread`` from async handlers: under the scope,
-        resolution can do blocking work (credential refresh, context-length
-        HTTP probes) that must not run on the event loop. The scope is entered
-        inside this method, so contextvars behave correctly in the worker
-        thread.
-        """
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
 
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
@@ -20705,33 +19723,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             thread_metadata=metadata,
         )
 
-    async def _run_background_task(
-        self,
-        prompt: str,
-        source: "SessionSource",
-        task_id: str,
-        event_message_id: Optional[str] = None,
-        media_urls: Optional[List[str]] = None,
-        media_types: Optional[List[str]] = None,
-    ) -> None:
-        """Profile-scoping wrapper around the background agent task.
-
-        When multiplexing is active, resolve the inbound source's profile and
-        run the whole task inside ``_profile_runtime_scope`` so credentials
-        resolve from that profile's secret scope. Mirrors the pattern in
-        ``_run_agent``.
-        """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return await self._run_background_task_inner(
-                prompt, source, task_id, event_message_id, media_urls, media_types,
-            )
-
-        profile_home = self._resolve_profile_home_for_source(source)
-        with _profile_runtime_scope(profile_home):
-            return await self._run_background_task_inner(
-                prompt, source, task_id, event_message_id, media_urls, media_types,
-            )
-
     def _resolve_enabled_toolsets_for_source(
         self,
         user_config: dict,
@@ -20767,7 +19758,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         return sorted(_get_platform_tools(user_config, platform_key))
 
-    async def _run_background_task_inner(
+    async def _run_background_task(
         self,
         prompt: str,
         source: "SessionSource",
@@ -22298,7 +21289,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
-            profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
         )
@@ -25428,16 +24418,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "tools": [],
             }
 
-        # Scope-aware read: the proxy key is a per-profile credential; under
-        # multiplex honor the installed scope's verdict (Slack pattern for
-        # the unscoped default-profile loop).
         try:
-            from agent.secret_scope import UnscopedSecretError, get_secret
+            from agent.secret_scope import get_secret
 
-            try:
-                proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
-            except UnscopedSecretError:
-                proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
+            proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
         except Exception:
             proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
@@ -25664,185 +24648,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # ------------------------------------------------------------------
 
     async def _run_agent(
-        self,
-        message: str,
-        context_prompt: str,
-        history: List[Dict[str, Any]],
-        source: SessionSource,
-        session_id: str,
-        session_key: str = None,
-        run_generation: Optional[int] = None,
-        _interrupt_depth: int = 0,
-        event_message_id: Optional[str] = None,
-        channel_prompt: Optional[str] = None,
-        persist_user_message: Optional[Any] = None,
-        persist_user_timestamp: Optional[float] = None,
-        persist_user_display_kind: Optional[str] = None,
-        message_type: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Profile-scoping wrapper around the agent run.
-
-        When multiplexing is active, resolve the inbound source's profile and
-        run the whole turn inside ``_profile_runtime_scope`` so config/skills/
-        memory resolve to that profile's home AND credentials resolve from that
-        profile's secret scope (never the process-global ``os.environ``). When
-        multiplexing is off this is a transparent pass-through — zero behavior
-        change for single-profile gateways.
-        """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                persist_user_display_kind=persist_user_display_kind,
-                message_type=message_type,
-            )
-
-        profile_home = self._resolve_profile_home_for_source(source)
-        with _profile_runtime_scope(profile_home):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                persist_user_display_kind=persist_user_display_kind,
-                message_type=message_type,
-            )
-
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Resolve the profile name for an inbound source via configured routes.
-
-        Returns ``None`` when multiplexing is off, no routes are configured, or
-        no route matches. Callers (``build_source``,
-        ``_resolve_profile_home_for_source``) treat ``None`` as "use the
-        default/active profile". When ``gateway.profile_routes`` is configured,
-        the most specific matching route wins (guild < channel < thread). See
-        :mod:`gateway.profile_routing` for matching rules.
-
-        Gated on ``gateway.multiplex_profiles``: routing stamps
-        ``source.profile``, which selects the session-key namespace and batch
-        keys — but the profile-scoped agent run only activates under
-        multiplexing. Without this gate, a configured route with multiplexing
-        off would namespace batch/session keys by profile while the agent
-        still runs in ``agent:main``, splitting the two out of agreement.
-        """
-        config = getattr(self, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            return None
-        routes = getattr(config, "profile_routes", None)
-        if not routes:
-            return None
-        from gateway.profile_routing import ProfileRouteRejected, match_profile_route
-        try:
-            matched = match_profile_route(
-                routes,
-                platform=source.platform.value,
-                guild_id=getattr(source, "guild_id", None),
-                chat_id=source.chat_id,
-                thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None),
-            )
-        except Exception:
-            logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
-                source.platform, source.chat_id, exc_info=True,
-            )
-            return None
-        if matched:
-            try:
-                served = {name for name, _home in _multiplex_profile_homes(config)}
-            except Exception as exc:
-                logger.warning(
-                    "Rejecting profile route %r because the served-profile set "
-                    "could not be resolved",
-                    matched.name,
-                    exc_info=True,
-                )
-                raise ProfileRouteRejected(matched.name) from exc
-            if matched.profile not in served:
-                logger.warning(
-                    "Rejecting profile route %r: target profile %r is not served",
-                    matched.name,
-                    matched.profile,
-                )
-                raise ProfileRouteRejected(matched.name)
-            return matched.profile
-        logger.debug(
-            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
-            source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
-        )
-        return None
-
-    def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
-        """Resolve which profile's SON_OF_ANTON_HOME should serve this inbound source.
-
-        Resolution order:
-          1. ``source.profile`` — set by /p/<profile>/ URL prefix, per-credential
-             adapter ownership, OR profile_routes matching at ``build_source`` time.
-          2. ``_profile_name_for_source`` — re-run routing here as a defensive
-             fallback for sources that bypass ``build_source``.
-          3. The active profile (the multiplexer's own home).
-        """
-        from gateway.profile_routing import ProfileRouteRejected
-        from son_of_anton_cli.profiles import (
-            get_active_profile_name,
-            get_profile_dir,
-            profile_exists,
-        )
-        from son_of_anton_constants import get_son_of_anton_home
-        
-        # Track whether a profile was explicitly requested (vs. falling back to default)
-        explicit_profile = None
-        try:
-            name = (source.profile or "").strip()
-            if name:
-                explicit_profile = name  # User explicitly set this profile
-            if not name:
-                name = self._profile_name_for_source(source)
-                if name:
-                    explicit_profile = name  # Routing explicitly set this profile
-            if not name:
-                # Per-chat /profile pin — the command-driven alternative to
-                # routes for senders who own more than one profile.
-                name = self._pinned_profile_for_source(source) or ""
-            if not name:
-                name = get_active_profile_name() or "default"
-            
-            profile_dir = get_profile_dir(name)
-            # Warn if an explicit profile doesn't exist on disk
-            if explicit_profile and not profile_exists(name):
-                logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global SON_OF_ANTON_HOME",
-                    explicit_profile,
-                    source.platform.value,
-                    source.chat_id,
-                    getattr(source, "guild_id", None),
-                )
-                return get_son_of_anton_home()
-            return profile_dir
-        except ProfileRouteRejected:
-            raise
-        except Exception:
-            # Catch normalization errors, path errors, etc.
-            logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global SON_OF_ANTON_HOME: %s",
-                source.platform.value,
-                source.chat_id,
-                getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)",
-                exc_info=True,
-            )
-            return get_son_of_anton_home()
-
-    async def _run_agent_inner(
         self,
         message: str,
         context_prompt: str,
@@ -27219,7 +26024,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             session_key or "?",
                             exc_info=True,
                         )
-                    next_message = await self._prepare_profile_scoped_inbound_message_text(
+                    next_message = await self._prepare_inbound_message_text(
                         event=pending_event,
                         source=next_source,
                         history=updated_history,

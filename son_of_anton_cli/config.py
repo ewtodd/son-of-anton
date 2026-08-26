@@ -4152,23 +4152,14 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ``os.environ`` or ``~/.son-of-anton/.env``, scope-aware.
+    """Get a value from ``os.environ``, then ``~/.son-of-anton/.env``.
 
-    The ``os.environ`` read routes through ``agent.secret_scope.get_secret``
-    so that, under an active profile scope (multiplexed gateway turn), this
-    is scope-checked rather than leaking another profile's raw ``os.environ``
-    value. ``get_secret`` encodes the whole policy: global vars pass through;
-    scope is authoritative under multiplexing (miss -> None, no environ
-    fallthrough); when multiplexing is off it behaves exactly like the
-    legacy ``os.environ`` read. Its siblings ``get_env_value_prefer_dotenv``
-    and ``gateway.config._getenv`` already work this way — this was the last
-    scope-blind reader of the trio (#67027).
+    The ``os.environ`` read routes through ``agent.secret_scope.get_secret``,
+    the single seam every credential read goes through — same as its siblings
+    ``get_env_value_prefer_dotenv`` and ``gateway.config._getenv``.
     """
     try:
-        from agent.secret_scope import (
-            UnscopedSecretError,
-            get_secret as _get_secret,
-        )
+        from agent.secret_scope import get_secret as _get_secret
     except Exception:
         if key in os.environ:
             return os.environ[key]
@@ -4176,8 +4167,6 @@ def get_env_value(key: str) -> Optional[str]:
 
     try:
         val = _get_secret(key)
-    except UnscopedSecretError:
-        raise
     except Exception:
         val = os.environ.get(key)
     if val is not None:
@@ -4197,27 +4186,20 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     a key in ``.env`` mid-session leaves callers serving the stale shell
     value and produces persistent 401s.
 
-    The ``os.environ`` fallback routes through ``secret_scope.get_secret`` so
-    that, under an active profile scope (multiplexed gateway turn), this read
-    is scope-checked rather than leaking another profile's raw ``os.environ``
-    value — matching the credential-pool seeding path's behaviour.
+    The ``os.environ`` fallback routes through ``secret_scope.get_secret``,
+    matching the credential-pool seeding path's behaviour.
     """
     env_vars = load_env()
     val = env_vars.get(key)
     if val:
         return val
     try:
-        from agent.secret_scope import (
-            UnscopedSecretError,
-            get_secret as _get_secret,
-        )
+        from agent.secret_scope import get_secret as _get_secret
     except Exception:
         return os.environ.get(key)
 
     try:
         return _get_secret(key)
-    except UnscopedSecretError:
-        raise
     except Exception:
         return os.environ.get(key)
 

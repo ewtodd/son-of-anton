@@ -2273,14 +2273,9 @@ def _scoped_key_env(name: str) -> str:
     endpoints unauthenticated (or skips the probe entirely). The
     multiplexed gateway installs a secret scope per turn; a raw
     ``os.environ`` read hands the current profile whatever key happens to be
-    in the process environment — another profile's, in a multiplexer.
-    ``get_env_value`` reads the .env file first and routes the environment
-    fallback through the secret scope, so both surfaces resolve the key the
-    way every other credential read does.
-
-    A fail-closed ``UnscopedSecretError`` (multiplexing on, no scope
-    installed) means "no credential visible for this profile here", which is
-    exactly how the picker already treats a missing key.
+    in the process environment. ``get_env_value`` reads the .env file first
+    and routes the environment fallback through ``agent.secret_scope``, so
+    both surfaces resolve the key the way every other credential read does.
     """
     if not name:
         return ""

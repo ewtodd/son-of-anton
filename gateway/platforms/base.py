@@ -1121,31 +1121,6 @@ _MEDIA_DELIVERY_CACHE_SUBDIRS = (
 )
 
 
-def _profile_cache_roots() -> List[Path]:
-    """Return per-profile canonical cache roots under the shared Son of Anton root.
-
-    Profile gateways write generated artifacts to
-    ``<root>/profiles/<name>/cache/{images,audio,...}``. The static safe-roots
-    list only covers the *active* SON_OF_ANTON_HOME's cache, so a gateway running at
-    the root (e.g. ``SON_OF_ANTON_HOME=/opt/data``) while the model emits a
-    profile-scoped path silently fails delivery. Enumerated dynamically at
-    check time so profiles created after startup are covered, and so the
-    resolved profile path is allowlisted *before* the ``/root`` system denylist
-    is consulted (which otherwise wins when SON_OF_ANTON_HOME is symlinked under a
-    denied prefix and $HOME is not that prefix). See issue #31733.
-    """
-    roots: List[Path] = []
-    profiles_dir = _SON_OF_ANTON_ROOT / "profiles"
-    try:
-        profile_dirs = [p for p in profiles_dir.iterdir() if p.is_dir()]
-    except OSError:
-        return roots
-    for profile_dir in profile_dirs:
-        for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS:
-            roots.append(profile_dir / "cache" / subdir)
-    return roots
-
-
 def _kanban_attachment_roots() -> List[Path]:
     """Return durable Kanban attachment roots without importing kanban_db."""
     override = os.environ.get("SON_OF_ANTON_KANBAN_ATTACHMENTS_ROOT", "").strip()
@@ -1171,7 +1146,6 @@ def _kanban_attachment_roots() -> List[Path]:
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
-    roots.extend(_profile_cache_roots())
     roots.extend(_kanban_attachment_roots())
     extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
     for chunk in extra_roots.split(os.pathsep):
@@ -2931,14 +2905,6 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # Owning profile for a multiplexed secondary adapter, installed by
-        # ``GatewayRunner._configure_profile_adapter``. Adapter-level session
-        # keys must carry the profile namespace, but ``source.profile`` is only
-        # stamped later by the runner's profile message handler — so at adapter
-        # ingress every bot in a multiplexed gateway would otherwise derive the
-        # same ``agent:main:`` key (see ``_session_key_profile``). ``None`` on a
-        # primary/single-profile adapter, which keeps the legacy namespace.
-        self._owner_profile: Optional[str] = None
         # Optional authorization check, registered by GatewayRunner. Used by
         # adapters that fetch external context (e.g. Slack thread history) to
         # mark senders not on the allowlist as unverified in LLM context,
@@ -3541,57 +3507,6 @@ class BasePlatformAdapter(ABC):
         """
         self._session_store = session_store
 
-    def set_owner_profile(self, profile_name: Optional[str]) -> None:
-        """Declare which multiplex profile owns this adapter.
-
-        Installed by ``GatewayRunner._configure_profile_adapter`` for secondary
-        profiles. Read by :meth:`_session_key_profile` so adapter-level keys
-        land in this profile's namespace instead of the shared ``agent:main:``.
-        """
-        name = (profile_name or "").strip() or None
-        self._owner_profile = None if name == "default" else name
-
-    def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
-        """Resolve the profile namespace for an adapter-derived session key.
-
-        Adapter ingress runs BEFORE the runner stamps ``source.profile``
-        (``_make_profile_message_handler``), so the session store's resolver
-        falls back to the *active* profile and every bot in a multiplexed
-        gateway derives the same ``agent:main:`` key. Batching dicts,
-        ``_active_sessions`` and the busy-session guard are keyed on that
-        string, so two profiles sharing a chat id — which is EVERY DM,
-        where ``chat.id`` is the user's own id — collide on one lane.
-
-        Resolution order:
-          1. ``source.profile`` when already stamped (relay/connector ingress).
-          2. ``self._owner_profile`` — this adapter's own credential owner.
-          3. The session store's resolver (active profile / no-multiplex None).
-
-        ``getattr`` throughout: adapters are routinely constructed without
-        ``BasePlatformAdapter.__init__`` (``object.__new__`` in tests, subclasses
-        that build their own state), so no attribute here may be assumed to
-        exist — see the ``object.__new__`` pitfall in AGENTS.md. Every candidate
-        is also type-checked: a duck-typed/mock session store returns a truthy
-        non-string from ``_resolve_profile_for_key``, which would otherwise be
-        interpolated straight into the key as ``agent:<MagicMock ...>:``.
-        """
-        for candidate in (
-            getattr(source, "profile", None) if source is not None else None,
-            getattr(self, "_owner_profile", None),
-        ):
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate
-        store = getattr(self, "_session_store", None)
-        resolver = getattr(store, "_resolve_profile_for_key", None) if store else None
-        if callable(resolver):
-            try:
-                resolved = resolver(source)
-            except Exception:
-                return None
-            if isinstance(resolved, str) and resolved.strip():
-                return resolved
-        return None
-    
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session.
 
@@ -5724,7 +5639,6 @@ class BasePlatformAdapter(ABC):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
         )
         expected_session_key = str(
             (event.metadata or {}).get("gateway_session_key") or ""
@@ -6673,52 +6587,10 @@ class BasePlatformAdapter(ABC):
         auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None,
     ) -> SessionSource:
-        """Helper to build a SessionSource for this platform.
-
-        When ``gateway.profile_routes`` is configured, the routing engine
-        resolves the matching profile from guild/chat/thread and stamps it on
-        ``source.profile``. Downstream code (``_resolve_profile_home_for_source``
-        in run.py) reads that field to enter ``_profile_runtime_scope`` for
-        per-profile SON_OF_ANTON_HOME isolation.
-        """
+        """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
         if chat_topic is not None and not chat_topic.strip():
             chat_topic = None
-
-        # Resolve profile from configured routes (None when no match / no routes)
-        profile = None
-        profile_route_rejected = False
-        runner = getattr(self, "gateway_runner", None)
-        if runner is not None:
-            from gateway.profile_routing import ProfileRouteRejected
-
-            try:
-                profile = runner._profile_name_for_source(
-                    SessionSource(
-                        platform=self.platform,
-                        chat_id=str(chat_id),
-                        chat_name=chat_name,
-                        chat_type=chat_type,
-                        user_id=str(user_id) if user_id else None,
-                        user_name=user_name,
-                        thread_id=str(thread_id) if thread_id else None,
-                        chat_topic=chat_topic.strip() if chat_topic else None,
-                        user_id_alt=user_id_alt,
-                        chat_id_alt=chat_id_alt,
-                        is_bot=is_bot,
-                        scope_id=str(scope_id) if scope_id else None,
-                        guild_id=str(guild_id) if guild_id else None,
-                        parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
-                        message_id=str(message_id) if message_id else None,
-                    )
-                )
-            except ProfileRouteRejected:
-                profile_route_rejected = True
-            except Exception:
-                logger.warning(
-                    "Profile resolution failed for %s/%s, defaulting to active profile",
-                    self.platform, chat_id, exc_info=True,
-                )
 
         source = SessionSource(
             platform=self.platform,
@@ -6736,20 +6608,14 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
-            profile=profile,
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
         )
         # In-process transport provenance is deliberately not serialized by
         # SessionSource.to_dict(). The live receiving adapter is authoritative
-        # for this turn even when profile_routes selects a different runtime.
+        # for this turn.
         source._transport_adapter_ref = weakref.ref(self)
-        # Keep this transport-only fail-closed signal out of SessionSource
-        # serialization/session identity. The shared gateway handler consumes it
-        # before auth, hooks, or session setup, so every adapter drops matched
-        # routes to unserved profiles consistently without surfacing HTTP 500s.
-        source.profile_route_rejected = profile_route_rejected
         return source
     
     @abstractmethod

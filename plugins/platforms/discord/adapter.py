@@ -425,33 +425,6 @@ def _scoped_gate_env(name: str, default: str = "") -> str:
         return (os.getenv(name) or default).strip()
 
 
-def _multiplex_active() -> bool:
-    """True when the gateway is running in multiplex_profiles mode."""
-    try:
-        from agent.secret_scope import is_multiplex_active
-
-        return bool(is_multiplex_active())
-    except Exception:
-        return False
-
-
-def _profile_scoped_config_load() -> bool:
-    """True when the current config load belongs to a multiplexed profile.
-
-    Secondary profile configs load inside ``_profile_runtime_scope`` (secret
-    scope installed + multiplex active). In that case the YAML→env bridge in
-    ``_apply_yaml_config`` must NOT write process-global env vars: the values
-    belong to one profile only and the first-writer-wins guard would pin them
-    for every other profile (issue #72348).
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        return bool(is_multiplex_active() and current_secret_scope() is not None)
-    except Exception:
-        return False
-
-
 def discord_deps_present() -> bool:
     """PASSIVE probe: is discord.py importable right now?
 
@@ -5729,10 +5702,9 @@ class DiscordAdapter(BasePlatformAdapter):
         snap = getattr(self, "_gate_env_snapshot", None)
         if snap is not None:
             snap["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
-        if not _multiplex_active():
-            # Single-profile: preserve the legacy env rewrite so the gateway's
-            # env-based auth checks match the resolved numeric IDs.
-            os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        # Keep the env rewrite so the gateway's env-based auth checks match
+        # the resolved numeric IDs.
+        os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
@@ -8525,20 +8497,12 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching.
-
-        Passes ``event.source.profile`` through so routed messages batch
-        under the same namespace the agent run will use (e.g.
-        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
-        the batch key would always land in ``agent:main`` even when the
-        routed profile differs.
-        """
+        """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -9948,7 +9912,7 @@ async def _standalone_send(
     if not token:
         # Profile-scoped read: under multiplex the process env may hold a
         # different profile's bot token, so honor the secret scope's verdict
-        # (scoped miss ⇒ no token; unscoped multiplex ⇒ UnscopedSecretError).
+        # (a miss ⇒ no token).
         from agent.secret_scope import get_secret
 
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
@@ -10327,12 +10291,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
                 platform_extra_cfg = candidate_extra
     seeded_extra = {}
     # Authorization gate keys are ALWAYS seeded into PlatformConfig.extra so
-    # every adapter carries its own profile's allow/deny lists (issue #72348).
-    # The os.environ writes below remain first-writer-wins for legacy env-only
-    # consumers, but are skipped for profile-scoped loads under multiplex —
-    # a secondary profile's gates must never land in process-global env where
-    # they'd become another profile's policy.
-    _skip_env_bridge = _profile_scoped_config_load()
+    # every adapter carries its own allow/deny lists (issue #72348). The
+    # os.environ writes below remain first-writer-wins for legacy env-only
+    # consumers.
+    _skip_env_bridge = False
     allowed_users_cfg = (
         discord_cfg["allow_from"] if "allow_from" in discord_cfg
         else platform_extra_cfg.get("allow_from")

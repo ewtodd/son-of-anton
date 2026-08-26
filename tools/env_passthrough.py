@@ -183,39 +183,18 @@ def resolve_passthrough_value(
     name: str,
     fallback: str | None = None,
 ) -> str | None:
-    """Resolve an allowlisted variable without crossing profile boundaries.
+    """Resolve an allowlisted variable, preferring the caller's own value.
 
-    ``fallback`` is the value the caller would have forwarded before profile
-    secret scopes existed (typically a snapshot of ``os.environ`` or the
-    current profile's ``.env``).  An active multiplex scope is authoritative:
-    a missing key returns ``None`` and never falls back to the process-global
-    environment.  An unscoped read while multiplexing is active raises the
-    fail-closed ``UnscopedSecretError`` from :mod:`agent.secret_scope`.
-
-    Outside multiplexing, an installed scope keeps the existing overlay
-    semantics and an unscoped caller keeps its already-resolved fallback.
+    ``fallback`` is the value the caller already resolved (typically a
+    snapshot of ``os.environ`` or the home's ``.env``), including any explicit
+    per-call override, so it wins when present. Otherwise read the process
+    environment through the credential seam.
     """
-    from agent.secret_scope import (
-        _is_global_env,
-        current_secret_scope,
-        get_secret,
-        is_multiplex_active,
-    )
+    from agent.secret_scope import get_secret
 
-    # Global terminal/runtime settings are not profile secrets.  ``fallback``
-    # is already the caller's effective value (including an explicit per-call
-    # override), so preserve it instead of replacing it with the process-wide
-    # value while a multiplex scope is active.
-    if _is_global_env(name) and fallback is not None:
+    if fallback is not None:
         return fallback
-
-    scope = current_secret_scope()
-    multiplex_active = is_multiplex_active()
-    if scope is None:
-        if multiplex_active:
-            return get_secret(name)
-        return fallback
-    return get_secret(name, None if multiplex_active else fallback)
+    return get_secret(name)
 
 
 def clear_env_passthrough() -> None:

@@ -25,7 +25,7 @@ from gateway.session import SessionSource
 
 
 def _auth_env(name: str, default: str = "") -> str:
-    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    """Read an allowlist/auth env var, preferring the .env secret store."""
     if not name:
         return default
     try:
@@ -40,31 +40,9 @@ def _auth_env(name: str, default: str = "") -> str:
 
 
 def _platform_gate_env(name: str, default: str = "") -> str:
-    """Read a platform allow/deny gate env var with per-profile isolation.
-
-    Like ``_auth_env`` but authoritative under multiplex: when a profile
-    secret scope is installed AND multiplexing is active, a key absent from
-    the scope returns ``default`` instead of falling through to
-    ``os.environ``. Under multiplex the process env may hold ANOTHER
-    profile's first-writer-bridged value (the YAML→env bridges in the
-    Discord/Slack adapters' ``_apply_yaml_config`` are first-writer-wins),
-    so falling through would leak profile A's allowlist into profile B
-    (issue #72348). Single-profile deployments — no scope installed, or
-    multiplex off — behave exactly like the legacy ``os.getenv`` read.
-    """
+    """Read a platform allow/deny gate env var from the process environment."""
     if not name:
         return default
-    try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        scope = current_secret_scope()
-        if scope is not None and is_multiplex_active():
-            val = scope.get(name)
-            if val is None:
-                return default
-            return str(val).strip()
-    except Exception:
-        pass
     return (os.getenv(name) or default).strip()
 
 
@@ -86,39 +64,9 @@ def _coerce_allow_set(raw) -> set[str]:
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
-    def _authorization_adapter(
-        self,
-        platform: Optional[Platform],
-        profile: Optional[str] = None,
-    ):
-        """Resolve the live adapter whose intake policy should gate authorization.
-
-        In multiplex mode, secondary-profile adapters live in
-        ``_profile_adapters[profile]`` while the default/active profile uses
-        ``self.adapters``. ``SessionSource.profile`` selects which map to consult.
-        When a stamped profile has its own adapter registry entry, the default
-        profile's same-platform adapter must not be consulted as a fallback.
-        """
+    def _authorization_adapter(self, platform: Optional[Platform]):
+        """Resolve the live adapter whose intake policy gates authorization."""
         if not platform:
-            return None
-        profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
-            active_profile = None
-            active_profile_fn = getattr(self, "_active_profile_name", None)
-            if callable(active_profile_fn):
-                try:
-                    active_profile = active_profile_fn()
-                except Exception:
-                    active_profile = None
-            if profile_name == active_profile:
-                adapters = getattr(self, "adapters", None) or {}
-                return adapters.get(platform)
-            profile_adapters = getattr(self, "_profile_adapters", None) or {}
-            if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(platform)
-            # Fail closed: a stamped secondary profile with no registry entry
-            # (e.g. its adapter failed to connect) must NOT fall back to the
-            # default profile's adapter — that sends replies out the wrong bot.
             return None
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
@@ -137,28 +85,16 @@ class GatewayAuthorizationMixin:
         # here silently disables streaming, typing, and tool progress when a
         # managed gateway does not also run that platform's native adapter.
         if getattr(source, "delivered_via_upstream_relay", False) is True:
-            # One process-level RelayAdapter owns the connector socket for all
-            # multiplexed profiles. Secondary profiles intentionally do not
-            # register their own relay adapters, so profile-aware lookup would
-            # fail and suppress streamed delivery for those profiles.
             adapters = getattr(self, "adapters", None) or {}
             return adapters.get(Platform.RELAY)
-        # ``getattr`` guards test fixtures that build a bare source via
-        # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
-        return self._authorization_adapter(
-            getattr(source, "platform", None),
-            getattr(source, "profile", None),
-        )
+        return self._authorization_adapter(getattr(source, "platform", None))
 
     def _registered_transport_adapter(self, source: SessionSource):
         """Return the registered adapter that created *source*, if retained.
 
-        ``source.profile`` is the runtime/session namespace. A chat-based
-        profile route can therefore differ from the adapter profile when one
-        shared credential serves several routed runtimes. ``build_source``
-        keeps the receiving adapter as in-process provenance so replies and
-        intake-policy checks stay on that transport without weakening the
-        fail-closed fallback for restored or hand-built sources.
+        ``build_source`` keeps the receiving adapter as in-process provenance
+        so replies and intake-policy checks stay on that transport without
+        weakening the fail-closed fallback for restored or hand-built sources.
         """
         adapter_ref = getattr(source, "_transport_adapter_ref", None)
         adapter = adapter_ref() if callable(adapter_ref) else None
@@ -167,31 +103,11 @@ class GatewayAuthorizationMixin:
             return None
         if adapter is (getattr(self, "adapters", None) or {}).get(platform):
             return adapter
-        profile_maps = getattr(self, "_profile_adapters", None) or {}
-        for profile_adapters in profile_maps.values():
-            if adapter is profile_adapters.get(platform):
-                return adapter
         return None
-
-    def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
-        """Resolve the transport-owning profile for adapter policy lookups."""
-        adapter = self._registered_transport_adapter(source)
-        platform = getattr(source, "platform", None)
-        if adapter is not None:
-            if adapter is (getattr(self, "adapters", None) or {}).get(platform):
-                return None
-            for profile, profile_adapters in (
-                getattr(self, "_profile_adapters", None) or {}
-            ).items():
-                if adapter is profile_adapters.get(platform):
-                    return profile
-        return getattr(source, "profile", None)
 
     def _adapter_authorization_is_upstream(
         self,
         platform: Optional[Platform],
-        *,
-        profile: Optional[str] = None,
     ) -> bool:
         """Whether the adapter for *platform* delegates authz to a trusted upstream.
 
@@ -206,7 +122,7 @@ class GatewayAuthorizationMixin:
         """
         if not platform:
             return False
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform)
         if adapter is None:
             return False
         return bool(getattr(adapter, "authorization_is_upstream", False))
@@ -214,8 +130,6 @@ class GatewayAuthorizationMixin:
     def _adapter_enforces_own_access_policy(
         self,
         platform: Optional[Platform],
-        *,
-        profile: Optional[str] = None,
     ) -> bool:
         """Whether the adapter for *platform* gates access at intake itself.
 
@@ -234,7 +148,7 @@ class GatewayAuthorizationMixin:
         # Some test helpers build a bare GatewayRunner via object.__new__ and
         # never set ``adapters``; treat a missing/empty map as "no adapter"
         # rather than raising (see pitfalls.md #17).
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform)
         if adapter is None:
             return False
         return bool(getattr(adapter, "enforces_own_access_policy", False))
@@ -242,8 +156,6 @@ class GatewayAuthorizationMixin:
     def _adapter_dm_policy(
         self,
         platform: Optional[Platform],
-        *,
-        profile: Optional[str] = None,
     ) -> str:
         """Best-effort read of an own-policy adapter's effective DM policy.
 
@@ -262,7 +174,7 @@ class GatewayAuthorizationMixin:
         """
         if not platform:
             return ""
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform)
         policy = getattr(adapter, "_dm_policy", None) if adapter is not None else None
         if policy is None:
             config = getattr(self, "config", None)
@@ -279,8 +191,6 @@ class GatewayAuthorizationMixin:
     def _adapter_group_policy(
         self,
         platform: Optional[Platform],
-        *,
-        profile: Optional[str] = None,
     ) -> str:
         """Best-effort read of an own-policy adapter's effective group policy.
 
@@ -297,7 +207,7 @@ class GatewayAuthorizationMixin:
         """
         if not platform:
             return ""
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform)
         policy = getattr(adapter, "_group_policy", None) if adapter is not None else None
         if policy is None:
             config = getattr(self, "config", None)
@@ -315,8 +225,6 @@ class GatewayAuthorizationMixin:
         self,
         platform: Optional[Platform],
         chat_id: Optional[str],
-        *,
-        profile: Optional[str] = None,
     ) -> bool:
         """Whether a per-group sender allowlist gated this group message.
 
@@ -329,7 +237,7 @@ class GatewayAuthorizationMixin:
         """
         if not platform or not chat_id:
             return False
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform)
         groups = getattr(adapter, "_groups", None) if adapter is not None else None
         if groups is None:
             config = getattr(self, "config", None)
@@ -365,18 +273,7 @@ class GatewayAuthorizationMixin:
         return False
 
     def _pairing_store_for(self, source: "SessionSource"):
-        """Pick the per-profile PairingStore for a source, falling back to global.
-
-        In a multiplexing gateway, each profile owns its own pairing whitelist
-        so isolation is preserved. When the source has no profile (single-
-        profile gateway, or a path that hasn't stamped profile yet) or the
-        profile isn't registered, fall back to ``self.pairing_store`` (the
-        global default) so existing behavior is preserved.
-        """
-        per_profile = getattr(self, "pairing_stores", None) or {}
-        profile = getattr(source, "profile", None)
-        if profile and profile in per_profile:
-            return per_profile[profile]
+        """Return the gateway's PairingStore. One store per gateway process."""
         return getattr(self, "pairing_store", None)
 
     def _is_user_authorized(
@@ -396,8 +293,6 @@ class GatewayAuthorizationMixin:
         5. Default: deny
         """
         from gateway.run import logger
-
-        adapter_profile = self._adapter_profile_for_source(source)
 
         # Relay (and any adapter whose authorization is enforced by a trusted
         # authenticated upstream): the Team Gateway connector authenticates this
@@ -428,10 +323,7 @@ class GatewayAuthorizationMixin:
         # tests) — defensive against accidental fail-open.
         if allow_adapter_delegation and (
             source.delivered_via_upstream_relay is True
-            or self._adapter_authorization_is_upstream(
-                source.platform,
-                profile=adapter_profile,
-            )
+            or self._adapter_authorization_is_upstream(source.platform)
         ):
             return True
 
@@ -509,9 +401,6 @@ class GatewayAuthorizationMixin:
         # operator-visible source of truth. (#23778: the original bypass was the
         # inbound message/approval-button gate, not this gate; that gate is
         # fixed separately.)
-        # In multiplex gateways, route to the per-profile PairingStore so each
-        # profile's whitelist is isolated; falls back to the global store when
-        # the source has no profile or the profile isn't registered.
         platform_name = source.platform.value if source.platform else ""
         pairing_store = self._pairing_store_for(source)
         if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
@@ -550,26 +439,13 @@ class GatewayAuthorizationMixin:
             # flag (checked above), and the pairing flow remain the explicit
             # opt-ins to broader access. (#34515 follow-up: trusting "open" was a
             # fail-open.)
-            if allow_adapter_delegation and self._adapter_enforces_own_access_policy(
-                source.platform,
-                profile=adapter_profile,
-            ):
+            if allow_adapter_delegation and self._adapter_enforces_own_access_policy(source.platform):
                 if source.chat_type in {"group", "forum", "channel"}:
-                    effective_policy = self._adapter_group_policy(
-                        source.platform,
-                        profile=adapter_profile,
-                    )
-                    if self._adapter_group_has_sender_allowlist(
-                        source.platform,
-                        source.chat_id,
-                        profile=adapter_profile,
-                    ):
+                    effective_policy = self._adapter_group_policy(source.platform)
+                    if self._adapter_group_has_sender_allowlist(source.platform, source.chat_id):
                         return True
                 else:
-                    effective_policy = self._adapter_dm_policy(
-                        source.platform,
-                        profile=adapter_profile,
-                    )
+                    effective_policy = self._adapter_dm_policy(source.platform)
                 if effective_policy == "allowlist":
                     # Trust allowlist intake only when the live adapter still
                     # allowlists this sender. Pairing revoke can clear
@@ -580,10 +456,7 @@ class GatewayAuthorizationMixin:
                     # historical "reached the gateway under allowlist policy"
                     # rubber-stamp (#34515).
                     if source.chat_type not in {"group", "forum", "channel"}:
-                        adapter = self._authorization_adapter(
-                            source.platform,
-                            profile=adapter_profile,
-                        )
+                        adapter = self._authorization_adapter(source.platform)
                         dm_check = (
                             getattr(adapter, "_is_dm_allowed", None)
                             if adapter is not None
@@ -642,8 +515,6 @@ class GatewayAuthorizationMixin:
     def _get_unauthorized_dm_behavior(
         self,
         platform: Optional[Platform],
-        *,
-        profile: Optional[str] = None,
     ) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
@@ -677,11 +548,10 @@ class GatewayAuthorizationMixin:
         # Config-driven dm_policy. An allowlist or disabled DM policy means the
         # operator restricted access, so unauthorized DMs should be dropped
         # silently rather than answered with a pairing code. An explicit
-        # pairing policy opts back into codes. Prefer the profile-scoped live
-        # adapter's resolved policy in multiplex mode; fall back to the default
-        # profile's config.extra.
+        # pairing policy opts back into codes. Read it from the live adapter
+        # so it comes from that adapter's own config.extra.
         if platform:
-            dm_policy = self._adapter_dm_policy(platform, profile=profile)
+            dm_policy = self._adapter_dm_policy(platform)
             if not dm_policy and config and hasattr(config, "platforms"):
                 platform_cfg = config.platforms.get(platform)
                 extra = getattr(platform_cfg, "extra", None) if platform_cfg else None

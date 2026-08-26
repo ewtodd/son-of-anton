@@ -264,14 +264,11 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     """
     from tools.mcp_tool import _interpolate_env_vars
 
-    from agent.secret_scope import current_secret_scope
-
-    if current_secret_scope() is None:
-        try:
-            from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-            load_son_of_anton_dotenv()
-        except Exception:  # pragma: no cover — defensive
-            pass
+    try:
+        from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
+        load_son_of_anton_dotenv()
+    except Exception:  # pragma: no cover — defensive
+        pass
     return _interpolate_env_vars(config)
 
 

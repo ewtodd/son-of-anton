@@ -50,15 +50,10 @@ def resolve_provider_secret(
     env/.env):
 
     1. An explicit ``config_value`` from config.yaml, when the caller has one.
-    2. The environment / ``~/.son-of-anton/.env``. Under a multiplexed gateway turn
-       this reads the active profile's secret scope (authoritative — a scope
-       miss must NOT borrow another profile's ``os.environ``; see
-       ``agent/secret_scope.py``). Outside multiplexing it reads
-       ``son_of_anton_cli.config.get_env_value`` (os.environ, then ``.env``),
-       matching the tools' historical behaviour exactly.
+    2. The environment / ``~/.son-of-anton/.env``, via
+       ``son_of_anton_cli.config.get_env_value`` (os.environ, then ``.env``).
     3. The credential pool / auth store for ``provider_id`` (``son-of-anton auth
-       add <provider_id>``). Skipped under an active multiplex turn, where
-       only the profile scope is authoritative for credentials.
+       add <provider_id>``).
 
     Never raises — credential resolution must not hard-fail on a pool or
     config read; returns ``""`` when no key is found anywhere.
@@ -71,23 +66,9 @@ def resolve_provider_secret(
     if value:
         return value
 
-    # Scope-aware env read: under a multiplexed gateway turn this reads the
-    # active profile's secret scope (authoritative); otherwise it reads the
-    # scope overlay then os.environ (see ``agent.secret_scope.get_secret``).
     key = _scoped_credential(env_var)
     if key:
         return key
-
-    try:
-        from agent.secret_scope import is_multiplex_active
-
-        if is_multiplex_active():
-            # Under multiplexing the profile scope is authoritative: do not
-            # fall through to the process-global .env or credential pool,
-            # which may belong to a different profile than the current turn.
-            return ""
-    except Exception:  # pragma: no cover — secret_scope is in-repo
-        pass
 
     if env_getter is not None:
         key = str(env_getter(env_var) or "").strip()

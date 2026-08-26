@@ -173,14 +173,6 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
-    # Profile this inbound message is routed to in a multiplexing gateway
-    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
-    # None => the gateway's active/default profile. Drives both session-key
-    # namespacing and the per-turn config/credential scope.
-    profile: Optional[str] = None
-    # Transport-local fail-closed signal for an explicit profile route whose
-    # target is not served. Excluded from repr/equality and wire serialization.
-    profile_route_rejected: bool = field(default=False, repr=False, compare=False)
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
@@ -273,8 +265,6 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
-        if self.profile:
-            d["profile"] = self.profile
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -301,7 +291,6 @@ class SessionSource:
             scope_id=data.get("scope_id", data.get("guild_id")),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
-            profile=data.get("profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),
@@ -383,16 +372,11 @@ def _slack_tools_loaded() -> bool:
     except Exception:
         pass
 
-    # Presence check through the profile secret scope: under multiplex the
-    # process env may carry another profile's token (Slack pattern for the
-    # unscoped default-profile path).
+    # Presence check through the secret store, then the process env.
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from agent.secret_scope import get_secret
 
-        try:
-            _slack_token = get_secret("SLACK_BOT_TOKEN") or ""
-        except UnscopedSecretError:
-            _slack_token = os.environ.get("SLACK_BOT_TOKEN") or ""
+        _slack_token = get_secret("SLACK_BOT_TOKEN") or ""
     except Exception:
         _slack_token = os.environ.get("SLACK_BOT_TOKEN") or ""
     if not _slack_token.strip():
@@ -1023,40 +1007,23 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
-def _session_key_namespace(profile: Optional[str]) -> str:
-    """Return the ``agent:<ns>`` namespace prefix for a session key.
-
-    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
-    ``main`` is a static namespace literal (NOT a branch name — branching keys
-    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
-    slot to carry the profile:
-
-    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
-      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
-      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
-    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
-      layout, just a different namespace, so two profiles serving the same
-      platform/chat never collide.
-    """
-    if not profile or profile == "default":
-        return "agent:main"
-    return f"agent:{profile}"
+# The ``agent:<ns>`` namespace prefix for every session key. ``main`` is a
+# static literal, NOT a branch name — branching keys off ``session_id``, not
+# this slot. It was briefly reused to carry a profile name; one gateway per
+# SON_OF_ANTON_HOME makes that unnecessary and the constant restores the
+# byte-identical historical key format that positional parsers rely on
+# (``parts[2]`` == platform, etc.).
+SESSION_KEY_NAMESPACE = "agent:main"
 
 
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
-    profile: Optional[str] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
-
-    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
-    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
-    that don't multiplex produce byte-identical keys to before. Only the
-    multiplexing gateway passes a non-default profile.
 
     DM rules:
       - Slack ``scope_id`` identifies the workspace before chat/user ids. Other
@@ -1081,7 +1048,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
-    ns = _session_key_namespace(profile)
+    ns = SESSION_KEY_NAMESPACE
     platform = source.platform.value
     slack_scope_id = (
         str(source.scope_id)
@@ -1180,9 +1147,9 @@ class AsyncSessionStore:
 
 
 # Sentinel for "no explicit SessionDB has been pinned on this store", so the
-# ``_db`` property can distinguish "resolve from the active profile scope"
-# from a deliberate ``store._db = None`` (which disables the DB and selects
-# the JSONL fallback).  A plain ``None`` cannot express both.
+# ``_db`` property can distinguish "resolve from the current home" from a
+# deliberate ``store._db = None`` (which disables the DB and selects the
+# JSONL fallback).  A plain ``None`` cannot express both.
 _DB_UNPINNED = object()
 
 
@@ -1239,20 +1206,13 @@ class SessionStore:
         # Initialize SQLite session database.
         #
         # Handles are cached per resolved path and looked up through the
-        # ``_db`` property instead of being bound to one handle here.  A
-        # multiplexed gateway serves every profile from a SINGLE process, so
-        # a handle bound during __init__ is frozen to the process's own root
-        # home; every profile's rows then land in the root state.db even
-        # though ``_profile_runtime_scope`` has already redirected
-        # ``get_son_of_anton_home()`` for the turn (its docstring lists "sessions"
-        # among what it scopes).  The row still carries the right
-        # ``profile_name``, so the damage is invisible in the data and shows
-        # up only as the desktop listing a profile's session under the
-        # default bot -- ``_open_session_db_for_profile`` reads
-        # ``profiles/<name>/state.db``, which never received the write.
-        # See #88532.
+        # ``_db`` property instead of being bound to one handle in __init__.
+        # ``_default_db_path()`` is resolved at call time, so binding one
+        # handle here would freeze this store to whatever home was current
+        # during construction and silently send later writes to the wrong
+        # state.db (#88532). Reads and writes must never resolve differently.
         #
-        # Priming the handle for the current scope here keeps the startup
+        # Priming the handle for the current home here keeps the startup
         # diagnostics exactly where they were: the live-DB isolation guard
         # still raises during construction, and the JSONL-fallback warning
         # is still printed once at startup rather than on first use.
@@ -1262,20 +1222,17 @@ class SessionStore:
         self._open_session_db_for_active_scope()
 
     def _open_session_db_for_active_scope(self):
-        """Return the SessionDB for the profile scope active on this task.
+        """Return the SessionDB for the SON_OF_ANTON_HOME current on this task.
 
         ``SessionDB(db_path=None)`` resolves ``_default_db_path()`` at call
-        time, and that helper follows the context-local SON_OF_ANTON_HOME override
-        installed by ``_profile_runtime_scope``.  Resolving here rather than
-        once in ``__init__`` is the whole fix for #88532: it lets the
-        scoping that the multiplexed inbound path already performs actually
-        reach session storage.
+        time. Resolving here rather than once in ``__init__`` is the fix for
+        #88532: it keeps the read path and the write path resolving to the
+        same database no matter when the store was constructed.
 
         Handles are cached per resolved path, so a hot inbound path opens
-        SQLite once per profile rather than once per message, and two
-        profiles never share a handle.  Construction is done under the lock
-        so a concurrent first message on the same profile cannot open (and
-        then leak) a second handle for the same path.
+        SQLite once rather than once per message.  Construction is done under
+        the lock so a concurrent first message cannot open (and then leak) a
+        second handle for the same path.
 
         A construction failure is cached as ``None`` for that path, matching
         the previous behavior where a failed startup left ``_db`` None for
@@ -1306,13 +1263,12 @@ class SessionStore:
 
     @property
     def _db(self):
-        """The SessionDB for the active profile scope, or a pinned override.
+        """The SessionDB for the current home, or a pinned override.
 
         Assigning ``store._db`` pins that value for every subsequent read,
         which is what tests rely on to install a fake or to disable the DB
         with ``store._db = None``.  Unpinned (the production path), each read
-        resolves the scope so a multiplexed profile's writes reach its own
-        store.
+        resolves the path so reads and writes cannot diverge.
         """
         if self._db_pinned is not _DB_UNPINNED:
             return self._db_pinned
@@ -1325,15 +1281,12 @@ class SessionStore:
     def close_all_db_handles(self) -> None:
         """Close every SessionDB handle this store opened, one per resolved path.
 
-        A multiplexed gateway accumulates one cached handle per profile it
-        served (see ``_open_session_db_for_active_scope``).  Reading ``_db``
-        at shutdown resolves only the handle for the scope active *then* —
-        the root home — so a shutdown that closes just ``store._db`` would
-        strand every secondary profile's handle with its WAL write lock held
-        until the interpreter exits, recreating the abandoned-handle leak
-        that ``SessionDB.close()`` exists to prevent.  Restart flows
-        (``--replace``) would then hit 'database is locked' opening those
-        profiles' stores.
+        Reading ``_db`` at shutdown resolves only the handle for the path
+        current *then*, so a shutdown that closed just ``store._db`` would
+        strand any other cached handle with its WAL write lock held until the
+        interpreter exits — the abandoned-handle leak ``SessionDB.close()``
+        exists to prevent.  Restart flows (``--replace``) would then hit
+        'database is locked'.
 
         Handles are drained under the lock but closed outside it, so a
         concurrent resolver blocked in ``_open_session_db_for_active_scope``
@@ -1377,8 +1330,8 @@ class SessionStore:
 
         The resolved sessions_dir path — the same identity that used to
         distinguish separate sessions.json files, so two stores with
-        different directories (tests, multi-profile setups sharing one
-        state.db) never see each other's routing entries.
+        different directories (tests, or several stores sharing one state.db)
+        never see each other's routing entries.
         """
         try:
             return str(Path(self.sessions_dir).resolve())
@@ -1812,71 +1765,12 @@ class SessionStore:
         else:
             self._save_entries()
 
-    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
-        """Return the profile namespace for session keys, or None when off.
-
-        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
-        keys stay in the legacy ``agent:main`` namespace — byte-identical to
-        before. When enabled, prefers the profile the inbound source was routed
-        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
-        per-credential adapter), falling back to the active profile name.
-        """
-        if not getattr(self.config, "multiplex_profiles", False):
-            return None
-        if source is not None and source.profile:
-            return source.profile
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-            return get_active_profile_name() or "default"
-        except Exception:
-            return None
-
-    @staticmethod
-    def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
-        """Extract the profile namespace encoded in a gateway session key."""
-        if not session_key:
-            return None
-        parts = str(session_key).split(":")
-        if len(parts) < 2 or parts[0] != "agent":
-            return None
-        namespace = parts[1] or "main"
-        return "default" if namespace == "main" else namespace
-
-    @staticmethod
-    def _active_profile_name() -> str:
-        try:
-            from son_of_anton_cli.profiles import get_active_profile_name
-            return get_active_profile_name() or "default"
-        except Exception:
-            return "default"
-
-    def _recovered_row_allowed_for_active_profile(
-        self,
-        *,
-        requested_session_key: str,
-        recovered: Dict[str, Any],
-    ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
-
-        recovered_key = str(recovered.get("session_key") or "")
-        if not recovered_key or recovered_key == requested_session_key:
-            return True
-
-        recovered_profile = self._profile_from_session_key(recovered_key)
-        if recovered_profile is None:
-            return True
-
-        return recovered_profile == self._active_profile_name()
-
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            profile=self._resolve_profile_for_key(source),
         )
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
@@ -1898,7 +1792,6 @@ class SessionStore:
             thread_sessions_per_user=getattr(
                 self.config, "thread_sessions_per_user", False
             ),
-            profile=self._resolve_profile_for_key(source),
         )
 
     def _claim_legacy_slack_key(self, legacy_key: Optional[str]) -> bool:
@@ -2068,18 +1961,6 @@ class SessionStore:
             return None
         if not self._recovered_row_matches_source_scope(recovered, source):
             return None
-        if not self._recovered_row_allowed_for_active_profile(
-            requested_session_key=session_key,
-            recovered=recovered,
-        ):
-            logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
-                recovered.get("session_key"),
-                session_key,
-            )
-            return None
         entry = self._create_entry_from_recovered_row(
             row=recovered,
             session_key=session_key,
@@ -2144,18 +2025,6 @@ class SessionStore:
         if not isinstance(recovered, dict):
             return None
         if not self._recovered_row_matches_source_scope(recovered, source):
-            return None
-        if not self._recovered_row_allowed_for_active_profile(
-            requested_session_key=session_key,
-            recovered=recovered,
-        ):
-            logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
-                recovered.get("session_key"),
-                session_key,
-            )
             return None
         # Reopen only after the caller evaluates reset policy against durable
         # last activity.  An agent_close/ws_orphan row may need promotion to a
@@ -2813,7 +2682,7 @@ class SessionStore:
                     "chat_id": source.chat_id,
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
-                    "profile_name": source.profile,
+                    "profile_name": None,
                     # Identity lands atomically in the INSERT (#82616): a
                     # crash after this write can no longer strand the row
                     # unroutable, and lineage survives resets (#12857).
@@ -3325,7 +3194,7 @@ class SessionStore:
                 "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
-                "profile_name": old_entry.origin.profile if old_entry.origin else None,
+                "profile_name": None,
                 # Identity + lineage land atomically in the INSERT (#82616,
                 # #12857) — see the get_or_create twin path.
                 "origin_json": _reset_origin_json,

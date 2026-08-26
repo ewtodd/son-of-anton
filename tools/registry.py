@@ -303,28 +303,14 @@ def _prune_check_fn_caches(now: float) -> None:
 
 
 def check_fn_cache_scope() -> Optional[str]:
-    """Return the active profile key when availability is profile-scoped.
+    """Return the cache-partition key for tool-availability checks.
 
-    Single-profile processes intentionally keep the historical process-wide
-    cache. A multiplex gateway installs a Son of Anton-home override for every
-    profile turn, so the canonical profile key is the stable isolation
-    boundary across repeated turns for that profile.
+    ``None`` means the historical process-wide cache. One process serves one
+    SON_OF_ANTON_HOME, so no per-home partition is needed; the multiplexed
+    gateway that required one is gone. ``CHECK_FN_CACHE_BYPASS`` remains the
+    fail-closed sentinel callers check for.
     """
-    try:
-        from agent.secret_scope import is_multiplex_active
-
-        if not is_multiplex_active():
-            return None
-        from son_of_anton_constants import get_son_of_anton_home_override
-
-        override = get_son_of_anton_home_override()
-        if not override:
-            return CHECK_FN_CACHE_BYPASS
-        return str(Path(override).expanduser().resolve())
-    except Exception:
-        # Fail closed: bypass both cache layers rather than aliasing requests
-        # whose multiplex profile identity could not be resolved.
-        return CHECK_FN_CACHE_BYPASS
+    return None
 
 
 def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:

@@ -1443,24 +1443,15 @@ def _nous_min_key_ttl_seconds() -> int:
 def _scoped_key_env(name: str) -> str:
     """Read a provider API key env var through the profile secret scope.
 
-    Auxiliary-client resolution runs both inside agent turns (secret scope
-    installed — its verdict is authoritative under multiplex, so a scoped
-    miss must NOT borrow another profile's process-env key) and on unscoped
-    startup/CLI probe paths, which keep the legacy ``os.environ`` read via
-    the ``UnscopedSecretError`` fallback (Slack pattern, #59739).
     """
     if not name:
         return ""
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from agent.secret_scope import get_secret
 
-        try:
-            return (get_secret(name) or "").strip()
-        except UnscopedSecretError:
-            pass
+        return (get_secret(name) or "").strip()
     except Exception:
-        pass
-    return (os.getenv(name) or "").strip()
+        return (os.getenv(name) or "").strip()
 
 
 # ── Codex Responses → chat.completions adapter ─────────────────────────────

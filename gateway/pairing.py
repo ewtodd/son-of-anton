@@ -127,21 +127,13 @@ def _read_allowlist_env(env_var: str) -> str:
     borrowing the process value.  Unscoped callers (single-profile CLI /
     admin endpoints) keep the legacy ``os.getenv`` read.
 
-    TODO(profile-secrets): the grant mirror below still WRITES through
-    ``son_of_anton_cli.config.save_env_value`` / ``remove_env_value``, which target
-    the root ``.env`` — those writes need a profile-aware counterpart before
-    pairing grants can be mirrored correctly under multiplexing.
     """
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from agent.secret_scope import get_secret
 
-        try:
-            return (get_secret(env_var) or "").strip()
-        except UnscopedSecretError:
-            pass
+        return (get_secret(env_var) or "").strip()
     except Exception:
-        pass
-    return (os.getenv(env_var) or "").strip()
+        return (os.getenv(env_var) or "").strip()
 
 
 def _sync_allowlist_add(platform: str, user_id: str) -> None:
@@ -187,11 +179,6 @@ def _iter_live_gateway_adapters():
     for adapter in adapters.values():
         if adapter is not None:
             yield adapter
-    profile_adapters = getattr(runner, "_profile_adapters", None) or {}
-    for mapping in profile_adapters.values():
-        for adapter in (mapping or {}).values():
-            if adapter is not None:
-                yield adapter
 
 
 def _adapter_platform_name(adapter) -> str:

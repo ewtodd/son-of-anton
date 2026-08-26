@@ -6215,22 +6215,6 @@ def _run_one_job_body(
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
-
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_son_of_anton_home())
-        )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -6262,8 +6246,6 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
-        finally:
-            reset_secret_scope(_scope_token)
 
         if _fire_claim_ownership_lost():
             for _deferred_agent in _deferred_agents:

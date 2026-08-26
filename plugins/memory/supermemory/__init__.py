@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret, is_multiplex_active
+from agent.secret_scope import get_secret
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -631,15 +631,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         # Make the freshly-entered key visible to the connection probe below.
         # (Checks the VALUE of SUPERMEMORY_API_KEY, not whether the key string
         # happens to name some unrelated env var.)
-        # Single-profile convenience only: never write a profile's key into
-        # the process-global environ under a multiplexed gateway — sibling
-        # profiles' turns (and any subprocess spawned with env=os.environ)
-        # would inherit it.
-        if (
-            api_key
-            and not is_multiplex_active()
-            and os.environ.get("SUPERMEMORY_API_KEY") != api_key
-        ):
+        if api_key and os.environ.get("SUPERMEMORY_API_KEY") != api_key:
             os.environ["SUPERMEMORY_API_KEY"] = api_key
 
         status = _probe_supermemory_connection(api_key, son_of_anton_home)

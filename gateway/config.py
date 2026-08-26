@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from son_of_anton_cli.config import get_son_of_anton_home
-from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from agent.secret_scope import get_secret as _get_secret
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -35,88 +35,6 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
             return False
         return default
     return is_truthy_value(value, default=default)
-
-
-def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
-    """Normalize the optional named-profile allowlist.
-
-    ``None`` preserves the historical serve-all behavior. A malformed outer
-    value fails safe to an empty list (default profile only); malformed list
-    entries are skipped with a warning.
-    """
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        logger.warning(
-            "Invalid gateway.multiplex_profile_allowlist (expected a list, got %s); "
-            "serving only the default profile",
-            type(value).__name__,
-        )
-        return []
-
-    from son_of_anton_cli.profiles import normalize_profile_name, validate_profile_name
-
-    normalized: List[str] = []
-    seen = set()
-    for entry in value:
-        if not isinstance(entry, str):
-            logger.warning(
-                "Skipping invalid gateway.multiplex_profile_allowlist entry %r "
-                "(expected a profile name)",
-                entry,
-            )
-            continue
-        try:
-            name = normalize_profile_name(entry)
-            validate_profile_name(name)
-        except ValueError:
-            logger.warning(
-                "Skipping invalid gateway.multiplex_profile_allowlist entry %r",
-                entry,
-            )
-            continue
-        if name == "default" or name in seen:
-            continue
-        seen.add(name)
-        normalized.append(name)
-    return normalized
-
-
-# Recognized truthy / falsy tokens for the GATEWAY_MULTIPLEX_PROFILES operator
-# override. Anything not in either set — and a blank/whitespace value — is
-# treated as "unset" so it falls through to config.yaml rather than silently
-# forcing the flag off.
-_MULTIPLEX_TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
-_MULTIPLEX_FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
-
-
-def _env_multiplex_profiles_override() -> "bool | None":
-    """Resolve the GATEWAY_MULTIPLEX_PROFILES operator override.
-
-    Returns ``True``/``False`` when the env var is set to a recognized truthy/
-    falsy token, or ``None`` when it is unset, blank, or unrecognized — in which
-    case the caller keeps the config.yaml value (env > config > default). Blank
-    is deliberately ``None``, not ``False``: a provisioned-but-unpopulated Fly
-    secret arrives as ``""`` and must NOT shadow a config.yaml opt-in.
-    """
-    raw = os.getenv("GATEWAY_MULTIPLEX_PROFILES")
-    if raw is None:
-        return None
-    token = raw.strip().lower()
-    if not token:
-        return None
-    if token in _MULTIPLEX_TRUTHY_STRINGS:
-        return True
-    if token in _MULTIPLEX_FALSY_STRINGS:
-        return False
-    logger.warning(
-        "Ignoring unrecognized GATEWAY_MULTIPLEX_PROFILES=%r "
-        "(expected one of %s or %s); falling back to config.yaml.",
-        raw,
-        sorted(_MULTIPLEX_TRUTHY_STRINGS),
-        sorted(_MULTIPLEX_FALSY_STRINGS),
-    )
-    return None
 
 
 def _normalize_transport_token(value: Any) -> str:
@@ -277,21 +195,8 @@ def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, 
 
 
 def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Read env vars through the active profile secret scope when present.
-
-    ``load_gateway_config()`` runs in many contexts, including multiplexed
-    profile startup where ``_profile_runtime_scope`` installs per-profile
-    secrets. In that scope we must prefer the scoped value; outside it we keep
-    legacy ``os.getenv`` behavior for single-profile callers and unscoped
-    gateway reads.
-    """
-    if current_secret_scope() is not None:
-        scope_val = _get_secret(name, None)
-        return scope_val if scope_val is not None else default
-    env_val = os.environ.get(name)
-    if env_val is not None:
-        return env_val
-    return default
+    """Read an env var through the credential seam."""
+    return _get_secret(name, default)
 
 
 def _getenv_str(name: str, default: str = "") -> str:
@@ -401,16 +306,11 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
-# Platforms that bind a host TCP port (HTTP listeners). In a profile
-# multiplexer the default profile owns the single shared listener and serves
-# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
-# enabling one of these is always a misconfiguration: it would try to bind a
-# port already held by the default's listener. Single source of truth for
-# both the gateway's fail-fast startup validation (gateway/run.py) and the
-# dashboard's pre-write mutation validation (son_of_anton_cli/web_server.py) so
-# the two policies cannot drift. Stored as platform .value strings.
-# No built-in platform binds a TCP port anymore; plugin platforms can still
-# bind and register here dynamically if needed.
+# Platforms that bind a host TCP port (HTTP listeners). Single source of
+# truth for the gateway's fail-fast startup validation and the
+# dashboard's pre-write mutation validation (son_of_anton_cli/web_server.py).
+# Stored as platform .value strings. No built-in platform binds a TCP port
+# anymore; plugin platforms can still register here dynamically if needed.
 PORT_BINDING_PLATFORM_VALUES = frozenset()
 
 # Platforms whose port-binding status depends on connection mode. Maps
@@ -889,16 +789,6 @@ class GatewayConfig:
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
-    # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
-    # When True, the default profile's gateway serves inbound messages for every
-    # profile on the host: profiles are stamped into session keys and (in later
-    # phases) per-profile adapters/credentials are resolved. When False, the
-    # gateway behaves exactly as before — single SON_OF_ANTON_HOME, no profile stamping.
-    multiplex_profiles: bool = False
-    # Optional named-profile allowlist for multiplex mode. None preserves the
-    # historical serve-all behavior; [] serves only the default profile.
-    multiplex_profile_allowlist: Optional[List[str]] = None
-
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
@@ -923,15 +813,7 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
-    # Profile-based routing: route specific guilds/channels/threads to
-    # different profiles. See gateway/profile_routing.py. Each entry is a
-    # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
-    profile_routes: list = field(default_factory=list)
-
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(
-            self.multiplex_profile_allowlist
-        )
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             self.systemd_watchdog_seconds
         )
@@ -1037,17 +919,11 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
-            "multiplex_profiles": self.multiplex_profiles,
-            "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
-            "profile_routes": [
-                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
-                for r in self.profile_routes
-            ],
         }
     
     @classmethod
@@ -1101,15 +977,8 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
-        multiplex_profiles = data.get("multiplex_profiles")
         raw_gateway = data.get("gateway")
         nested_gateway = raw_gateway if isinstance(raw_gateway, dict) else {}
-        if "multiplex_profile_allowlist" in data:
-            multiplex_profile_allowlist = data.get("multiplex_profile_allowlist")
-        else:
-            multiplex_profile_allowlist = nested_gateway.get(
-                "multiplex_profile_allowlist"
-            )
         if "systemd_watchdog_seconds" in data:
             systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "systemd_watchdog_seconds"
@@ -1124,22 +993,6 @@ class GatewayConfig:
         else:
             loop_watchdog_raw = nested_gateway.get("loop_watchdog")
         loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
-        if multiplex_profiles is None and isinstance(nested_gateway, dict):
-            # Also honor gateway.multiplex_profiles written by
-            # ``son-of-anton config set gateway.multiplex_profiles true``.
-            multiplex_profiles = nested_gateway.get("multiplex_profiles")
-        # Operator override: GATEWAY_MULTIPLEX_PROFILES wins over config.yaml when
-        # set to a recognized value. Hosted deployments (Nous Portal / Fly) stamp
-        # it on the container so the single multiplexed gateway — which the
-        # connector now depends on for per-profile relay routing — is forced on at
-        # every boot regardless of the image's config.yaml, while self-hosted
-        # users keep setting gateway.multiplex_profiles in config.yaml. A blank or
-        # unrecognized env value falls through to config (the empty-secret trap:
-        # a provisioned-but-unpopulated Fly secret must not shadow config), so
-        # this is a genuine 3-tier chain: env > config.yaml > default False.
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is not None:
-            multiplex_profiles = env_multiplex
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -1161,10 +1014,6 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
-        # Parse profile routes (validated by gateway.profile_routing)
-        from gateway.profile_routing import parse_profile_routes
-        profile_routes = parse_profile_routes(data.get("profile_routes") or [])
-
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -1182,15 +1031,12 @@ class GatewayConfig:
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
-            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=multiplex_profile_allowlist,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
-            profile_routes=profile_routes,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1314,37 +1160,7 @@ def load_gateway_config() -> GatewayConfig:
             elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
                 gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
 
-            # Multiplexing flag: accept both the top-level key and the nested
-            # gateway.multiplex_profiles form (written by
-            # ``son-of-anton config set gateway.multiplex_profiles true``).
-            if "multiplex_profiles" in yaml_cfg:
-                gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
-
-            if "multiplex_profile_allowlist" in yaml_cfg:
-                gw_data["multiplex_profile_allowlist"] = yaml_cfg[
-                    "multiplex_profile_allowlist"
-                ]
-            elif (
-                isinstance(gateway_section, dict)
-                and "multiplex_profile_allowlist" in gateway_section
-            ):
-                gw_data["multiplex_profile_allowlist"] = gateway_section[
-                    "multiplex_profile_allowlist"
-                ]
-
-            # Profile-based routing rules: accept either top-level
-            # ``profile_routes`` or the nested ``gateway.profile_routes`` form
-            # (matching the multiplex_profiles parity above).
-            _pr = yaml_cfg.get("profile_routes")
-            if _pr is None and isinstance(gateway_section, dict):
-                _pr = gateway_section.get("profile_routes")
-            if isinstance(_pr, list):
-                gw_data["profile_routes"] = _pr
-
             if isinstance(gateway_section, dict):
-                if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:
-                    # gateway.multiplex_profiles written by `son-of-anton config set gateway.multiplex_profiles true`
-                    gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
                 if "systemd_watchdog_seconds" in gateway_section:
