@@ -42,7 +42,7 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
 
 ### Phase 3 — bloat strip
 - Removed: Electron desktop app, web dashboard + `web_server.py`, docs website, ACP adapter, docker, native CJK FTS, i18n locales, optional-skills/mcps, research/trajectory tooling, ~25 plugins, 37→3 model providers (custom/openai/deepseek), browser/TTS/voice/wake/video/image-gen/HA/kanban/computer-use/x_search/feishu/yuanbao tools, MoA core, pets, CI, ~half the tests
-- Kept: CLI, TUI (+apps/shared), gateway core, cron, profiles, curator, memory providers, MCP client, iron proxy, discord tool, terminal backends local+ssh
+- Kept: CLI, TUI, gateway core, cron, curator, memory providers, MCP client, iron proxy, discord tool, terminal backends local+ssh
 - Core tools: web_search/extract, terminal, process, file ops, vision_analyze, skills, todo, memory, session_search, clarify, execute_code, delegate_task, cronjob
 
 ### Phase 4 — platforms + router + permissions

@@ -4,8 +4,8 @@ The hard *validator* in ``tools/skill_manager_tool.py::_validate_frontmatter``
 guards the non-negotiables (fence present, YAML mapping, ``name`` +
 ``description`` present, description length, non-empty body, size cap) and is a
 create/edit BLOCKER. This module is the softer, broader companion: it encodes
-the "Skill authoring standards (HARDLINE)" conventions from ``CONTRIBUTING.md``
-that today are only caught by a human reviewer — shell-utility references
+the "Skill authoring standards (HARDLINE)" conventions
+that would otherwise only be caught by a human reviewer — shell-utility references
 instead of native tools, a missing author/license/metadata block, a
 ``name`` that doesn't match its directory, dangling ``references/`` links,
 marketing words in the description, ``platforms:`` gating vs POSIX-only
@@ -43,7 +43,8 @@ from agent.skill_utils import (
 # Shell utilities the agent already has wrapped as first-class tools. Naming
 # them in SKILL.md prose steers the model to a raw shell call instead of the
 # native tool. Maps the banned token -> the native tool the prose should name.
-# (CONTRIBUTING.md "Skill authoring standards" rule 2.)
+# (Skill authoring standards, rule 2: name the native tool, not the shell
+# utility that happens to do the same job.)
 _SHELL_UTIL_TO_TOOL: Dict[str, str] = {
     "grep": "search_files",
     "rg": "search_files",
@@ -233,7 +234,7 @@ def _check_shell_utilities(body: str) -> List[LintFinding]:
     prose = _strip_code_blocks(body)
     for util, tool in _SHELL_UTIL_TO_TOOL.items():
         # Backtick-wrapped mention in prose, e.g. `grep` — the failure mode
-        # CONTRIBUTING rule 2 targets. Bare words in sentences are too noisy.
+        # rule 2 targets. Bare words in sentences are too noisy.
         if re.search(rf"`{re.escape(util)}`", prose):
             findings.append(
                 LintFinding(

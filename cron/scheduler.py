@@ -3487,7 +3487,7 @@ def _run_job_script(
 
     Subprocess environment is passed through ``_sanitize_subprocess_env`` so
     provider credentials and other Son of Anton-managed secrets are not inherited
-    (SECURITY.md §2.3), matching terminal and MCP child processes.
+    by cron children, matching terminal and MCP child processes.
 
     Args:
         script_path: Path to the script.  Relative paths are resolved

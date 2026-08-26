@@ -1,8 +1,7 @@
 """
 AST-level deep audit for skill Python files — opt-in diagnostic, not a security gate.
 
-Per SECURITY.md §2.4, Skills Guard is in-process heuristics ("useful — not
-boundaries"). This module is a separate opt-in diagnostic that flags dynamic
+Skills Guard is in-process heuristics: useful, but not a boundary. This module is a separate opt-in diagnostic that flags dynamic
 import / dynamic attribute access patterns operators may want to eyeball when
 reviewing third-party skill code. Every pattern flagged here has legitimate
 uses; findings are hints for human review, not verdicts.

@@ -12,8 +12,8 @@ credential-guard pipeline applies, and only the type check at the end differs
 bytes). Every existing call site keeps the image-only default unchanged.
 
 Security (terminal-backend confinement, GHSA-gpxw-6wxv-w3qq): under a non-local
-terminal backend the file tools are confined to the sandbox (SECURITY.md 2.2),
-but vision read images host-side. This resolver enforces the same boundary:
+terminal backend the file tools are confined to the sandbox, but vision
+read images host-side. This resolver enforces the same boundary:
 
   * local backend            -> read any host path (chosen posture, unchanged)
   * non-local backend:

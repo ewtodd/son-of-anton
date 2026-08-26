@@ -2973,8 +2973,8 @@ class BasePlatformAdapter(ABC):
         ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
         sender, so the gateway trusts the adapter only when its effective policy
         for the chat type is an actual ``"allowlist"`` restriction — never for
-        ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
-        forbids). Open access still requires an explicit
+        ``"open"`` (that would be the network-exposed fail-open the trust
+        model forbids). Open access still requires an explicit
         ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.

@@ -198,8 +198,8 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
         return False
     if psutil is not None:
         try:
-            # psutil is the canonical cross-platform liveness answer
-            # (CONTRIBUTING.md "Critical rules" #1). pid_exists() reports
+            # psutil is the canonical cross-platform liveness answer.
+            # pid_exists() reports
             # recycled PIDs as alive — conservative, the TTL still applies.
             return not psutil.pid_exists(pid)
         except Exception:

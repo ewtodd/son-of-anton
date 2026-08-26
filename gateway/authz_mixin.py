@@ -426,9 +426,9 @@ class GatewayAuthorizationMixin:
             # The adapters default dm_policy / group_policy to "open", which
             # forwards EVERY sender. Reading "reached the gateway" as
             # authorization in that case would admit the whole external network
-            # with no operator-configured allowlist -- the fail-open SECURITY.md
-            # §2.6 forbids ("an allowlist is required for every enabled
-            # network-exposed adapter ... code paths that fail open when no
+            # with no operator-configured allowlist -- the fail-open the
+            # trust model forbids: an allowlist is required for every enabled
+            # network-exposed adapter, and code paths that fail open when no
             # allowlist is configured are code bugs"). "disabled" never
             # forwards, and "pairing" forwards unpaired DMs only so the gateway
             # can run its pairing handshake (the pairing-store check above

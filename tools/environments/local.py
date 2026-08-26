@@ -115,8 +115,7 @@ _SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX = "_SON_OF_ANTON_FORCE_"
 #
 # The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
 # AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
-# left inheritable.  Per SECURITY.md §3.2 the local terminal is the user's
-# trusted operator shell; the agent having the same general AWS access the
+# left inheritable.  The local terminal is the user's trusted operator shell; the agent having the same general AWS access the
 # user's own shell has is the intended posture, not a leak.  Hard-blocklisting
 # those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
 # the agent terminal — not just Bedrock users, since the registry is iterated

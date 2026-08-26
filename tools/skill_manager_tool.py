@@ -904,7 +904,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
     """Run the advisory SKILL.md linter and attach any findings to *result*.
 
-    The linter enforces the CONTRIBUTING "Skill authoring standards (HARDLINE)"
+    The linter enforces the "Skill authoring standards (HARDLINE)"
     conventions that the hard validator does not (shell-utility references,
     missing metadata, dangling reference links, POSIX gating, forbidden files).
     Findings are ADVISORY — surfaced as guidance so the author can fix them,

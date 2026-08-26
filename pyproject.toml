@@ -97,7 +97,7 @@ dependencies = [
   # Cross-platform process / PID management.  `psutil` is the canonical
   # answer for "is this PID alive" and process-tree walking across Linux,
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
-  # (which is a silent killer on Windows — see CONTRIBUTING.md) and
+  # (which is a silent killer on Windows) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
   # Browser CDP supervisor + browser_dialog import this directly. Keep core

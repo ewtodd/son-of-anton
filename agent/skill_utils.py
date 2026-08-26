@@ -134,7 +134,7 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     ``utf-8-sig`` strips it). Left in place, the BOM defeats the ``---`` fence
     check below and the whole frontmatter is silently discarded — name,
     description, ``platforms`` gating, env-var setup, and conditional
-    activation all vanish. See CONTRIBUTING.md "File encoding".
+    activation all vanish. SKILL.md must be UTF-8 without a BOM.
 
     Returns:
         (frontmatter_dict, remaining_body)
