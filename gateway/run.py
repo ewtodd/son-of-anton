@@ -16768,7 +16768,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ``auto``) the router classifies the message. Falls back to
         ``standard`` when routing is disabled in config.
         """
-        from son_of_anton_cli.router import resolve_mode
+        from son_of_anton_cli.router import resolve_enabled_modes, resolve_mode
 
         router_cfg: dict = {}
         try:
@@ -16797,7 +16797,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 _is_first_turn = False
         except Exception:
             logger.debug("mode routing: session-activity probe failed", exc_info=True)
-        return resolve_mode(override, text, is_first_turn=_is_first_turn)
+        return resolve_mode(
+            override,
+            text,
+            is_first_turn=_is_first_turn,
+            enabled=resolve_enabled_modes(router_cfg.get("modes")),
+        )
 
     async def _run_physics_mode_turn(self, event, source, session_key, mode: str):
         """Run a physics/research mode turn and deliver the result to the chat.

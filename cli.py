@@ -10712,12 +10712,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         release — until then a pinned non-standard mode prints a notice and
         runs the standard loop.
         """
-        from son_of_anton_cli.router import AGENT_MODES
+        from son_of_anton_cli.router import resolve_enabled_modes
+
+        _router = (self.config or {}).get("router") or {}
+        allowed = ("auto",) + resolve_enabled_modes(_router.get("modes"))
 
         parts = cmd_original.split(None, 1)
         raw = parts[1].strip().lower() if len(parts) > 1 else ""
-        if raw and raw not in AGENT_MODES:
-            print(f"(._.) Unknown mode {raw!r} — use /mode auto|standard|physics|research.")
+        if raw and raw not in allowed:
+            # Only what this deployment has: see the gateway handler.
+            print(f"(._.) Unknown mode {raw!r} - use /mode {'|'.join(allowed)}.")
             return
         self._agent_mode = raw or "auto"
         if self._agent_mode == "auto":
@@ -14465,7 +14469,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # their own loops (the ported physics-intern modes); standard uses the
         # normal agent loop below.
         try:
-            from son_of_anton_cli.router import resolve_mode
+            from son_of_anton_cli.router import resolve_enabled_modes, resolve_mode
             _router_cfg = (self.config or {}).get("router") or {}
             if _router_cfg.get("enabled", True):
                 # Keyword classification is first-turn only: physics/research
@@ -14475,6 +14479,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     getattr(self, "_agent_mode", None),
                     message,
                     is_first_turn=not getattr(self, "conversation_history", None),
+                    enabled=resolve_enabled_modes(_router_cfg.get("modes")),
                 )
                 if _resolved_mode == "physics":
                     return self._run_physics_mode(message)

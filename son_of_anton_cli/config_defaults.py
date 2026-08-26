@@ -379,6 +379,12 @@ DEFAULT_CONFIG = {
     "router": {
         "enabled": True,
         "mode": "auto",
+        # Selectable agent modes. "standard" is always available; drop
+        # "physics"/"research" on a deployment that has no use for them (a
+        # household or general-purpose gateway) and their keywords stop
+        # routing, /mode stops offering them, and a stale session pin falls
+        # back to standard.
+        "modes": ["standard", "physics", "research"],
         "simple_model": "",
         "default_model": "",
         "planner_model": "",

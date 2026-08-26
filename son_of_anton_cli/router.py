@@ -10,9 +10,59 @@ All knobs live under the ``router`` section of config.yaml.
 
 from __future__ import annotations
 
-from typing import Optional
+import logging
+from typing import Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 AGENT_MODES = ("auto", "standard", "physics", "research")
+
+# Modes a deployment may switch off. "standard" is not among them: it is the
+# fallback every other path lands on, so it is always available.
+OPTIONAL_MODES = ("physics", "research")
+
+# Everything on, which is what an existing config.yaml with no `router.modes`
+# key means.
+DEFAULT_ENABLED_MODES = ("standard",) + OPTIONAL_MODES
+
+
+def resolve_enabled_modes(raw: object) -> tuple[str, ...]:
+    """Normalize ``router.modes`` into the set of selectable modes.
+
+    A gateway serving a household group has no use for the physics or research
+    loops, and listing them costs more than clutter: the router can route a
+    message into a one-shot loop nobody there wants, and the modes show up in
+    ``/mode`` as if they were on offer.
+
+    ``None`` (the key absent) means every mode, so an existing config.yaml is
+    unaffected. "standard" is always included even if omitted, because it is
+    where classification and every rejected override end up. Unknown names are
+    dropped with a warning rather than failing the load: a typo in config.yaml
+    should not take the agent down, and the result is a mode that is off, which
+    is the safe direction.
+    """
+    if raw is None:
+        return DEFAULT_ENABLED_MODES
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        logger.warning(
+            "Ignoring router.modes: expected a list of mode names, got %s",
+            type(raw).__name__,
+        )
+        return DEFAULT_ENABLED_MODES
+
+    enabled = {"standard"}
+    for entry in raw:
+        name = str(entry).strip().lower()
+        if name in ("standard", "auto"):
+            continue
+        if name in OPTIONAL_MODES:
+            enabled.add(name)
+        else:
+            logger.warning("Ignoring unknown router.modes entry %r", entry)
+    # Stable order so callers can render it in messages predictably.
+    return tuple(m for m in DEFAULT_ENABLED_MODES if m in enabled)
 
 # Keyword signal for the physics analysis mode. Keep this deliberately
 # specific: it should fire for real analysis work (ROOT macros, histogram
@@ -107,12 +157,21 @@ COMPLEX_SUBSTANCE_SIGNALS = (
 )
 
 
-def classify_mode(text: str) -> str:
-    """Return ``physics``, ``research``, or ``standard`` for *text*."""
+def classify_mode(
+    text: str,
+    enabled: Optional[Sequence[str]] = None,
+) -> str:
+    """Return ``physics``, ``research``, or ``standard`` for *text*.
+
+    *enabled* limits what may be returned; a disabled mode is simply not
+    classified into, so its keywords stop meaning anything. ``None`` means
+    every mode.
+    """
+    allowed = DEFAULT_ENABLED_MODES if enabled is None else tuple(enabled)
     low = text.lower()
-    if any(keyword in low for keyword in PHYSICS_KEYWORDS):
+    if "physics" in allowed and any(k in low for k in PHYSICS_KEYWORDS):
         return "physics"
-    if any(keyword in low for keyword in RESEARCH_KEYWORDS):
+    if "research" in allowed and any(k in low for k in RESEARCH_KEYWORDS):
         return "research"
     return "standard"
 
@@ -155,6 +214,7 @@ def resolve_mode(
     text: str,
     *,
     is_first_turn: bool = True,
+    enabled: Optional[Sequence[str]] = None,
 ) -> str:
     """Resolve the agent mode for one request.
 
@@ -174,11 +234,15 @@ def resolve_mode(
     history. An explicit ``/mode physics`` still wins on any turn — the user
     asking for it is unambiguous in a way a keyword match is not.
     """
+    allowed = DEFAULT_ENABLED_MODES if enabled is None else tuple(enabled)
     if override and override != "auto":
-        return override
+        # A pin can outlive the config that allowed it: sessions persist, and
+        # the mode is stored per session. Honour the current config, not the
+        # one in force when the pin was set.
+        return override if override in allowed else "standard"
     if not is_first_turn:
         return "standard"
-    return classify_mode(text)
+    return classify_mode(text, allowed)
 
 
 def resolve_model_slot(

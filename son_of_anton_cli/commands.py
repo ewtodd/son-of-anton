@@ -210,8 +210,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
-    CommandDef("mode", "Set the agent mode: auto, standard, physics, or research", "Configuration",
-               args_hint="[auto|standard|physics|research]", busy_policy="reject", busy_handler="mode"),
+    # Deliberately does not enumerate the modes: router.modes can switch
+    # physics/research off, and this registry is built at import with no
+    # config in hand. Bare /mode lists what the deployment actually has.
+    CommandDef("mode", "Set the agent mode (bare /mode lists what is available)", "Configuration",
+               args_hint="[MODE]", busy_policy="reject", busy_handler="mode"),
     CommandDef("perm", "Set the permission mode: default, ask, lockdown, or yolo", "Configuration",
                args_hint="[default|ask|lockdown|yolo]", busy_policy="reject", busy_handler="perm"),
 

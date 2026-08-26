@@ -1456,11 +1456,21 @@ class GatewaySlashCommandsMixin:
         release — until then a pinned non-standard mode prints a notice and
         runs the standard loop.
         """
-        from son_of_anton_cli.router import AGENT_MODES
+        from son_of_anton_cli.config import load_config
+        from son_of_anton_cli.router import resolve_enabled_modes
+
+        try:
+            _router = (load_config() or {}).get("router") or {}
+        except Exception:
+            _router = {}
+        allowed = ("auto",) + resolve_enabled_modes(_router.get("modes"))
 
         raw = event.get_command_args().strip().lower()
-        if raw and raw not in AGENT_MODES:
-            return f"Unknown mode {raw!r} — use /mode auto|standard|physics|research."
+        if raw and raw not in allowed:
+            # List what this deployment actually has, not the full vocabulary:
+            # offering a mode that router.modes has switched off just invites
+            # the user to pin something that silently runs as standard.
+            return f"Unknown mode {raw!r} - use /mode {'|'.join(allowed)}."
         session_key = self._session_key_for_source(event.source)
         if not hasattr(self, "_session_mode_overrides"):
             self._session_mode_overrides = {}
