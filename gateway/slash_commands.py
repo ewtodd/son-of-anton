@@ -4084,6 +4084,12 @@ class GatewaySlashCommandsMixin:
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,
             search_query=search_query,
+            # A messenger instance answers one chat, and the session key scopes
+            # this listing to that chat and (for a per-user group key) to this
+            # participant. That lane holds exactly one session until someone
+            # runs /new — the live one. Dropping it reported "no sessions" for
+            # a conversation the database was actively recording.
+            include_current=True,
             # Search filters at SQL level, so over-fetch before the visibility
             # cut: origin-invisible matches would otherwise consume the page.
             limit=50 if search_query else 10,

@@ -53,17 +53,27 @@ def query_session_listing(
     search_query: str | None = None,
     limit: int = 10,
     exclude_sources: list[str] | None = None,
+    include_current: bool = False,
 ) -> list[dict[str, Any]]:
     """Return session rows for interactive listing surfaces.
 
     This is the shared selection policy behind CLI/gateway session browsing:
     source-scoped by default, optionally global, hide unnamed sessions unless
-    the caller asks for a full listing, and never include the current session.
+    the caller asks for a full listing, and drop the current session so a
+    numbered pick can't land on the conversation you are already in.
     ``session_key`` further restricts gateway callers to one exact conversation
     lane before the database applies its result limit.
     With ``search_query``, rows are filtered by title/id match (SQL-level, see
     ``SessionDB.list_sessions_rich``) and ordered by most-recent activity;
     unnamed sessions stay visible since an id match may be the only handle.
+
+    ``include_current`` keeps the current session in the result with
+    ``is_current`` set on its row. A messenger surface that serves one
+    conversation has exactly one session in the lane — the one you are typing
+    in — so dropping it turns every listing into "no sessions found", which is
+    a lie about a database that has the conversation in it. Browsing surfaces
+    pass True; anything that resolves a number into a resume target leaves it
+    False.
     """
     query_source = None if include_all_sources else source
     fetch_limit = max(limit * 4, limit)
@@ -78,10 +88,16 @@ def query_session_listing(
     )
     result: list[dict[str, Any]] = []
     for row in rows:
-        if current_session_id and row.get("id") == current_session_id:
+        is_current = bool(current_session_id) and row.get("id") == current_session_id
+        if is_current and not include_current:
             continue
-        if not include_unnamed and not row.get("title") and not search:
+        # The current session is never clutter — it is the "you are here"
+        # marker — so the named-only filter does not apply to it.
+        if not include_unnamed and not row.get("title") and not search and not is_current:
             continue
+        if is_current:
+            row = dict(row)
+            row["is_current"] = True
         result.append(row)
         if len(result) >= limit:
             break
@@ -97,9 +113,8 @@ def format_gateway_session_listing(
     """Render a compact Markdown-ish session list for gateway messengers."""
     if not rows:
         return (
-            "No sessions found.\n"
-            "Use `/title My Session` to name this chat, or `/sessions full` "
-            "to include unnamed sessions."
+            "No sessions in this chat yet.\n"
+            "`/new` starts a second one; `/title My Session` names this one."
         )
 
     lines = [f"📋 **{title}**", ""]
@@ -110,7 +125,11 @@ def format_gateway_session_listing(
         source = str(row.get("source") or "")
         source_part = f" `{source}`" if include_source and source else ""
         preview_part = f" — _{preview}_" if preview else ""
-        lines.append(f"{idx}. **{title_text}**{source_part} — `{session_id}`{preview_part}")
+        current_part = " (current)" if row.get("is_current") else ""
+        lines.append(
+            f"{idx}. **{title_text}**{source_part}{current_part} — "
+            f"`{session_id}`{preview_part}"
+        )
     lines.append("")
     lines.append("Resume: `/resume <session id>` or `/resume <number>` from `/resume`.")
     lines.append("More: `/sessions all`, `/sessions full`, `/sessions search <query>`.")

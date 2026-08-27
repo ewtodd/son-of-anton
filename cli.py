@@ -8993,7 +8993,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent sessions in this home for browsing/resume affordances.
+
+        Every surface sharing a ``SON_OF_ANTON_HOME`` shares one ``state.db``:
+        the account's gateway writes its Signal conversations into the same
+        file the CLI reads. Filtering to ``source="cli"`` hid exactly those
+        rows, so a conversation started on the phone was unreachable from the
+        terminal even though it was sitting one table over. There is no
+        boundary to enforce here — one home is one account.
+        """
         if not self._session_db:
             return []
         try:
@@ -9001,9 +9009,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             return query_session_listing(
                 self._session_db,
-                source="cli",
+                source=None,
                 current_session_id=self.session_id,
-                include_all_sources=False,
+                include_all_sources=True,
                 include_unnamed=True,
                 limit=limit,
                 exclude_sources=["tool"],
@@ -9028,13 +9036,24 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             _cli_visible_print("  Recent sessions:")
         _cli_visible_print()
-        _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        # "Where" earns its column now that the list spans surfaces: a row can
+        # be a terminal session, a Signal conversation, or a cron run, and they
+        # all live in this account's one state.db.
+        _cli_visible_print(
+            f"  {'#':<3} {'Where':<8} {'Title':<30} {'Preview':<34} {'Last Active':<13} {'ID'}"
+        )
+        _cli_visible_print(
+            f"  {'─' * 3} {'─' * 8} {'─' * 30} {'─' * 34} {'─' * 13} {'─' * 24}"
+        )
         for idx, session in enumerate(sessions, start=1):
-            title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            where = (session.get("source") or "—")[:8]
+            title = (session.get("title") or "—")[:30]
+            preview = (session.get("preview") or "")[:32]
             last_active = _relative_time(session.get("last_active"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            _cli_visible_print(
+                f"  {idx:<3} {where:<8} {title:<30} {preview:<34} "
+                f"{last_active:<13} {session['id']}"
+            )
         _cli_visible_print()
         _cli_visible_print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         _cli_visible_print("  Example: /resume 2")
