@@ -22,11 +22,14 @@ import copy
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
+from son_of_anton_constants import get_son_of_anton_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +278,121 @@ def is_background_review_enabled(
     enabled, _ = load_background_review_settings()
     return enabled
 
+
+# ---------------------------------------------------------------------------
+# Automatic-review scheduling — "nudge" vs "daily".
+#
+# The automatic post-turn review fork is normally triggered by turn/iteration
+# counters (``memory.nudge_interval`` / ``skills.creation_nudge_interval``).
+# ``auxiliary.background_review.schedule: daily`` swaps that for a wall-clock
+# cadence: at most ONE combined memory+skills review per day, and only while
+# the local time falls inside the nightly ``daily_window``. This is the
+# "self-improvement once a day, overnight" mode — counters are ignored, and
+# the first turn that lands in the window each day carries the day's review.
+# Manual ``/refine`` (``focus`` set) never passes through this gate.
+# ---------------------------------------------------------------------------
+
+DEFAULT_DAILY_WINDOW: tuple[int, int] = (0, 6)  # [start_hour, end_hour) local
+
+
+def _background_review_state_file() -> Path:
+    return get_son_of_anton_home() / ".background_review_state"
+
+
+def _read_daily_state() -> Dict[str, Any]:
+    path = _background_review_state_file()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_daily_state(data: Dict[str, Any]) -> None:
+    try:
+        atomic_json_write(_background_review_state_file(), data)
+    except Exception:
+        logger.debug("Failed to write background-review daily state", exc_info=True)
+
+
+def _review_schedule(task_cfg: Optional[Dict[str, Any]] = None) -> str:
+    cfg = task_cfg if isinstance(task_cfg, dict) else {}
+    mode = str(cfg.get("schedule", "nudge")).strip().lower()
+    return mode if mode in ("nudge", "daily") else "nudge"
+
+
+def _parse_daily_window(task_cfg: Optional[Dict[str, Any]] = None) -> tuple[int, int]:
+    cfg = task_cfg if isinstance(task_cfg, dict) else {}
+    raw = cfg.get("daily_window", DEFAULT_DAILY_WINDOW)
+    try:
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            start = int(raw[0])
+            end = int(raw[1])
+            if 0 <= start < 24 and 0 <= end < 24 and start != end:
+                return (start, end)
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_DAILY_WINDOW
+
+
+def _hour_in_window(hour: int, window: tuple[int, int]) -> bool:
+    start, end = window
+    if start < end:
+        return start <= hour < end
+    # Window wraps midnight (e.g. 22 → 6).
+    return hour >= start or hour < end
+
+
+def automatic_review_due(
+    task_cfg: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Pure predicate: is the once-daily automatic review due right now?
+
+    Only meaningful when ``auxiliary.background_review.schedule`` is
+    ``"daily"``. True when the current local hour is inside the configured
+    ``daily_window`` and no automatic review has been recorded for today.
+    """
+    if _review_schedule(task_cfg) != "daily":
+        return False
+    now = now or datetime.now()
+    if not _hour_in_window(now.hour, _parse_daily_window(task_cfg)):
+        return False
+    today = now.strftime("%Y-%m-%d")
+    return _read_daily_state().get("last_auto_review_date") != today
+
+
+def apply_automatic_review_schedule(
+    review_memory: bool,
+    review_skills: bool,
+    task_cfg: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> tuple[bool, bool]:
+    """Resolve what the automatic post-turn review should actually review.
+
+    ``"nudge"`` (default) passes the counter-based triggers through unchanged
+    (legacy behavior). ``"daily"`` ignores the counters and instead returns
+    ``(True, True)`` — a single combined review — on the first turn that
+    lands inside the nightly window each day, recording the day so it does
+    not fire again. Returns ``(False, False)`` whenever nothing should run.
+    """
+    if _review_schedule(task_cfg) != "daily":
+        return (bool(review_memory), bool(review_skills))
+
+    now = now or datetime.now()
+    if not _hour_in_window(now.hour, _parse_daily_window(task_cfg)):
+        return (False, False)
+
+    today = now.strftime("%Y-%m-%d")
+    state = _read_daily_state()
+    if state.get("last_auto_review_date") == today:
+        return (False, False)
+
+    state["last_auto_review_date"] = today
+    _write_daily_state(state)
+    return (True, True)
 
 
 def _resolve_review_runtime(
@@ -1543,4 +1661,6 @@ __all__ = [
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
+    "automatic_review_due",
+    "apply_automatic_review_schedule",
 ]

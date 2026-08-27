@@ -906,11 +906,19 @@ def run_codex_app_server_turn(
 
     # Background review fork — same cadence + signature as the default
     # path (line ~15449). Only fires when a trigger actually tripped AND
-    # we have a real final response.
+    # we have a real final response. The once-daily overnight schedule is
+    # OR'd in (and re-resolved inside _spawn_background_review) so it fires
+    # independently of the nudge counters when configured.
+    _daily_review_due = False
+    try:
+        from agent.background_review import automatic_review_due
+        _daily_review_due = automatic_review_due()
+    except Exception:
+        _daily_review_due = False
     if (
         turn.final_text
         and not turn.interrupted
-        and (should_review_memory or should_review_skills)
+        and (should_review_memory or should_review_skills or _daily_review_due)
     ):
         try:
             agent._spawn_background_review(

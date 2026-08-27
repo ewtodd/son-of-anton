@@ -1087,6 +1087,18 @@ DEFAULT_CONFIG = {
             # Master switch for automatic post-turn memory/skill review forks.
             # false = skip automatic spawns (manual /refine still works).
             "enabled": True,
+            # Automatic-review cadence:
+            #   "nudge" — trigger on the turn/iteration counters
+            #             (memory.nudge_interval / skills.creation_nudge_interval),
+            #             the legacy behavior.
+            #   "daily" — ignore the counters; run at most ONE combined
+            #             memory+skills review per day, on the first turn that
+            #             lands inside ``daily_window`` (local time).
+            "schedule": "nudge",
+            # [start_hour, end_hour) local-time window used when
+            # schedule: "daily". Default midnight–06:00 ("overnight").
+            # May wrap midnight, e.g. [22, 6].
+            "daily_window": [0, 6],
             "provider": "auto",
             "model": "",
             "base_url": "",

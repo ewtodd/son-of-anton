@@ -788,11 +788,29 @@ def finalize_turn(
     # Suppressed when skip_background_review=True (e.g. cron) — review forks
     # spawn another AIAgent (~30K tokens / event) and cron sessions have no
     # human-in-the-loop benefit from the review.
+    #
+    # The nudge counters (_should_review_memory / _should_review_skills) gate
+    # the legacy turn/iteration cadence. When
+    # ``auxiliary.background_review.schedule: daily`` is set, the once-daily
+    # overnight review is due independently of those counters, so it is OR'd
+    # in here; _spawn_background_review then re-resolves the final flags.
+    _daily_review_due = False
     if (
         final_response
         and not interrupted
         and not getattr(agent, "skip_background_review", False)
-        and (_should_review_memory or _should_review_skills)
+    ):
+        try:
+            from agent.background_review import automatic_review_due
+            _daily_review_due = automatic_review_due()
+        except Exception:
+            _daily_review_due = False
+
+    if (
+        final_response
+        and not interrupted
+        and not getattr(agent, "skip_background_review", False)
+        and (_should_review_memory or _should_review_skills or _daily_review_due)
     ):
         try:
             agent._spawn_background_review(

@@ -1895,6 +1895,18 @@ class AIAgent:
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
+            # Apply the automatic-review schedule. "nudge" (default) passes
+            # the counter-based triggers through unchanged; "daily" ignores
+            # the counters and admits at most one combined review per day,
+            # inside the overnight window (see agent.background_review).
+            from agent.background_review import apply_automatic_review_schedule
+            review_memory, review_skills = apply_automatic_review_schedule(
+                review_memory,
+                review_skills,
+                task_cfg=task_cfg,
+            )
+            if not (review_memory or review_skills):
+                return
         from agent.background_review import (
             finish_background_review_run,
             prepare_background_review_run,
