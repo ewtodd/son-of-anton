@@ -123,10 +123,10 @@ nix shell nixpkgs#uv -c env UV_PYTHON=<nix-python-3.12> uv lock
 ### Commit convention
 
 - Author: `son-of-anton-bot <307402699+son-of-anton-bot@users.noreply.github.com>`
-- Trailer: `Co-authored-by: Ethan Todd <30243637+ewtodd@users.noreply.github.com>`
   (repo git config already set — do not change it)
+- Sole authorship. No `Co-authored-by:` trailers, for anyone — not the repo owner,
+  not the model, not an upstream account.
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
-- Do not create a DeepSeek co-author trailer (no such account exists)
 - Before merging anything, make sure the branch is up to date with `main` — a stale
   branch's version of an unrelated file silently overwrites recent fixes on squash-merge.
 
@@ -670,8 +670,8 @@ platform as data can stay unmarked.
 - **Upstream refs:** hermes-agent v0.20.5 (`fcbd1076a9`), physics-intern (`5553bb6`).
   The fork's history is a rewrite; when hunting upstream behavior, reference the upstream
   repos directly.
-- **The agent name:** the GitHub account is `son-of-anton-bot`; never create a DeepSeek
-  co-author trailer.
+- **The agent name:** the GitHub account is `son-of-anton-bot`, and it is the only
+  author on a commit — see "Commit convention" above.
 - **Known loose ends** (tracked in `STATUS.md`): a small deep-Nous tail
   (auth.py's Nous OAuth flow, the `auxiliary_client.py` Nous branch,
   `nous_account.py`/`portal_tags.py`, Nous-curated model helpers, the proxy's
