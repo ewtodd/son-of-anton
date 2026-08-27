@@ -67,7 +67,18 @@ def _skin_color(key: str, fallback: str) -> str:
 
 from son_of_anton_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗
+# The wordmark, at two widths. One line is the one we want whenever the
+# terminal is wide enough for it; the stacked form keeps a logo on narrow
+# windows instead of dropping it. The README uses the stacked form because
+# GitHub renders it in a fixed column. Widths: 109 and 52.
+SON_OF_ANTON_AGENT_LOGO_WIDE = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗       █████╗   ███╗   ██╗ ████████╗  ██████╗  ███╗   ██╗
+██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝      ██╔══██╗  ████╗  ██║ ╚══██╔══╝ ██╔═══██╗ ████╗  ██║
+███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗        ███████║  ██╔██╗ ██║    ██║    ██║   ██║ ██╔██╗ ██║
+╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝        ██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
+███████║ ╚██████╔╝ ██║ ╚████║     ╚██████╔╝ ██║           ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
+╚══════╝  ╚═════╝  ╚═╝  ╚═══╝      ╚═════╝  ╚═╝           ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
+
+SON_OF_ANTON_AGENT_LOGO_STACKED = """███████╗  ██████╗  ███╗   ██╗      ██████╗  ███████╗
 ██╔════╝ ██╔═══██╗ ████╗  ██║     ██╔═══██╗ ██╔════╝
 ███████╗ ██║   ██║ ██╔██╗ ██║     ██║   ██║ █████╗
 ╚════██║ ██║   ██║ ██║╚██╗██║     ██║   ██║ ██╔══╝
@@ -80,6 +91,26 @@ SON_OF_ANTON_AGENT_LOGO = """███████╗  ██████╗  �
 ██╔══██║  ██║╚██╗██║    ██║    ██║   ██║ ██║╚██╗██║
 ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
 ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝"""
+
+LOGO_WIDE_MIN_COLUMNS = 109
+LOGO_STACKED_MIN_COLUMNS = 95
+
+
+def pick_banner_logo(term_width: int, skin_logo: str = "") -> str:
+    """Return the logo to print at *term_width*, or "" to print none.
+
+    Rich wraps anything wider than the terminal, which turns block letters
+    into rubble, so each form has a floor and below the last one the banner
+    goes without a logo. A skin's own art keeps the old single floor: its
+    width is the skin author's business, not ours.
+    """
+    if skin_logo:
+        return skin_logo if term_width >= LOGO_STACKED_MIN_COLUMNS else ""
+    if term_width >= LOGO_WIDE_MIN_COLUMNS:
+        return SON_OF_ANTON_AGENT_LOGO_WIDE
+    if term_width >= LOGO_STACKED_MIN_COLUMNS:
+        return SON_OF_ANTON_AGENT_LOGO_STACKED
+    return ""
 
 
 
@@ -1138,8 +1169,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     console.print()
     term_width = shutil.get_terminal_size().columns
-    if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else SON_OF_ANTON_AGENT_LOGO
+    _logo = pick_banner_logo(
+        term_width,
+        skin_logo=getattr(_bskin, "banner_logo", "") if _bskin else "",
+    )
+    if _logo:
         console.print(_logo)
         console.print()
     console.print(outer_panel)
