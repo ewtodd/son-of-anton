@@ -1769,10 +1769,6 @@ def _build_child_agent(
     _effective_provider_norm = (effective_provider or "").strip().lower()
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
-    elif _effective_provider_norm in {"nous", "nous-portal", "nousresearch"}:
-        from son_of_anton_cli.providers import nous_api_mode
-
-        effective_api_mode = nous_api_mode(effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:

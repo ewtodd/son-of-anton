@@ -654,7 +654,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -669,21 +669,6 @@ def init_agent(
     elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
-        agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
-    elif agent._base_url_lower.rstrip("/").endswith("/anthropic"):
-        # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
-        # use a URL convention ending in /anthropic. Auto-detect these so the
-        # Anthropic Messages API adapter is used instead of chat completions.
-        agent.api_mode = "anthropic_messages"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire: anthropic/* → Messages, everything else →
-        # chat_completions. Callers that already pass api_mode win above;
-        # this covers direct AIAgent construction without a resolved runtime.
-        from son_of_anton_cli.providers import nous_api_mode
-
-        agent.api_mode = nous_api_mode(agent.model)
     else:
         # Host-mandated wire check — LAST, so the elif chain's provider-slug
         # rewrites (e.g. api.anthropic.com → provider="anthropic", #63425)
@@ -1078,305 +1063,252 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
-    if agent.api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-        # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-        # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-        # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-        _is_native_anthropic = agent.provider == "anthropic"
-        effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+    if api_key and base_url:
+        # Explicit credentials from CLI/gateway — construct directly.
+        # The runtime provider resolver already handled auth for us.
+        # Extract query params (e.g. Azure api-version) from base_url
+        # and pass via default_query to prevent loss during SDK URL
+        # joining (httpx drops query string when joining paths).
+        _parsed_url = urlparse(base_url)
+        if _parsed_url.query:
+            _clean_url = urlunparse(_parsed_url._replace(query=""))
+            _query_params = {
+                k: v[0] for k, v in parse_qs(_parsed_url.query).items()
+            }
+            client_kwargs = {
+                "api_key": api_key,
+                "base_url": _clean_url,
+                "default_query": _query_params,
+            }
+        else:
+            client_kwargs = {"api_key": api_key, "base_url": base_url}
+        if _provider_timeout is not None:
+            client_kwargs["timeout"] = _provider_timeout
+        if agent.provider == "copilot-acp":
+            client_kwargs["command"] = agent.acp_command
+            client_kwargs["args"] = agent.acp_args
+        effective_base = base_url
+        # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
+        # "Ox Alpha"): the Zen relay serves these ANONYMOUSLY and 401s any
+        # unrecognized bearer — including our keyless placeholder. Send an
+        # empty Authorization header to override the SDK's "Bearer <key>".
+        try:
+            from son_of_anton_cli.models import (
+                OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+                opencode_zen_free_headers,
+            )
+            if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
+                client_kwargs["default_headers"] = opencode_zen_free_headers()
+        except Exception:
+            pass
+        if base_url_host_matches(effective_base, "openrouter.ai"):
+            from agent.auxiliary_client import build_or_headers
+            client_kwargs["default_headers"] = build_or_headers()
+        elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):
+            from agent.auxiliary_client import build_nvidia_nim_headers
+            client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
+        elif base_url_host_matches(effective_base, "api.routermint.com"):
+            client_kwargs["default_headers"] = _ra()._routermint_headers()
+        elif base_url_host_matches(effective_base, "githubcopilot.com"):
+            from son_of_anton_cli.models import copilot_default_headers
 
-        # MiniMax OAuth issues short-lived (~15-min) access tokens. The
-        # Anthropic SDK caches ``api_key`` as a static string at client
-        # construction time, so a session that resolves the bearer once
-        # at startup will keep sending the same token until MiniMax
-        # returns 401 mid-session. Swap the static string for a callable
-        # token provider — ``build_anthropic_client`` recognizes the
-        # callable and installs an httpx event hook that mints a fresh
-        # bearer per outbound request (re-reading auth.json so a refresh
-        # persisted by another process is visible immediately).
-        # The cached refresh path is a no-op when the token still has
-        # ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS`` of life left, so steady-
-        # state cost is one file read + one timestamp compare per request.
-        if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-            try:
-                from son_of_anton_cli.auth import build_minimax_oauth_token_provider
-                effective_key = build_minimax_oauth_token_provider()
-            except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "MiniMax OAuth: failed to install per-request token provider "
-                    "(%s); falling back to static bearer that will expire ~15min in.",
-                    _mm_exc,
-                )
+            client_kwargs["default_headers"] = copilot_default_headers()
+        elif base_url_host_matches(effective_base, "api.kimi.com"):
+            client_kwargs["default_headers"] = {
+                "User-Agent": "claude-code/0.1.0",
+            }
+        elif base_url_host_matches(effective_base, "portal.qwen.ai"):
+            client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
+        elif base_url_host_matches(effective_base, "chatgpt.com"):
+            from agent.auxiliary_client import _codex_cloudflare_headers
+            client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+        elif base_url_host_matches(effective_base, "x.ai"):
+            from tools.xai_http import son_of_anton_xai_default_headers
 
-        agent.api_key = effective_key
-        agent._anthropic_api_key = effective_key
-        agent._anthropic_base_url = base_url
-        # Only mark the session as OAuth-authenticated when the token
-        # genuinely belongs to native Anthropic.  Third-party providers
-        # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
-        # Anthropic protocol must never trip OAuth code paths — doing
-        # so injects Claude-Code identity headers and system prompts
-        # that cause 401/403 on their endpoints.  Guards #1739 and
-        # the third-party identity-injection bug.
-        from agent.anthropic_adapter import _is_oauth_token as _is_oat
-        agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-        agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
-        # No OpenAI client needed for Anthropic mode
-        agent.client = None
-        agent._client_kwargs = {}
-        if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
-            if isinstance(effective_key, str) and len(effective_key) > 12:
-                print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
-    else:
-        if api_key and base_url:
-            # Explicit credentials from CLI/gateway — construct directly.
-            # The runtime provider resolver already handled auth for us.
-            # Extract query params (e.g. Azure api-version) from base_url
-            # and pass via default_query to prevent loss during SDK URL
-            # joining (httpx drops query string when joining paths).
-            _parsed_url = urlparse(base_url)
-            if _parsed_url.query:
-                _clean_url = urlunparse(_parsed_url._replace(query=""))
-                _query_params = {
-                    k: v[0] for k, v in parse_qs(_parsed_url.query).items()
-                }
-                client_kwargs = {
-                    "api_key": api_key,
-                    "base_url": _clean_url,
-                    "default_query": _query_params,
-                }
-            else:
-                client_kwargs = {"api_key": api_key, "base_url": base_url}
-            if _provider_timeout is not None:
-                client_kwargs["timeout"] = _provider_timeout
-            if agent.provider == "copilot-acp":
-                client_kwargs["command"] = agent.acp_command
-                client_kwargs["args"] = agent.acp_args
-            effective_base = base_url
-            # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
-            # "Ox Alpha"): the Zen relay serves these ANONYMOUSLY and 401s any
-            # unrecognized bearer — including our keyless placeholder. Send an
-            # empty Authorization header to override the SDK's "Bearer <key>".
+            client_kwargs["default_headers"] = son_of_anton_xai_default_headers()
+        elif "default_headers" not in client_kwargs:
+            # Fall back to profile.default_headers for providers that
+            # declare custom headers (e.g. Vercel AI Gateway attribution,
+            # Kimi User-Agent on non-kimi.com endpoints).
             try:
-                from son_of_anton_cli.models import (
-                    OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
-                    opencode_zen_free_headers,
-                )
-                if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-                    client_kwargs["default_headers"] = opencode_zen_free_headers()
+                from providers import get_provider_profile as _gpf
+                _ph = _gpf(agent.provider)
+                if _ph and _ph.default_headers:
+                    client_kwargs["default_headers"] = dict(_ph.default_headers)
             except Exception:
                 pass
-            if base_url_host_matches(effective_base, "openrouter.ai"):
-                from agent.auxiliary_client import build_or_headers
-                client_kwargs["default_headers"] = build_or_headers()
-            elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):
-                from agent.auxiliary_client import build_nvidia_nim_headers
-                client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
-            elif base_url_host_matches(effective_base, "api.routermint.com"):
-                client_kwargs["default_headers"] = _ra()._routermint_headers()
-            elif base_url_host_matches(effective_base, "githubcopilot.com"):
-                from son_of_anton_cli.models import copilot_default_headers
-
-                client_kwargs["default_headers"] = copilot_default_headers()
-            elif base_url_host_matches(effective_base, "api.kimi.com"):
-                client_kwargs["default_headers"] = {
-                    "User-Agent": "claude-code/0.1.0",
-                }
-            elif base_url_host_matches(effective_base, "portal.qwen.ai"):
-                client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
-            elif base_url_host_matches(effective_base, "chatgpt.com"):
-                from agent.auxiliary_client import _codex_cloudflare_headers
-                client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
-            elif base_url_host_matches(effective_base, "x.ai"):
-                from tools.xai_http import son_of_anton_xai_default_headers
-
-                client_kwargs["default_headers"] = son_of_anton_xai_default_headers()
-            elif "default_headers" not in client_kwargs:
-                # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Vercel AI Gateway attribution,
-                # Kimi User-Agent on non-kimi.com endpoints).
+    else:
+        # No explicit creds — use the centralized provider router
+        from agent.auxiliary_client import resolve_provider_client
+        _routed_client, _ = resolve_provider_client(
+            agent.provider or "auto", model=agent.model, raw_codex=True)
+        if _routed_client is not None:
+            client_kwargs = {
+                "api_key": _routed_client.api_key,
+                "base_url": str(_routed_client.base_url),
+            }
+            if _provider_timeout is not None:
+                client_kwargs["timeout"] = _provider_timeout
+            # Preserve provider-specific headers the router set.  The
+            # OpenAI SDK stores caller-provided default_headers in
+            # _custom_headers; older/mocked clients may expose
+            # _default_headers instead.
+            _routed_headers = getattr(_routed_client, "_custom_headers", None)
+            if not _routed_headers:
+                _routed_headers = getattr(_routed_client, "default_headers", None)
+            if not _routed_headers:
+                _routed_headers = getattr(_routed_client, "_default_headers", None)
+            if _routed_headers:
+                client_kwargs["default_headers"] = dict(_routed_headers)
+        else:
+            # When the user explicitly chose a non-OpenRouter provider
+            # but no credentials were found, fail fast with a clear
+            # message instead of silently routing through OpenRouter.
+            _explicit = (agent.provider or "").strip().lower()
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+                # Look up the actual env var name from the provider
+                # config — some providers use non-standard names
+                # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
+                _env_hint = f"{_explicit.upper()}_API_KEY"
                 try:
-                    from providers import get_provider_profile as _gpf
-                    _ph = _gpf(agent.provider)
-                    if _ph and _ph.default_headers:
-                        client_kwargs["default_headers"] = dict(_ph.default_headers)
+                    from son_of_anton_cli.auth import PROVIDER_REGISTRY
+                    _pcfg = PROVIDER_REGISTRY.get(_explicit)
+                    if _pcfg and _pcfg.api_key_env_vars:
+                        _env_hint = _pcfg.api_key_env_vars[0]
                 except Exception:
                     pass
-        else:
-            # No explicit creds — use the centralized provider router
-            from agent.auxiliary_client import resolve_provider_client
-            _routed_client, _ = resolve_provider_client(
-                agent.provider or "auto", model=agent.model, raw_codex=True)
-            if _routed_client is not None:
-                client_kwargs = {
-                    "api_key": _routed_client.api_key,
-                    "base_url": str(_routed_client.base_url),
-                }
-                if _provider_timeout is not None:
-                    client_kwargs["timeout"] = _provider_timeout
-                # Preserve provider-specific headers the router set.  The
-                # OpenAI SDK stores caller-provided default_headers in
-                # _custom_headers; older/mocked clients may expose
-                # _default_headers instead.
-                _routed_headers = getattr(_routed_client, "_custom_headers", None)
-                if not _routed_headers:
-                    _routed_headers = getattr(_routed_client, "default_headers", None)
-                if not _routed_headers:
-                    _routed_headers = getattr(_routed_client, "_default_headers", None)
-                if _routed_headers:
-                    client_kwargs["default_headers"] = dict(_routed_headers)
-            else:
-                # When the user explicitly chose a non-OpenRouter provider
-                # but no credentials were found, fail fast with a clear
-                # message instead of silently routing through OpenRouter.
-                _explicit = (agent.provider or "").strip().lower()
-                if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                    # Look up the actual env var name from the provider
-                    # config — some providers use non-standard names
-                    # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                    _env_hint = f"{_explicit.upper()}_API_KEY"
+                # --- Init-time fallback (#17929) ---
+                _fb_entries = []
+                if isinstance(fallback_model, list):
+                    _fb_entries = [
+                        f for f in fallback_model
+                        if isinstance(f, dict) and f.get("provider") and f.get("model")
+                    ]
+                elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+                    _fb_entries = [fallback_model]
+                _fb_resolved = False
+                for _fb in _fb_entries:
                     try:
-                        from son_of_anton_cli.auth import PROVIDER_REGISTRY
-                        _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                        if _pcfg and _pcfg.api_key_env_vars:
-                            _env_hint = _pcfg.api_key_env_vars[0]
-                    except Exception:
-                        pass
-                    # --- Init-time fallback (#17929) ---
-                    _fb_entries = []
-                    if isinstance(fallback_model, list):
-                        _fb_entries = [
-                            f for f in fallback_model
-                            if isinstance(f, dict) and f.get("provider") and f.get("model")
-                        ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                        _fb_entries = [fallback_model]
-                    _fb_resolved = False
-                    for _fb in _fb_entries:
-                        try:
-                            from son_of_anton_cli.fallback_config import resolve_entry_api_key
-                            _fb_explicit_key = resolve_entry_api_key(_fb)
-                            _fb_client, _fb_model = resolve_provider_client(
-                                _fb["provider"], model=_fb["model"], raw_codex=True,
-                                explicit_base_url=_fb.get("base_url"),
-                                explicit_api_key=_fb_explicit_key,
-                            )
-                        except Exception as _fb_exc:
-                            logger.debug(
-                                "Init-time fallback entry %s failed: %s",
-                                _fb.get("provider"), _fb_exc,
-                            )
-                            continue
-                        if _fb_client is not None:
-                            agent.provider = _fb["provider"]
-                            agent.model = _fb_model or _fb["model"]
-                            agent._fallback_activated = True
-                            client_kwargs = {
-                                "api_key": _fb_client.api_key,
-                                "base_url": str(_fb_client.base_url),
-                            }
-                            if _provider_timeout is not None:
-                                client_kwargs["timeout"] = _provider_timeout
-                            _fb_headers = getattr(_fb_client, "_custom_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "default_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "_default_headers", None)
-                            if _fb_headers:
-                                client_kwargs["default_headers"] = dict(_fb_headers)
-                            _fb_resolved = True
-                            break
-                    if not _fb_resolved:
-                        raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `son-of-anton model`."
+                        from son_of_anton_cli.fallback_config import resolve_entry_api_key
+                        _fb_explicit_key = resolve_entry_api_key(_fb)
+                        _fb_client, _fb_model = resolve_provider_client(
+                            _fb["provider"], model=_fb["model"], raw_codex=True,
+                            explicit_base_url=_fb.get("base_url"),
+                            explicit_api_key=_fb_explicit_key,
                         )
-                if not getattr(agent, "_fallback_activated", False):
-                    # No provider configured — reject with a clear message.
+                    except Exception as _fb_exc:
+                        logger.debug(
+                            "Init-time fallback entry %s failed: %s",
+                            _fb.get("provider"), _fb_exc,
+                        )
+                        continue
+                    if _fb_client is not None:
+                        agent.provider = _fb["provider"]
+                        agent.model = _fb_model or _fb["model"]
+                        agent._fallback_activated = True
+                        client_kwargs = {
+                            "api_key": _fb_client.api_key,
+                            "base_url": str(_fb_client.base_url),
+                        }
+                        if _provider_timeout is not None:
+                            client_kwargs["timeout"] = _provider_timeout
+                        _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                        if not _fb_headers:
+                            _fb_headers = getattr(_fb_client, "default_headers", None)
+                        if not _fb_headers:
+                            _fb_headers = getattr(_fb_client, "_default_headers", None)
+                        if _fb_headers:
+                            client_kwargs["default_headers"] = dict(_fb_headers)
+                        _fb_resolved = True
+                        break
+                if not _fb_resolved:
                     raise RuntimeError(
-                        "No LLM provider configured. Run `son-of-anton model` to "
-                        "select a provider, or run `son-of-anton setup` for first-time "
-                        "configuration."
+                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"was found. Set the {_env_hint} environment "
+                        f"variable, or switch to a different provider with `son-of-anton model`."
                     )
-        
-        agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+            if not getattr(agent, "_fallback_activated", False):
+                # No provider configured — reject with a clear message.
+                raise RuntimeError(
+                    "No LLM provider configured. Run `son-of-anton model` to "
+                    "select a provider, or run `son-of-anton setup` for first-time "
+                    "configuration."
+                )
+    
+    agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
-        # Enable fine-grained tool streaming for Claude on OpenRouter.
-        # Without this, Anthropic buffers the entire tool call and goes
-        # silent for minutes while thinking — OpenRouter's upstream proxy
-        # times out during the silence.  The beta header makes Anthropic
-        # stream tool call arguments token-by-token, keeping the
-        # connection alive.
-        _effective_base = str(client_kwargs.get("base_url", "")).lower()
-        if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
-            headers = client_kwargs.get("default_headers") or {}
-            existing_beta = headers.get("x-anthropic-beta", "")
-            _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
-            if _FINE_GRAINED not in existing_beta:
-                if existing_beta:
-                    headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
-                else:
-                    headers["x-anthropic-beta"] = _FINE_GRAINED
-                client_kwargs["default_headers"] = headers
+    # Enable fine-grained tool streaming for Claude on OpenRouter.
+    # Without this, Anthropic buffers the entire tool call and goes
+    # silent for minutes while thinking — OpenRouter's upstream proxy
+    # times out during the silence.  The beta header makes Anthropic
+    # stream tool call arguments token-by-token, keeping the
+    # connection alive.
+    _effective_base = str(client_kwargs.get("base_url", "")).lower()
+    if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
+        headers = client_kwargs.get("default_headers") or {}
+        existing_beta = headers.get("x-anthropic-beta", "")
+        _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
+        if _FINE_GRAINED not in existing_beta:
+            if existing_beta:
+                headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
+            else:
+                headers["x-anthropic-beta"] = _FINE_GRAINED
+            client_kwargs["default_headers"] = headers
 
-        # User-configured request headers (model.default_headers in
-        # config.yaml) override provider/SDK defaults. Lets custom
-        # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
-        # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
-        # client_kwargs is the same dict object as agent._client_kwargs, so
-        # this mutation is reflected in the client built just below.
-        agent._apply_user_default_headers()
+    # User-configured request headers (model.default_headers in
+    # config.yaml) override provider/SDK defaults. Lets custom
+    # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
+    # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
+    # client_kwargs is the same dict object as agent._client_kwargs, so
+    # this mutation is reflected in the client built just below.
+    agent._apply_user_default_headers()
 
-        try:
-            from son_of_anton_cli.config import (
-                apply_custom_provider_extra_headers_to_client_kwargs,
-                apply_custom_provider_tls_to_client_kwargs,
-                get_compatible_custom_providers,
-                load_config,
-            )
+    try:
+        from son_of_anton_cli.config import (
+            apply_custom_provider_extra_headers_to_client_kwargs,
+            apply_custom_provider_tls_to_client_kwargs,
+            get_compatible_custom_providers,
+            load_config,
+        )
 
-            _cp_config = load_config()
-            _cp_entries = get_compatible_custom_providers(_cp_config)
-            _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
-            apply_custom_provider_tls_to_client_kwargs(
-                client_kwargs,
-                _cp_base_url,
-                _cp_entries,
-            )
-            # Per-provider extra HTTP headers (providers.<name>.extra_headers /
-            # custom_providers[].extra_headers) — proxies, gateways, custom
-            # auth. Applied last so the most specific config level wins.
-            # SECURITY: values may carry credentials — never log them.
-            apply_custom_provider_extra_headers_to_client_kwargs(
-                client_kwargs,
-                _cp_base_url,
-                _cp_entries,
-            )
-        except Exception:
-            logger.debug("custom-provider TLS resolution skipped", exc_info=True)
+        _cp_config = load_config()
+        _cp_entries = get_compatible_custom_providers(_cp_config)
+        _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
+        apply_custom_provider_tls_to_client_kwargs(
+            client_kwargs,
+            _cp_base_url,
+            _cp_entries,
+        )
+        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
+        # custom_providers[].extra_headers) — proxies, gateways, custom
+        # auth. Applied last so the most specific config level wins.
+        # SECURITY: values may carry credentials — never log them.
+        apply_custom_provider_extra_headers_to_client_kwargs(
+            client_kwargs,
+            _cp_base_url,
+            _cp_entries,
+        )
+    except Exception:
+        logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
-        agent.api_key = client_kwargs.get("api_key", "")
-        agent.base_url = client_kwargs.get("base_url", agent.base_url)
-        try:
-            from agent.ssl_guard import verify_ca_bundle_with_fallback
+    agent.api_key = client_kwargs.get("api_key", "")
+    agent.base_url = client_kwargs.get("base_url", agent.base_url)
+    try:
+        from agent.ssl_guard import verify_ca_bundle_with_fallback
 
-            verify_ca_bundle_with_fallback()
-            agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
-            if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model}")
-                if base_url:
-                    print(f"🔗 Using custom base URL: {base_url}")
-                key_used = client_kwargs.get("api_key", "none")
-                if isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
-                else:
-                    print("⚠️  Warning: API key appears invalid or missing")
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+        verify_ca_bundle_with_fallback()
+        agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model}")
+            if base_url:
+                print(f"🔗 Using custom base URL: {base_url}")
+            key_used = client_kwargs.get("api_key", "none")
+            if isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
+                print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+            else:
+                print("⚠️  Warning: API key appears invalid or missing")
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
     # Keep a stable identity for the pool entry that supplied this runtime.
     # OAuth refreshes can replace the runtime token before a failed request is
@@ -2881,13 +2813,4 @@ def init_agent(
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }
-    if agent.api_mode == "anthropic_messages":
-        agent._primary_runtime.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
-
-
-
 __all__ = ["init_agent"]

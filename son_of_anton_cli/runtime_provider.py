@@ -260,43 +260,6 @@ def _host_derived_api_key(base_url: str) -> str:
     return (_getenv(env_name, "") or "").strip()
 
 
-def _anthropic_base_url_override_ok(base_url: str) -> bool:
-    """Decide whether a configured ``model.base_url`` may back native Anthropic.
-
-    Native ``provider: anthropic`` resolution honors ``model.base_url`` so users
-    can point at Anthropic-compatible endpoints (official Anthropic/Claude hosts,
-    Azure Foundry, MiniMax/Zhipu/LiteLLM-style ``/anthropic`` proxies, Kimi's
-    ``/coding`` route). But a config can carry a *stale* non-Anthropic URL — e.g.
-    ``provider: anthropic`` left with ``base_url: https://openrouter.ai/api/v1``
-    after a provider switch — which would route Anthropic OAuth/setup-token
-    traffic to an OpenAI-compatible aggregator and 404. Ignore those.
-
-    Returns True only when the URL plausibly speaks the Anthropic Messages
-    protocol; otherwise the caller falls back to ``https://api.anthropic.com``.
-    """
-    candidate = (base_url or "").strip()
-    if not candidate:
-        return False
-
-    hostname = (base_url_hostname(candidate) or "").lower()
-    if not hostname:
-        return False
-
-    # Official Anthropic / Claude hosts.
-    if hostname == "api.anthropic.com" or hostname.endswith(".anthropic.com") or hostname.endswith(".claude.com"):
-        return True
-    # Azure Foundry Anthropic endpoints (handled specially downstream).
-    if hostname.endswith(".azure.com"):
-        return True
-    # Anthropic-compatible proxies conventionally expose the native Messages
-    # protocol under a ``/anthropic`` suffix, and Kimi under ``/coding`` — same
-    # signal _detect_api_mode_for_url() uses to pick anthropic_messages.
-    if _detect_api_mode_for_url(candidate) == "anthropic_messages":
-        return True
-    # Bare api.kimi.com without the /coding path is not an Anthropic endpoint.
-    return False
-
-
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -502,24 +465,10 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "anthropic_messages"
         pconfig = PROVIDER_REGISTRY.get(provider)
         base_url = base_url or (pconfig.inference_base_url if pconfig else "")
-    elif provider == "anthropic":
-        api_mode = "anthropic_messages"
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == "anthropic":
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if not _anthropic_base_url_override_ok(cfg_base_url):
-                cfg_base_url = ""
-        base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":
         api_mode = "codex_responses"
-    elif provider == "nous":
-        from son_of_anton_cli.providers import nous_api_mode
-
-        api_mode = nous_api_mode(effective_model)
-        base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(
             model_cfg,
@@ -1402,33 +1351,6 @@ def _resolve_explicit_runtime(
     if not explicit_api_key and not explicit_base_url:
         return None
 
-    if provider == "anthropic":
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == "anthropic":
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if not _anthropic_base_url_override_ok(cfg_base_url):
-                cfg_base_url = ""
-        base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
-        api_key = explicit_api_key
-        if not api_key:
-            from agent.anthropic_adapter import resolve_anthropic_token
-
-            api_key = resolve_anthropic_token()
-            if not api_key:
-                raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
-                )
-        return {
-            "provider": "anthropic",
-            "api_mode": "anthropic_messages",
-            "base_url": base_url,
-            "api_key": api_key,
-            "source": "explicit",
-            "requested_provider": requested_provider,
-        }
-
     if provider == "openai-codex":
         base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
         api_key = explicit_api_key
@@ -1446,45 +1368,6 @@ def _resolve_explicit_runtime(
             "api_key": api_key,
             "source": "explicit",
             "last_refresh": last_refresh,
-            "requested_provider": requested_provider,
-        }
-
-    if provider == "nous":
-        from son_of_anton_cli.providers import nous_api_mode
-
-        state = auth_mod.get_provider_auth_state("nous") or {}
-        base_url = (
-            explicit_base_url
-            or _nous_inference_base_url_override()
-            or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
-        )
-        # Only use the agent_key compatibility field for inference when it
-        # contains a NAS invoke JWT; raw OAuth access_token fallback is handled
-        # by resolve_nous_runtime_credentials().
-        api_key = explicit_api_key or (
-            str(state.get("agent_key") or "").strip()
-            if _agent_key_is_usable(
-                state,
-                max(60, env_int("SON_OF_ANTON_NOUS_MIN_KEY_TTL_SECONDS", 1800)),
-            )
-            else ""
-        )
-        expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
-        if not api_key:
-            creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(_getenv("SON_OF_ANTON_NOUS_TIMEOUT_SECONDS", "15")),
-            )
-            api_key = creds.get("api_key", "")
-            expires_at = creds.get("expires_at")
-            if not explicit_base_url:
-                base_url = creds.get("base_url", "").rstrip("/") or base_url
-        return {
-            "provider": "nous",
-            "api_mode": nous_api_mode(target_model or model_cfg.get("default") or ""),
-            "base_url": base_url,
-            "api_key": api_key,
-            "source": "explicit",
-            "expires_at": expires_at,
             "requested_provider": requested_provider,
         }
 
@@ -1793,30 +1676,6 @@ def resolve_runtime_provider(
                 target_model=target_model,
             )
 
-    if provider == "nous":
-        try:
-            from son_of_anton_cli.providers import nous_api_mode
-
-            creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(_getenv("SON_OF_ANTON_NOUS_TIMEOUT_SECONDS", "15")),
-            )
-            return {
-                "provider": "nous",
-                "api_mode": nous_api_mode(target_model or model_cfg.get("default") or ""),
-                "base_url": creds.get("base_url", "").rstrip("/"),
-                "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "portal"),
-                "expires_at": creds.get("expires_at"),
-                "requested_provider": requested_provider,
-            }
-        except AuthError:
-            if requested_provider != "auto":
-                raise
-            # Auto-detected Nous but credentials are stale/revoked —
-            # fall through to env-var providers (e.g. OpenRouter).
-            logger.info("Auto-detected Nous provider but credentials failed; "
-                        "falling through to next provider.")
-
     if provider == "openai-codex":
         try:
             creds = resolve_codex_runtime_credentials()
@@ -1901,75 +1760,6 @@ def resolve_runtime_provider(
         }
 
     # Anthropic (native Messages API)
-    if provider == "anthropic":
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == "anthropic":
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-            if not _anthropic_base_url_override_ok(cfg_base_url):
-                cfg_base_url = ""
-        base_url = cfg_base_url or "https://api.anthropic.com"
-
-        # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —
-        # Claude Code OAuth tokens (sk-ant-oat01) are not accepted by Azure.
-        # Azure keys don't start with "sk-ant-" so resolve_anthropic_token()
-        # would find the Claude Code OAuth token first (priority 3) and return
-        # that instead, causing 401s. Detect Azure endpoints and use the env
-        # key directly to bypass the OAuth priority chain.
-        _is_azure_endpoint = base_url_host_matches(base_url, "azure.com") or (
-            cfg_base_url and base_url_host_matches(cfg_base_url, "azure.com")
-        )
-        if _is_azure_endpoint:
-            # Honor user-specified env var hints on the model config before
-            # falling back to the built-in AZURE_ANTHROPIC_KEY / ANTHROPIC_API_KEY
-            # chain.  Accept both `key_env` (Son of Anton canonical — matches the
-            # custom_providers field name) and `api_key_env` (documented in the
-            # Azure Foundry guide and read by most Son of Anton-compatible importers).
-            # Matches the config.yaml examples in website/docs/guides/azure-foundry.md.
-            token = ""
-            for hint_key in ("key_env", "api_key_env"):
-                env_var = str(model_cfg.get(hint_key) or "").strip()
-                if env_var:
-                    token = _getenv(env_var, "").strip()
-                    if token:
-                        break
-            # Next: an inline api_key on the model config (useful in multi-profile
-            # setups that want to avoid env-var juggling).
-            if not token:
-                token = str(model_cfg.get("api_key") or "").strip()
-            # Finally fall back to the historical fixed names.
-            if not token:
-                token = (
-                    _getenv("AZURE_ANTHROPIC_KEY", "").strip()
-                    or _getenv("ANTHROPIC_API_KEY", "").strip()
-                )
-            if not token:
-                raise AuthError(
-                    "No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or "
-                    "ANTHROPIC_API_KEY, or point key_env/api_key_env in your "
-                    "config.yaml model section at a custom env var."
-                )
-        else:
-            from agent.anthropic_adapter import resolve_anthropic_token
-            token = resolve_anthropic_token()
-            if not token:
-                raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
-                )
-        return {
-            "provider": "anthropic",
-            "api_mode": "anthropic_messages",
-            "base_url": base_url,
-            "api_key": token,
-            "source": "env",
-            "requested_provider": requested_provider,
-        }
-
-
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":

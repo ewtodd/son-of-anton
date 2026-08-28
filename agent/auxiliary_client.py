@@ -1969,285 +1969,6 @@ class AsyncCodexAuxiliaryClient:
         self._real_client = sync_wrapper._real_client
 
 
-def _translate_anthropic_response_format(
-    anthropic_kwargs: Dict[str, Any], response_format: Any,
-) -> None:
-    """Merge an OpenAI response format into Anthropic ``output_config``."""
-    if not isinstance(response_format, dict):
-        return
-
-    format_type = response_format.get("type")
-    if format_type == "json_schema":
-        json_schema = response_format.get("json_schema")
-        if not isinstance(json_schema, dict) or "schema" not in json_schema:
-            return
-        native_format = {
-            "type": "json_schema",
-            "schema": json_schema["schema"],
-        }
-    elif format_type == "json_object":
-        # Anthropic SDK 0.87.0 exposes only JSONOutputFormatParam, whose
-        # required type is ``json_schema``; it has no schema-less JSON mode.
-        native_format = {
-            "type": "json_schema",
-            "schema": {"type": "object"},
-        }
-    else:
-        return
-
-    output_config = anthropic_kwargs.get("output_config")
-    if not isinstance(output_config, dict):
-        output_config = {}
-        anthropic_kwargs["output_config"] = output_config
-    output_config["format"] = native_format
-
-
-class _AnthropicCompletionsAdapter:
-    """OpenAI-client-compatible adapter for Anthropic Messages API."""
-
-    def __init__(
-        self,
-        real_client: Any,
-        model: str,
-        is_oauth: bool = False,
-        base_url: str | None = None,
-    ):
-        self._client = real_client
-        self._model = model
-        self._is_oauth = is_oauth
-        # Prefer the caller-supplied URL (AnthropicAuxiliaryClient keeps the
-        # pre-strip Portal ``.../v1`` form). Only fall back to the SDK
-        # client's host for Nous Portal — a blanket fallback would flip
-        # MiniMax/Zhipu/etc. aux adapters from "unknown host = native
-        # Anthropic" to third-party (stripping thinking signatures).
-        self._base_url = base_url or None
-        if not self._base_url:
-            candidate = str(getattr(real_client, "base_url", "") or "") or None
-            if candidate:
-                try:
-                    from agent.anthropic_adapter import _is_nous_portal_endpoint
-
-                    if _is_nous_portal_endpoint(candidate):
-                        self._base_url = candidate
-                except Exception:
-                    pass
-
-    def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
-        from agent.transports import get_transport
-
-        messages = kwargs.get("messages", [])
-        model = kwargs.get("model", self._model)
-        tools = kwargs.get("tools")
-        tool_choice = kwargs.get("tool_choice")
-        reasoning_config = kwargs.get("_reasoning_config")
-        # ZAI's Anthropic-compatible endpoint rejects max_tokens on vision
-        # models (glm-4v-flash etc.) with error code 1210.  When the caller
-        # signals this by setting _skip_zai_max_tokens in kwargs, omit it.
-        _skip_mt = kwargs.pop("_skip_zai_max_tokens", False)
-        if _skip_mt:
-            max_tokens = None
-        else:
-            max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
-        temperature = kwargs.get("temperature")
-
-        normalized_tool_choice = None
-        if isinstance(tool_choice, str):
-            normalized_tool_choice = tool_choice
-        elif isinstance(tool_choice, dict):
-            choice_type = str(tool_choice.get("type", "")).lower()
-            if choice_type == "function":
-                normalized_tool_choice = tool_choice.get("function", {}).get("name")
-            elif choice_type in {"auto", "required", "none"}:
-                normalized_tool_choice = choice_type
-
-        # Reasoning priority: explicit per-call reasoning_config (MoA per-slot,
-        # passed as _reasoning_config by _build_call_kwargs) wins over an
-        # extra_body.reasoning dict (auxiliary.<task>.extra_body config).
-        # build_anthropic_kwargs translates the config dict into the native
-        # ``thinking`` field and handles models where thinking is mandatory.
-        _reasoning_cfg = reasoning_config
-        if _reasoning_cfg is None:
-            _eb = kwargs.get("extra_body")
-            if isinstance(_eb, dict):
-                _rc = _eb.get("reasoning")
-                if isinstance(_rc, dict):
-                    _reasoning_cfg = _rc
-
-        anthropic_kwargs = build_anthropic_kwargs(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            reasoning_config=_reasoning_cfg,
-            tool_choice=normalized_tool_choice,
-            is_oauth=self._is_oauth,
-            # Portal routes on ``anthropic/<slug>`` catalog ids and replays
-            # signed thinking like native Anthropic; both carve-outs key off
-            # base_url. Omitting it normalizes the id to a bare Anthropic
-            # slug and the Portal Messages route cannot resolve it.
-            base_url=self._base_url,
-        )
-        # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
-        # temperature for models that still accept it. build_anthropic_kwargs
-        # additionally strips these keys as a safety net — keep both layers.
-        if temperature is not None:
-            from agent.anthropic_adapter import _forbids_sampling_params
-            if not _forbids_sampling_params(model):
-                anthropic_kwargs["temperature"] = temperature
-
-        # Pass through caller-supplied extra_body so providers behind
-        # Anthropic-compatible gateways receive their per-vendor request
-        # fields (thinking control, metadata, portal tags, ...). The dict
-        # form is the documented Anthropic SDK passthrough for non-standard
-        # request body keys; merge on top of whatever build_anthropic_kwargs
-        # already produced (e.g. fast-mode ``speed``) so call-time settings
-        # survive. Three exclusions:
-        #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
-        #     the native ``thinking`` field above (build_anthropic_kwargs);
-        #     forwarding the raw field alongside would double-specify
-        #     reasoning and 400 on strict gateways.
-        #   - ``response_format``: the OpenAI structured-output shape is
-        #     TRANSLATED into top-level ``output_config.format`` below;
-        #     forwarding the raw field 400s on strict Anthropic gateways.
-        #   - ``_``-prefixed keys: private Son of Anton plumbing (_reasoning_config
-        #     et al.), never wire fields.
-        caller_extra_body = kwargs.get("extra_body")
-        # A top-level ``response_format`` kwarg (the OpenAI SDK's documented
-        # call shape) must get the same translation as the extra_body form.
-        # The adapter builds the Messages body from a fixed allow-list of
-        # kwargs, so before this an unrecognized top-level kwarg was dropped
-        # on the floor: the request succeeded but the schema contract
-        # silently became prompt compliance (#85626 review, point 2). When
-        # both shapes are present, the extra_body form wins — it is the shape
-        # every in-tree caller uses.
-        top_level_response_format = kwargs.get("response_format")
-        if top_level_response_format is not None:
-            _translate_anthropic_response_format(
-                anthropic_kwargs, top_level_response_format,
-            )
-        if caller_extra_body and isinstance(caller_extra_body, dict):
-            _translate_anthropic_response_format(
-                anthropic_kwargs, caller_extra_body.get("response_format"),
-            )
-            passthrough = {
-                k: v for k, v in caller_extra_body.items()
-                if k not in {"reasoning", "response_format"}
-                and not str(k).startswith("_")
-            }
-            if passthrough:
-                existing = anthropic_kwargs.get("extra_body") or {}
-                if not isinstance(existing, dict):
-                    existing = {}
-                anthropic_kwargs["extra_body"] = {**existing, **passthrough}
-
-        response = create_anthropic_message(
-            self._client,
-            anthropic_kwargs,
-            # Tick the aux forward-progress hook per streamed event so hosts
-            # watching liveness (gateway session hygiene) don't kill a
-            # slow-but-generating summary model. No-op when no hook is
-            # installed (None keeps the fast get_final_message path).
-            on_stream_event=(
-                (lambda _event: _notify_aux_progress())
-                if _aux_progress_active() else None
-            ),
-        )
-        _transport = get_transport("anthropic_messages")
-        _nr = _transport.normalize_response(
-            response, strip_tool_prefix=self._is_oauth
-        )
-
-        # ToolCall already duck-types as OpenAI shape (.type, .function.name,
-        # .function.arguments) via properties, so no wrapping needed.
-        assistant_message = SimpleNamespace(
-            content=_nr.content,
-            tool_calls=_nr.tool_calls,
-            reasoning=_nr.reasoning,
-        )
-        finish_reason = _nr.finish_reason
-
-        usage = None
-        if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
-            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
-            usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-            )
-
-        choice = SimpleNamespace(
-            index=0,
-            message=assistant_message,
-            finish_reason=finish_reason,
-        )
-        return SimpleNamespace(
-            choices=[choice],
-            model=model,
-            usage=usage,
-        )
-
-
-class _AnthropicChatShim:
-    def __init__(self, adapter: _AnthropicCompletionsAdapter):
-        self.completions = adapter
-
-
-class AnthropicAuxiliaryClient:
-    """OpenAI-client-compatible wrapper over a native Anthropic client."""
-
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
-        self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(
-            real_client, model, is_oauth=is_oauth, base_url=base_url,
-        )
-        self.chat = _AnthropicChatShim(adapter)
-        self.api_key = api_key
-        self.base_url = base_url
-
-    def close(self):
-        close_fn = getattr(self._real_client, "close", None)
-        if callable(close_fn):
-            close_fn()
-
-
-class _AsyncAnthropicCompletionsAdapter:
-    def __init__(self, sync_adapter: _AnthropicCompletionsAdapter):
-        self._sync = sync_adapter
-
-    async def create(self, **kwargs) -> Any:
-        import asyncio
-        return await asyncio.to_thread(self._sync.create, **kwargs)
-
-
-class _AsyncAnthropicChatShim:
-    def __init__(self, adapter: _AsyncAnthropicCompletionsAdapter):
-        self.completions = adapter
-
-
-class AsyncAnthropicAuxiliaryClient:
-    def __init__(self, sync_wrapper: "AnthropicAuxiliaryClient"):
-        sync_adapter = sync_wrapper.chat.completions
-        async_adapter = _AsyncAnthropicCompletionsAdapter(sync_adapter)
-        self.chat = _AsyncAnthropicChatShim(async_adapter)
-        self.api_key = sync_wrapper.api_key
-        self.base_url = sync_wrapper.base_url
-        # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
-        # eviction on a poisoned underlying client also drops this entry.
-        self._real_client = sync_wrapper._real_client
-
-
-
-
-
-
-
-
-
-
-
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if the endpoint at ``base_url`` speaks the Anthropic Messages
     protocol instead of OpenAI chat.completions.
@@ -2275,80 +1996,6 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return True
     return False
-
-
-def _maybe_wrap_anthropic(
-    client_obj: Any,
-    model: str,
-    api_key: str,
-    base_url: str,
-    api_mode: Optional[str] = None,
-) -> Any:
-    """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when
-    the endpoint actually speaks Anthropic Messages.
-
-    This is the single chokepoint for aux-client transport correction.
-    Runs at the end of every ``resolve_provider_client`` branch so that
-    api_key providers (Kimi Coding Plan), the ``custom`` endpoint, and
-    future /anthropic gateways all land on the right wire format
-    regardless of which branch built the client.
-
-    Returns ``client_obj`` unchanged when:
-
-    - It's already an Anthropic/Codex/Gemini/CopilotACP wrapper.
-    - The endpoint is an OpenAI-wire endpoint.
-    - ``api_mode`` is explicitly set to a non-Anthropic transport.
-    - The ``anthropic`` SDK is not installed (falls back to OpenAI wire).
-    """
-    # Already wrapped — don't double-wrap.
-    if isinstance(client_obj, _AuxProbeClientStub):
-        # Availability probe: transport correction is irrelevant — the stub
-        # only signals resolvability.
-        return client_obj
-    if _safe_isinstance(client_obj, AnthropicAuxiliaryClient):
-        return client_obj
-    # Other specialized adapters we should never re-dispatch.
-    if _safe_isinstance(client_obj, CodexAuxiliaryClient):
-        return client_obj
-
-    # Explicit non-anthropic api_mode wins over URL heuristics.
-    if api_mode and api_mode != "anthropic_messages":
-        return client_obj
-
-    should_wrap = (
-        api_mode == "anthropic_messages"
-        or _endpoint_speaks_anthropic_messages(base_url)
-    )
-    if not should_wrap:
-        return client_obj
-
-    try:
-        from agent.anthropic_adapter import build_anthropic_client
-    except ImportError:
-        logger.warning(
-            "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
-            "not installed — falling back to OpenAI-wire (will likely 404).",
-            base_url,
-        )
-        return client_obj
-
-    try:
-        real_client = build_anthropic_client(api_key, base_url)
-    except Exception as exc:
-        logger.warning(
-            "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
-        )
-        return client_obj
-
-    logger.debug(
-        "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
-        "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
-    )
-    return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
-    )
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -2656,7 +2303,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if _merged_aux:
                 extra["default_headers"] = _merged_aux
             _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-            _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -2691,7 +2337,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if _merged_aux2:
             extra["default_headers"] = _merged_aux2
         _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-        _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
 
     return None, None
@@ -3555,30 +3200,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     if custom_mode == "codex_responses":
         real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
-    if custom_mode == "anthropic_messages":
-        # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
-        # LiteLLM proxies, etc.).  Must NEVER be treated as OAuth —
-        # Anthropic OAuth claims only apply to api.anthropic.com.
-        try:
-            from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
-        except ImportError:
-            logger.warning(
-                "Custom endpoint declares api_mode=anthropic_messages but the "
-                "anthropic SDK is not installed — falling back to OpenAI-wire."
-            )
-            return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-        return (
-            AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
-            model,
-        )
-    # URL-based anthropic detection for custom endpoints that didn't set
-    # api_mode explicitly (e.g. kimi.com/coding reached via custom config).
-    _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
-    _fallback_client = _maybe_wrap_anthropic(
-        _fallback_client, model, custom_key, custom_base, custom_mode,
-    )
-    return _fallback_client, model
+    return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
 
 
 def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -3653,73 +3275,6 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     )
     return CodexAuxiliaryClient(real_client, model), model
 
-
-
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
-    try:
-        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-    except ImportError:
-        return None, None
-
-    pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
-    else:
-        # Pool absent, OR pool present but no usable entry (expired token +
-        # stale refresh_token, all entries exhausted, etc). Fall through to the
-        # legacy resolver instead of hard-failing: a temporarily dead pool
-        # entry must not wedge auxiliary tasks when a valid standalone
-        # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
-        # matches the openrouter and codex paths, which already fall back to
-        # their env/auth-store credential on (True, None). Without this, the
-        # goal judge and every other Anthropic-routed side channel died with
-        # "no auxiliary client configured" while the main session stayed
-        # healthy (it resolves the env token directly).
-        entry = None
-        token = explicit_api_key or resolve_anthropic_token()
-    if not token:
-        return None, None
-
-    # Allow base URL override from config.yaml model.base_url, but only when:
-    #   1. the configured provider is anthropic (otherwise a non-Anthropic
-    #      base_url, e.g. Codex endpoint, would leak into Anthropic requests), AND
-    #   2. the override URL actually points at an Anthropic-compatible endpoint.
-    # Without gate (2), operators who route main-session traffic through a
-    # non-Anthropic provider that accepts Anthropic-format requests (e.g.
-    # OpenRouter at openrouter.ai/api/v1, with provider=anthropic in config.yaml)
-    # would have every auxiliary side-channel call (memory extractors,
-    # reflection, vision, title generation) 401 from the foreign host —
-    # see issue #52608.
-    base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
-    try:
-        from son_of_anton_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-        model_cfg = cfg.get("model")
-        if isinstance(model_cfg, dict):
-            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-            if cfg_provider == "anthropic":
-                cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-                if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
-                    base_url = cfg_base_url
-    except Exception:
-        pass
-
-    from agent.anthropic_adapter import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
-    if _aux_probe_active():
-        # Availability probe — token + SDK adapter import resolved; skip
-        # real client construction.
-        return _AuxProbeClientStub(api_key="", base_url=base_url), model
-    logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
-    try:
-        real_client = build_anthropic_client(token, base_url)
-    except ImportError:
-        # The anthropic_adapter module imports fine but the SDK itself is
-        # missing — build_anthropic_client raises ImportError at call time
-        # when _anthropic_sdk is None.  Treat as unavailable.
-        return None, None
-    return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
 _AUTO_PROVIDER_LABELS = {
@@ -4675,17 +4230,6 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 force_refresh=True,
             )
             if not str(creds.get("api_key", "") or "").strip():
-                return False
-            _evict_cached_clients(normalized)
-            return True
-        if normalized == "anthropic":
-            from agent.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
-
-            creds = read_claude_code_credentials()
-            token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
-            if not str(token or "").strip():
-                token = resolve_anthropic_token()
-            if not str(token or "").strip():
                 return False
             _evict_cached_clients(normalized)
             return True
@@ -5879,8 +5423,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
         return AsyncCodexAuxiliaryClient(sync_client), model
-    if isinstance(sync_client, AnthropicAuxiliaryClient):
-        return AsyncAnthropicAuxiliaryClient(sync_client), model
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
@@ -6104,11 +5646,7 @@ def resolve_provider_client(
                 api_mode or "auto-detected", final_model_str,
                 base_url_str[:60] if base_url_str else "")
             return CodexAuxiliaryClient(client_obj, final_model_str)
-        # Anthropic-wire endpoints: rewrap plain OpenAI clients so
-        # chat.completions.create() is translated to /v1/messages.
-        return _maybe_wrap_anthropic(
-            client_obj, final_model_str, api_key_str, base_url_str, api_mode,
-        )
+        return client_obj
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -6163,17 +5701,6 @@ def resolve_provider_client(
                            "but Nous Portal not configured (run: son-of-anton auth)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
-        # Dual-wire: anthropic/* → /v1/messages, everything else stays on
-        # /chat/completions. Derive from the catalog id (not a stale
-        # api_mode=chat_completions) so aux matches the main agent.
-        from son_of_anton_cli.providers import nous_api_mode
-
-        portal_mode = nous_api_mode(final_model)
-        api_key_str = str(getattr(client, "api_key", "") or "")
-        base_url_str = str(getattr(client, "base_url", "") or "")
-        client = _maybe_wrap_anthropic(
-            client, final_model, api_key_str, base_url_str, portal_mode,
-        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -6372,16 +5899,8 @@ def resolve_provider_client(
                     or "gpt-4o-mini",
                     provider,
                 )
-                # anthropic_messages talks to the /anthropic surface directly;
-                # OpenAI-wire paths (chat_completions / codex_responses) need the
-                # /v1 equivalent.  Rewrite only on the OpenAI-wire path so the
-                # Anthropic fallback SDK still sees the original URL.
-                if entry_api_mode == "anthropic_messages":
-                    openai_base = custom_base
-                    raw_base_for_wrap = custom_base
-                else:
-                    openai_base = _to_openai_base_url(custom_base)
-                    raw_base_for_wrap = custom_base
+                openai_base = _to_openai_base_url(custom_base)
+                raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
@@ -6390,37 +5909,6 @@ def resolve_provider_client(
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
-                # anthropic_messages: route through the Anthropic Messages API
-                # via AnthropicAuxiliaryClient. Mirrors the anonymous-custom
-                # branch in _try_custom_endpoint(). See #15033.
-                if entry_api_mode == "anthropic_messages":
-                    try:
-                        from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
-                    except ImportError:
-                        logger.warning(
-                            "Named custom provider %r declares api_mode="
-                            "anthropic_messages but the anthropic SDK is not "
-                            "installed — falling back to OpenAI-wire.",
-                            provider,
-                        )
-                        # Fallback went OpenAI-wire after all — redo the query
-                        # extraction against the rewritten /v1 URL.
-                        _fallback_base = _to_openai_base_url(custom_base)
-                        _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
-                        _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
-                        if _fb_headers:
-                            _fb_extra["default_headers"] = _fb_headers
-                        client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
-                        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                                else (client, final_model))
-                    sync_anthropic = AnthropicAuxiliaryClient(
-                        real_client, final_model, custom_key, custom_base, is_oauth=False,
-                    )
-                    if async_mode:
-                        return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
-                    return sync_anthropic, final_model
                 client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
@@ -7961,90 +7449,6 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
     return "/anthropic" in url_lower
 
 
-def _convert_openai_images_to_anthropic(messages: list) -> list:
-    """Convert OpenAI ``image_url``/``video_url`` blocks to Anthropic format.
-
-    Converts:
-    - ``image_url`` blocks to Anthropic ``image`` blocks
-    - ``video_url`` blocks to Anthropic ``video`` blocks (MiniMax M3 compat)
-
-    Only touches messages that have list-type content with ``image_url`` or
-    ``video_url`` blocks; plain text messages pass through unchanged.
-    """
-    converted = []
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            converted.append(msg)
-            continue
-        new_content = []
-        changed = False
-        for block in content:
-            if block.get("type") == "image_url":
-                image_url_val = (block.get("image_url") or {}).get("url", "")
-                if image_url_val.startswith("data:"):
-                    # Parse data URI: data:<media_type>;base64,<data>
-                    header, _, b64data = image_url_val.partition(",")
-                    media_type = "image/png"
-                    if ":" in header and ";" in header:
-                        media_type = header.split(":", 1)[1].split(";", 1)[0]
-                    new_content.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64data,
-                        },
-                    })
-                else:
-                    # URL-based image
-                    new_content.append({
-                        "type": "image",
-                        "source": {
-                            "type": "url",
-                            "url": image_url_val,
-                        },
-                    })
-                changed = True
-            elif block.get("type") == "video_url":
-                # MiniMax's Anthropic-compatible endpoint expects a "video"
-                # block (not OpenAI's "video_url", and not "input_video").
-                # See https://platform.minimax.io/docs/api-reference/text-anthropic-api
-                # — the Messages-field table lists type="video" (M3 only,
-                # URL/base64/mm_file://). The source shape mirrors the "image"
-                # block: base64 → {type:"base64", media_type, data}, URL →
-                # {type:"url", url}.
-                video_url_val = (block.get("video_url") or {}).get("url", "")
-                if video_url_val.startswith("data:"):
-                    # Parse data URI: data:<media_type>;base64,<data>
-                    header, _, b64data = video_url_val.partition(",")
-                    media_type = "video/mp4"
-                    if ":" in header and ";" in header:
-                        media_type = header.split(":", 1)[1].split(";", 1)[0]
-                    new_content.append({
-                        "type": "video",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64data,
-                        },
-                    })
-                else:
-                    # URL-based video
-                    new_content.append({
-                        "type": "video",
-                        "source": {
-                            "type": "url",
-                            "url": video_url_val,
-                        },
-                    })
-                changed = True
-            else:
-                new_content.append(block)
-        converted.append({**msg, "content": new_content} if changed else msg)
-    return converted
-
-
 _PROFILE_REASONING_KEYS = {
     "reasoning",
     "reasoning_effort",
@@ -8103,7 +7507,7 @@ def _build_call_kwargs(
     # structured-JSON extraction) don't 400 the moment
     # the aux model is flipped to 4.7.
     if temperature is not None:
-        from agent.anthropic_adapter import _forbids_sampling_params
+        from agent.model_metadata import _forbids_sampling_params
         if _forbids_sampling_params(model):
             temperature = None
 
@@ -8151,14 +7555,8 @@ def _build_call_kwargs(
         # untitled and the next turn tries again. The endpoint honors max_tokens
         # perfectly when it is actually sent.
         _is_bounded_task = str(task or "") in _HARD_CAPPED_TASKS
-        _nous_on_messages = False
-        if _provider_norm in {"nous", "nous-portal", "nousresearch"}:
-            from son_of_anton_cli.providers import nous_api_mode
-
-            _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
-            or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
             or _is_bounded_task
@@ -8282,14 +7680,8 @@ def _build_call_kwargs(
     if reasoning_config and isinstance(reasoning_config, dict):
         provider_norm = str(provider or "").strip().lower()
         effective_base = base_url or ""
-        _nous_on_messages = False
-        if provider_norm in {"nous", "nous-portal", "nousresearch"}:
-            from son_of_anton_cli.providers import nous_api_mode
-
-            _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
         if (
             provider_norm == "anthropic"
-            or _nous_on_messages
             or _endpoint_speaks_anthropic_messages(effective_base)
             or _is_anthropic_compat_endpoint(provider_norm, effective_base)
         ):
@@ -8487,10 +7879,7 @@ def _client_streams_internally(client: Any) -> bool:
     progress hook themselves (Codex per SSE event, Anthropic per stream
     event); Bedrock's Converse shim cannot stream at all. None of them
     accept chat-completions ``stream=True`` semantics from us."""
-    return isinstance(client, (
-        CodexAuxiliaryClient,
-        AnthropicAuxiliaryClient,
-    ))
+    return isinstance(client, CodexAuxiliaryClient)
 
 
 def _is_streaming_rejected_error(exc: Exception) -> bool:
@@ -9925,10 +9314,7 @@ async def _async_call_llm_impl(
             _provider_requires_stream(
                 request_provider, _client_base or resolved_base_url,
             )
-            and not isinstance(client, (
-                AsyncCodexAuxiliaryClient,
-                AsyncAnthropicAuxiliaryClient,
-            ))
+            and not isinstance(client, AsyncCodexAuxiliaryClient)
         )
 
         async def _acreate(_kwargs: Dict[str, Any]) -> Any:

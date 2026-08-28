@@ -3560,3 +3560,149 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
         _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
     _TOOLS_TOKENS_CACHE[key] = (n, first, last, tokens)
     return tokens
+
+
+# ── Rescued from the deleted Anthropic wire ──────────────────────────────────
+# These are facts about model *names*, not about a wire protocol, so they stay
+# true when the same weights are served over an OpenAI-compatible endpoint —
+# which is the only way this fork reaches them now. Kimi family detection drives
+# the OpenRouter prompt-cache envelope layout, which a custom provider pointed
+# at openrouter.ai still needs; the sampling-param restriction is a Claude API
+# contract that a proxy in front of Claude enforces just the same.
+
+_LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
+    "claude-3",          # 3, 3.5, 3.7
+    "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
+    "claude-sonnet-4-0", "claude-sonnet-4.0",
+    "claude-opus-4-2025", "claude-sonnet-4-2025",  # date-stamped 4.0 IDs
+    "claude-opus-4-5", "claude-opus-4.5",
+    "claude-sonnet-4-5", "claude-sonnet-4.5",
+    "claude-haiku-4-5", "claude-haiku-4.5",
+)
+
+# 4.6 is adaptive but still accepts sampling params; Opus 4.7 introduced the
+# restriction and later releases follow it.
+_NO_XHIGH_CLAUDE_SUBSTRINGS = (
+    "claude-opus-4-6", "claude-opus-4.6",
+    "claude-sonnet-4-6", "claude-sonnet-4.6",
+)
+
+_KIMI_FAMILY_MODEL_PREFIXES = (
+    "kimi-", "kimi_",
+    "moonshot-", "moonshot_",
+    "k1.", "k1-",
+    "k2.", "k2-",
+    "k25", "k2.5",
+    "k3.", "k3-",
+)
+
+# Bare release slugs with no separator suffix (Kimi Coding Plan serves K3 as
+# the exact slug ``k3``). Exact-match so unrelated names that merely start with
+# the same characters aren't misclassified.
+_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
+
+
+def _is_claude_model(model: "str | None") -> bool:
+    return "claude" in (model or "").lower()
+
+
+def _model_name_is_kimi_family(model: "str | None") -> bool:
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    if m in _KIMI_FAMILY_EXACT_SLUGS:
+        return True
+    return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
+
+
+def _forbids_sampling_params(model: str) -> bool:
+    """Return True for models that 400 on any non-default temperature/top_p/top_k.
+
+    Opus 4.7 introduced this restriction; later Claude releases follow it.
+    Defaults unknown Claude models to forbidding sampling params (the modern
+    contract). The 4.6 family still accepts them, and the legacy
+    manual-thinking families (4.5 and older) accept them too, so both are
+    excluded. Non-Claude models are unaffected. Callers should omit these
+    fields entirely rather than passing zero/default values.
+    """
+    if not _is_claude_model(model):
+        return False
+    m = model.lower()
+    if any(v in m for v in _NO_XHIGH_CLAUDE_SUBSTRINGS):
+        return False
+    return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+
+
+# ── Rescued from the deleted Anthropic wire ─────────────────────────
+# Model-gated, not URL-gated: any chat-completions proxy serving one of
+# these models (LiteLLM, vLLM, corporate gateways) needs an explicit
+# max_tokens, because the upstream treats it as mandatory and proxies
+# that omit it default as low as 4096 output tokens. That is the live
+# OpenAI-compatible path, so the table outlived the wire it came from.
+
+# ── Max output token limits per Anthropic model ───────────────────────
+# Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
+# max_tokens as a mandatory field.  Previously we hardcoded 16384, which
+# starves thinking-enabled models (thinking tokens count toward the limit).
+_ANTHROPIC_DEFAULT_OUTPUT_LIMIT = 128_000
+
+_ANTHROPIC_OUTPUT_LIMITS = {
+    # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
+    "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
+    # Claude 4.8
+    "claude-opus-4-8":   128_000,
+    # Claude 4.7
+    "claude-opus-4-7":   128_000,
+    # Claude 4.6
+    "claude-opus-4-6":   128_000,
+    "claude-sonnet-4-6":  64_000,
+    # Claude 4.5
+    "claude-opus-4-5":    64_000,
+    "claude-sonnet-4-5":  64_000,
+    "claude-haiku-4-5":   64_000,
+    # Claude 4
+    "claude-opus-4":      32_000,
+    "claude-sonnet-4":    64_000,
+    # Claude 3.7
+    "claude-3-7-sonnet": 128_000,
+    # Claude 3.5
+    "claude-3-5-sonnet":   8_192,
+    "claude-3-5-haiku":    8_192,
+    # Claude 3
+    "claude-3-opus":       4_096,
+    "claude-3-sonnet":     4_096,
+    "claude-3-haiku":      4_096,
+    # Third-party Anthropic-compatible providers
+    "minimax":            131_072,
+    # Qwen models via DashScope Anthropic-compatible endpoint
+    # DashScope enforces max_tokens ∈ [1, 65536]
+    "qwen3":               65_536,
+}
+
+
+def _get_anthropic_max_output(model: str) -> int:
+    """Look up the max output token limit for an Anthropic model.
+
+    Uses substring matching against _ANTHROPIC_OUTPUT_LIMITS so date-stamped
+    model IDs (claude-sonnet-4-5-20250929) and variant suffixes (:1m, :fast)
+    resolve correctly.  Longest-prefix match wins to avoid e.g. "claude-3-5"
+    matching before "claude-3-5-sonnet".
+
+    Normalizes dots to hyphens so that model names like
+    ``anthropic/claude-opus-4.6`` match the ``claude-opus-4-6`` table key.
+    """
+    m = model.lower().replace(".", "-")
+    best_key = ""
+    best_val = _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
+    for key, val in _ANTHROPIC_OUTPUT_LIMITS.items():
+        if key in m and len(key) > len(best_key):
+            best_key = key
+            best_val = val
+    return best_val

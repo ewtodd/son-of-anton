@@ -2116,11 +2116,6 @@ def switch_model(
     # /chat/completions. resolve_runtime_provider already sets this when it
     # succeeds; always re-derive from the *final* (post-normalize) model so
     # alias clears / empty fallbacks cannot leave Claude on the OpenAI wire.
-    if target_provider in {"nous", "nous-portal", "nousresearch"}:
-        from son_of_anton_cli.providers import nous_api_mode
-
-        api_mode = nous_api_mode(new_model)
-
     # --- Determine api_mode if not already set ---
     if not api_mode:
         api_mode = determine_api_mode(
@@ -2888,19 +2883,6 @@ def list_authenticated_providers(
         # But the /model picker is discovery-oriented — we WANT to show
         # providers the user can switch to, even if they aren't currently
         # configured.
-        if not has_creds and son_of_anton_slug == "anthropic":
-            try:
-                from agent.anthropic_adapter import (
-                    read_claude_code_credentials,
-                    read_son_of_anton_oauth_credentials,
-                )
-                son_of_anton_creds = read_son_of_anton_oauth_credentials()
-                cc_creds = read_claude_code_credentials()
-                if (son_of_anton_creds and son_of_anton_creds.get("accessToken")) or \
-                   (cc_creds and cc_creds.get("accessToken")):
-                    has_creds = True
-            except Exception as exc:
-                logger.debug("Anthropic external creds check failed: %s", exc)
         if not has_creds:
             continue
 

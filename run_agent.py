@@ -1286,8 +1286,7 @@ class AIAgent:
         is provider wire-format trouble, not local request validation, so it
         should follow the same retry path as a truncated JSON body.
         """
-        if getattr(self, "api_mode", None) != "anthropic_messages":
-            return False
+        return False
         if not isinstance(error, ValueError):
             return False
         if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
@@ -4071,16 +4070,6 @@ class AIAgent:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
-    def _capture_anthropic_response_headers(self, http_response: Any) -> None:
-        """Capture out-of-band state from Anthropic Messages response headers.
-
-        The Anthropic SDK's aggregated ``Message`` drops HTTP headers. Some
-        providers put rate-limit state there — the same family the OpenAI-wire
-        streaming path captures via ``stream.response``. Fail-open: each
-        capture swallows its own errors.
-        """
-        self._capture_rate_limits(http_response)
-
     def _check_openrouter_cache_status(self, http_response: Any) -> None:
         """Read X-OpenRouter-Cache-Status from response headers and log it.
 
@@ -4309,10 +4298,6 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="cache_evict")
         except Exception:
             pass
-        try:
-            self._close_cached_request_anthropic_client(reason="cache_evict")
-        except Exception:
-            pass
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -4378,10 +4363,6 @@ class AIAgent:
         # sequential LLM calls; see _create_request_openai_client).
         try:
             self._close_cached_request_openai_client(reason="agent_close")
-        except Exception:
-            pass
-        try:
-            self._close_cached_request_anthropic_client(reason="agent_close")
         except Exception:
             pass
 
@@ -5283,216 +5264,6 @@ class AIAgent:
                 "OpenAI client abort failed (%s, shared=False) %s error=%s",
                 reason,
                 self._client_log_context(),
-                exc,
-            )
-
-    def _request_anthropic_client_cache_ref(self) -> dict:
-        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
-        cache = getattr(self, "_request_anthropic_client_cache", None)
-        if cache is None:
-            cache = {"client": None, "key": None, "poisoned": False, "in_use": False}
-            self._request_anthropic_client_cache = cache
-        return cache
-
-    def _request_anthropic_client_key(self) -> tuple:
-        """Cache key covering everything that forces a fresh client: credential
-        rotation, base URL / region changes, timeout changes (model switch),
-        and the 1M-context beta flag."""
-        return (
-            "direct",
-            self._anthropic_api_key,
-            getattr(self, "_anthropic_base_url", None),
-            get_provider_request_timeout(self.provider, self.model),
-            bool(getattr(self, "_oauth_1m_beta_disabled", False)),
-        )
-
-    def _create_request_anthropic_client(self, *, reason: str) -> Any:
-        """Build (or reuse) a request-local Anthropic client for one in-flight call.
-
-        The shared ``_anthropic_client`` stays the long-lived primary, but the
-        stale/interrupt watchdog runs on the poll thread and must never call
-        ``close()`` on the client whose TLS socket a worker thread is still
-        reading: releasing that FD from a stranger thread lets the kernel
-        recycle it under a still-live SSL BIO, which then writes a TLS record
-        into an unrelated SQLite header (#29507 / #67142). A per-request client
-        lets the stranger thread ``shutdown()`` the socket while the owning
-        worker performs the SDK-level close from its own context — the same
-        ownership contract the OpenAI-wire path already uses.
-
-        Also mirrors the OpenAI-wire path's single-slot cache
-        (``_create_request_openai_client``): building ``anthropic.Anthropic``
-        means a fresh httpx pool and TCP+TLS handshake per call, so the client
-        is kept warm across sequential calls whose cache key (credentials,
-        base URL/region, timeout, 1M-beta flag) hasn't changed. ``in_use``
-        keeps a second concurrent call from sharing one pool's close/abort
-        lifecycle — it gets a fresh untracked client instead.
-
-        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh/cached client instead of swapping
-        the shared one.
-        """
-        if self.api_mode == "anthropic_messages":
-            self._try_refresh_anthropic_client_credentials()
-        key = self._request_anthropic_client_key()
-
-        stale = None
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            cached = cache["client"]
-            if cached is not None and not cache["in_use"]:
-                if (
-                    not cache["poisoned"]
-                    and cache["key"] == key
-                    and not self._is_openai_client_closed(cached)
-                ):
-                    cache["in_use"] = True
-                    return cached
-                # Key changed (credential rotation, base URL/region, timeout,
-                # 1M-beta flip), poisoned by a cross-thread abort, or
-                # externally closed — never reuse; discard and rebuild below.
-                stale = cached
-                cache["client"] = None
-                cache["key"] = None
-                cache["poisoned"] = False
-        if stale is not None:
-            # Safe to close from this thread: in_use was False, so no worker
-            # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
-            self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
-
-        from agent.anthropic_adapter import build_anthropic_client
-        client = build_anthropic_client(
-            self._anthropic_api_key,
-            getattr(self, "_anthropic_base_url", None),
-            timeout=get_provider_request_timeout(self.provider, self.model),
-            drop_context_1m_beta=key[4],
-        )
-        logger.debug(
-            "Anthropic request client created (%s, shared=False) provider=%s model=%s",
-            reason,
-            getattr(self, "provider", None),
-            getattr(self, "model", None),
-        )
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            if cache["client"] is None:
-                cache["client"] = client
-                cache["key"] = key
-                cache["poisoned"] = False
-                cache["in_use"] = True
-            # else: a concurrent call holds the slot — hand this client out
-            # untracked; _close_request_anthropic_client fully closes
-            # untracked clients, preserving the per-request lifecycle.
-        return client
-
-    def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Owner-thread close of a request-local Anthropic client.
-
-        On a clean finish (``reason`` in ``_REQUEST_CLIENT_REUSE_REASONS``)
-        the pool is kept warm in the cache slot for the next sequential call,
-        mirroring ``_close_request_openai_client``. Any other outcome
-        (error / kill / abort / stale-slot eviction) force-closes the pool's
-        TCP sockets first (CLOSE-WAIT hygiene, parity with
-        ``_close_openai_client``), then does the graceful SDK close. Safe
-        because the caller owns the connection.
-        """
-        if client is None:
-            return
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            if cache["client"] is client:
-                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
-                    cache["in_use"] = False
-                    return
-                cache["client"] = None
-                cache["key"] = None
-                cache["poisoned"] = False
-                cache["in_use"] = False
-        try:
-            self._force_close_tcp_sockets(client)
-            client.close()
-            logger.info(
-                "Anthropic client closed (%s, shared=False) provider=%s model=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Anthropic client close failed (%s, shared=False) provider=%s model=%s error=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                exc,
-            )
-
-    def _close_cached_request_anthropic_client(self, *, reason: str) -> None:
-        """Teardown hook: really close the cached per-request Anthropic client."""
-        with self._openai_client_lock():
-            cache = getattr(self, "_request_anthropic_client_cache", None)
-            client = cache["client"] if cache else None
-            in_use = bool(cache["in_use"]) if cache else False
-            if cache is not None:
-                cache["client"] = None
-                cache["key"] = None
-                cache["poisoned"] = False
-                cache["in_use"] = False
-        if client is None:
-            return
-        if in_use:
-            # A worker thread has this client checked out for an in-flight
-            # request — same #29507 reasoning as the OpenAI teardown hook.
-            self._abort_request_anthropic_client(client, reason=f"{reason}_in_flight")
-            return
-        try:
-            self._force_close_tcp_sockets(client)
-            client.close()
-        except Exception:
-            pass
-
-    def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Cross-thread abort for request-local Anthropic clients.
-
-        Stranger threads (the interrupt-check / stale-stream detector loop)
-        must not call the SDK ``close()`` — that races the owning worker's live
-        SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
-        #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
-        unblocks and releases the FD from its own thread.
-        """
-        if client is None:
-            return
-        # A pool whose sockets were shut down from a stranger thread must
-        # never be reused: poison the cache slot so the owner-thread close
-        # discards it and the next create builds a fresh client.
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            if cache["client"] is client:
-                cache["poisoned"] = True
-        try:
-            shutdown_count = self._force_close_tcp_sockets(client)
-            # Same visibility contract as the OpenAI abort path (#72975):
-            # zero sockets shut down means the abort did not unblock the
-            # worker — log WARNING, not a success-shaped INFO.
-            _log = logger.warning if shutdown_count == 0 else logger.info
-            _log(
-                "Anthropic client aborted (%s, shared=False, tcp_force_closed=%d, "
-                "deferred_close=stranger_thread) provider=%s model=%s%s",
-                reason,
-                shutdown_count,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                (
-                    " — no sockets found; in-flight request may keep running "
-                    "until the provider finishes"
-                    if shutdown_count == 0
-                    else ""
-                ),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
                 exc,
             )
 
@@ -5823,10 +5594,6 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="cache_evict")
         except Exception:
             pass
-        try:
-            self._close_cached_request_anthropic_client(reason="cache_evict")
-        except Exception:
-            pass
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -5892,10 +5659,6 @@ class AIAgent:
         # sequential LLM calls; see _create_request_openai_client).
         try:
             self._close_cached_request_openai_client(reason="agent_close")
-        except Exception:
-            pass
-        try:
-            self._close_cached_request_anthropic_client(reason="agent_close")
         except Exception:
             pass
 
@@ -6797,216 +6560,6 @@ class AIAgent:
                 "OpenAI client abort failed (%s, shared=False) %s error=%s",
                 reason,
                 self._client_log_context(),
-                exc,
-            )
-
-    def _request_anthropic_client_cache_ref(self) -> dict:
-        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
-        cache = getattr(self, "_request_anthropic_client_cache", None)
-        if cache is None:
-            cache = {"client": None, "key": None, "poisoned": False, "in_use": False}
-            self._request_anthropic_client_cache = cache
-        return cache
-
-    def _request_anthropic_client_key(self) -> tuple:
-        """Cache key covering everything that forces a fresh client: credential
-        rotation, base URL / region changes, timeout changes (model switch),
-        and the 1M-context beta flag."""
-        return (
-            "direct",
-            self._anthropic_api_key,
-            getattr(self, "_anthropic_base_url", None),
-            get_provider_request_timeout(self.provider, self.model),
-            bool(getattr(self, "_oauth_1m_beta_disabled", False)),
-        )
-
-    def _create_request_anthropic_client(self, *, reason: str) -> Any:
-        """Build (or reuse) a request-local Anthropic client for one in-flight call.
-
-        The shared ``_anthropic_client`` stays the long-lived primary, but the
-        stale/interrupt watchdog runs on the poll thread and must never call
-        ``close()`` on the client whose TLS socket a worker thread is still
-        reading: releasing that FD from a stranger thread lets the kernel
-        recycle it under a still-live SSL BIO, which then writes a TLS record
-        into an unrelated SQLite header (#29507 / #67142). A per-request client
-        lets the stranger thread ``shutdown()`` the socket while the owning
-        worker performs the SDK-level close from its own context — the same
-        ownership contract the OpenAI-wire path already uses.
-
-        Also mirrors the OpenAI-wire path's single-slot cache
-        (``_create_request_openai_client``): building ``anthropic.Anthropic``
-        means a fresh httpx pool and TCP+TLS handshake per call, so the client
-        is kept warm across sequential calls whose cache key (credentials,
-        base URL/region, timeout, 1M-beta flag) hasn't changed. ``in_use``
-        keeps a second concurrent call from sharing one pool's close/abort
-        lifecycle — it gets a fresh untracked client instead.
-
-        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh/cached client instead of swapping
-        the shared one.
-        """
-        if self.api_mode == "anthropic_messages":
-            self._try_refresh_anthropic_client_credentials()
-        key = self._request_anthropic_client_key()
-
-        stale = None
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            cached = cache["client"]
-            if cached is not None and not cache["in_use"]:
-                if (
-                    not cache["poisoned"]
-                    and cache["key"] == key
-                    and not self._is_openai_client_closed(cached)
-                ):
-                    cache["in_use"] = True
-                    return cached
-                # Key changed (credential rotation, base URL/region, timeout,
-                # 1M-beta flip), poisoned by a cross-thread abort, or
-                # externally closed — never reuse; discard and rebuild below.
-                stale = cached
-                cache["client"] = None
-                cache["key"] = None
-                cache["poisoned"] = False
-        if stale is not None:
-            # Safe to close from this thread: in_use was False, so no worker
-            # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
-            self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
-
-        from agent.anthropic_adapter import build_anthropic_client
-        client = build_anthropic_client(
-            self._anthropic_api_key,
-            getattr(self, "_anthropic_base_url", None),
-            timeout=get_provider_request_timeout(self.provider, self.model),
-            drop_context_1m_beta=key[4],
-        )
-        logger.debug(
-            "Anthropic request client created (%s, shared=False) provider=%s model=%s",
-            reason,
-            getattr(self, "provider", None),
-            getattr(self, "model", None),
-        )
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            if cache["client"] is None:
-                cache["client"] = client
-                cache["key"] = key
-                cache["poisoned"] = False
-                cache["in_use"] = True
-            # else: a concurrent call holds the slot — hand this client out
-            # untracked; _close_request_anthropic_client fully closes
-            # untracked clients, preserving the per-request lifecycle.
-        return client
-
-    def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Owner-thread close of a request-local Anthropic client.
-
-        On a clean finish (``reason`` in ``_REQUEST_CLIENT_REUSE_REASONS``)
-        the pool is kept warm in the cache slot for the next sequential call,
-        mirroring ``_close_request_openai_client``. Any other outcome
-        (error / kill / abort / stale-slot eviction) force-closes the pool's
-        TCP sockets first (CLOSE-WAIT hygiene, parity with
-        ``_close_openai_client``), then does the graceful SDK close. Safe
-        because the caller owns the connection.
-        """
-        if client is None:
-            return
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            if cache["client"] is client:
-                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
-                    cache["in_use"] = False
-                    return
-                cache["client"] = None
-                cache["key"] = None
-                cache["poisoned"] = False
-                cache["in_use"] = False
-        try:
-            self._force_close_tcp_sockets(client)
-            client.close()
-            logger.info(
-                "Anthropic client closed (%s, shared=False) provider=%s model=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Anthropic client close failed (%s, shared=False) provider=%s model=%s error=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                exc,
-            )
-
-    def _close_cached_request_anthropic_client(self, *, reason: str) -> None:
-        """Teardown hook: really close the cached per-request Anthropic client."""
-        with self._openai_client_lock():
-            cache = getattr(self, "_request_anthropic_client_cache", None)
-            client = cache["client"] if cache else None
-            in_use = bool(cache["in_use"]) if cache else False
-            if cache is not None:
-                cache["client"] = None
-                cache["key"] = None
-                cache["poisoned"] = False
-                cache["in_use"] = False
-        if client is None:
-            return
-        if in_use:
-            # A worker thread has this client checked out for an in-flight
-            # request — same #29507 reasoning as the OpenAI teardown hook.
-            self._abort_request_anthropic_client(client, reason=f"{reason}_in_flight")
-            return
-        try:
-            self._force_close_tcp_sockets(client)
-            client.close()
-        except Exception:
-            pass
-
-    def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Cross-thread abort for request-local Anthropic clients.
-
-        Stranger threads (the interrupt-check / stale-stream detector loop)
-        must not call the SDK ``close()`` — that races the owning worker's live
-        SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
-        #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
-        unblocks and releases the FD from its own thread.
-        """
-        if client is None:
-            return
-        # A pool whose sockets were shut down from a stranger thread must
-        # never be reused: poison the cache slot so the owner-thread close
-        # discards it and the next create builds a fresh client.
-        with self._openai_client_lock():
-            cache = self._request_anthropic_client_cache_ref()
-            if cache["client"] is client:
-                cache["poisoned"] = True
-        try:
-            shutdown_count = self._force_close_tcp_sockets(client)
-            # Same visibility contract as the OpenAI abort path (#72975):
-            # zero sockets shut down means the abort did not unblock the
-            # worker — log WARNING, not a success-shaped INFO.
-            _log = logger.warning if shutdown_count == 0 else logger.info
-            _log(
-                "Anthropic client aborted (%s, shared=False, tcp_force_closed=%d, "
-                "deferred_close=stranger_thread) provider=%s model=%s%s",
-                reason,
-                shutdown_count,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                (
-                    " — no sockets found; in-flight request may keep running "
-                    "until the provider finishes"
-                    if shutdown_count == 0
-                    else ""
-                ),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
                 exc,
             )
 
@@ -7116,10 +6669,7 @@ class AIAgent:
     ) -> bool:
         if self.provider != "nous":
             return False
-        # Portal serves anthropic/* on the native Messages route, so a session
-        # can be holding either client kind when its short-lived invoke JWT
-        # expires. Both need the refresh or the turn dies on a 401.
-        if self.api_mode not in ("chat_completions", "anthropic_messages"):
+        if self.api_mode != "chat_completions":
             return False
 
         try:
@@ -7142,12 +6692,6 @@ class AIAgent:
 
         self.api_key = api_key.strip()
         self.base_url = base_url.strip().rstrip("/")
-
-        if self.api_mode == "anthropic_messages":
-            self._anthropic_api_key = self.api_key
-            self._anthropic_base_url = self.base_url
-            self._rebuild_anthropic_client()
-            return True
 
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
@@ -7346,57 +6890,6 @@ class AIAgent:
         return True
 
 
-    def _try_refresh_anthropic_client_credentials(self) -> bool:
-        if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
-            return False
-        # Only refresh credentials for the native Anthropic provider.
-        # Other anthropic_messages providers (MiniMax, Alibaba, etc.) use their own keys.
-        if self.provider != "anthropic":
-            return False
-        # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
-        # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
-        _base = getattr(self, "_anthropic_base_url", "") or ""
-        if base_url_host_matches(_base, "azure.com"):
-            return False
-
-        try:
-            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
-
-            new_token = resolve_anthropic_token()
-        except Exception as exc:
-            logger.debug("Anthropic credential refresh failed: %s", exc)
-            return False
-
-        if not isinstance(new_token, str) or not new_token.strip():
-            return False
-        new_token = new_token.strip()
-        if new_token == self._anthropic_api_key:
-            return False
-
-        try:
-            self._anthropic_client.close()
-        except Exception:
-            pass
-
-        try:
-            self._anthropic_client = build_anthropic_client(
-                new_token,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-            )
-        except Exception as exc:
-            logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
-            return False
-
-        self._anthropic_api_key = new_token
-        # Update OAuth flag — token type may have changed (API key ↔ OAuth).
-        # Only treat as OAuth on native Anthropic; third-party endpoints using
-        # the Anthropic protocol must not trip OAuth paths (#1739 & third-party
-        # identity-injection guard).
-        from agent.anthropic_adapter import _is_oauth_token
-        self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
-        return True
-
     def _apply_client_headers_for_base_url(
         self,
         base_url: str,
@@ -7456,17 +6949,16 @@ class AIAgent:
         # custom_providers[].extra_headers) — applied last so the most
         # specific config level survives credential swaps and rebuilds too.
         # SECURITY: values may carry credentials — never log them.
-        if self.api_mode != "anthropic_messages":
-            try:
-                from son_of_anton_cli.config import (
-                    apply_custom_provider_extra_headers_to_client_kwargs,
-                )
+        try:
+            from son_of_anton_cli.config import (
+                apply_custom_provider_extra_headers_to_client_kwargs,
+            )
 
-                apply_custom_provider_extra_headers_to_client_kwargs(
-                    self._client_kwargs, base_url,
-                )
-            except Exception:
-                logger.debug("custom-provider extra_headers skipped", exc_info=True)
+            apply_custom_provider_extra_headers_to_client_kwargs(
+                self._client_kwargs, base_url,
+            )
+        except Exception:
+            logger.debug("custom-provider extra_headers skipped", exc_info=True)
 
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
@@ -7489,8 +6981,6 @@ class AIAgent:
         No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
         and when no overrides are configured.
         """
-        if self.api_mode == "anthropic_messages":
-            return
         from agent.auxiliary_client import (
             _apply_user_default_headers as _merge_user_headers,
         )
@@ -7507,25 +6997,6 @@ class AIAgent:
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
             runtime_base
         )
-
-        if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
-
-            try:
-                self._anthropic_client.close()
-            except Exception:
-                pass
-
-            self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-            self._anthropic_client = build_anthropic_client(
-                runtime_key, self._anthropic_base_url,
-                timeout=get_provider_request_timeout(self.provider, self.model),
-            )
-            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
-            self.api_key = runtime_key
-            self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-            return
 
         self.api_key = runtime_key
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
@@ -7587,48 +7058,6 @@ class AIAgent:
         if pool is None:
             return False
         return pool.has_available()
-
-    def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
-        # When a request-local client is supplied it was already credential-
-        # refreshed in ``_create_request_anthropic_client``; only the shared
-        # fallback path refreshes here.
-        if client is None and self.api_mode == "anthropic_messages":
-            self._try_refresh_anthropic_client_credentials()
-        # Defensive: strip Responses-only kwargs that can leak in under an
-        # api_mode-flip race (the Anthropic SDK raises a non-retryable
-        # TypeError on them). See #31673.
-        from agent.anthropic_adapter import create_anthropic_message
-        return create_anthropic_message(
-            client or self._anthropic_client,
-            api_kwargs,
-            log_prefix=getattr(self, "log_prefix", ""),
-            prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
-            # Rate-limit state lives in response headers, which the parsed
-            # Message drops. No-ops on providers that don't send the matching
-            # header family (x-ratelimit-*).
-            on_response=self._capture_anthropic_response_headers,
-        )
-
-    def _rebuild_anthropic_client(self) -> None:
-        """Rebuild the Anthropic client after an interrupt or stale call.
-
-        Handles both direct Anthropic and Bedrock-hosted Anthropic models
-        correctly — rebuilding with the Bedrock SDK when provider is bedrock,
-        rather than always falling back to build_anthropic_client() which
-        requires a direct Anthropic API key.
-
-        Honors ``self._oauth_1m_beta_disabled`` (set by the reactive recovery
-        path when an OAuth subscription rejects the 1M-context beta) so the
-        rebuilt client carries the reduced beta set.
-        """
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        from agent.anthropic_adapter import build_anthropic_client
-        self._anthropic_client = build_anthropic_client(
-            self._anthropic_api_key,
-            getattr(self, "_anthropic_base_url", None),
-            timeout=get_provider_request_timeout(self.provider, self.model),
-            drop_context_1m_beta=_drop_1m,
-        )
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
@@ -8207,7 +7636,98 @@ class AIAgent:
         path = Path(tmp.name)
         return str(path), path
 
-    def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
+    def _model_supports_vision(self) -> bool:
+        """Return True if the active provider+model reports native vision.
+
+        Used to decide whether to strip image content parts from API-bound
+        messages (for non-vision models) or let the provider adapter handle
+        them natively (for vision-capable models).
+
+        Resolution order (see ``agent.image_routing._supports_vision_override``):
+          1. ``model.supports_vision`` (top-level, single-model shortcut)
+          2. ``providers.<provider>.models.<model>.supports_vision``
+          3. models.dev capability lookup
+        Custom/local models absent from models.dev would otherwise be
+        misclassified as non-vision and have their images stripped.
+        """
+        try:
+            from son_of_anton_cli.config import load_config
+            from agent.image_routing import _lookup_supports_vision
+            cfg = load_config()
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            return _lookup_supports_vision(provider, model, cfg) is True
+        except Exception:
+            return False
+
+    def _provider_supports_vision_tool_messages(self) -> bool:
+        """Return True if the active provider accepts list-type tool content.
+
+        Some providers (e.g. Xiaomi MiMo) support multimodal user messages
+        but reject list-type tool message content with 400 errors.  This
+        checks the provider profile's ``supports_vision_tool_messages`` field.
+        """
+        try:
+            from providers import get_provider_profile
+            provider = (getattr(self, "provider", "") or "").strip()
+            profile = get_provider_profile(provider)
+            if profile is not None:
+                return getattr(profile, "supports_vision_tool_messages", True)
+        except Exception:
+            pass
+        return True  # default: assume compatible
+
+    def _get_transport(self, api_mode: str = None):
+        """Return the cached transport for the given (or current) api_mode.
+
+        Lazy-initializes on first call per api_mode. Returns None if no
+        transport is registered for the mode.
+        """
+        mode = api_mode or self.api_mode
+        cache = getattr(self, "_transport_cache", None)
+        if cache is None:
+            cache = {}
+            self._transport_cache = cache
+        t = cache.get(mode)
+        if t is None:
+            from agent.transports import get_transport
+            t = get_transport(mode)
+            cache[mode] = t
+        return t
+
+    def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
+        """Strip native image parts when the active model lacks vision.
+
+        Runs on the chat.completions / codex_responses paths. Vision-capable
+        models pass through unchanged (provider and any downstream translator
+        handle the image parts natively). Non-vision models get each image
+        replaced by a cached vision_analyze text description so the turn
+        doesn't fail with "model does not support image input".
+        """
+        if not any(
+            isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
+            for msg in api_messages
+        ):
+            return api_messages
+
+        if self._model_supports_vision():
+            return api_messages
+
+        transformed = copy.deepcopy(api_messages)
+        for msg in transformed:
+            if not isinstance(msg, dict):
+                continue
+            msg["content"] = self._replace_images_with_descriptions(
+                msg.get("content"),
+                str(msg.get("role", "user") or "user"),
+            )
+        return transformed
+
+    # Image → text fallback for models without vision. Named for the
+    # Anthropic wire it was written against; the behaviour is generic and
+    # the only remaining caller is the OpenAI-compatible path, so it
+    # outlived that wire.
+    def _describe_image_without_vision(self, image_url: str, role: str) -> str:
         cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
         cached = self._anthropic_image_fallback_cache.get(cache_key)
         if cached:
@@ -8258,48 +7778,7 @@ class AIAgent:
         self._anthropic_image_fallback_cache[cache_key] = note
         return note
 
-    def _model_supports_vision(self) -> bool:
-        """Return True if the active provider+model reports native vision.
-
-        Used to decide whether to strip image content parts from API-bound
-        messages (for non-vision models) or let the provider adapter handle
-        them natively (for vision-capable models).
-
-        Resolution order (see ``agent.image_routing._supports_vision_override``):
-          1. ``model.supports_vision`` (top-level, single-model shortcut)
-          2. ``providers.<provider>.models.<model>.supports_vision``
-          3. models.dev capability lookup
-        Custom/local models absent from models.dev would otherwise be
-        misclassified as non-vision and have their images stripped.
-        """
-        try:
-            from son_of_anton_cli.config import load_config
-            from agent.image_routing import _lookup_supports_vision
-            cfg = load_config()
-            provider = (getattr(self, "provider", "") or "").strip()
-            model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, cfg) is True
-        except Exception:
-            return False
-
-    def _provider_supports_vision_tool_messages(self) -> bool:
-        """Return True if the active provider accepts list-type tool content.
-
-        Some providers (e.g. Xiaomi MiMo) support multimodal user messages
-        but reject list-type tool message content with 400 errors.  This
-        checks the provider profile's ``supports_vision_tool_messages`` field.
-        """
-        try:
-            from providers import get_provider_profile
-            provider = (getattr(self, "provider", "") or "").strip()
-            profile = get_provider_profile(provider)
-            if profile is not None:
-                return getattr(profile, "supports_vision_tool_messages", True)
-        except Exception:
-            pass
-        return True  # default: assume compatible
-
-    def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
+    def _replace_images_with_descriptions(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
 
@@ -8324,7 +7803,7 @@ class AIAgent:
                 image_data = part.get("image_url", {})
                 image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
                 if image_url:
-                    image_notes.append(self._describe_image_for_anthropic_fallback(image_url, role))
+                    image_notes.append(self._describe_image_without_vision(image_url, role))
                 else:
                     image_notes.append("[An image was attached but no image source was available.]")
                 continue
@@ -8342,84 +7821,6 @@ class AIAgent:
         if suffix:
             return suffix
         return "[A multimodal message was converted to text for Anthropic compatibility.]"
-
-    def _get_transport(self, api_mode: str = None):
-        """Return the cached transport for the given (or current) api_mode.
-
-        Lazy-initializes on first call per api_mode. Returns None if no
-        transport is registered for the mode.
-        """
-        mode = api_mode or self.api_mode
-        cache = getattr(self, "_transport_cache", None)
-        if cache is None:
-            cache = {}
-            self._transport_cache = cache
-        t = cache.get(mode)
-        if t is None:
-            from agent.transports import get_transport
-            t = get_transport(mode)
-            cache[mode] = t
-        return t
-
-    def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
-        # Fast exit when no message carries image content at all.
-        if not any(
-            isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
-            for msg in api_messages
-        ):
-            return api_messages
-
-        # The Anthropic adapter (agent/anthropic_adapter.py:_convert_content_part_to_anthropic)
-        # already translates OpenAI-style image_url/input_image parts into
-        # native Anthropic ``{"type": "image", "source": ...}`` blocks. When
-        # the active model supports vision we let the adapter do its job and
-        # skip this legacy text-fallback preprocessor entirely.
-        if self._model_supports_vision():
-            return api_messages
-
-        # Non-vision Anthropic model (rare today, but keep the fallback for
-        # compat): replace each image part with a vision_analyze text note.
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
-            if not isinstance(msg, dict):
-                continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
-        return transformed
-
-    def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
-        """Strip native image parts when the active model lacks vision.
-
-        Runs on the chat.completions / codex_responses paths. Vision-capable
-        models pass through unchanged (provider and any downstream translator
-        handle the image parts natively). Non-vision models get each image
-        replaced by a cached vision_analyze text description so the turn
-        doesn't fail with "model does not support image input".
-        """
-        if not any(
-            isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
-            for msg in api_messages
-        ):
-            return api_messages
-
-        if self._model_supports_vision():
-            return api_messages
-
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
-            if not isinstance(msg, dict):
-                continue
-            # Reuse the Anthropic text-fallback preprocessor — the behaviour is
-            # identical (walk content parts, replace images with cached
-            # descriptions, merge back into a single text or structured
-            # content). Naming is historical.
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
-        return transformed
 
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
         """Return the tool message content that is safe for the active model.

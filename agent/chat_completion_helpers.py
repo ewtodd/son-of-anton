@@ -1894,7 +1894,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
     _ant_max = None
     try:
-        from agent.anthropic_adapter import (
+        from agent.model_metadata import (
             _get_anthropic_max_output,
             _ANTHROPIC_OUTPUT_LIMITS,
         )
@@ -2494,14 +2494,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
-            elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
-                # Portal is dual-wire: anthropic/* must land on /v1/messages.
-                # resolve_provider_client still returns an OpenAI client for
-                # Nous; the anthropic_messages branch below rebuilds the native
-                # client from that credential + base_url.
-                from son_of_anton_cli.providers import nous_api_mode
-
-                fb_api_mode = nous_api_mode(fb_model)
             elif (
                 fb_base_url.rstrip("/").lower().endswith("/anthropic")
                 or base_url_hostname(fb_base_url) == "api.anthropic.com"
@@ -2590,45 +2582,31 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # SDK default.
         _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
 
-        if fb_api_mode == "anthropic_messages":
-            # Build native Anthropic client instead of using OpenAI client
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
-            agent.api_key = effective_key
-            agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = fb_base_url
-            agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
-            )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
-            agent.client = None
-            agent._client_kwargs = {}
-        else:
-            # Swap OpenAI client and config in-place
-            agent.api_key = fb_client.api_key
-            agent.client = fb_client
-            # Preserve provider-specific headers that
-            # resolve_provider_client() may have baked into
-            # fb_client via the default_headers kwarg.  The OpenAI
-            # SDK stores these in _custom_headers.  Without this,
-            # subsequent request-client rebuilds (via
-            # _create_request_openai_client) drop the headers,
-            # causing 403s from providers like Kimi Coding that
-            # require a User-Agent sentinel.
-            fb_headers = getattr(fb_client, "_custom_headers", None)
-            if not fb_headers:
-                fb_headers = getattr(fb_client, "default_headers", None)
-            agent._client_kwargs = {
-                "api_key": fb_client.api_key,
-                "base_url": fb_base_url,
-                **({"default_headers": dict(fb_headers)} if fb_headers else {}),
-            }
-            if _fb_timeout is not None:
-                agent._client_kwargs["timeout"] = _fb_timeout
-                # Rebuild the shared OpenAI client so the configured
-                # timeout takes effect on the very next fallback request,
-                # not only after a later credential-rotation rebuild.
-                agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+        # Swap OpenAI client and config in-place
+        agent.api_key = fb_client.api_key
+        agent.client = fb_client
+        # Preserve provider-specific headers that
+        # resolve_provider_client() may have baked into
+        # fb_client via the default_headers kwarg.  The OpenAI
+        # SDK stores these in _custom_headers.  Without this,
+        # subsequent request-client rebuilds (via
+        # _create_request_openai_client) drop the headers,
+        # causing 403s from providers like Kimi Coding that
+        # require a User-Agent sentinel.
+        fb_headers = getattr(fb_client, "_custom_headers", None)
+        if not fb_headers:
+            fb_headers = getattr(fb_client, "default_headers", None)
+        agent._client_kwargs = {
+            "api_key": fb_client.api_key,
+            "base_url": fb_base_url,
+            **({"default_headers": dict(fb_headers)} if fb_headers else {}),
+        }
+        if _fb_timeout is not None:
+            agent._client_kwargs["timeout"] = _fb_timeout
+            # Rebuild the shared OpenAI client so the configured
+            # timeout takes effect on the very next fallback request,
+            # not only after a later credential-rotation rebuild.
+            agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
         from agent.agent_runtime_helpers import sync_credential_pool_entry_id
         sync_credential_pool_entry_id(agent)
@@ -4089,228 +4067,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             usage=usage_obj,
         )
 
-    def _call_anthropic(request_client):
-        """Stream an Anthropic Messages API response.
-
-        Fires delta callbacks for real-time token delivery, but returns
-        the native Anthropic Message object from get_final_message() so
-        the rest of the agent loop (validation, tool extraction, etc.)
-        works unchanged.
-
-        Uses ``request_client`` (a per-request Anthropic client registered with
-        the stranger-thread abort machinery) rather than the shared
-        ``_anthropic_client``, so the stale/interrupt watchdog can abort this
-        stream's socket without closing the shared client mid-flight (#67142).
-        """
-        has_tool_use = False
-        # Zero-event guard parity with the chat_completions path: track
-        # whether the provider delivered ANY stream event. On an eventless
-        # stream the real Anthropic SDK's get_final_message() raises
-        # AssertionError (no message_start ⇒ no final-message snapshot);
-        # OpenAI-compat shims may instead fabricate a contentless Message
-        # with no stop_reason, or return None under ``python -O`` (assert
-        # stripped). Every one of those shapes is normalized below to
-        # EmptyStreamError so the shared _call() retry loop treats it as
-        # transient instead of surfacing a raw AssertionError or a
-        # fabricated "successful" empty turn.
-        saw_stream_event = False
-
-        last_chunk_time["t"] = time.time()
-        _diag = agent._stream_diag_init()
-        request_client_holder["diag"] = _diag
-        _writer_token = {"value": None}
-        _stream_context = {"manager": None, "stream": None}
-        base_final_message = None
-
-        from agent import relay_llm
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
-
-        accumulator = relay_llm.AnthropicStreamAccumulator()
-
-        def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
-            final_kwargs = dict(next_api_kwargs)
-            sanitize_anthropic_kwargs(
-                final_kwargs,
-                log_prefix=getattr(agent, "log_prefix", ""),
-            )
-            manager = request_client.messages.stream(**final_kwargs)
-            _stream_context["manager"] = manager
-            return manager.__enter__()
-
-        def _anthropic_stream_created(raw_stream: Any) -> None:
-            _stream_context["stream"] = raw_stream
-            # The Anthropic SDK exposes the raw httpx response on
-            # ``stream.response``. Snapshot diagnostics immediately so they
-            # survive a stream that dies before the first event.
-            try:
-                agent._stream_diag_capture_response(
-                    _diag,
-                    getattr(raw_stream, "response", None),
-                )
-            except Exception:
-                pass
-            _writer_token["value"] = claim_stream_writer(agent)
-
-        def _accept_anthropic_event(_event: Any) -> bool:
-            token = _writer_token["value"]
-            if token is None or stream_writer_is_current(agent, token):
-                return True
-            logger.warning(
-                "Anthropic streaming attempt superseded by a newer stream; "
-                "stopping consumption to preserve the single-writer "
-                "invariant (model=%s).",
-                api_kwargs.get("model", "unknown"),
-            )
-            return False
-
-        stream = _set_managed_stream(
-            relay_llm.stream(
-                api_kwargs,
-                _open_anthropic_stream,
-                session_id=str(getattr(agent, "session_id", "") or ""),
-                name=str(getattr(agent, "provider", "") or "anthropic"),
-                model_name=str(getattr(agent, "model", "") or ""),
-                finalizer=accumulator.finalize,
-                on_stream_created=_anthropic_stream_created,
-                on_chunk=accumulator.observe,
-                accept_chunk=_accept_anthropic_event,
-                metadata={
-                    "api_mode": "anthropic_messages",
-                    "api_request_id": getattr(agent, "_current_api_request_id", None),
-                    "call_role": (
-                        "delegated"
-                        if getattr(agent, "is_subagent", False)
-                        else "fallback"
-                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                        else "primary"
-                    ),
-                },
-                defer_logical_completion=True,
-            )
-        )
-        try:
-            for event in stream:
-                saw_stream_event = True
-                last_chunk_time["t"] = time.time()
-                agent._touch_activity("receiving stream response")
-                try:
-                    _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
-                    if _diag.get("first_chunk_at") is None:
-                        _diag["first_chunk_at"] = last_chunk_time["t"]
-                    _diag["bytes"] = int(_diag.get("bytes", 0)) + _estimate_chunk_bytes(event)
-                except Exception:
-                    pass
-                if agent._interrupt_requested:
-                    break
-
-                event_type = getattr(event, "type", None)
-                if event_type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block and getattr(block, "type", None) == "tool_use":
-                        has_tool_use = True
-                        tool_name = getattr(block, "name", None)
-                        if tool_name:
-                            _fire_first_delta()
-                            agent._fire_tool_gen_started(tool_name)
-                elif event_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        delta_type = getattr(delta, "type", None)
-                        if delta_type == "text_delta":
-                            text = getattr(delta, "text", "")
-                            if text and not has_tool_use:
-                                _fire_first_delta()
-                                agent._fire_stream_delta(text)
-                                deltas_were_sent["yes"] = True
-                        elif delta_type == "thinking_delta":
-                            thinking_text = getattr(delta, "thinking", "")
-                            if thinking_text:
-                                _fire_first_delta()
-                                agent._fire_reasoning_delta(thinking_text)
-            if not agent._interrupt_requested:
-                raw_stream = _stream_context["stream"]
-                if raw_stream is not None:
-                    try:
-                        base_final_message = raw_stream.get_final_message()
-                    except AssertionError:
-                        if not saw_stream_event:
-                            raise EmptyStreamError(
-                                "Provider returned an empty stream with no events "
-                                "(possible upstream error or malformed event stream)."
-                            ) from None
-                        raise
-        finally:
-            try:
-                _close_managed_stream()
-            finally:
-                manager = _stream_context["manager"]
-                if manager is not None:
-                    manager.__exit__(None, None, None)
-
-        if agent._interrupt_requested:
-            return None
-
-        def _tool_use_dropped_mid_stream(message) -> bool:
-            """True when the stream died mid tool call (#80498 sibling).
-
-            Mirror of the chat_completions zero-byte/truncated-args gate: a
-            legitimate completion always carries a ``stop_reason``
-            (``tool_use``/``end_turn``/...), so a message that contains a
-            ``tool_use`` block but NO stop_reason means the SSE closed after
-            ``content_block_start`` and before ``message_delta`` — the
-            block's ``input`` is whatever partial state the SDK snapshot
-            accumulated (typically ``{}`` when no ``input_json_delta`` ever
-            arrived). Without this gate the empty-input call passed the
-            empty-stream guards (content is non-empty) and executed the tool
-            with no arguments and no retry. Raising EmptyStreamError blocks
-            that execution on every path; when no assistant text streamed
-            before the drop it additionally rides the bounded stream-retry
-            the eventless case uses (probe-verified recovery), while a
-            drop after streamed preamble text degrades to the
-            partial-stream-stub/continuation path instead — still never an
-            empty-args execution.
-            """
-            if getattr(message, "stop_reason", None) is not None:
-                return False
-            for block in getattr(message, "content", None) or []:
-                if getattr(block, "type", None) == "tool_use":
-                    return True
-            return False
-
-        if (
-            base_final_message is not None
-            and not getattr(base_final_message, "content", None)
-            and getattr(base_final_message, "stop_reason", None) is None
-        ):
-            raise EmptyStreamError(
-                "Provider returned an empty stream with no stop_reason "
-                "(possible upstream error or malformed event stream)."
-            )
-        if base_final_message is not None and not stream.output_modified:
-            if _tool_use_dropped_mid_stream(base_final_message):
-                raise EmptyStreamError(
-                    "Stream ended with no stop_reason while a tool_use "
-                    "block was still incomplete; treating as a "
-                    "mid-tool-call stream drop (#80498)."
-                )
-            return base_final_message
-        final_message = accumulator.response(base_final_message)
-        if (
-            not getattr(final_message, "content", None)
-            and getattr(final_message, "stop_reason", None) is None
-        ):
-            raise EmptyStreamError(
-                "Provider returned an empty stream with no stop_reason "
-                "(possible upstream error or malformed event stream)."
-            )
-        if _tool_use_dropped_mid_stream(final_message):
-            raise EmptyStreamError(
-                "Stream ended with no stop_reason while a tool_use "
-                "block was still incomplete; treating as a "
-                "mid-tool-call stream drop (#80498)."
-            )
-        return final_message
-
     def _call():
         import httpx as _httpx
 
@@ -4330,19 +4086,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     raise InterruptedError("Agent interrupted before stream retry")
                 _emit_stream_start()
                 try:
-                    if agent.api_mode == "anthropic_messages":
-                        # #67142: per-request client (credential refresh happens
-                        # inside _create_request_anthropic_client) registered so
-                        # the watchdog aborts its socket, not the shared client.
-                        request_client = _set_request_client(
-                            agent._create_request_anthropic_client(
-                                reason="anthropic_stream_request"
-                            ),
-                            kind="anthropic_messages",
-                        )
-                        result["response"] = _call_anthropic(request_client)
-                    else:
-                        result["response"] = _call_chat_completions(stream_attempt_id)
+                    result["response"] = _call_chat_completions(stream_attempt_id)
                     _emit_stream_end(
                         final_text=_stream_final_text(result["response"]),
                         finished=True,

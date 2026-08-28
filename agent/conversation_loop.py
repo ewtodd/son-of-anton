@@ -3118,14 +3118,6 @@ def run_conversation(
                                     )
                                     response_invalid = True
                                     error_details.append("response.output is empty")
-                elif agent.api_mode == "anthropic_messages":
-                    _tv = agent._get_transport()
-                    if not _tv.validate_response(response):
-                        response_invalid = True
-                        if response is None:
-                            error_details.append("response is None")
-                        else:
-                            error_details.append("response.content invalid (not a non-empty list)")
                 else:
                     _ctv = agent._get_transport()
                     if not _ctv.validate_response(response):
@@ -4625,33 +4617,6 @@ def run_conversation(
                         _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
                         agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
                         continue
-                if (
-                    agent.api_mode == "anthropic_messages"
-                    and status_code == 401
-                    and hasattr(agent, '_anthropic_api_key')
-                    and not _retry.anthropic_auth_retry_attempted
-                ):
-                    _retry.anthropic_auth_retry_attempted = True
-                    from agent.anthropic_adapter import _is_oauth_token
-                    if agent._try_refresh_anthropic_client_credentials():
-                        agent._safe_print(f"{agent.log_prefix}Anthropic credentials refreshed after 401. Retrying request...")
-                        continue
-                    # Credential refresh didn't help — show diagnostic info
-                    key = agent._anthropic_api_key
-                    agent._safe_print(f"{agent.log_prefix}Anthropic 401 — authentication failed.")
-                    auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-                    print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                    print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
-                    print(f"{agent.log_prefix}   Troubleshooting:")
-                    from son_of_anton_constants import display_son_of_anton_home as _dhh_fn
-                    _dhh = _dhh_fn()
-                    print(f"{agent.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Son of Anton-managed OAuth/setup tokens")
-                    print(f"{agent.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
-                    print(f"{agent.log_prefix}     • For API keys: verify at https://platform.claude.com/settings/keys")
-                    print(f"{agent.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                    print(f"{agent.log_prefix}     • Legacy cleanup: son-of-anton config set ANTHROPIC_TOKEN \"\"")
-                    print(f"{agent.log_prefix}     • Clear stale keys: son-of-anton config set ANTHROPIC_API_KEY \"\"")
-
                 # Thinking block signature recovery.
                 #
                 # Anthropic signs thinking blocks against the full turn

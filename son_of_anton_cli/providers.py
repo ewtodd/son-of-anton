@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class SonOfAntonOverlay:
     """Son of Anton-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
+    transport: str = "openai_chat"        # openai_chat | codex_responses
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
@@ -66,7 +66,7 @@ class ProviderDef:
 
     id: str
     name: str
-    transport: str                        # openai_chat | anthropic_messages | codex_responses
+    transport: str                        # openai_chat | codex_responses
     api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
@@ -109,7 +109,6 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
-    "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
 }
 
@@ -317,9 +316,6 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
       - api.meta.ai only achieves KV-cache hits on /v1/responses with
         prompt_cache_retention; /v1/chat/completions returns 0 cached
         tokens (measured 0% vs 93-99% on /responses with retention).
-      - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
-      - Kimi's ``/coding`` endpoint speaks native Messages.
-      - AWS Bedrock runtime hosts speak Converse.
 
     These are *mandatory* — a session carrying a stale api_mode (e.g. a
     /model switch that kept the previous provider's ``chat_completions``)
@@ -334,10 +330,6 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     # Exact-hostname matching only — never bare substring — so lookalike hosts
     # (api.openai.com.attacker.test) and path-segment spoofs
     # (proxy.test/api.openai.com/v1) are NOT treated as the real endpoint. (#32243)
-    if hostname == "api.kimi.com" and "/coding" in url_lower:
-        return "anthropic_messages"
-    if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
-        return "anthropic_messages"
     # Official OpenAI host family: canonical + data-residency regional hosts
     # (us./eu.api.openai.com) all mandate the Responses API for reasoning
     # models with tools. Shared predicate keeps this lane in lockstep with
@@ -350,19 +342,6 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     if hostname == "api.meta.ai":
         return "codex_responses"
     return None
-
-
-def nous_api_mode(model: str = "") -> str:
-    """Resolve the wire protocol for a ``anthropic/*``-style model name.
-
-    Kept for compatibility with the agent call sites that consult it: with
-    the fork's provider surface the only meaningful input is an
-    ``anthropic/*``-prefixed model served through an OpenAI-compatible
-    endpoint. Defaults to ``chat_completions``.
-    """
-    if str(model or "").strip().lower().startswith("anthropic/"):
-        return "anthropic_messages"
-    return "chat_completions"
 
 
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:

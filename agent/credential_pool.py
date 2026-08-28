@@ -852,58 +852,6 @@ class CredentialPool:
             self._persist()
         return updated
 
-    def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a claude_code pool entry from ~/.claude/.credentials.json if tokens differ.
-
-        OAuth refresh tokens are single-use. When something external (e.g.
-        Claude Code CLI, or another profile's pool) refreshes the token, it
-        writes the new pair to ~/.claude/.credentials.json. The pool entry's
-        refresh token becomes stale. This method detects that and syncs.
-        """
-        if self.provider != "anthropic" or entry.source != "claude_code":
-            return entry
-        try:
-            from agent.anthropic_adapter import read_claude_code_credentials
-            creds = read_claude_code_credentials()
-            if not creds:
-                return entry
-            file_refresh = creds.get("refreshToken", "")
-            file_access = creds.get("accessToken", "")
-            file_expires = creds.get("expiresAt", 0)
-            # Sync when either token changed.  Access tokens can be re-issued
-            # without a new refresh token (silent re-issue path), so checking
-            # only refresh_token misses that case and leaves a stale
-            # access_token in the pool → 401 on every request until the pool
-            # entry's exhausted TTL expires.
-            entry_access = entry.access_token or ""
-            entry_refresh = entry.refresh_token or ""
-            if (file_access or file_refresh) and (
-                (file_access and file_access != entry_access)
-                or (file_refresh and file_refresh != entry_refresh)
-            ):
-                logger.debug(
-                    "Pool entry %s: syncing tokens from credentials file (tokens changed)",
-                    entry.id,
-                )
-                updated = replace(
-                    entry,
-                    access_token=file_access or entry.access_token,
-                    refresh_token=file_refresh or entry.refresh_token,
-                    expires_at_ms=file_expires or entry.expires_at_ms,
-                    last_status=None,
-                    last_status_at=None,
-                    last_error_code=None,
-                    last_error_reason=None,
-                    last_error_message=None,
-                    last_error_reset_at=None,
-                )
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
-        except Exception as exc:
-            logger.debug("Failed to sync from credentials file: %s", exc)
-        return entry
-
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex device_code pool entry from auth.json if tokens differ.
 
@@ -1366,33 +1314,7 @@ class CredentialPool:
         self, entry: PooledCredential, *, force: bool
     ) -> Optional[PooledCredential]:
         try:
-            if self.provider == "anthropic":
-                from agent.anthropic_adapter import refresh_anthropic_oauth_pure
-
-                refreshed = refresh_anthropic_oauth_pure(
-                    entry.refresh_token,
-                    use_json=entry.source.endswith("son_of_anton_pkce"),
-                )
-                updated = replace(
-                    entry,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed["refresh_token"],
-                    expires_at_ms=refreshed["expires_at_ms"],
-                )
-                # Keep ~/.claude/.credentials.json in sync so that the
-                # fallback path (resolve_anthropic_token) and other profiles
-                # see the latest tokens.
-                if entry.source == "claude_code":
-                    try:
-                        from agent.anthropic_adapter import _write_claude_code_credentials
-                        _write_claude_code_credentials(
-                            refreshed["access_token"],
-                            refreshed["refresh_token"],
-                            refreshed["expires_at_ms"],
-                        )
-                    except Exception as wexc:
-                        logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
-            elif self.provider == "openai-codex":
+            if self.provider == "openai-codex":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another Son of Anton
                 # process sharing the same auth.json singleton would otherwise
@@ -1444,43 +1366,6 @@ class CredentialPool:
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
-            if self.provider == "anthropic" and entry.source == "claude_code":
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Retrying refresh with synced token from credentials file")
-                    try:
-                        from agent.anthropic_adapter import refresh_anthropic_oauth_pure
-                        refreshed = refresh_anthropic_oauth_pure(
-                            synced.refresh_token,
-                            use_json=synced.source.endswith("son_of_anton_pkce"),
-                        )
-                        updated = replace(
-                            synced,
-                            access_token=refreshed["access_token"],
-                            refresh_token=refreshed["refresh_token"],
-                            expires_at_ms=refreshed["expires_at_ms"],
-                            last_status=STATUS_OK,
-                            last_status_at=None,
-                            last_error_code=None,
-                        )
-                        self._replace_entry(synced, updated)
-                        self._persist()
-                        try:
-                            from agent.anthropic_adapter import _write_claude_code_credentials
-                            _write_claude_code_credentials(
-                                refreshed["access_token"],
-                                refreshed["refresh_token"],
-                                refreshed["expires_at_ms"],
-                            )
-                        except Exception as wexc:
-                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
-                        return updated
-                    except Exception as retry_exc:
-                        logger.debug("Retry refresh also failed: %s", retry_exc)
-                elif not self._entry_needs_refresh(synced):
-                    # Credentials file had a valid (non-expired) token — use it directly
-                    logger.debug("Credentials file has valid token, using without refresh")
-                    return synced
             # For xai-oauth: same race as nous — another process may have
             # consumed the refresh token between our proactive sync and the
             # HTTP call.  Re-check auth.json and adopt the fresh tokens if
@@ -1762,10 +1647,6 @@ class CredentialPool:
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
-        if self.provider == "anthropic":
-            if entry.expires_at_ms is None:
-                return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(
                 entry.access_token,
@@ -1857,12 +1738,6 @@ class CredentialPool:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Son of Anton profiles).
-            if (self.provider == "anthropic" and entry.source == "claude_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
             # For nous entries, sync from auth.json before status checks.
             # Another process may have successfully refreshed via
             # resolve_nous_runtime_credentials(), making this entry's
@@ -2511,85 +2386,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         def _is_suppressed(_p, _s):  # type: ignore[misc]
             return False
 
-    if provider == "anthropic":
-        # Only auto-discover external credentials (Claude Code, Son of Anton PKCE)
-        # when the user has explicitly configured anthropic as their provider.
-        # Without this gate, auxiliary client fallback chains silently read
-        # ~/.claude/.credentials.json without user consent.  See PR #4210.
-        try:
-            from son_of_anton_cli.auth import is_provider_explicitly_configured
-            if not is_provider_explicitly_configured("anthropic"):
-                return changed, active_sources
-        except ImportError:
-            pass
-
-        # API-key vs OAuth is a user-visible choice at `son-of-anton setup` ("Claude
-        # Pro/Max subscription" vs "Anthropic API key").  The signal that the
-        # user picked the API-key path is: ANTHROPIC_API_KEY set in the env,
-        # AND no OAuth env vars set — `save_anthropic_api_key()` writes the
-        # API key and zeros ANTHROPIC_TOKEN; `save_anthropic_oauth_token()`
-        # does the inverse.  When that signal is present we MUST NOT seed
-        # autodiscovered OAuth tokens (~/.claude/.credentials.json from the
-        # Claude Code CLI, son_of_anton_pkce creds from a previous OAuth login)
-        # into the anthropic pool — otherwise rotation on a 401/429 silently
-        # flips the session onto an OAuth credential, which forces the Claude
-        # Code identity injection, `mcp_` tool-name rewrite, and claude-cli
-        # User-Agent header (`agent/anthropic_adapter.py:2128`).  Users who
-        # explicitly opted into the API-key path are explicitly opting OUT of
-        # that masquerade.  Prefer ~/.son-of-anton/.env over os.environ for the
-        # same reason `_seed_from_env` does — that's the authoritative file
-        # that `son-of-anton setup` writes.
-        _env_file = load_env()
-
-        def _env_val(key: str) -> str:
-            return (_env_file.get(key) or _get_secret(key, "") or "").strip()
-
-        anthropic_api_key = _env_val("ANTHROPIC_API_KEY")
-        anthropic_oauth_env = (
-            _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
-        )
-        api_key_path_explicit = bool(anthropic_api_key and not anthropic_oauth_env)
-
-        if api_key_path_explicit:
-            # Prune any stale autodiscovered OAuth entries that may have been
-            # seeded into the on-disk pool during a previous OAuth session.
-            # Without this, switching OAuth -> API key at setup leaves the
-            # OAuth entries dormant in auth.json forever and rotation on a
-            # transient 401 could revive them.
-            retained = [
-                entry for entry in entries
-                if entry.source not in {"son_of_anton_pkce", "claude_code"}
-            ]
-            if len(retained) != len(entries):
-                entries[:] = retained
-                changed = True
-            return changed, active_sources
-
-        from agent.anthropic_adapter import read_claude_code_credentials, read_son_of_anton_oauth_credentials
-
-        for source_name, creds in (
-            ("son_of_anton_pkce", read_son_of_anton_oauth_credentials()),
-            ("claude_code", read_claude_code_credentials()),
-        ):
-            if creds and creds.get("accessToken"):
-                if _is_suppressed(provider, source_name):
-                    continue
-                active_sources.add(source_name)
-                changed |= _upsert_entry(
-                    entries,
-                    provider,
-                    source_name,
-                    {
-                        "source": source_name,
-                        "auth_type": AUTH_TYPE_OAUTH,
-                        "access_token": creds.get("accessToken", ""),
-                        "refresh_token": creds.get("refreshToken"),
-                        "expires_at_ms": creds.get("expiresAt"),
-                        "label": label_from_token(creds.get("accessToken", ""), source_name),
-                    },
-                )
-
-    elif provider == "nous":
+    if provider == "nous":
         state = _load_provider_state(auth_store, "nous")
         has_runtime_material = bool(
             isinstance(state, dict)
@@ -2909,13 +2706,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         env_url = _get_env_prefer_dotenv(pconfig.base_url_env_var).rstrip("/")
 
     env_vars = list(pconfig.api_key_env_vars)
-    if provider == "anthropic":
-        env_vars = [
-            "ANTHROPIC_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "ANTHROPIC_API_KEY",
-        ]
-
     for env_var in env_vars:
         # Prefer ~/.son-of-anton/.env over os.environ
         token = _get_env_prefer_dotenv(env_var)

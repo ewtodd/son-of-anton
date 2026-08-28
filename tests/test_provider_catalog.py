@@ -93,6 +93,13 @@ def test_removed_provider_adapters_are_gone() -> None:
         "agent.vertex_adapter",
         "agent.transports.bedrock",
         "son_of_anton_cli.azure_detect",
+        # Removed 2026-08-27: wires no shipped provider could select.
+        "agent.anthropic_adapter",
+        "agent.transports.anthropic",
+        "agent.gemini_native_adapter",
+        "agent.gemini_schema",
+        "agent.copilot_acp_client",
+        "son_of_anton_cli.copilot_auth",
     ):
         try:
             importlib.import_module(mod)
@@ -138,3 +145,27 @@ def test_custom_providers_dict_form_normalizes() -> None:
     assert len(providers) == 1
     assert providers[0]["name"] == "custom"
     assert providers[0]["base_url"] == "http://127.0.0.1:8080/v1"
+
+
+def test_the_anthropic_wire_cannot_be_selected() -> None:
+    """The fork speaks OpenAI-compatible wires only.
+
+    Three things used to route a turn onto the Anthropic Messages transport:
+    ``provider: anthropic``, a base URL at api.anthropic.com, and any URL
+    ending in ``/anthropic``. None of them can now, so the adapter behind
+    them had nothing left to reach it.
+    """
+    from son_of_anton_cli.providers import (
+        TRANSPORT_TO_API_MODE,
+        determine_api_mode,
+        host_mandated_api_mode,
+    )
+
+    assert "anthropic_messages" not in TRANSPORT_TO_API_MODE.values()
+    assert determine_api_mode("anthropic") == "chat_completions"
+    for url in (
+        "https://api.anthropic.com",
+        "https://example.test/anthropic",
+        "https://api.kimi.com/coding",
+    ):
+        assert host_mandated_api_mode(url) != "anthropic_messages"

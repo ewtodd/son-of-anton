@@ -222,32 +222,6 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
         return
 
-    if provider == "anthropic":
-        from agent import anthropic_adapter as anthropic_mod
-
-        creds = anthropic_mod.run_son_of_anton_oauth_login_pure()
-        if not creds:
-            raise SystemExit("Anthropic OAuth login did not return credentials.")
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds["access_token"],
-            _oauth_default_label(provider, len(pool.entries()) + 1),
-        )
-        entry = PooledCredential(
-            provider=provider,
-            id=uuid.uuid4().hex[:6],
-            label=label,
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:son_of_anton_pkce",
-            access_token=creds["access_token"],
-            refresh_token=creds.get("refresh_token"),
-            expires_at_ms=creds.get("expires_at_ms"),
-            base_url=_provider_base_url(provider),
-        )
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
-        return
-
     if provider == "nous":
         # Codex-style auto-import: if a shared Nous credential lives at
         # <son-of-anton-root>/shared/nous_auth.json (written by any previous

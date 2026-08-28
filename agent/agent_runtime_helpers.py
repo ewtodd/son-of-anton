@@ -1351,17 +1351,7 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
 
-        if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
-            agent._anthropic_api_key = rt["anthropic_api_key"]
-            agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
-            agent.client = None
-        elif (agent.provider or "").strip().lower() == "moa":
+        if (agent.provider or "").strip().lower() == "moa":
             # MoA is a virtual provider with empty client_kwargs — rebuilding
             # via _create_openai_client would raise "api_key client option
             # must be set". Recreate the facade through the shared factory so
@@ -1608,16 +1598,6 @@ def restore_primary_runtime(agent) -> bool:
 
             agent.client = build_moa_facade(agent, agent.model)
             agent._anthropic_client = None
-        elif agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
-            agent._anthropic_api_key = rt["anthropic_api_key"]
-            agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
-                rt["anthropic_api_key"], rt["anthropic_base_url"],
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
-            agent.client = None
         else:
             agent.client = agent._create_openai_client(
                 dict(rt["client_kwargs"]),
@@ -2276,7 +2256,7 @@ def anthropic_prompt_cache_policy(
     # every turn.  Observed within-turn progression with cache enabled:
     # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
     # (covers bare k1./k2./k25 release slugs the substring check missed).
-    from agent.anthropic_adapter import _model_name_is_kimi_family
+    from agent.model_metadata import _model_name_is_kimi_family
     is_kimi = (
         _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
     )
@@ -2746,43 +2726,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = build_moa_facade(agent, agent.model)
-        elif api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import (
-                build_anthropic_client,
-                resolve_anthropic_token,
-                _is_oauth_token,
-            )
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
-            # API key — falling back would send Anthropic credentials to third-party endpoints.
-            _is_native_anthropic = new_provider == "anthropic"
-            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
-
-            # MiniMax OAuth: swap static string for a per-request callable token
-            # provider so the rebuilt client survives 15-min token expiry. See
-            # the matching block in agent_init.py for the full rationale.
-            if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-                try:
-                    from son_of_anton_cli.auth import build_minimax_oauth_token_provider
-                    effective_key = build_minimax_oauth_token_provider()
-                except Exception as _mm_exc:  # noqa: BLE001
-                    import logging as _logging
-                    _logging.getLogger(__name__).warning(
-                        "MiniMax OAuth: failed to install per-request token provider "
-                        "on switch (%s); using static bearer.",
-                        _mm_exc,
-                    )
-
-            agent.api_key = effective_key
-            agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-            agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url,
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent.client = None
-            agent._client_kwargs = {}
         else:
             effective_key = api_key or agent.api_key
             effective_base = base_url or agent.base_url
@@ -2965,13 +2908,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
-    if api_mode == "anthropic_messages":
-        agent._primary_runtime.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
-
     # ── Reset fallback state ──
     agent._fallback_activated = False
     agent._fallback_index = 0
