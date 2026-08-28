@@ -2188,75 +2188,6 @@ def run_doctor(args):
                 ["Check network connectivity"],
             )
 
-    def _probe_anthropic() -> _ConnectivityResult:
-        from son_of_anton_cli.auth import get_anthropic_key
-        key = get_anthropic_key()
-        if not key:
-            return _ConnectivityResult("Anthropic API", [], [])
-        try:
-            import httpx
-            from agent.anthropic_adapter import (
-                _is_oauth_token,
-                _COMMON_BETAS,
-                _OAUTH_ONLY_BETAS,
-                _CONTEXT_1M_BETA,
-            )
-            headers = {"anthropic-version": "2023-06-01"}
-            is_oauth = _is_oauth_token(key)
-            if is_oauth:
-                headers["Authorization"] = f"Bearer {key}"
-                headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
-            else:
-                headers["x-api-key"] = key
-            r = httpx.get(
-                "https://api.anthropic.com/v1/models",
-                headers=headers, timeout=10,
-            )
-            # Reactive recovery: OAuth subscriptions without 1M context reject the
-            # request with 400 "long context beta is not yet available for this
-            # subscription". Retry once with that beta stripped so the doctor
-            # check doesn't falsely report Anthropic as unreachable.
-            if (
-                is_oauth
-                and r.status_code == 400
-                and "long context beta" in r.text.lower()
-                and "not yet available" in r.text.lower()
-            ):
-                headers["anthropic-beta"] = ",".join(
-                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-                    + list(_OAUTH_ONLY_BETAS)
-                )
-                r = httpx.get(
-                    "https://api.anthropic.com/v1/models",
-                    headers=headers, timeout=10,
-                )
-            if r.status_code == 200:
-                return _ConnectivityResult(
-                    "Anthropic API",
-                    [(color("✓", Colors.GREEN), "Anthropic API", "")],
-                    [],
-                )
-            if r.status_code == 401:
-                return _ConnectivityResult(
-                    "Anthropic API",
-                    [(color("✗", Colors.RED), "Anthropic API",
-                      color("(invalid API key)", Colors.DIM))],
-                    [],
-                )
-            return _ConnectivityResult(
-                "Anthropic API",
-                [(color("⚠", Colors.YELLOW), "Anthropic API",
-                  color("(couldn't verify)", Colors.DIM))],
-                [],
-            )
-        except Exception as e:
-            return _ConnectivityResult(
-                "Anthropic API",
-                [(color("⚠", Colors.YELLOW), "Anthropic API",
-                  color(f"({e})", Colors.DIM))],
-                [],
-            )
-
     def _probe_apikey_provider(pname, env_vars, default_url, base_env,
                                supports_health_check) -> _ConnectivityResult:
         key = ""
@@ -2346,7 +2277,6 @@ def run_doctor(args):
 
     # Build the probe submission list in display order
     _probes.append(("OpenRouter API", _probe_openrouter))
-    _probes.append(("Anthropic API", _probe_anthropic))
 
     global _APIKEY_PROVIDERS_CACHE
     if _APIKEY_PROVIDERS_CACHE is None:
