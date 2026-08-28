@@ -959,7 +959,7 @@ class TestE2EPermissions:
 
 
 # ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
+# 4. TOOL LISTING — verify every tool is registered
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
@@ -973,6 +973,8 @@ class TestToolRegistration:
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
             "permissions_list_open", "permissions_respond",
+            # Cross-instance control: one agent stopping another.
+            "agent_pause", "agent_resume", "agent_status",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
