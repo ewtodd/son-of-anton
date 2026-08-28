@@ -1208,13 +1208,6 @@ def recover_with_credential_pool(
             and "oauth authentication is currently not allowed for this organization" in _auth_haystack
         ):
             is_entitlement = True
-        if (
-            not is_entitlement
-            and status_code == 403
-            and (agent.provider or "") == "anthropic"
-            and getattr(agent, "api_mode", "") == "anthropic_messages"
-        ):
-            is_entitlement = True
         if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
             _is_xai_auth_failure = (
                 "[wke=unauthenticated:" in _auth_haystack
@@ -1318,7 +1311,6 @@ def try_recover_primary_transport(
     # already gets — don't blanket-skip the dual-wire path.
     if (
         provider_lower in {"nous", "nous-portal", "nousresearch"}
-        and getattr(agent, "api_mode", None) != "anthropic_messages"
     ):
         return False
 
@@ -1575,10 +1567,7 @@ def restore_primary_runtime(agent) -> bool:
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
         # native-vs-proxy split (older sessions saved before this PR).
-        agent._use_native_cache_layout = rt.get(
-            "use_native_cache_layout",
-            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
-        )
+        agent._use_native_cache_layout = rt.get("use_native_cache_layout", False)
         # If the operator has disabled caching via config (cache_ttl is
         # falsy → _cache_disabled flag is set), the disable must survive
         # runtime snapshot restoration (#33555).
@@ -1951,10 +1940,7 @@ def _direct_native_anthropic_tool_cache_capability(
     """Return whether this resolved destination accepts native tool markers."""
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
-    return (
-        eff_api_mode == "anthropic_messages"
-        and base_url_hostname(eff_base_url) == "api.anthropic.com"
-    )
+    return False
 
 
 def cache_ttl_means_disabled(ttl: Any) -> bool:
@@ -2264,12 +2250,12 @@ def anthropic_prompt_cache_policy(
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an
     # OpenRouter-equivalent endpoint for caching layout purposes.
-    is_nous_portal = base_url_host_matches(eff_base_url, "nousresearch.com")
-    is_anthropic_wire = eff_api_mode == "anthropic_messages"
-    is_native_anthropic = (
-        is_anthropic_wire
-        and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")
-    )
+    # The Anthropic Messages wire is gone, so no route reaching this function
+    # is on it. Kept as named constants rather than threaded away: every
+    # branch below reads as the cache-layout decision it is.
+    is_anthropic_wire = False
+    is_native_anthropic = False
+    is_nous_portal = False
 
     # A custom Anthropic-compatible route may use a bare model alias that is
     # canonicalized only after Son of Anton sends the request. In that case model

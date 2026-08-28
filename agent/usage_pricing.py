@@ -1119,7 +1119,7 @@ def normalize_usage(
     provider_name = (provider or "").strip().lower()
     mode = (api_mode or "").strip().lower()
 
-    if mode == "anthropic_messages" or provider_name == "anthropic":
+    if provider_name == "anthropic":
         input_tokens = _usage_count(_usage_get(response_usage, "input_tokens", 0))
         output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
         cache_read_tokens = _usage_count(_usage_get(response_usage, "cache_read_input_tokens", 0))
@@ -1231,7 +1231,7 @@ def normalize_usage(
     # drop between consecutive calls. Standard level-gated logger.debug;
     # enable via logging config to confirm cache behavior.
     # Docs: https://platform.minimax.io/docs/api-reference/text-prompt-caching
-    if provider_name in {"minimax", "minimax-cn"} and mode == "anthropic_messages":
+    if provider_name in {"minimax", "minimax-cn"}:
         logger.debug(
             "cache_observability provider=%s mode=%s input_tokens=%s "
             "output_tokens=%s cache_read_tokens=%s cache_write_tokens=%s "

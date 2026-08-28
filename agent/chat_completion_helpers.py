@@ -848,14 +848,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             client=request_client,
             on_first_delta=getattr(agent, "_codex_on_first_delta", None),
         )
-    if agent.api_mode == "anthropic_messages":
-        # #67142: use a request-local Anthropic client so the stale/interrupt
-        # watchdog aborts sockets from the stranger thread while the worker
-        # owns the SDK close — never closing the shared client mid-flight.
-        request_client = make_client(
-            "anthropic_messages_request", kind="anthropic_messages"
-        )
-        return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.provider == "moa":
         # MoA is a virtual chat-completions provider backed by the
         # in-process MoAClient facade. Do not rebuild a request-local
@@ -1294,12 +1286,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 # in-flight request's sockets. The abort itself never blocks
                 # (socket shutdown + slot poison), so holding the lock across
                 # it only delays the racing pop, never the data path.
-                if request_client_kind.get("value", "openai") == "anthropic_messages":
-                    agent._abort_request_anthropic_client(
-                        request_client, reason=reason
-                    )
-                else:
-                    agent._abort_request_openai_client(request_client, reason=reason)
+                agent._abort_request_openai_client(request_client, reason=reason)
                 return
             # Owning thread (or no recorded owner) → pop and fully close.
             request_client_holder["client"] = None
@@ -1706,41 +1693,9 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     if tools_for_api is None:
         tools_for_api = agent.tools
 
-    if agent.api_mode == "anthropic_messages":
-        _transport = agent._get_transport()
-        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
-        ctx_len = getattr(agent, "context_compressor", None)
-        ctx_len = ctx_len.context_length if ctx_len else None
-        ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
-        if ephemeral_out is not None:
-            agent._ephemeral_max_output_tokens = None  # consume immediately
-        anthropic_kwargs = _transport.build_kwargs(
-            model=agent.model,
-            messages=anthropic_messages,
-            tools=tools_for_api,
-            max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
-            reasoning_config=agent.reasoning_config,
-            is_oauth=agent._is_anthropic_oauth,
-            preserve_dots=agent._anthropic_preserve_dots(),
-            context_length=ctx_len,
-            base_url=getattr(agent, "_anthropic_base_url", None),
-            fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
-            drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
-        )
-        # Nous Portal reads ``tags`` and ``session_id`` as top-level body fields
-        # on its Messages route the same way it does on /chat/completions, but
-        # the profile hook that produces them is only consulted by the
-        # OpenAI-wire transport. Merge them here so Messages traffic keeps
-        # product attribution and sticky routing.
-        return anthropic_kwargs
-
-    # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
-    # The adapter handles message/tool conversion and boto3 calls directly.
-
     # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
     # below (codex + both chat_completions paths). Memoized on the agent —
-    # cheap after the first call. Resolved after the anthropic/bedrock early
-    # returns above, which don't use prompt_cache_key.
+    # cheap after the first call.
     _cache_scope_id = _prompt_cache_scope_for_agent(agent)
 
     if agent.api_mode == "codex_responses":
@@ -2401,19 +2356,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_api_mode = "chat_completions"
         if fb_api_mode_explicit:
             fb_api_mode = str(fb.get("api_mode")).strip()
-        elif fb_provider == "anthropic":
-            # Provider-name check must not be gated on fb_base_url_hint:
-            # an entry that names provider: anthropic without an explicit
-            # base_url uses the provider's default endpoint and must still
-            # resolve to anthropic_messages, not chat_completions.
-            fb_api_mode = "anthropic_messages"
-        elif fb_base_url_hint:
-            _orig_url = fb_base_url_hint.rstrip("/").lower()
-            if (
-                _orig_url.endswith("/anthropic")
-                or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
-            ):
-                fb_api_mode = "anthropic_messages"
         
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
@@ -2453,16 +2395,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
-            elif (
-                fb_base_url.rstrip("/").lower().endswith("/anthropic")
-                or base_url_hostname(fb_base_url) == "api.anthropic.com"
-            ):
-                # Named custom providers (e.g. cron-anthropic) resolve their
-                # base_url from config rather than the fallback entry, so the
-                # pre-resolve hint check above never sees it. Match the host
-                # the same way determine_api_mode() and _detect_api_mode_for_url()
-                # do on the primary path. (#32243, #49247)
-                fb_api_mode = "anthropic_messages"
             elif _fb_is_azure:
                 # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
                 # support the Responses API. Stay on chat_completions.
@@ -2885,25 +2817,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
 
-            if agent.api_mode == "anthropic_messages":
-                _tsum = agent._get_transport()
-                _ant_kw = _tsum.build_kwargs(
-                    model=agent.model,
-                    messages=api_messages,
-                    tools=None,
-                    max_tokens=agent.max_tokens,
-                    reasoning_config=agent.reasoning_config,
-                    is_oauth=agent._is_anthropic_oauth,
-                    preserve_dots=agent._anthropic_preserve_dots(),
-                    base_url=getattr(agent, "_anthropic_base_url", None),
-                )
-                summary_response = _managed_summary_call(
-                    _ant_kw,
-                    agent._anthropic_messages_create,
-                    retry_count=0,
-                )
-                _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
-                final_response = (_summary_result.content or "").strip()
             else:
                 summary_client = agent._ensure_primary_openai_client(
                     reason="iteration_limit_summary"
@@ -2936,25 +2849,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)
                 final_response = (_cnr_retry.content or "").strip()
-            elif agent.api_mode == "anthropic_messages":
-                _tretry = agent._get_transport()
-                _ant_kw2 = _tretry.build_kwargs(
-                    model=agent.model,
-                    messages=api_messages,
-                    tools=None,
-                    is_oauth=agent._is_anthropic_oauth,
-                    max_tokens=agent.max_tokens,
-                    reasoning_config=agent.reasoning_config,
-                    preserve_dots=agent._anthropic_preserve_dots(),
-                    base_url=getattr(agent, "_anthropic_base_url", None),
-                )
-                retry_response = _managed_summary_call(
-                    _ant_kw2,
-                    agent._anthropic_messages_create,
-                    retry_count=1,
-                )
-                _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
-                final_response = (_retry_result.content or "").strip()
             else:
                 summary_kwargs = {
                     "model": agent.model,
@@ -3282,8 +3176,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # (or an any-thread-safe stream handle) reaches the close dispatch.
         if request_kind == "stream":
             _close_request_stream_handle(request_client, reason)
-        elif request_kind == "anthropic_messages":
-            agent._close_request_anthropic_client(request_client, reason=reason)
         else:
             agent._close_request_openai_client(request_client, reason=reason)
 
@@ -4452,25 +4344,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _bump_stale_streak(agent)
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
-            if agent.api_mode == "anthropic_messages":
-                # #67142: the stale stream ran on a request-local anthropic
-                # client, already socket-aborted above via
-                # _close_request_client_once (which unblocks the worker and
-                # preserves the #28161 no-hang guarantee). The shared
-                # _anthropic_client is NOT the in-flight transport, so we must
-                # not close it from this poll (stranger) thread — that was the
-                # FD-recycle corruption vector. Nothing further is needed.
-                pass
-            else:
-                # #70773: same FD-recycle corruption vector as #67142.
-                # The shared OpenAI client's connection pool must NOT be
-                # closed from this watchdog/poll thread — worker threads
-                # from previous stale-killed attempts may still be
-                # unwinding their SSL BIOs.  The request-local client is
-                # already closed above via _close_request_client_once.
-                # The shared client will be replaced lazily by
-                # _ensure_primary_openai_client on the next request.
-                pass
+            # #70773: the shared OpenAI client's connection pool must NOT be
+            # closed from this watchdog/poll thread — worker threads from
+            # previous stale-killed attempts may still be unwinding their SSL
+            # BIOs. The request-local client is already closed above via
+            # _close_request_client_once, and the shared client is replaced
+            # lazily by _ensure_primary_openai_client on the next request.
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()

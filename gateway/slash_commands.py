@@ -2219,7 +2219,6 @@ class GatewaySlashCommandsMixin:
             # Cache notice
             cache_enabled = (
                 (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-                or result.api_mode == "anthropic_messages"
             )
             if cache_enabled:
                 lines.append(t("gateway.model.prompt_caching_enabled"))

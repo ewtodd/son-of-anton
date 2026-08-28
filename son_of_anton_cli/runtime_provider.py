@@ -111,14 +111,6 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
       hitting the shim accounts against a separate "extra usage" pool
       that is empty by default and surfaces as HTTP 400 "You're out of
       extra usage."  See issue #32243.
-    - Third-party Anthropic-compatible gateways (MiniMax, Zhipu GLM,
-      LiteLLM proxies, etc.) conventionally expose the native Anthropic
-      protocol under a ``/anthropic`` suffix — treat those as
-      ``anthropic_messages`` transport instead of the default
-      ``chat_completions``.
-    - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
-      Anthropic Messages protocol (the /coding route accepts Claude
-      Code's native request shape).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
@@ -137,17 +129,6 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.actual.inc":
         return "codex_responses"
-    # Direct native Anthropic host: realign with providers.determine_api_mode,
-    # which already maps this host to anthropic_messages. The exact-hostname
-    # match rejects lookalike subdomains (api.anthropic.com.attacker.test) and
-    # path-segment spoofing (proxy.test/api.anthropic.com/v1). (#32243)
-    if hostname == "api.anthropic.com":
-        return "anthropic_messages"
-    path = urlparse(normalized).path.rstrip("/")
-    if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
-        return "anthropic_messages"
-    if hostname == "api.kimi.com" and "/coding" in normalized:
-        return "anthropic_messages"
     return None
 
 
@@ -328,39 +309,9 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
-def _copilot_runtime_api_mode(
-    model_cfg: Dict[str, Any],
-    api_key: str,
-    *,
-    target_model: Optional[str] = None,
-) -> str:
-    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
-        return configured_mode
-
-    # Use the model being resolved for this runtime, not the persisted global
-    # default. Fallback models and mid-session model switches all resolve
-    # credentials for a target model that can differ from config.yaml's
-    # model.default. If we derive Copilot api_mode from the stale default, a
-    # Claude/Gemini slot can inherit codex_responses from a GPT-5 default and
-    # fail with "model ... does not support Responses API".
-    model_name = str(target_model or model_cfg.get("default") or "").strip()
-    if not model_name:
-        return "chat_completions"
-
-    try:
-        from son_of_anton_cli.models import copilot_model_api_mode
-
-        return copilot_model_api_mode(model_name, api_key=api_key)
-    except Exception:
-        return "chat_completions"
-
-
 _VALID_API_MODES = {
     "chat_completions",
     "codex_responses",
-    "anthropic_messages",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
     # instead of Son of Anton' tool dispatch. Gated behind config key
@@ -439,25 +390,10 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "xai-oauth":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
-    elif provider == "minimax-oauth":
-        # MiniMax OAuth tokens are valid only against the Anthropic Messages
-        # compatible endpoint. Do not honor stale model.api_mode values from a
-        # prior OpenAI-compatible provider, or the client will hit
-        # /chat/completions under /anthropic and receive a bare nginx 404.
-        api_mode = "anthropic_messages"
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        base_url = base_url or (pconfig.inference_base_url if pconfig else "")
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":
         api_mode = "codex_responses"
-    elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(
-            model_cfg,
-            getattr(entry, "runtime_api_key", ""),
-            target_model=effective_model,
-        )
-        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -1464,21 +1400,6 @@ def resolve_runtime_provider(
     # return provider="custom" with chat_completions api_mode and no valid key).
     # Instead, use the Azure key directly with anthropic_messages api_mode.
     _eff_base = (explicit_base_url or "").strip()
-    if requested_provider == "anthropic" and base_url_host_matches(_eff_base, "azure.com"):
-        _azure_key = (
-            (explicit_api_key or "").strip()
-            or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
-            or _getenv("ANTHROPIC_API_KEY", "").strip()
-        )
-        return {
-            "provider": "anthropic",
-            "api_mode": "anthropic_messages",
-            "base_url": _eff_base.rstrip("/"),
-            "api_key": _azure_key,
-            "source": "azure-explicit",
-            "requested_provider": requested_provider,
-        }
-
     # Azure Foundry: user-configured endpoint with selectable API mode
     # (OpenAI-style chat_completions or Anthropic-style anthropic_messages).
     # Resolve before the custom-runtime / pool / generic paths so Azure
@@ -1698,31 +1619,6 @@ def resolve_runtime_provider(
 
     if provider == "minimax-oauth":
         pconfig = PROVIDER_REGISTRY.get(provider)
-        if pconfig and pconfig.auth_type == "oauth_minimax":
-            from son_of_anton_cli.auth import resolve_minimax_oauth_runtime_credentials
-            creds = resolve_minimax_oauth_runtime_credentials()
-            return {
-                "provider": provider,
-                "api_mode": "anthropic_messages",
-                "base_url": creds["base_url"],
-                "api_key": creds["api_key"],
-                "source": creds.get("source", "oauth"),
-                "requested_provider": requested_provider,
-            }
-
-    if provider == "copilot-acp":
-        creds = resolve_external_process_provider_credentials(provider)
-        return {
-            "provider": "copilot-acp",
-            "api_mode": "chat_completions",
-            "base_url": creds.get("base_url", "").rstrip("/"),
-            "api_key": creds.get("api_key", ""),
-            "command": creds.get("command", ""),
-            "args": list(creds.get("args") or []),
-            "source": creds.get("source", "process"),
-            "requested_provider": requested_provider,
-        }
-
     # Anthropic (native Messages API)
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)

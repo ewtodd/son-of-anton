@@ -1068,9 +1068,6 @@ _API_MODE_ALIASES = {
     "responses": "codex_responses",
     "openai_responses": "codex_responses",
     "openai-responses": "codex_responses",
-    "anthropic": "anthropic_messages",
-    "anthropic-messages": "anthropic_messages",
-    "messages": "anthropic_messages",
 }
 
 

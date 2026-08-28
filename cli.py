@@ -10510,7 +10510,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         cache_enabled = (
             (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-            or result.api_mode == "anthropic_messages"
         )
         if cache_enabled:
             _cprint("    Prompt caching: enabled")
@@ -11059,7 +11058,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Cache notice
         cache_enabled = (
             (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-            or result.api_mode == "anthropic_messages"
         )
         if cache_enabled:
             _cprint("    Prompt caching: enabled")

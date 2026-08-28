@@ -3335,9 +3335,6 @@ def run_conversation(
                         finish_reason = "content_filter"
                     else:
                         finish_reason = "stop"
-                elif agent.api_mode == "anthropic_messages":
-                    _tfr = agent._get_transport()
-                    finish_reason = _tfr.map_finish_reason(response.stop_reason)
                 else:
                     _cc_fr = agent._get_transport()
                     _finish_result = _cc_fr.normalize_response(response)
@@ -3370,12 +3367,7 @@ def run_conversation(
                 # configured fallback once, otherwise return the refusal.
                 if finish_reason == "content_filter":
                     _refusal_transport = agent._get_transport()
-                    if agent.api_mode == "anthropic_messages":
-                        _refusal_result = _refusal_transport.normalize_response(
-                            response, strip_tool_prefix=agent._is_anthropic_oauth
-                        )
-                    else:
-                        _refusal_result = _refusal_transport.normalize_response(response)
+                    _refusal_result = _refusal_transport.normalize_response(response)
                     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
                     # Some refusals carry the explanation only in the reasoning
                     # channel; fall back to it so the user sees *something*.
@@ -3480,12 +3472,7 @@ def run_conversation(
                     # would have been appended in the non-truncated path.
                     _trunc_msg = None
                     _trunc_transport = agent._get_transport()
-                    if agent.api_mode == "anthropic_messages":
-                        _trunc_result = _trunc_transport.normalize_response(
-                            response, strip_tool_prefix=agent._is_anthropic_oauth
-                        )
-                    else:
-                        _trunc_result = _trunc_transport.normalize_response(response)
+                    _trunc_result = _trunc_transport.normalize_response(response)
                     _trunc_msg = _trunc_result
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
@@ -3606,7 +3593,7 @@ def run_conversation(
                             "error": _rep_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions"}:
                         assistant_message = _trunc_msg
                         # ── Content-filter stream stall → fallback (#32421) ──
                         # When the provider's output-layer safety filter (e.g.
@@ -3773,7 +3760,7 @@ def run_conversation(
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "anthropic_messages"}:
+                    if agent.api_mode in {"chat_completions"}:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
                             _is_stub_stall = (
@@ -4587,8 +4574,6 @@ def run_conversation(
                 # don't silently lose the capability).
                 if (
                     classified.reason == FailoverReason.oauth_long_context_beta_forbidden
-                    and agent.api_mode == "anthropic_messages"
-                    and agent._is_anthropic_oauth
                     and not _retry.oauth_1m_beta_retry_attempted
                 ):
                     _retry.oauth_1m_beta_retry_attempted = True
@@ -6314,10 +6299,7 @@ def run_conversation(
 
         try:
             _transport = agent._get_transport()
-            _normalize_kwargs = {}
-            if agent.api_mode == "anthropic_messages":
-                _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
-            normalized = _transport.normalize_response(response, **_normalize_kwargs)
+            normalized = _transport.normalize_response(response)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
             

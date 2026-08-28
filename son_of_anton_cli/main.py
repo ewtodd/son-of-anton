@@ -2606,7 +2606,6 @@ def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "")
             "Use /responses for Codex-compatible tool-calling backends.",
         ),
         (
-            "anthropic_messages",
             "Anthropic Messages",
             "Use /v1/messages for Anthropic-compatible endpoints.",
         ),
@@ -2641,8 +2640,6 @@ def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "")
         return "chat_completions"
     if raw in {"3", "responses", "codex", "codex_responses"}:
         return "codex_responses"
-    if raw in {"4", "anthropic", "anthropic_messages", "messages"}:
-        return "anthropic_messages"
 
     print(f"Invalid API mode choice: {raw}. Falling back to auto-detect.")
     return None
