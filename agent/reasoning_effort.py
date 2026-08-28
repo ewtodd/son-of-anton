@@ -117,9 +117,6 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
-#: DeepSeek V4 OpenAI-compat endpoint: low/medium/high/max; ``xhigh``
-#: requests the top tier (matches the shipped profile mapping).
-
 #: Ollama Cloud /v1/chat/completions: accepts {none, low, medium, high, max};
 #: rejects ``minimal`` with HTTP 400. ``xhigh`` requests the top tier.
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
