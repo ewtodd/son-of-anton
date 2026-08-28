@@ -298,40 +298,12 @@ from son_of_anton_cli.subcommands._shared import add_accept_hooks_flag as _add_a
 from son_of_anton_cli.subcommands.cron import build_cron_parser
 from son_of_anton_cli.subcommands.gateway import build_gateway_parser
 from son_of_anton_cli.subcommands.model import build_model_parser
-from son_of_anton_cli.subcommands.setup import build_setup_parser
 
-from son_of_anton_cli.subcommands.slack import build_slack_parser
-from son_of_anton_cli.subcommands.login import build_login_parser
-from son_of_anton_cli.subcommands.logout import build_logout_parser
-from son_of_anton_cli.subcommands.auth import build_auth_parser
 from son_of_anton_cli.subcommands.status import build_status_parser
 from son_of_anton_cli.subcommands.pause import build_pause_parser
-from son_of_anton_cli.subcommands.hooks import build_hooks_parser
-from son_of_anton_cli.subcommands.doctor import build_doctor_parser
-from son_of_anton_cli.subcommands.verify import build_verify_parser
-from son_of_anton_cli.subcommands.security import build_security_parser
-from son_of_anton_cli.subcommands.approvals import build_approvals_parser
-from son_of_anton_cli.subcommands.dump import build_dump_parser
-from son_of_anton_cli.subcommands.debug import build_debug_parser
-from son_of_anton_cli.subcommands.backup import build_backup_parser
-from son_of_anton_cli.subcommands.import_cmd import build_import_cmd_parser
-from son_of_anton_cli.subcommands.import_agent import build_import_agent_parser
 from son_of_anton_cli.subcommands.config import build_config_parser
-from son_of_anton_cli.subcommands.skin import build_skin_parser
-from son_of_anton_cli.subcommands.console import build_console_parser
-from son_of_anton_cli.subcommands.update import build_update_parser
-from son_of_anton_cli.subcommands.uninstall import build_uninstall_parser
-from son_of_anton_cli.subcommands.logs import build_logs_parser
-from son_of_anton_cli.subcommands.prompt_size import build_prompt_size_parser
-from son_of_anton_cli.subcommands.memory import build_memory_parser
-from son_of_anton_cli.subcommands.tools import build_tools_parser
-from son_of_anton_cli.subcommands.insights import build_insights_parser
-from son_of_anton_cli.subcommands.monitoring import build_monitoring_parser
 from son_of_anton_cli.subcommands.skills import build_skills_parser
-from son_of_anton_cli.subcommands.pairing import build_pairing_parser
-from son_of_anton_cli.subcommands.plugins import build_plugins_parser
 from son_of_anton_cli.subcommands.mcp import build_mcp_parser
-from son_of_anton_cli.subcommands.claw import build_claw_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -1637,24 +1609,6 @@ def cmd_gateway(args):
     from son_of_anton_cli.gateway import gateway_command
 
     gateway_command(args)
-
-
-def cmd_proxy(args):
-    """Local OpenAI-compatible proxy to OAuth providers."""
-    # Lazy import — pulls in aiohttp, which is gated behind an extras install
-    # for users who don't run the proxy or the messaging gateway.
-    from son_of_anton_cli.proxy.cli import cmd_proxy as _cmd_proxy
-
-    rc = _cmd_proxy(args)
-    if isinstance(rc, int) and rc != 0:
-        raise SystemExit(rc)
-
-
-def cmd_setup(args):
-    """Interactive setup wizard."""
-    from son_of_anton_cli.setup import run_setup_wizard
-
-    run_setup_wizard(args)
 
 
 def cmd_model(args):
@@ -3234,27 +3188,6 @@ def _stepfun_base_url_for_region(region: str) -> str:
 
 
 
-def cmd_login(args):
-    """Authenticate Son of Anton CLI with a provider."""
-    from son_of_anton_cli.auth import login_command
-
-    login_command(args)
-
-
-def cmd_logout(args):
-    """Clear provider authentication."""
-    from son_of_anton_cli.auth import logout_command
-
-    logout_command(args)
-
-
-def cmd_auth(args):
-    """Manage pooled credentials."""
-    from son_of_anton_cli.auth_commands import auth_command
-
-    auth_command(args)
-
-
 def cmd_status(args):
     """Show status of all components."""
     from son_of_anton_cli.status import show_status
@@ -3269,136 +3202,11 @@ def cmd_cron(args):
     cron_command(args)
 
 
-def cmd_slack(args):
-    """Slack integration helpers.
-
-    Dispatches ``son-of-anton slack <subcommand>``. Currently supports:
-      manifest — print or write a Slack app manifest with every gateway
-                 command registered as a first-class slash.
-    """
-    sub = getattr(args, "slack_command", None)
-    if sub in {None, ""}:
-        # No subcommand — print usage hint.
-        print(
-            "usage: son-of-anton slack <subcommand>\n"
-            "\n"
-            "subcommands:\n"
-            "  manifest   Generate a Slack app manifest with every gateway\n"
-            "             command registered as a native slash\n"
-            "\n"
-            "Run `son-of-anton slack manifest -h` for details.",
-            file=sys.stderr,
-        )
-        return 1
-
-    if sub == "manifest":
-        from son_of_anton_cli.slack_cli import slack_manifest_command
-
-        status = slack_manifest_command(args)
-        if status:
-            raise SystemExit(status)
-        return status
-
-    print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
-    return 1
-
-
-def cmd_project(args):
-    """Manage projects (named, multi-folder workspaces)."""
-    from son_of_anton_cli.projects_cmd import projects_command
-
-    return projects_command(args)
-
-
-def cmd_hooks(args):
-    """Shell-hook inspection and management."""
-    from son_of_anton_cli.hooks import hooks_command
-
-    hooks_command(args)
-
-
-def cmd_doctor(args):
-    """Check configuration and dependencies."""
-    from son_of_anton_cli.doctor import run_doctor
-
-    run_doctor(args)
-
-
-def cmd_verify(args):
-    """Detect a project's run recipe and smoke-test it."""
-    from son_of_anton_cli.verify_cmd import run_verify_command
-
-    sys.exit(run_verify_command(args))
-
-
-def cmd_security(args):
-    """Dispatch `son-of-anton security <subcmd>`."""
-    sub = getattr(args, "security_command", None)
-    if sub in ("audit", None):
-        from son_of_anton_cli.security_audit import cmd_security_audit
-
-        # Default subcommand is `audit` when no subcmd is given.
-        code = cmd_security_audit(args)
-        sys.exit(int(code or 0))
-    print(f"unknown security subcommand: {sub}", file=sys.stderr)
-    sys.exit(2)
-
-
-def cmd_approvals(args):
-    """Dispatch `son-of-anton approvals <subcmd>`."""
-    from son_of_anton_cli.approvals_suggest import approvals_command
-
-    status = approvals_command(args)
-    if status:
-        sys.exit(status)
-    return status
-
-
-def cmd_dump(args):
-    """Dump setup summary for support/debugging."""
-    from son_of_anton_cli.dump import run_dump
-
-    run_dump(args)
-
-
-def cmd_debug(args):
-    """Debug tools (share report, etc.)."""
-    from son_of_anton_cli.debug import run_debug
-
-    run_debug(args)
-
-
 def cmd_config(args):
     """Configuration management."""
     from son_of_anton_cli.config import config_command
 
     config_command(args)
-
-
-def cmd_skin(args):
-    """Skin management (list / use / set)."""
-    from son_of_anton_cli.skin_cmd import skin_command
-
-    skin_command(args)
-
-
-def cmd_backup(args):
-    """Back up Son of Anton home directory to a zip file."""
-    if getattr(args, "quick", False):
-        from son_of_anton_cli.backup import run_quick_backup
-
-        run_quick_backup(args)
-    else:
-        from son_of_anton_cli.backup import run_backup
-
-        run_backup(args)
-
-
-def cmd_import(args):
-    """Restore a Son of Anton backup from a zip file."""
-    from son_of_anton_cli.backup import run_import
-
-    run_import(args)
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
@@ -3411,17 +3219,6 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 def cmd_version(args):
     """Show version (--version/-V flag)."""
     _print_version_info(check_updates=True)
-
-
-def cmd_uninstall(args):
-    """Uninstall Son of Anton Agent."""
-    # Full/keep-data uninstall. ``--yes`` runs non-interactively, so only
-    # gate on a TTY when we actually need to prompt for the option + confirm.
-    if not getattr(args, "yes", False):
-        _require_tty("uninstall")
-    from son_of_anton_cli.uninstall import run_uninstall
-
-    run_uninstall(args)
 
 
 def _clear_bytecode_cache(root: Path) -> int:
@@ -4711,117 +4508,6 @@ def _size_delta_label(saved_mb: float) -> str:
     return f"grew by {-saved_mb:.1f} MB"
 
 
-def cmd_update(args):
-    """Update Son of Anton Agent to the latest version.
-
-    Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
-    runs the update, then restores stdio on the way out (even on
-    ``sys.exit`` or unhandled exceptions).
-    """
-    from son_of_anton_cli.config import (
-        detect_install_method,
-        is_managed,
-        is_nix_install_method,
-        managed_error,
-        recommended_update_command_for_method,
-    )
-
-    if is_managed():
-        managed_error("update Son of Anton Agent")
-        return
-
-    # --plan is read-only and deployment-kind aware, so it runs BEFORE the
-    # nix refusal gate: on a package-managed install the plan itself reports
-    # "not updatable in place" plus the right mechanism — strictly more
-    # useful than the bare refusal text.
-    if getattr(args, "plan", False):
-        # Read-only plan phase (#91277 Phase 2): inventory every running
-        # Son of Anton runtime across profiles, its supervisor, and its running
-        # code version — without mutating anything. Safe on a live fleet.
-        from son_of_anton_cli.update_inventory import (
-            collect_runtime_inventory,
-            print_update_plan,
-        )
-
-        print_update_plan(collect_runtime_inventory())
-        return
-
-    install_method = detect_install_method(PROJECT_ROOT)
-    if is_nix_install_method(install_method):
-        print(recommended_update_command_for_method(install_method))
-        sys.exit(1)
-
-    if getattr(args, "check", False):
-        # --check honors --branch so the "any new commits?" answer matches
-        # what a subsequent `son-of-anton update --branch=<x>` would actually pull.
-        branch = _resolve_update_branch(args)
-        _self()._cmd_update_check(
-            branch=branch,
-            branch_explicit=bool(getattr(args, "branch", None)),
-        )
-        return
-
-    gateway_mode = getattr(args, "gateway", False)
-
-    # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
-    # writes to a closed stdout.  No-op in gateway mode.  See
-    # _install_hangup_protection for rationale.
-    _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
-    # Cross-process mutual exclusion. Multiple updaters mutate one checkout.
-    # Two of them running together rewrite source under a live interpreter and
-    # strand the tree half-updated. Share the update marker rather than
-    # inventing a second lock.
-    from son_of_anton_cli.update_lock import (
-        UPDATE_EXIT_CONCURRENT,
-        UpdateLock,
-        describe_holder,
-    )
-
-    _update_lock = UpdateLock()
-    if not _update_lock.acquire():
-        print(describe_holder(_update_lock.holder))
-        _finalize_update_output(_update_io_state)
-        sys.exit(UPDATE_EXIT_CONCURRENT)
-
-    try:
-        _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
-    except SystemExit as _update_exit:
-        # Receipt boundary (#91283 review): the impl has many early
-        # sys.exit paths (concurrent-instance preflight, venv-holder
-        # refusal, head-pinned no-op, fetch failure) that never reach an
-        # inner finalize. Persist any still-open receipt with the real
-        # exit code, then let the exit proceed unchanged. No-op when an
-        # inner path already finalized (exactly-once by construction).
-        try:
-            from son_of_anton_cli.update_receipt import finalize_pending_update_receipt
-
-            _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
-            finalize_pending_update_receipt(_code, f"sys.exit({_code})")
-        except Exception:
-            pass
-        raise
-    except BaseException as _update_exc:
-        try:
-            from son_of_anton_cli.update_receipt import finalize_pending_update_receipt
-
-            finalize_pending_update_receipt(
-                1, f"{type(_update_exc).__name__}: {_update_exc}"
-            )
-        except Exception:
-            pass
-        raise
-    else:
-        try:
-            from son_of_anton_cli.update_receipt import finalize_pending_update_receipt
-
-            finalize_pending_update_receipt(0, "completed at command boundary")
-        except Exception:
-            pass
-    finally:
-        _update_lock.release()
-        _finalize_update_output(_update_io_state)
-
-
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
@@ -4904,41 +4590,6 @@ def cmd_completion(args, parser=None):
         print(generate_bash(parser))
 
 
-def cmd_prompt_size(args):
-    """Show a byte/char breakdown of the system prompt + tool schemas."""
-    from son_of_anton_cli.prompt_size import cmd_prompt_size as _impl
-
-    _impl(args)
-
-
-def cmd_logs(args):
-    """View and filter Son of Anton log files."""
-    from son_of_anton_cli.logs import tail_log, list_logs
-
-    log_name = getattr(args, "log_name", "agent") or "agent"
-
-    if log_name == "list":
-        list_logs()
-        return
-
-    tail_log(
-        log_name,
-        num_lines=getattr(args, "lines", 50),
-        follow=getattr(args, "follow", False),
-        level=getattr(args, "level", None),
-        session=getattr(args, "session", None),
-        since=getattr(args, "since", None),
-        component=getattr(args, "component", None),
-    )
-
-
-def cmd_console(args):
-    """Open the safe Son of Anton command console."""
-    from son_of_anton_cli.console_engine import run_console_repl
-
-    return run_console_repl()
-
-
 def _build_provider_choices() -> list[str]:
     """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
     try:
@@ -4960,23 +4611,12 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
-        "config", "console", "cron", "curator", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
-        "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "plugins",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
-        "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "worktree", "chat", "secrets", "security",
+        "chat", "config", "cron", "gateway", "mcp", "model", "pause",
+        "resume", "sessions", "skills", "status",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
         "help",
-        "verify",
     }
 )
 
@@ -5284,151 +4924,6 @@ def _try_fast_chat_launch() -> bool:
     return True
 
 
-def cmd_memory(args):
-    sub = getattr(args, "memory_command", None)
-    if sub == "off":
-        from son_of_anton_cli.config import load_config, save_config
-
-        config = load_config()
-        if not isinstance(config.get("memory"), dict):
-            config["memory"] = {}
-        config["memory"]["provider"] = ""
-        save_config(config)
-        print("\n  ✓ Memory provider: built-in only")
-        print("  Saved to config.yaml\n")
-    elif sub == "reset":
-        from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
-
-        mem_dir = get_son_of_anton_home() / "memories"
-        target = getattr(args, "target", "all")
-        files_to_reset = []
-        if target in {"all", "memory"}:
-            files_to_reset.append(("MEMORY.md", "agent notes"))
-        if target in {"all", "user"}:
-            files_to_reset.append(("USER.md", "user profile"))
-
-        # Check what exists
-        existing = [
-            (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
-        ]
-        if not existing:
-            print(
-                f"\n  Nothing to reset — no memory files found in {display_son_of_anton_home()}/memories/\n"
-            )
-            return
-
-        print("\n  This will permanently erase the following memory files:")
-        for f, desc in existing:
-            path = mem_dir / f
-            size = path.stat().st_size
-            print(f"    ◆ {f} ({desc}) — {size:,} bytes")
-
-        if not getattr(args, "yes", False):
-            try:
-                answer = input("\n  Type 'yes' to confirm: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\n  Cancelled.\n")
-                return
-            if answer != "yes":
-                print("  Cancelled.\n")
-                return
-
-        for f, desc in existing:
-            (mem_dir / f).unlink()
-            print(f"  ✓ Deleted {f} ({desc})")
-
-        print(
-            "\n  Memory reset complete. New sessions will start with a blank slate."
-        )
-        print(f"  Files were in: {display_son_of_anton_home()}/memories/\n")
-    else:
-        from son_of_anton_cli.memory_setup import memory_command
-
-        memory_command(args)
-
-
-def cmd_tools(args):
-    action = getattr(args, "tools_action", None)
-    if action in {"list", "disable", "enable"}:
-        from son_of_anton_cli.tools_config import tools_disable_enable_command
-
-        tools_disable_enable_command(args)
-    elif action == "post-setup":
-        from son_of_anton_cli.tools_config import run_post_setup_command
-
-        sys.exit(run_post_setup_command(args))
-    else:
-        _require_tty("tools")
-        from son_of_anton_cli.tools_config import tools_command
-
-        tools_command(args)
-
-
-def cmd_insights(args):
-    db = None
-    try:
-        from son_of_anton_state import SessionDB
-        from agent.insights import InsightsEngine
-
-        db = SessionDB()
-        engine = InsightsEngine(db)
-        report = engine.generate(days=args.days, source=args.source)
-        print(engine.format_terminal(report))
-    except Exception as e:
-        print(f"Error generating insights: {e}")
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
-
-
-def cmd_monitoring(args):
-    """Gateway monitoring status: health & diagnostics export posture."""
-    from son_of_anton_cli.config import load_config
-
-    action = getattr(args, "monitoring_action", None) or "status"
-    config = load_config()
-    mon_raw = config.get("monitoring")
-    mon: dict = mon_raw if isinstance(mon_raw, dict) else {}
-
-    if action == "status":
-        from agent.monitoring import otlp_exporter
-
-        gh_raw = mon.get("gateway_health_export")
-        gh: dict = gh_raw if isinstance(gh_raw, dict) else {}
-        export_raw = mon.get("export")
-        export_cfg: dict = export_raw if isinstance(export_raw, dict) else {}
-        otlp_raw = export_cfg.get("otlp")
-        otlp: dict = otlp_raw if isinstance(otlp_raw, dict) else {}
-
-        print("Gateway monitoring")
-        print(f"  Health export:  {'enabled' if gh.get('enabled') else 'disabled'} "
-              f"(monitoring.gateway_health_export.enabled)")
-        if gh.get("enabled"):
-            print(f"    Metrics:            {'on' if gh.get('metrics_enabled', True) else 'off'} "
-                  f"(interval {gh.get('export_interval_seconds', 60)}s)")
-            print(f"    Diagnostic events:  {'on' if gh.get('diagnostic_events_enabled', True) else 'off'}")
-            print(f"    Warning/error logs: {'on' if gh.get('warning_error_events_enabled', True) else 'off'} "
-                  f"(interval {gh.get('logs_export_interval_seconds', 5)}s)")
-            print("    Content safety:     always on "
-                  "(rendered messages are never exported; not configurable)")
-        endpoint = otlp.get("endpoint") or ""
-        if otlp.get("enabled") and endpoint:
-            print(f"  OTLP endpoint:  {endpoint}")
-        else:
-            print("  OTLP endpoint:  not configured (monitoring.export.otlp)")
-        print(f"  OTel SDK:       {'installed' if otlp_exporter.is_available() else 'not installed'} "
-              f"(optional extra: son-of-anton[otlp])")
-        print("\n  Scope: gateway service health + redacted diagnostics only.")
-        print("  No prompts, messages, tool args/results, usage analytics, or traces.")
-        return
-
-    print(f"Unknown monitoring action: {action}", file=sys.stderr)
-    sys.exit(2)
-
-
 def cmd_skills(args):
     # Route 'config' action to skills_config module
     if getattr(args, "skills_action", None) == "config":
@@ -5519,28 +5014,10 @@ def _cmd_skills_trust(args):
         print(f"No project skills found yet — add them under {subdirs}.")
 
 
-def cmd_pairing(args):
-    from son_of_anton_cli.pairing import pairing_command
-
-    pairing_command(args)
-
-
-def cmd_plugins(args):
-    from son_of_anton_cli.plugins_cmd import plugins_command
-
-    plugins_command(args)
-
-
 def cmd_mcp(args):
     from son_of_anton_cli.mcp_config import mcp_command
 
     mcp_command(args)
-
-
-def cmd_claw(args):
-    from son_of_anton_cli.claw import claw_command
-
-    claw_command(args)
 
 
 def _advertise_agent_env() -> None:
@@ -5683,256 +5160,10 @@ def main():
     # model command  (parser built in son_of_anton_cli/subcommands/model.py)
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
-
-    # =========================================================================
-    # fallback command — manage the fallback provider chain
-    # =========================================================================
-    from son_of_anton_cli.fallback_cmd import cmd_fallback
-
-    fallback_parser = subparsers.add_parser(
-        "fallback",
-        help="Manage fallback providers (tried when the primary model fails)",
-        description=(
-            "Manage the fallback provider chain.  Fallback providers are tried "
-            "in order when the primary model fails with rate-limit, overload, or "
-            "connection errors."
-        ),
-    )
-    fallback_subparsers = fallback_parser.add_subparsers(dest="fallback_command")
-    fallback_subparsers.add_parser(
-        "list",
-        aliases=["ls"],
-        help="Show the current fallback chain (default when no subcommand)",
-    )
-    fallback_subparsers.add_parser(
-        "add",
-        help="Pick a provider + model (same picker as `son-of-anton model`) and append to the chain",
-    )
-    fallback_subparsers.add_parser(
-        "remove",
-        aliases=["rm"],
-        help="Pick an entry to delete from the chain",
-    )
-    fallback_subparsers.add_parser(
-        "clear",
-        help="Remove all fallback entries",
-    )
-    fallback_parser.set_defaults(func=cmd_fallback)
-
-    # =========================================================================
-    # worktree command — audit/reclaim accumulated git worktrees + branches
-    # =========================================================================
-    worktree_parser = subparsers.add_parser(
-        "worktree",
-        help="Audit and reclaim accumulated git worktrees and merged branches",
-        description=(
-            "Attended reclaim for the .worktrees/ directory son-of-anton -w sessions "
-            "accumulate. Never deletes uncommitted tracked changes, unique "
-            "unpushed commits, or in-use trees; untracked-only scratch is "
-            "archived to ~/.son-of-anton/archive/worktree-prune/ before removal."
-        ),
-    )
-    worktree_subparsers = worktree_parser.add_subparsers(dest="worktree_action")
-    worktree_list = worktree_subparsers.add_parser(
-        "list",
-        aliases=["ls", "audit"],
-        help="Classify every tree: age, size, verdict, reason (default action)",
-    )
-    worktree_list.add_argument("--repo", help="Repo root (default: current repo)")
-    worktree_prune = worktree_subparsers.add_parser(
-        "prune",
-        help="Remove safe trees and delete fully-merged local branches",
-    )
-    worktree_prune.add_argument("--repo", help="Repo root (default: current repo)")
-    worktree_prune.add_argument(
-        "--dry-run", action="store_true",
-        help="Show the plan without changing anything",
-    )
-    worktree_prune.add_argument(
-        "--trees-only", action="store_true",
-        help="Only remove worktrees; leave local branches alone",
-    )
-    worktree_prune.add_argument(
-        "--branches-only", action="store_true",
-        help="Only delete merged local branches; leave worktrees alone",
-    )
-
-    def _dispatch_worktree(_args):
-        from son_of_anton_cli.worktree_cmd import cmd_worktree
-
-        # argparse aliases set dest to the literal typed string ("ls"/"audit").
-        action = getattr(_args, "worktree_action", None)
-        if action in ("ls", "audit"):
-            _args.worktree_action = "list"
-        return cmd_worktree(_args)
-
-    worktree_parser.set_defaults(func=_dispatch_worktree)
-
-
-    # =========================================================================
-    # secrets command — external secret managers (Bitwarden, 1Password)
-    # =========================================================================
-    secrets_parser = subparsers.add_parser(
-        "secrets",
-        help="Manage external secret sources (Bitwarden, 1Password)",
-        description=(
-            "Pull API keys from an external secret manager at process startup "
-            "instead of storing them in ~/.son-of-anton/.env.  Supports Bitwarden "
-            "Secrets Manager and 1Password."
-        ),
-    )
-    secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
-
-    secrets_bw = secrets_subparsers.add_parser(
-        "bitwarden",
-        aliases=["bw"],
-        help="Bitwarden Secrets Manager integration",
-    )
-
-    secrets_op = secrets_subparsers.add_parser(
-        "onepassword",
-        aliases=["op", "1password"],
-        help="1Password (op:// references) integration",
-    )
-
-    # Lazy-import secrets_cli: the module imports agent.secret_sources.bitwarden
-    # which loads cryptography's native extension into the updater process,
-    # causing the self-lock preflight to defer (#86781).  secrets_cli defers
-    # its backend import to first use (module-level __getattr__ +
-    # handler-level _load_bw()), so register_cli at parse time only wires
-    # argparse structure with no crypto cost.
-    from son_of_anton_cli import secrets_cli as _secrets_cli
-    from son_of_anton_cli import onepassword_secrets_cli as _op_secrets_cli
-
-    _secrets_cli.register_cli(secrets_bw)
-    _op_secrets_cli.register_cli(secrets_op)
-
-    def _dispatch_secrets(args):  # noqa: ANN001
-        sub = getattr(args, "secrets_command", None)
-        if sub is None:
-            secrets_parser.print_help()
-            return 0
-        return args.func(args)
-
-    secrets_parser.set_defaults(func=_dispatch_secrets)
-
-    # =========================================================================
-    # egress command — iron-proxy outbound credential-injection firewall
-    # =========================================================================
-    # NOTE: this is the OUTBOUND egress firewall (ironsh/iron-proxy).
-    # `son-of-anton proxy` (defined elsewhere in this file) is a separate INBOUND
-    # OAuth-aggregator reverse proxy.  Different direction, different purpose.
-    egress_parser = subparsers.add_parser(
-        "egress",
-        help="Manage the iron-proxy egress credential-injection firewall",
-        description=(
-            "Manage iron-proxy, the optional TLS-intercepting egress firewall "
-            "that swaps proxy tokens for real API credentials before outbound "
-            "requests leave a sandbox.  Disabled by default."
-        ),
-    )
-
-    from son_of_anton_cli import proxy_cli as _proxy_cli
-    _proxy_cli.register_cli(egress_parser)
-
-    def _dispatch_egress(args):  # noqa: ANN001
-        # The egress subparser uses dest='egress_command' to stay disjoint
-        # from the inbound OAuth ``son-of-anton proxy`` subparser (dest='proxy_command').
-        sub = getattr(args, "egress_command", None)
-        if sub is not None and hasattr(args, "func") and args.func is not _dispatch_egress:
-            return args.func(args)
-        egress_parser.print_help()
-        return 0
-
-    egress_parser.set_defaults(func=_dispatch_egress)
-
-    # =========================================================================
-    # migrate command
-    # =========================================================================
-    from son_of_anton_cli.migrate import cmd_migrate, cmd_migrate_xai
-
-    migrate_parser = subparsers.add_parser(
-        "migrate",
-        help="Migrate configuration for retired models or deprecated settings",
-        description=(
-            "Diagnose and (optionally) rewrite the active config.yaml to "
-            "replace references to retired models or deprecated settings."
-        ),
-    )
-    migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
-
-    migrate_xai = migrate_subparsers.add_parser(
-        "xai",
-        help="Migrate xAI models scheduled for retirement on May 15, 2026",
-        description=(
-            "Scan config.yaml for references to xAI models retiring on "
-            "May 15, 2026 and, with --apply, rewrite them in-place to the "
-            "official replacements per the xAI migration guide. The original "
-            "config.yaml is backed up before any rewrite."
-        ),
-    )
-    migrate_xai.add_argument(
-        "--apply",
-        action="store_true",
-        help="Rewrite config.yaml in-place (default: dry-run, no writes)",
-    )
-    migrate_xai.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="Skip the timestamped backup of config.yaml when applying",
-    )
-    migrate_xai.set_defaults(func=cmd_migrate_xai)
-    migrate_parser.set_defaults(func=cmd_migrate)
-
     # =========================================================================
     # gateway + proxy commands  (parsers built in son_of_anton_cli/subcommands/gateway.py)
     # =========================================================================
-    build_gateway_parser(
-        subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy
-    )
-
-    # =========================================================================
-    # lsp command
-    # =========================================================================
-    try:
-        from agent.lsp.cli import register_subparser as _lsp_register
-        _lsp_register(subparsers)
-    except Exception as _lsp_err:  # noqa: BLE001
-        # LSP is optional infrastructure — never let a registration
-        # failure break the CLI overall.
-        logger.debug("LSP CLI registration failed: %s", _lsp_err)
-
-    # =========================================================================
-    # setup command  (parser built in son_of_anton_cli/subcommands/setup.py)
-    # =========================================================================
-    build_setup_parser(subparsers, cmd_setup=cmd_setup)
-
-
-    # =========================================================================
-    # slack command  (parser built in son_of_anton_cli/subcommands/slack.py)
-    # =========================================================================
-    build_slack_parser(subparsers, cmd_slack=cmd_slack)
-
-    # =========================================================================
-    # send command — pipe shell-script output to any configured platform
-    # =========================================================================
-    from son_of_anton_cli.send_cmd import register_send_subparser
-    register_send_subparser(subparsers)
-
-    # =========================================================================
-    # login command  (parser built in son_of_anton_cli/subcommands/login.py)
-    # =========================================================================
-    build_login_parser(subparsers, cmd_login=cmd_login)
-
-    # =========================================================================
-    # logout command  (parser built in son_of_anton_cli/subcommands/logout.py)
-    # =========================================================================
-    build_logout_parser(subparsers, cmd_logout=cmd_logout)
-
-    # =========================================================================
-    # auth command  (parser built in son_of_anton_cli/subcommands/auth.py)
-    # =========================================================================
-    build_auth_parser(subparsers, cmd_auth=cmd_auth)
+    build_gateway_parser(subparsers, cmd_gateway=cmd_gateway)
 
     # =========================================================================
     # status command  (parser built in son_of_anton_cli/subcommands/status.py)
@@ -5950,130 +5181,14 @@ def main():
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
 
     # =========================================================================
-    # project command — named, multi-folder workspaces
-    # =========================================================================
-    from son_of_anton_cli.projects_cmd import build_parser as _build_project_parser
-
-    project_parser = _build_project_parser(subparsers)
-    project_parser.set_defaults(func=cmd_project)
-
-    # =========================================================================
-    # hooks command — shell-hook inspection and management
-    # =========================================================================
-    # hooks command  (parser built in son_of_anton_cli/subcommands/hooks.py)
-    # =========================================================================
-    build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
-
-    # =========================================================================
-    # doctor command  (parser built in son_of_anton_cli/subcommands/doctor.py)
-    # =========================================================================
-    build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
-
-    # =========================================================================
-    # verify command  (parser built in son_of_anton_cli/subcommands/verify.py)
-    # =========================================================================
-    build_verify_parser(subparsers, cmd_verify=cmd_verify)
-
-    # =========================================================================
-    # security command — on-demand supply-chain audit
-    # =========================================================================
-    # security command  (parser built in son_of_anton_cli/subcommands/security.py)
-    # =========================================================================
-    build_security_parser(subparsers, cmd_security=cmd_security)
-
-    # =========================================================================
-    # approvals command  (parser built in son_of_anton_cli/subcommands/approvals.py)
-    # =========================================================================
-    build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
-
-    # =========================================================================
-    # dump command  (parser built in son_of_anton_cli/subcommands/dump.py)
-    # =========================================================================
-    build_dump_parser(subparsers, cmd_dump=cmd_dump)
-
-    # =========================================================================
-    # debug command  (parser built in son_of_anton_cli/subcommands/debug.py)
-    # =========================================================================
-    build_debug_parser(subparsers, cmd_debug=cmd_debug)
-
-    # =========================================================================
-    # backup command  (parser built in son_of_anton_cli/subcommands/backup.py)
-    # =========================================================================
-    build_backup_parser(subparsers, cmd_backup=cmd_backup)
-
-    # =========================================================================
-    # checkpoints command
-    # =========================================================================
-    checkpoints_parser = subparsers.add_parser(
-        "checkpoints",
-        help="Inspect / prune / clear ~/.son-of-anton/checkpoints/",
-        description="Manage the filesystem checkpoint store — the shadow git "
-        "repo son-of-anton uses to snapshot working directories before "
-        "write_file/patch/terminal calls. Lets you see how much "
-        "space checkpoints occupy, force a prune, or wipe the base.",
-    )
-    from son_of_anton_cli.checkpoints import register_cli as _register_checkpoints_cli
-    _register_checkpoints_cli(checkpoints_parser)
-
-    # =========================================================================
-    # import command  (parser built in son_of_anton_cli/subcommands/import_cmd.py)
-    # =========================================================================
-    build_import_cmd_parser(subparsers, cmd_import=cmd_import)
-
-    # =========================================================================
-    # import-agent command  (parser: son_of_anton_cli/subcommands/import_agent.py)
-    # =========================================================================
-    def cmd_import_agent(args):
-        from son_of_anton_cli.agent_import import import_agent_command
-        import_agent_command(args)
-
-    build_import_agent_parser(subparsers, cmd_import_agent=cmd_import_agent)
-
-    # =========================================================================
     # config command  (parser built in son_of_anton_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
 
     # =========================================================================
-    # skin command  (parser built in son_of_anton_cli/subcommands/skin.py)
-    # =========================================================================
-    build_skin_parser(subparsers, cmd_skin=cmd_skin)
-
-    # =========================================================================
-    # console command  (parser built in son_of_anton_cli/subcommands/console.py)
-    # =========================================================================
-    build_console_parser(subparsers, cmd_console=cmd_console)
-
-    # =========================================================================
-    # pairing command  (parser built in son_of_anton_cli/subcommands/pairing.py)
-    # =========================================================================
-    build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
-
-    # =========================================================================
     # skills command  (parser built in son_of_anton_cli/subcommands/skills.py)
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
-
-    # =========================================================================
-    # bundles command — skill bundles (alias /<name> for multiple skills)
-    # =========================================================================
-    bundles_parser = subparsers.add_parser(
-        "bundles",
-        help="Create, list, and manage skill bundles (aliases for multiple skills)",
-        description=(
-            "Skill bundles let you load several skills under one slash "
-            "command. `/<bundle>` from the CLI or gateway loads every "
-            "referenced skill at once."
-        ),
-    )
-    from son_of_anton_cli.bundles import register_cli as _bundles_register, bundles_command
-    _bundles_register(bundles_parser)
-    bundles_parser.set_defaults(func=bundles_command)
-
-    # =========================================================================
-    # plugins command  (parser built in son_of_anton_cli/subcommands/plugins.py)
-    # =========================================================================
-    build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
     # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.
@@ -6124,58 +5239,6 @@ def main():
                     plugin_parser.set_defaults(func=cmd_info["handler_fn"])
         except Exception as _exc:
             logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
-
-    # =========================================================================
-    # curator command — background skill maintenance
-    # =========================================================================
-    curator_parser = subparsers.add_parser(
-        "curator",
-        help="Background skill maintenance (curator) — status, run, pause, pin",
-        description=(
-            "The curator is an auxiliary-model background task that "
-            "periodically reviews agent-created skills, prunes stale ones, "
-            "consolidates overlaps, and archives obsolete skills. "
-            "Bundled and hub-installed skills are never touched. "
-            "Archives are recoverable; auto-deletion never happens."
-        ),
-    )
-    try:
-        from son_of_anton_cli.curator import register_cli as _register_curator_cli
-
-        _register_curator_cli(curator_parser)
-    except Exception as _exc:
-        logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
-
-    # =========================================================================
-    # journey command — learned skills + memories over time, in the terminal
-    # =========================================================================
-    journey_parser = subparsers.add_parser(
-        "journey",
-        aliases=["learning", "memory-graph"],
-        help="Timeline of learned skills + memories over time",
-        description=(
-            "A terminal rendition of the desktop Star Map / Memory Graph: a "
-            "timeline bar chart of learned skills and memories over time "
-            "(oldest at top, newest at bottom) plus a playable constellation "
-            "scrubber. Mirrors the TUI `/journey` overlay and the desktop panel."
-        ),
-    )
-    try:
-        from son_of_anton_cli.journey import register_cli as _register_journey_cli
-
-        _register_journey_cli(journey_parser)
-    except Exception as _exc:
-        logging.getLogger(__name__).debug("journey CLI wiring failed: %s", _exc)
-
-    # =========================================================================
-    # memory command  (parser built in son_of_anton_cli/subcommands/memory.py)
-    # =========================================================================
-    build_memory_parser(subparsers, cmd_memory=cmd_memory)
-
-    # =========================================================================
-    # tools command  (parser built in son_of_anton_cli/subcommands/tools.py)
-    # =========================================================================
-    build_tools_parser(subparsers, cmd_tools=cmd_tools)
 
     # =========================================================================
     # mcp command  (parser built in son_of_anton_cli/subcommands/mcp.py)
@@ -6699,55 +5762,8 @@ def main():
 
     sessions_parser.set_defaults(func=_dispatch_sessions)
 
-    # =========================================================================
-    # insights command  (parser built in son_of_anton_cli/subcommands/insights.py)
-    # =========================================================================
-    build_insights_parser(subparsers, cmd_insights=cmd_insights)
-    build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
-
-    # =========================================================================
-    # claw command  (parser built in son_of_anton_cli/subcommands/claw.py)
-    # =========================================================================
-    build_claw_parser(subparsers, cmd_claw=cmd_claw)
-
     # NOTE: the `son-of-anton version` subcommand was removed — `son-of-anton --version`
     # / `-V` now carries the full output including update status.
-
-    # =========================================================================
-    # update command  (parser built in son_of_anton_cli/subcommands/update.py)
-    # =========================================================================
-    build_update_parser(subparsers, cmd_update=cmd_update)
-
-    # =========================================================================
-    # uninstall command  (parser built in son_of_anton_cli/subcommands/uninstall.py)
-    # =========================================================================
-    build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
-
-    # =========================================================================
-    # completion command
-    # =========================================================================
-    completion_parser = subparsers.add_parser(
-        "completion",
-        help="Print shell completion script (bash, zsh, or fish)",
-    )
-    completion_parser.add_argument(
-        "shell",
-        nargs="?",
-        default="bash",
-        choices=["bash", "zsh", "fish"],
-        help="Shell type (default: bash)",
-    )
-    completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
-
-    # =========================================================================
-    # logs command  (parser built in son_of_anton_cli/subcommands/logs.py)
-    # =========================================================================
-    build_logs_parser(subparsers, cmd_logs=cmd_logs)
-
-    # =========================================================================
-    # prompt-size command  (parser built in son_of_anton_cli/subcommands/prompt_size.py)
-    # =========================================================================
-    build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
 
     # =========================================================================
     # Parse and execute
