@@ -27,10 +27,8 @@ from son_of_anton_cli.auth import (
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
-    _nous_inference_env_override,
     format_auth_error,
     resolve_provider,
-    resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
     resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials,
@@ -389,17 +387,6 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
         if normalized in _VALID_API_MODES:
             return normalized
     return None
-
-
-def _nous_inference_base_url_override() -> str:
-    """Return the trusted Nous runtime base URL override, if configured.
-
-    Delegates to ``auth._nous_inference_env_override`` so every
-    ``NOUS_INFERENCE_BASE_URL`` read shares one normalization path
-    (trailing-slash stripping, blank → empty). The env source is trusted
-    and intentionally bypasses the network host allowlist there.
-    """
-    return _nous_inference_env_override() or ""
 
 
 def _maybe_apply_codex_app_server_runtime(

@@ -401,17 +401,12 @@ def _reasoning_catalog_reader(slug: str):
     """
     try:
         from son_of_anton_cli.models import (
-            nous_model_reasoning_capabilities,
             openrouter_model_reasoning_capabilities,
-            warm_nous_reasoning_caps_async,
             warm_openrouter_reasoning_caps_async,
         )
     except Exception:
         return None
 
-    if slug == "nous":
-        warm_nous_reasoning_caps_async()
-        return nous_model_reasoning_capabilities
     if slug == "openrouter":
         warm_openrouter_reasoning_caps_async()
         return openrouter_model_reasoning_capabilities
@@ -776,10 +771,8 @@ def _apply_pricing(
     """
     from son_of_anton_cli.models import (
         _format_price_per_mtok,
-        check_nous_free_tier,
         compute_sale_discount,
         get_pricing_for_provider,
-        partition_nous_models_by_tier,
     )
 
     # Resolve Nous free-tier once (cached in models.py for the TTL window).

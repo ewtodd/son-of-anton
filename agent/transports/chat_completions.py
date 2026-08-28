@@ -10,7 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
@@ -1074,3 +1074,22 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
 
 def _effective_gemini_max_output_tokens(
     max_tokens: Optional[int], thinking_config: Any
+) -> int:
+    """Resolve native ``maxOutputTokens``.
+
+    Gemini's generateContent API does not treat an omitted cap as
+    unlimited — it applies a low internal default and truncates. When
+    thinking is enabled, also raise a too-small explicit cap to the
+    published 65,535 ceiling so thought tokens do not starve the answer.
+    """
+    if max_tokens is None:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if requested <= 0:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if _thinking_requests_output_headroom(thinking_config):
+        return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
+    return requested

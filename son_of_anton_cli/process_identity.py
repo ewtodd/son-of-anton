@@ -58,12 +58,7 @@ def install_id(project_root: Optional[Path] = None) -> str:
     same machine without path comparisons at scan time.
     """
     if project_root is None:
-        try:
-            from son_of_anton_constants import PROJECT_ROOT as _root
-
-            project_root = Path(_root)
-        except Exception:
-            project_root = Path(__file__).resolve().parent.parent
+        project_root = Path(__file__).resolve().parent.parent
     try:
         canonical = str(Path(project_root).resolve()).lower()
     except OSError:

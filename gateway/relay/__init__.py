@@ -561,10 +561,7 @@ def _resolve_relay_identity_token() -> str:
             token_url = token_url or ""
 
     if not token_url:
-        # Mode 2 — Nous Portal (default, unchanged behaviour).
-        from son_of_anton_cli.auth import resolve_nous_access_token
-
-        return resolve_nous_access_token()
+        return ""
 
     import json
     import urllib.error

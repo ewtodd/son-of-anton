@@ -1200,6 +1200,28 @@ def venv_python_path(venv_dir) -> Path:
     """Path to the Python interpreter inside *venv_dir* (may not exist)."""
     return venv_bin_dir(venv_dir) / "python"
 
+# Top-level packages and modules that ship with Son of Anton. Used to tell a
+# half-updated tree (our own module missing a name a sibling expects) from a
+# missing third-party dependency, which has different remediation. Exact-set,
+# never a prefix test: ``startswith("agent")`` would also claim ``agents`` and
+# ``agentops``. Anything named ``son_of_anton_*`` is matched separately.
+FIRST_PARTY_MODULE_ROOTS: frozenset = frozenset({
+    "agent",
+    "cron",
+    "gateway",
+    "physics_intern",
+    "plugins",
+    "providers",
+    "tools",
+    "cli",
+    "model_tools",
+    "run_agent",
+    "toolsets",
+    "utils",
+    "mcp_serve",
+})
+
+
 def is_first_party_module(name: str | None) -> bool:
     """True when *name* is a module that ships with Son of Anton.
 

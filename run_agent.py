@@ -6662,47 +6662,6 @@ class AIAgent:
 
         return True
 
-    def _try_refresh_nous_client_credentials(
-        self,
-        *,
-        force: bool = True,
-    ) -> bool:
-        if self.provider != "nous":
-            return False
-        if self.api_mode != "chat_completions":
-            return False
-
-        try:
-            from son_of_anton_cli.auth import resolve_nous_runtime_credentials
-
-            creds = resolve_nous_runtime_credentials(
-                timeout_seconds=env_float("SON_OF_ANTON_NOUS_TIMEOUT_SECONDS", 15),
-                force_refresh=force,
-            )
-        except Exception as exc:
-            logger.debug("Nous credential refresh failed: %s", exc)
-            return False
-
-        api_key = creds.get("api_key")
-        base_url = creds.get("base_url")
-        if not isinstance(api_key, str) or not api_key.strip():
-            return False
-        if not isinstance(base_url, str) or not base_url.strip():
-            return False
-
-        self.api_key = api_key.strip()
-        self.base_url = base_url.strip().rstrip("/")
-
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-        # Nous requests should not inherit OpenRouter-only attribution headers.
-        self._client_kwargs.pop("default_headers", None)
-
-        if not self._replace_primary_openai_client(reason="nous_credential_refresh"):
-            return False
-
-        return True
-
     def _try_refresh_env_client_credentials(self) -> bool:
         """Adopt ~/.son-of-anton/.env credential/base-url edits at the turn boundary.
 
@@ -8469,11 +8428,6 @@ class AIAgent:
             resolve_context_compression_timeouts,
             run_compress_context_with_progress_timeout,
         )
-        from agent.portal_tags import (
-            get_conversation_context,
-            reset_conversation_context,
-            set_conversation_context,
-        )
         # Out-of-turn compaction entry points — ``/compact`` (cli.py), the
         # gateway ``/compress`` command and its hygiene sweep (both of which
         # build a throwaway agent), and partial head compression — call this
@@ -8489,10 +8443,6 @@ class AIAgent:
         # system prompt, so that request is a cold write on any endpoint. What
         # it buys is the turns AFTER compaction reading the cache it wrote.
         token = None
-        if get_conversation_context() is None:
-            root = self._conversation_root_id()
-            if root:
-                token = set_conversation_context(root)
         # Every AIAgent compression has a fence, including ordinary in-turn and
         # manual paths. hard_interrupt() uses this exact instance to serialize
         # cancel admission against begin_commit().
@@ -8682,10 +8632,6 @@ class AIAgent:
                     vars(self).pop("_active_compression_commit_fence", None)
                 else:
                     self._active_compression_commit_fence = previous_fence
-            # Restore whatever the caller had, so a compaction never leaks its
-            # tag into the surrounding scope.
-            if token is not None:
-                reset_conversation_context(token)
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -8959,10 +8905,6 @@ class AIAgent:
         )
         from agent import relay_runtime
         from agent.conversation_loop import run_conversation
-        from agent.portal_tags import (
-            reset_conversation_context,
-            set_conversation_context,
-        )
         from son_of_anton_cli.observability.relay_shared_metrics import (
             finish_task_run,
             start_task_run,
@@ -9278,12 +9220,7 @@ class AIAgent:
                     parent_session_id=getattr(self, "_parent_session_id", None) or "",
                 )
                 task_started = True
-            # Publish the conversation id for ambient Nous Portal tagging. Every
-            # LLM call made inside this turn — main loop, compression, vision,
-            # web_extract, session_search, background-review forks
-            # (which copy this Context into their thread) — inherits the
-            # ``conversation=<root>`` tag with zero per-call-site plumbing.
-            token = set_conversation_context(self._conversation_root_id())
+            token = None
             # Publish the session accounting handles the same way so auxiliary
             # calls record their token usage into session_model_usage (task
             # dimension) — the fix for aux spend being invisible in analytics
@@ -9406,8 +9343,6 @@ class AIAgent:
                         self._relay_pending_turn_id = None
                     if acct_token is not None:
                         reset_accounting_context(acct_token)
-                    if token is not None:
-                        reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

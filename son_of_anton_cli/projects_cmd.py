@@ -320,16 +320,4 @@ def _sync_board_default_workdir(proj, board_slug: str) -> None:
     Keeps kanban task worktrees anchored to the project's repo. Failures here
     are non-fatal — the binding itself already succeeded.
     """
-    if not proj.primary_path:
-        return
-    try:
-        from son_of_anton_cli import kanban_db as kb
-
-        slug = kb._normalize_board_slug(board_slug)
-        if not slug:
-            return
-        if slug != kb.DEFAULT_BOARD and not kb.board_exists(slug):
-            return
-        kb.write_board_metadata(slug, default_workdir=proj.primary_path)
-    except Exception:
-        pass
+    return

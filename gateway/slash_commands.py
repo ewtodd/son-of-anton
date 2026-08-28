@@ -585,19 +585,11 @@ class GatewaySlashCommandsMixin:
 
         if not context_length:
             try:
-                from gateway.run import (
-                    _profile_runtime_scope,
-                    _resolve_gateway_model_context,
+                from gateway.run import _resolve_gateway_model_context
+
+                resolved = await asyncio.to_thread(
+                    _resolve_gateway_model_context, model_name or None
                 )
-
-                def _resolve_nonresident_context():
-                    if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-                        profile_home = self._resolve_profile_home_for_source(source)
-                        with _profile_runtime_scope(profile_home):
-                            return _resolve_gateway_model_context(model_name or None)
-                    return _resolve_gateway_model_context(model_name or None)
-
-                resolved = await asyncio.to_thread(_resolve_nonresident_context)
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
             except Exception:
@@ -1542,12 +1534,6 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         source = event.source
-        _command_profile_home = None
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            _command_profile_home = getattr(
-                self, "_resolve_profile_home_for_source"
-            )(source)
-
         # Parse --provider, --global, --session, --once, and --refresh flags
         # via the shared single-owner parser (son_of_anton_cli.model_switch).
         request = parse_model_switch_args(raw_args)
@@ -1598,7 +1584,7 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
-        config_path = (_command_profile_home or _son_of_anton_home) / "config.yaml"
+        config_path = _son_of_anton_home / "config.yaml"
         try:
             cfg = _load_gateway_config(config_path=config_path)
             if cfg:
@@ -1671,7 +1657,6 @@ class GatewaySlashCommandsMixin:
                     _cur_provider = current_provider
                     _cur_base_url = current_base_url
                     _cur_api_key = current_api_key
-                    _picker_profile_home = _command_profile_home
 
                     async def _on_model_selected_scoped(
                         _chat_id: str, model_id: str, provider_slug: str
@@ -1923,19 +1908,7 @@ class GatewaySlashCommandsMixin:
                             lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
-                    async def _on_model_selected(
-                        _chat_id: str, model_id: str, provider_slug: str
-                    ) -> str:
-                        if _picker_profile_home is None:
-                            return await _on_model_selected_scoped(
-                                _chat_id, model_id, provider_slug
-                            )
-                        from gateway.run import _profile_runtime_scope
-
-                        with _profile_runtime_scope(_picker_profile_home):
-                            return await _on_model_selected_scoped(
-                                _chat_id, model_id, provider_slug
-                            )
+                    _on_model_selected = _on_model_selected_scoped
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     result = await adapter.send_model_picker(
