@@ -304,20 +304,31 @@ except Exception:
 # Anthropic Key Helper
 # =============================================================================
 
+# Anthropic is not a PROVIDER_REGISTRY entry — the fork's provider surface is
+# OpenAI-compatible endpoints only.  The Anthropic *protocol* still has a live
+# runtime path (agent/anthropic_adapter.py, reached by ``provider: anthropic``
+# and by Anthropic-Messages-speaking endpoints), so the credential order stays
+# declared here rather than being derived from a registry entry that no longer
+# exists.  Reading it from the registry is what made ``son-of-anton config`` and
+# ``son-of-anton doctor`` die with ``KeyError: 'anthropic'``.
+ANTHROPIC_API_KEY_ENV_VARS: tuple = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+)
+
+
 def get_anthropic_key() -> str:
     """Return the first usable Anthropic credential, or ``""``.
 
     Checks both the ``.env`` file and the process environment, preferring
     ``~/.son-of-anton/.env`` so a deliberate key rotation isn't shadowed by a stale
-    shell export (matches the api-key resolution path — see #20591).  The
-    order mirrors the ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``
-    tuple:
-
-        ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
+    shell export (matches the api-key resolution path — see #20591).  Order is
+    ``ANTHROPIC_API_KEY`` -> ``ANTHROPIC_TOKEN`` -> ``CLAUDE_CODE_OAUTH_TOKEN``.
     """
     from son_of_anton_cli.config import get_env_value_prefer_dotenv
 
-    for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+    for var in ANTHROPIC_API_KEY_ENV_VARS:
         value = get_env_value_prefer_dotenv(var) or ""
         if value:
             return value

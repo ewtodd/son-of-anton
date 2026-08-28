@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from son_of_anton_cli.config import get_son_of_anton_home
+from agent.hour_window import parse_hour_window
 from agent.secret_scope import get_secret as _get_secret
 from utils import is_truthy_value
 
@@ -304,6 +305,25 @@ class Platform(Enum):
 # Snapshot of built-in platform values before any dynamic _missing_ lookups.
 # Used to distinguish real platforms from arbitrary strings.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
+
+
+# The env var that configures each platform's connection, for "not configured
+# (SET_THIS)" hints in status displays.  Signal is reached through a REST
+# bridge rather than a bot token, so the hint is its URL; anything without an
+# entry falls back to the bot-token convention that plugin platforms follow.
+_PLATFORM_CREDENTIAL_HINTS: dict[str, str] = {
+    "signal": "SIGNAL_HTTP_URL",
+    "relay": "GATEWAY_RELAY_URL",
+}
+
+
+def platform_credential_hint(platform: "Platform") -> str:
+    """Return the env var a user would set to configure *platform*."""
+    value = str(getattr(platform, "value", platform) or "").lower()
+    hint = _PLATFORM_CREDENTIAL_HINTS.get(value)
+    if hint:
+        return hint
+    return f"{value.upper().replace('-', '_')}_BOT_TOKEN"
 
 
 # Platforms that bind a host TCP port (HTTP listeners). Single source of
@@ -780,6 +800,15 @@ class GatewayConfig:
     # raw passthrough.
     filter_silence_narration: bool = True
 
+    # Hours this instance runs agent turns, as [start, end) local hours;
+    # wraps past midnight, so (20, 7) is 8pm-7am. None = always active.
+    # Outside the window the gateway stays connected and answers with
+    # ``inactive_message`` instead of starting a turn — see
+    # gateway/active_hours.py for why this is a reply and not a stopped unit.
+    active_hours: Optional[tuple] = None
+    # Wording for that reply. Empty = the default in active_hours.py.
+    inactive_message: str = ""
+
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
@@ -952,6 +981,8 @@ class GatewayConfig:
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
+            "active_hours": list(self.active_hours) if self.active_hours else None,
+            "inactive_message": self.inactive_message,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
@@ -1065,6 +1096,8 @@ class GatewayConfig:
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
             ),
+            active_hours=parse_hour_window(data.get("active_hours"), None),
+            inactive_message=str(data.get("inactive_message") or "").strip(),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
@@ -1242,6 +1275,12 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["filter_silence_narration"] = gateway_section[
                     "filter_silence_narration"
                 ]
+
+            for _hours_key in ("active_hours", "inactive_message"):
+                if _hours_key in yaml_cfg:
+                    gw_data[_hours_key] = yaml_cfg[_hours_key]
+                elif isinstance(gateway_section, dict) and _hours_key in gateway_section:
+                    gw_data[_hours_key] = gateway_section[_hours_key]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(

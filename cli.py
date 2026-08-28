@@ -11304,7 +11304,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
-        from gateway.config import load_gateway_config, Platform
+        from gateway.config import (
+            load_gateway_config,
+            Platform,
+            platform_credential_hint as _platform_credential_hint,
+        )
         
         print()
         print("+" + "-" * 60 + "+")
@@ -11318,19 +11322,25 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
             
-            platform_status = {
-                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
-                Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
-                Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
-                Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
-            }
-            
-            for platform, (name, env_var) in platform_status.items():
+            # Derived from the enum and the loaded config, never hand-listed.
+            # The old table named Platform.TELEGRAM and Platform.WHATSAPP,
+            # which this fork removed, so every run raised AttributeError and
+            # fell into the except branch below — the command could not
+            # succeed, and it never mentioned Signal, the one platform these
+            # instances actually run.
+            platforms = [p for p in Platform if p is not Platform.LOCAL]
+            for configured in config.platforms:
+                if configured not in platforms:
+                    platforms.append(configured)
+
+            for platform in platforms:
+                name = str(platform.value).title()
+                env_var = _platform_credential_hint(platform)
                 pconfig = config.platforms.get(platform)
                 if pconfig and pconfig.enabled:
                     home = config.get_home_channel(platform)
                     home_str = f" → {home.name}" if home else ""
-                    print(f"    {name:<13} Enabled{home_str}")
+                    print(f"    ● {name:<12} Enabled{home_str}")
                 else:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
             
@@ -11344,7 +11354,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             
             print()
             print("  To start the gateway:")
-            print("    python cli.py --gateway")
+            print("    son-of-anton gateway run")
             print()
             print(f"  Configuration file: {display_son_of_anton_home()}/config.yaml")
             print()
@@ -11353,10 +11363,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"  Error loading gateway config: {e}")
             print()
             print("  To configure the gateway:")
-            print("    1. Set environment variables:")
-            print("       TELEGRAM_BOT_TOKEN=your_token")
+            print(f"    1. Add a platforms: block to {display_son_of_anton_home()}/config.yaml")
+            print("    2. Or set the platform's credential env var, e.g.")
+            print("       SIGNAL_HTTP_URL=http://host:7583")
             print("       DISCORD_BOT_TOKEN=your_token")
-            print(f"    2. Or configure settings in {display_son_of_anton_home()}/config.yaml")
             print()
     
     def process_command(self, command: str) -> bool:

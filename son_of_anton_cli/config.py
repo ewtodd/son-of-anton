@@ -4318,16 +4318,16 @@ def show_config():
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
+    # Only credentials a shipped tool actually reads. The voice, browser, and
+    # image-generation tools left the fork with their toolsets; their keys kept
+    # being printed here, inviting people to configure services nothing would
+    # ever call. The search and scrape keys below are read by tools/web_tools.py.
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
-        ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
-        ("BROWSERBASE_API_KEY", "Browserbase"),
-        ("BROWSER_USE_API_KEY", "Browser Use"),
-        ("FAL_KEY", "FAL"),
     ]
     
     for env_key, name in keys:
