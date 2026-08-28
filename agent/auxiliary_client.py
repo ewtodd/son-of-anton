@@ -1143,22 +1143,10 @@ _NVIDIA_NIM_CLOUD_HEADERS = {
 }
 
 
-def build_nvidia_nim_headers(base_url: str | None) -> dict:
-    """Return NVIDIA NIM cloud attribution headers for build.nvidia.com traffic."""
-    if base_url_host_matches(str(base_url or ""), "integrate.api.nvidia.com"):
-        return dict(_NVIDIA_NIM_CLOUD_HEADERS)
-    return {}
-
-
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
 from son_of_anton_cli import __version__ as _SON_OF_ANTON_VERSION
 
-_AI_GATEWAY_HEADERS = {
-    "HTTP-Referer": "https://son-of-anton.nousresearch.com",
-    "X-Title": "Son of Anton Agent",
-    "User-Agent": f"SonOfAntonAgent/{_SON_OF_ANTON_VERSION}",
-}
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3.6-flash"
@@ -2092,22 +2080,13 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
-            if base_url_host_matches(base_url, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(base_url, "githubcopilot.com"):
-                from son_of_anton_cli.models import copilot_default_headers
-
-                extra["default_headers"] = copilot_default_headers()
-            elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-                extra["default_headers"] = build_nvidia_nim_headers(base_url)
-            else:
-                try:
-                    from providers import get_provider_profile as _gpf_aux
-                    _ph_aux = _gpf_aux(provider_id)
-                    if _ph_aux and _ph_aux.default_headers:
-                        extra["default_headers"] = dict(_ph_aux.default_headers)
-                except Exception:
-                    pass
+            try:
+                from providers import get_provider_profile as _gpf_aux
+                _ph_aux = _gpf_aux(provider_id)
+                if _ph_aux and _ph_aux.default_headers:
+                    extra["default_headers"] = dict(_ph_aux.default_headers)
+            except Exception:
+                pass
             _merged_aux = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_aux:
                 extra["default_headers"] = _merged_aux
@@ -2126,22 +2105,13 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
-        if base_url_host_matches(base_url, "api.kimi.com"):
-            extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from son_of_anton_cli.models import copilot_default_headers
-
-            extra["default_headers"] = copilot_default_headers()
-        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-            extra["default_headers"] = build_nvidia_nim_headers(base_url)
-        else:
-            try:
-                from providers import get_provider_profile as _gpf_aux2
-                _ph_aux2 = _gpf_aux2(provider_id)
-                if _ph_aux2 and _ph_aux2.default_headers:
-                    extra["default_headers"] = dict(_ph_aux2.default_headers)
-            except Exception:
-                pass
+        try:
+            from providers import get_provider_profile as _gpf_aux2
+            _ph_aux2 = _gpf_aux2(provider_id)
+            if _ph_aux2 and _ph_aux2.default_headers:
+                extra["default_headers"] = dict(_ph_aux2.default_headers)
+        except Exception:
+            pass
         _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"))
         if _merged_aux2:
             extra["default_headers"] = _merged_aux2
@@ -2785,11 +2755,6 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         return None, None, None
 
     custom_base = custom_base.strip().rstrip("/")
-    if base_url_host_matches(custom_base, "openrouter.ai"):
-        # requested='custom' falls back to OpenRouter when no custom endpoint is
-        # configured. Treat that as "no custom endpoint" for auxiliary routing.
-        return None, None, None
-
     # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but
     # local servers ignore the Authorization header.  Same fix as cli.py
@@ -5085,30 +5050,19 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "base_url": str(sync_client.base_url),
     }
     sync_base_url = str(sync_client.base_url)
-    if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        async_kwargs["default_headers"] = build_or_headers()
-    elif base_url_host_matches(sync_base_url, "api.kimi.com"):
-        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-    elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
-        async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
-    elif base_url_host_matches(sync_base_url, "x.ai"):
-        from tools.xai_http import son_of_anton_xai_default_headers
-
-        async_kwargs["default_headers"] = son_of_anton_xai_default_headers()
-    else:
-        # Fall back to profile.default_headers for providers that declare
-        # client-level headers on their ProviderProfile (e.g. attribution
-        # User-Agent strings). Provider is inferred from the hostname.
-        try:
-            from agent.model_metadata import _infer_provider_from_url
-            from providers import get_provider_profile as _gpf_async
-            _inferred = _infer_provider_from_url(sync_base_url)
-            if _inferred:
-                _ph_async = _gpf_async(_inferred)
-                if _ph_async and _ph_async.default_headers:
-                    async_kwargs["default_headers"] = dict(_ph_async.default_headers)
-        except Exception:
-            pass
+    # Fall back to profile.default_headers for providers that declare
+    # client-level headers on their ProviderProfile (e.g. attribution
+    # User-Agent strings). Provider is inferred from the hostname.
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+        from providers import get_provider_profile as _gpf_async
+        _inferred = _infer_provider_from_url(sync_base_url)
+        if _inferred:
+            _ph_async = _gpf_async(_inferred)
+            if _ph_async and _ph_async.default_headers:
+                async_kwargs["default_headers"] = dict(_ph_async.default_headers)
+    except Exception:
+        pass
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
@@ -5464,20 +5418,15 @@ def resolve_provider_client(
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
-            if base_url_host_matches(custom_base, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
-                extra["default_headers"] = build_nvidia_nim_headers(custom_base)
-            else:
-                # Fall back to profile.default_headers for providers that
-                # declare client-level attribution headers on their profile.
-                try:
-                    from providers import get_provider_profile as _gpf_custom
-                    _ph_custom = _gpf_custom(provider)
-                    if _ph_custom and _ph_custom.default_headers:
-                        extra["default_headers"] = dict(_ph_custom.default_headers)
-                except Exception:
-                    pass
+            # Fall back to profile.default_headers for providers that
+            # declare client-level attribution headers on their profile.
+            try:
+                from providers import get_provider_profile as _gpf_custom
+                _ph_custom = _gpf_custom(provider)
+                if _ph_custom and _ph_custom.default_headers:
+                    extra["default_headers"] = dict(_ph_custom.default_headers)
+            except Exception:
+                pass
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
@@ -5673,26 +5622,17 @@ def resolve_provider_client(
 
         # Provider-specific headers
         headers = {}
-        if base_url_host_matches(base_url, "api.kimi.com"):
-            headers["User-Agent"] = "claude-code/0.1.0"
-        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-            headers.update(build_nvidia_nim_headers(base_url))
-        elif base_url_host_matches(base_url, "x.ai"):
-            from tools.xai_http import son_of_anton_xai_default_headers
-
-            headers.update(son_of_anton_xai_default_headers())
-        else:
-            # Fall back to profile.default_headers for providers that declare
-            # client-level attribution headers on their profile (e.g. GMI
-            # User-Agent for traffic identification, Vercel AI Gateway
-            # Referer/Title for analytics).
-            try:
-                from providers import get_provider_profile as _gpf_main
-                _ph_main = _gpf_main(provider)
-                if _ph_main and _ph_main.default_headers:
-                    headers.update(_ph_main.default_headers)
-            except Exception:
-                pass
+        # Fall back to profile.default_headers for providers that declare
+        # client-level attribution headers on their profile (e.g. GMI
+        # User-Agent for traffic identification, Vercel AI Gateway
+        # Referer/Title for analytics).
+        try:
+            from providers import get_provider_profile as _gpf_main
+            _ph_main = _gpf_main(provider)
+            if _ph_main and _ph_main.default_headers:
+                headers.update(_ph_main.default_headers)
+        except Exception:
+            pass
         _merged_main = _apply_user_default_headers(headers)
         if _merged_main:
             headers = _merged_main

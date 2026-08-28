@@ -1101,33 +1101,9 @@ def init_agent(
                 client_kwargs["default_headers"] = opencode_zen_free_headers()
         except Exception:
             pass
-        if base_url_host_matches(effective_base, "openrouter.ai"):
-            from agent.auxiliary_client import build_or_headers
-            client_kwargs["default_headers"] = build_or_headers()
-        elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):
-            from agent.auxiliary_client import build_nvidia_nim_headers
-            client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
-        elif base_url_host_matches(effective_base, "api.routermint.com"):
-            client_kwargs["default_headers"] = _ra()._routermint_headers()
-        elif base_url_host_matches(effective_base, "githubcopilot.com"):
-            from son_of_anton_cli.models import copilot_default_headers
-
-            client_kwargs["default_headers"] = copilot_default_headers()
-        elif base_url_host_matches(effective_base, "api.kimi.com"):
-            client_kwargs["default_headers"] = {
-                "User-Agent": "claude-code/0.1.0",
-            }
-        elif base_url_host_matches(effective_base, "chatgpt.com"):
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
-        elif base_url_host_matches(effective_base, "x.ai"):
-            from tools.xai_http import son_of_anton_xai_default_headers
-
-            client_kwargs["default_headers"] = son_of_anton_xai_default_headers()
-        elif "default_headers" not in client_kwargs:
-            # Fall back to profile.default_headers for providers that
-            # declare custom headers (e.g. Vercel AI Gateway attribution,
-            # Kimi User-Agent on non-kimi.com endpoints).
+        if "default_headers" not in client_kwargs:
+            # Provider profiles may declare their own attribution headers.
+            # No vendor-host special cases: generic OpenAI-compatible only.
             try:
                 from providers import get_provider_profile as _gpf
                 _ph = _gpf(agent.provider)

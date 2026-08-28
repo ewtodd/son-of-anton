@@ -293,15 +293,6 @@ _openrouter_prewarm_done = threading.Event()
 _QWEN_CODE_VERSION = "0.14.1"
 
 
-def _routermint_headers() -> dict:
-    """Return the User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from son_of_anton_cli import __version__ as _SON_OF_ANTON_VERSION
-
-    return {
-        "User-Agent": f"SonOfAntonAgent/{_SON_OF_ANTON_VERSION}",
-    }
-
-
 def _pool_may_recover_from_rate_limit(pool) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
@@ -6841,47 +6832,20 @@ class AIAgent:
         *,
         apply_user_headers: bool = True,
     ) -> None:
-        from agent.auxiliary_client import (
-            _AI_GATEWAY_HEADERS,
-            build_nvidia_nim_headers,
-            build_or_headers,
-        )
-
-        if base_url_host_matches(base_url, "openrouter.ai"):
-            self._client_kwargs["default_headers"] = build_or_headers()
-        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
-        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-            self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
-        elif base_url_host_matches(base_url, "api.routermint.com"):
-            self._client_kwargs["default_headers"] = _routermint_headers()
-        elif base_url_host_matches(base_url, "api.kimi.com"):
-            from agent.auxiliary_client import _AI_GATEWAY_HEADERS
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
-        elif base_url_host_matches(base_url, "chatgpt.com"):
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                self._client_kwargs.get("api_key", "")
-            )
-        elif base_url_host_matches(base_url, "x.ai"):
-            # Cover both provider=xai and provider=xai-oauth (api.x.ai).
-            from tools.xai_http import son_of_anton_xai_default_headers
-
-            self._client_kwargs["default_headers"] = son_of_anton_xai_default_headers()
+        # No vendor-host headers: this fork speaks generic OpenAI-compatible
+        # only. A provider profile may still declare its own default_headers.
+        _ph_headers = None
+        try:
+            from providers import get_provider_profile as _gpf2
+            _ph2 = _gpf2(self.provider)
+            if _ph2 and _ph2.default_headers:
+                _ph_headers = dict(_ph2.default_headers)
+        except Exception:
+            pass
+        if _ph_headers:
+            self._client_kwargs["default_headers"] = _ph_headers
         else:
-            # No URL-specific headers — check profile.default_headers before clearing.
-            _ph_headers = None
-            try:
-                from providers import get_provider_profile as _gpf2
-                _ph2 = _gpf2(self.provider)
-                if _ph2 and _ph2.default_headers:
-                    _ph_headers = dict(_ph2.default_headers)
-            except Exception:
-                pass
-            if _ph_headers:
-                self._client_kwargs["default_headers"] = _ph_headers
-            else:
-                self._client_kwargs.pop("default_headers", None)
+            self._client_kwargs.pop("default_headers", None)
 
         # User-configured overrides win over URL/profile defaults for the same
         # route. A credential swap to another endpoint must not inherit them.
