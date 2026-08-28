@@ -466,28 +466,6 @@ def resolve_cron_scheduler() -> "CronScheduler":
         return InProcessCronScheduler()
 
 
-def scheduler_for_profile_mode(
-    provider: "CronScheduler", *, multiplex_profiles: bool
-) -> "CronScheduler":
-    """Return a scheduler that can safely serve the gateway's profile mode.
-
-    External providers currently own one unscoped remote registry/client and
-    therefore cannot safely reconcile several profile stores from one process.
-    Fail closed to the built-in multiplex ticker until the provider API carries
-    explicit profile identity through lifecycle and fire calls.
-    """
-    if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):
-        return provider
-
-    import logging
-
-    logging.getLogger("cron.scheduler_provider").warning(
-        "cron.provider '%s' does not support multiplex_profiles; using built-in ticker",
-        provider.name,
-    )
-    return InProcessCronScheduler()
-
-
 class InProcessCronScheduler(CronScheduler):
     """Default provider: the historical in-process 60s ticker.
 
@@ -510,7 +488,6 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
-        profile_homes=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -522,24 +499,6 @@ class InProcessCronScheduler(CronScheduler):
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
-
-        # ── Multiplex profiles ────────────────────────────────────────────
-        # When profile_homes is set (multiplex_profiles on), tick EACH profile's
-        # cron store on every tick cycle so secondary-profile jobs actually fire
-        # instead of languishing in a store no ticker owns (#69377). Without this,
-        # only the process-global SON_OF_ANTON_HOME (the default profile) is ticked.
-        # Heartbeats and recovery are also scoped per profile so `son-of-anton cron
-        # status` reflects liveness for every profile independently.
-        if profile_homes:
-            self._start_multiplex(
-                stop_event,
-                profile_homes=profile_homes,
-                adapters=adapters,
-                loop=loop,
-                interval=interval,
-                can_dispatch=can_dispatch,
-            )
-            return
 
         # ── Single-profile (legacy) path ──────────────────────────────────
         recovered = self.recover_interrupted()
@@ -600,104 +559,3 @@ class InProcessCronScheduler(CronScheduler):
                 consecutive_failures = 0
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
 
-    def _start_multiplex(
-        self,
-        stop_event,
-        *,
-        profile_homes,
-        adapters=None,
-        loop=None,
-        interval=60,
-        can_dispatch=None,
-    ):
-        """Tick every served profile's cron store when multiplex_profiles is on.
-
-        Each profile uses ``set_son_of_anton_home_override()`` + ``use_cron_store()``
-        to scope its tick, heartbeat, recovery, lock file, config/.env, and
-        agent execution to that profile's home — mirroring how
-        ``_profile_runtime_scope`` scopes the multiplexed inbound path and
-        ``web_server.py`` scopes per-profile cron API calls.
-        """
-        import logging
-        from cron.scheduler import tick as cron_tick
-        from cron.jobs import (
-            clear_ticker_error,
-            record_ticker_error,
-            record_ticker_heartbeat,
-            use_cron_store,
-        )
-        from son_of_anton_constants import set_son_of_anton_home_override, reset_son_of_anton_home_override
-
-        logger = logging.getLogger("cron.scheduler_provider")
-        logger.info(
-            "Multiplex cron scheduler started for %d profile(s): %s",
-            len(profile_homes),
-            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
-        )
-
-        # Recovery + initial heartbeat for every profile.
-        for entry in profile_homes:
-            home = entry[1] if isinstance(entry, tuple) else entry
-            home_token = set_son_of_anton_home_override(str(home))
-            try:
-                with use_cron_store(home):
-                    recovered = self.recover_interrupted()
-                    if recovered:
-                        logger.warning(
-                            "Marked %d interrupted cron execution(s) for profile at %s",
-                            recovered,
-                            home,
-                        )
-                    record_ticker_heartbeat()
-            finally:
-                reset_son_of_anton_home_override(home_token)
-
-        consecutive_failures = 0
-        while not stop_event.is_set():
-            ok = False
-            _tick_error = None
-            try:
-                if can_dispatch is not None and not can_dispatch():
-                    logger.debug("Cron dispatch paused while gateway drains existing work")
-                else:
-                    for entry in profile_homes:
-                        home = entry[1] if isinstance(entry, tuple) else entry
-                        home_token = set_son_of_anton_home_override(str(home))
-                        try:
-                            with use_cron_store(home):
-                                cron_tick(
-                                    verbose=False,
-                                    adapters=adapters,
-                                    loop=loop,
-                                    sync=False,
-                                    can_dispatch=can_dispatch,
-                                )
-                        finally:
-                            reset_son_of_anton_home_override(home_token)
-                ok = True
-            except BaseException as e:
-                logger.error("Cron tick error: %s", e, exc_info=True)
-                _tick_error = f"{type(e).__name__}: {e}"
-                # EMFILE: reclaim fds + exponential backoff (#87644).
-                consecutive_failures = _note_tick_failure(e, consecutive_failures)
-            else:
-                _tick_error = None
-            # Record per-profile heartbeat after each tick cycle.
-            for entry in profile_homes:
-                home = entry[1] if isinstance(entry, tuple) else entry
-                home_token = set_son_of_anton_home_override(str(home))
-                try:
-                    with use_cron_store(home):
-                        record_ticker_heartbeat(success=ok)
-                        # Surface the failure reason (or clear it) per profile
-                        # so `son-of-anton cron status` can show WHY ticks fail
-                        # (#68483).
-                        if ok:
-                            clear_ticker_error()
-                        elif _tick_error:
-                            record_ticker_error(_tick_error)
-                finally:
-                    reset_son_of_anton_home_override(home_token)
-            if ok:
-                consecutive_failures = 0
-            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

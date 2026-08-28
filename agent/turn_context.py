@@ -898,20 +898,7 @@ def build_turn_context(
             lambda _tokens: False,
         )
         _preflight_deferred = _defer_preflight(_preflight_tokens)
-        # Codex app-server threads are compacted by the codex agent itself;
-        # Son of Anton only initiates compaction in "son-of-anton" mode (#36801).
-        _codex_native_auto = (
-            getattr(agent, "api_mode", None) == "codex_app_server"
-            and str(
-                getattr(
-                    agent,
-                    "codex_app_server_auto_compaction",
-                    "native",
-                )
-                or "native"
-            ).lower()
-            in {"native", "off"}
-        )
+        _codex_native_auto = False
 
         if not _preflight_deferred:
             _last = _compressor.last_prompt_tokens
@@ -1374,7 +1361,6 @@ def build_turn_context(
     # sent bytes" (MoA keeps its pre-sidecar cache behavior).
     if (
         not moa_active
-        and getattr(agent, "api_mode", None) != "codex_app_server"
         and 0 <= current_turn_user_idx < len(messages)
         and messages[current_turn_user_idx].get("role") == "user"
     ):

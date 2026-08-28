@@ -392,15 +392,13 @@ def _resolve_review_runtime(
     """Resolve provider/model/credentials for the review fork.
 
     Default (auto / unset / same as parent): inherit the parent's live runtime
-    (with codex_app_server -> codex_responses downgrade). ``routed`` is False —
+    ``routed`` is False —
     the fork uses the main model and the warm cache, exactly as before. When
     ``auxiliary.background_review.{provider,model}`` names a concrete model
     different from the parent's, resolve that runtime and set ``routed=True``.
     """
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
-    if parent_api_mode == "codex_app_server":
-        parent_api_mode = "codex_responses"
     parent = {
         "provider": agent.provider,
         "model": agent.model,

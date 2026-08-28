@@ -654,7 +654,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -2019,16 +2019,6 @@ def init_agent(
             2000,
         ),
     )
-    codex_app_server_auto_compaction = str(
-        _compression_cfg.get("codex_app_server_auto", "native") or "native"
-    ).lower()
-    if codex_app_server_auto_compaction not in {"native", "son-of-anton", "off"}:
-        _ra().logger.warning(
-            "Invalid compression.codex_app_server_auto=%r; using 'native'. "
-            "Valid values are: native, son-of-anton, off.",
-            codex_app_server_auto_compaction,
-        )
-        codex_app_server_auto_compaction = "native"
     # Native OpenAI Responses server-side compaction (opt-in). Only ever
     # engages for gpt-5.6-family models on api.openai.com or the ChatGPT
     # Codex backend — the per-request gate lives in agent/native_compaction.py.
@@ -2506,7 +2496,6 @@ def init_agent(
         _cc._micro_compact_defrag_threshold_tokens = (
             compression_micro_compact_defrag_tokens
         )
-    agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.codex_responses_native_compaction = codex_responses_native_compaction
     agent.codex_responses_compact_threshold = codex_responses_compact_threshold
     agent.max_compression_attempts = compression_max_attempts
