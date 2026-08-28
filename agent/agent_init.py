@@ -1054,8 +1054,6 @@ def init_agent(
     # Codex/Anthropic wrapping for all known providers.
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex Responses API streaming.
-    agent._anthropic_client = None
-    agent._is_anthropic_oauth = False
 
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,

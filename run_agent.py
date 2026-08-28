@@ -7851,41 +7851,6 @@ class AIAgent:
 
         return changed
 
-    def _anthropic_preserve_dots(self) -> bool:
-        """True when using an anthropic-compatible endpoint that preserves dots in model names.
-        Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
-        MiniMax keeps dots (e.g. MiniMax-M2.7).
-        Xiaomi MiMo keeps dots (e.g. mimo-v2.5, mimo-v2.5-pro).
-        OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
-        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1).
-        AWS Bedrock uses dotted inference-profile IDs
-        (e.g. ``global.anthropic.claude-opus-4-7``,
-        ``us.anthropic.claude-sonnet-4-5-20250929-v1:0``) and rejects
-        the hyphenated form with
-        ``HTTP 400 The provided model identifier is invalid``.
-        Regression for #11976; mirrors the opencode-go fix for #5211
-        (commit f77be22c), which extended this same allowlist."""
-        if (getattr(self, "provider", "") or "").lower() in {
-            "alibaba", "minimax", "minimax-cn",
-            "opencode-go", "opencode-zen",
-            "zai",
-            "xiaomi",
-        }:
-            return True
-        base = (getattr(self, "base_url", "") or "").lower()
-        host = base_url_hostname(base)
-        return (
-            "dashscope" in host
-            or base_url_host_matches(base, "aliyuncs.com")
-            or "minimax" in host
-            or (base_url_host_matches(base, "opencode.ai") and "/zen/" in base)
-            or base_url_host_matches(base, "bigmodel.cn")
-            or base_url_host_matches(base, "xiaomimimo.com")
-            # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
-            # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
-            or base_url_host_matches(base, "aiplatform.googleapis.com")
-        )
-
     def _build_api_kwargs(self, api_messages: list, tools_for_api: Optional[list] = None) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs

@@ -938,7 +938,7 @@ def build_turn_context(
             logger.info(
                 "Skipping Son of Anton preflight compression for codex app-server "
                 "(mode=%s); Son of Anton will not start thread compaction here.",
-                getattr(agent, "codex_app_server_auto_compaction", "native"),
+                "native",
             )
         else:
             _should_compress_now = _compressor.should_compress(_preflight_tokens)

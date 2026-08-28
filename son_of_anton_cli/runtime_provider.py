@@ -25,7 +25,6 @@ from son_of_anton_cli.auth import (
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
-    _agent_key_is_usable,
     format_auth_error,
     resolve_provider,
     resolve_codex_runtime_credentials,
@@ -407,12 +406,6 @@ def _resolve_runtime_from_pool_entry(
         from son_of_anton_cli.models import normalize_opencode_base_url
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
-
-    # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
-    # Inert when `model.openai_runtime` is unset or "auto".
-    api_mode = _maybe_apply_codex_app_server_runtime(
-        provider=provider, api_mode=api_mode, model_cfg=model_cfg
-    )
 
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
@@ -1496,40 +1489,6 @@ def resolve_runtime_provider(
                 getattr(entry, "runtime_api_key", None)
                 or getattr(entry, "access_token", "")
             )
-        # For Nous, the pool entry's runtime_api_key is the agent_key
-        # compatibility field. It must be an invoke JWT. The pool doesn't
-        # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `son-of-anton auth list`). If the key is
-        # expired/missing, refresh the selected pool entry before falling back
-        # to singleton auth resolution.
-        if provider == "nous" and entry is not None:
-            min_ttl = max(60, env_int("SON_OF_ANTON_NOUS_MIN_KEY_TTL_SECONDS", 1800))
-            nous_state = {
-                "agent_key": getattr(entry, "agent_key", None),
-                "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
-                "scope": getattr(entry, "scope", None),
-            }
-            if not _agent_key_is_usable(nous_state, min_ttl):
-                logger.debug("Nous pool entry agent_key expired/missing, refreshing selected pool entry")
-                try:
-                    refreshed = pool.try_refresh_current()
-                except Exception as exc:
-                    logger.debug("Nous pool entry refresh failed: %s", exc)
-                    refreshed = None
-                if refreshed is not None:
-                    entry = refreshed
-                    pool_api_key = (
-                        getattr(entry, "runtime_api_key", None)
-                        or getattr(entry, "access_token", "")
-                    )
-                    nous_state = {
-                        "agent_key": getattr(entry, "agent_key", None),
-                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
-                        "scope": getattr(entry, "scope", None),
-                    }
-                if not pool_api_key or not _agent_key_is_usable(nous_state, min_ttl):
-                    logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
-                    pool_api_key = ""
         if (
             entry is not None
             and pool_api_key

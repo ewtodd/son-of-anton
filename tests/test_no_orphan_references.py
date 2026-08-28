@@ -139,3 +139,74 @@ def test_no_import_names_a_symbol_that_is_gone() -> None:
     assert not orphans, (
         "imports naming symbols that no longer exist:\n  " + "\n  ".join(orphans)
     )
+
+
+# Symbols deleted when their subsystem was removed. The import test above
+# cannot see these: they were reached as ``self._foo(...)`` /
+# ``agent._foo(...)``, which no static import check inspects. Four of them
+# survived their own removal that way — a call into a method that no longer
+# existed, inert only because the caller sat in a branch that could no longer
+# be taken. An explicit denylist is cheap and catches exactly that.
+_REMOVED_SYMBOLS = (
+    # Anthropic Messages wire
+    "_anthropic_messages_create",
+    "_rebuild_anthropic_client",
+    "_anthropic_preserve_dots",
+    "_prepare_anthropic_messages_for_api",
+    "_create_request_anthropic_client",
+    "_close_request_anthropic_client",
+    "_abort_request_anthropic_client",
+    "_close_cached_request_anthropic_client",
+    "_try_refresh_anthropic_client_credentials",
+    "_sync_anthropic_entry_from_credentials_file",
+    # Nous Portal
+    "_sync_nous_entry_from_auth_store",
+    "_nous_invoke_jwt_is_usable",
+    "resolve_nous_runtime_credentials",
+    "_agent_key_is_usable",
+    "nous_api_mode",
+    # Copilot
+    "_is_copilot_provider",
+    "_is_copilot_url",
+    "_copilot_headers_for_request",
+    # Qwen Portal
+    "_is_qwen_portal",
+    "_qwen_portal_headers",
+    # Codex app-server
+    "_run_codex_app_server_turn",
+    "_maybe_apply_codex_app_server_runtime",
+    # Profiles / Kanban
+    "_profile_runtime_scope",
+    "_multiplex_profile_homes",
+    "scrub_kanban_env",
+    "is_dispatcher_owned_worker_context",
+    "build_kanban_stop_nudge",
+)
+
+
+def test_no_reference_to_a_removed_symbol() -> None:
+    """Tokenized, so a comment or docstring naming the old thing is fine.
+
+    Only NAME tokens count — a reference the interpreter would actually
+    resolve. Prose that explains what used to be there is documentation, not
+    a dangling call.
+    """
+    import io
+    import tokenize
+
+    removed = set(_REMOVED_SYMBOLS)
+    hits = []
+    for path in _first_party_files():
+        if path.name == "test_no_orphan_references.py":
+            continue  # this file names them all on purpose
+        src = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            tokens = tokenize.generate_tokens(io.StringIO(src).readline)
+            for tok in tokens:
+                if tok.type == tokenize.NAME and tok.string in removed:
+                    hits.append(
+                        f"{path.relative_to(ROOT)}:{tok.start[0]}: {tok.string}"
+                    )
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            continue  # reported by the compile test
+    assert not hits, "references to removed symbols:\n  " + "\n  ".join(hits)

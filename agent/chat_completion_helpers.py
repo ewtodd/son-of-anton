@@ -1293,10 +1293,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             request_client_holder["owner_tid"] = None
         if request_client is None:
             return
-        if request_client_kind.get("value", "openai") == "anthropic_messages":
-            agent._close_request_anthropic_client(request_client, reason=reason)
-        else:
-            agent._close_request_openai_client(request_client, reason=reason)
+        agent._close_request_openai_client(request_client, reason=reason)
 
     def _call():
         try:
@@ -1309,9 +1306,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 agent,
                 api_kwargs,
                 make_client=lambda reason, kind="openai": _set_request_client(
-                    agent._create_request_anthropic_client(reason=reason)
-                    if kind == "anthropic_messages"
-                    else agent._create_request_openai_client(
+                    agent._create_request_openai_client(
                         reason=reason, api_kwargs=api_kwargs
                     ),
                     kind=kind,
@@ -3162,9 +3157,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # for why the holder read and the abort must be atomic (a late
                 # abort would otherwise hit the NEXT request's checkout).
                 if request_client_kind.get("value", "openai") == "anthropic_messages":
-                    agent._abort_request_anthropic_client(
-                        request_client, reason=reason
-                    )
+                    agent._abort_request_openai_client(request_client, reason=reason)
                 else:
                     agent._abort_request_openai_client(request_client, reason=reason)
                 return

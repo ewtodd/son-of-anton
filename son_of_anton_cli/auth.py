@@ -4604,18 +4604,6 @@ def _refresh_access_token(
     raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
 
 
-def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
-    key = state.get("agent_key")
-    if not isinstance(key, str) or not key.strip():
-        return False
-    return _nous_invoke_jwt_is_usable(
-        key,
-        scope=state.get("scope"),
-        expires_at=state.get("agent_key_expires_at"),
-        min_ttl_seconds=max(0, int(min_ttl_seconds)),
-    )
-
-
 # Per-process memo for resolve_nous_access_token. Startup runs
 # check_tool_availability once per managed-tool check_fn (browser, image_gen,
 # etc.), and each one independently triggers a ~15s blocking token-refresh
