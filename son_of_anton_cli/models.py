@@ -3403,10 +3403,6 @@ def _resolve_copilot_catalog_api_key() -> str:
 
     try:
         from son_of_anton_cli.auth import read_credential_pool
-        from son_of_anton_cli.copilot_auth import (
-            exchange_copilot_token,
-            validate_copilot_token,
-        )
 
         for entry in read_credential_pool("copilot"):
             if not isinstance(entry, dict):
@@ -4302,16 +4298,12 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
     Includes Openai-Intent and x-initiator headers that opencode and the
     Copilot CLI send on every request.
     """
-    try:
-        from son_of_anton_cli.copilot_auth import copilot_request_headers
-        return copilot_request_headers(is_agent_turn=is_agent_turn)
-    except ImportError:
-        return {
-            "Editor-Version": COPILOT_EDITOR_VERSION,
-            "User-Agent": "SonOfAntonAgent/1.0",
-            "Openai-Intent": "conversation-edits",
-            "x-initiator": "agent" if is_agent_turn else "user",
-        }
+    return {
+        "Editor-Version": COPILOT_EDITOR_VERSION,
+        "User-Agent": "SonOfAntonAgent/1.0",
+        "Openai-Intent": "conversation-edits",
+        "x-initiator": "agent" if is_agent_turn else "user",
+    }
 
 
 def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:

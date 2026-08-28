@@ -412,54 +412,6 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     agent._stream_needs_break = True
 
 
-def _is_copilot_provider(agent: Any) -> bool:
-    """Delegate to ``AIAgent._is_copilot_provider`` (single owner of the check).
-
-    ``agent.provider`` is not always the normalized ``copilot`` slug —
-    ``/model`` and profile configs can leave the alias ``github-copilot`` (or
-    ``github``) in place, and a bare ``provider == "copilot"`` gate silently
-    skips credential recovery for those spellings.
-    """
-    try:
-        return bool(agent._is_copilot_provider())
-    except Exception:
-        return (getattr(agent, "provider", "") or "").strip().lower() in {
-            "copilot",
-            "github-copilot",
-            "github",
-        }
-
-
-def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
-    """Detect a Copilot 400 that is really a STALE / DEGRADED credential.
-
-    Copilot surfaces a stale or degraded credential as an HTTP 400 rather than a
-    clean 401. Two body markers indicate this class:
-
-    - ``model_not_available_for_integrator`` — the request reached the
-      restricted ``copilot-language-server`` integrator (the server's fallback
-      when it receives a raw OAuth token instead of an exchanged API token),
-      whose model allowlist omits enterprise-only models.
-    - ``model_not_supported`` / "the requested model is not supported" — the
-      cached bearer's Copilot entitlement rotated out from under a long-lived
-      process.
-
-    Matched narrowly (status 400 AND a specific marker) so a genuinely wrong
-    model name — a real 400 — never triggers the single-shot re-exchange. The
-    caller enforces copilot-provider scoping and the single-shot guard.
-    """
-    lowered = (error_message or "").lower()
-    is_400 = status_code == 400 or "error code: 400" in lowered
-    if not is_400:
-        return False
-    return (
-        "model_not_available_for_integrator" in lowered
-        or "not available for integrator" in lowered
-        or "model_not_supported" in lowered
-        or "the requested model is not supported" in lowered
-    )
-
-
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -2840,17 +2792,9 @@ def run_conversation(
                     api_kwargs = agent._get_transport().preflight_kwargs(
                         api_kwargs,
                         allow_stream=False,
-                        is_github_responses=agent._is_copilot_url(),
+                        is_github_responses=False,
                         sanitize_harmony_tokens=agent._is_codex_backend(),
                     )
-                # Copilot x-initiator: the first API call of a user turn is
-                # marked "user" so Copilot bills a premium request; tool-loop
-                # follow-ups keep the default "agent" header (#3040).
-                if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
-                    _xh = dict(api_kwargs.get("extra_headers") or {})
-                    _xh["x-initiator"] = "user"
-                    api_kwargs["extra_headers"] = _xh
-                    agent._is_user_initiated_turn = False
                 try:
                     from son_of_anton_cli.middleware import apply_llm_request_middleware
 
@@ -2991,15 +2935,9 @@ def run_conversation(
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
-                # CopilotACPClient communicates via subprocess stdio and
-                # returns a plain SimpleNamespace — not an iterable
-                # stream.  Mirror the ACP exclusion used for Responses
-                # API upgrade (lines ~1083-1085).
-                elif (
-                    agent.provider in {"copilot-acp"}
-                    or str(agent.base_url or "").lower().startswith("acp://copilot")
-                    or str(agent.base_url or "").lower().startswith("acp+tcp://")
-                ):
+                # ACP endpoints communicate via subprocess stdio and return a
+                # plain SimpleNamespace, not an iterable stream.
+                elif str(agent.base_url or "").lower().startswith("acp+tcp://"):
                     _use_streaming = False
                 # MoA streams only when a display/TTS consumer is present to
                 # receive the deltas. MoAChatCompletions.create() honors
@@ -3025,7 +2963,7 @@ def run_conversation(
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
                             allow_stream=False,
-                            is_github_responses=agent._is_copilot_url(),
+                            is_github_responses=False,
                             sanitize_harmony_tokens=agent._is_codex_backend(),
                         )
                     if _use_streaming:
@@ -4688,15 +4626,6 @@ def run_conversation(
                         agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
                         continue
                 if (
-                    _is_copilot_provider(agent)
-                    and status_code == 401
-                    and not _retry.copilot_auth_retry_attempted
-                ):
-                    _retry.copilot_auth_retry_attempted = True
-                    if agent._try_refresh_copilot_client_credentials():
-                        agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
-                        continue
-                if (
                     agent.api_mode == "anthropic_messages"
                     and status_code == 401
                     and hasattr(agent, '_anthropic_api_key')
@@ -5351,14 +5280,6 @@ def run_conversation(
                         f"{agent.log_prefix}      exceeds that floor, so this endpoint cannot run an agentic loop.",
                         force=True,
                     )
-                    agent._vprint(
-                        f"{agent.log_prefix}      Use the `copilot` provider with a Copilot subscription token (`son-of-anton",
-                        force=True,
-                    )
-                    agent._vprint(
-                        f"{agent.log_prefix}      setup` → GitHub Copilot), or pick any other provider.",
-                        force=True,
-                    )
 
                 if is_payload_too_large:
                     compression_attempts += 1
@@ -5820,32 +5741,6 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
-                    # Copilot self-heal BEFORE fallback: a stale/degraded
-                    # credential surfaces as a 400
-                    # ``model_not_available_for_integrator`` /
-                    # ``model_not_supported`` (not a clean 401), so the 401
-                    # refresh path above never fired. Force a fresh token
-                    # exchange + client rebuild and retry once on the SAME
-                    # provider — a fresh 437-char API token routes to the
-                    # correct integrator and the model becomes available again.
-                    # Single-shot guard prevents looping on a genuinely
-                    # unavailable model. Copilot-scoped so other providers'
-                    # real 400s are untouched.
-                    if (
-                        _is_copilot_provider(agent)
-                        and not _retry.copilot_stale_cred_retry_attempted
-                        and _is_stale_copilot_credential_error(
-                            status_code, str(getattr(api_error, "message", "") or api_error)
-                        )
-                    ):
-                        _retry.copilot_stale_cred_retry_attempted = True
-                        if agent._try_recover_stale_copilot_credential():
-                            agent._buffer_vprint(
-                                "🔐 Copilot credential re-exchanged after "
-                                "model_not_available 400. Retrying request..."
-                            )
-                            retry_count = 0
-                            continue
                     # Try fallback before aborting — a different provider may
                     # not have the same issue (rate limit, auth, etc.). Only
                     # announce the attempt when a fallback chain actually

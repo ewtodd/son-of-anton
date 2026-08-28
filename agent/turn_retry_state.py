@@ -3,7 +3,7 @@
 The inner retry loop in ``run_conversation`` (``while retry_count <
 max_retries``) makes several distinct recovery attempts on a single model API
 call: a credential-pool 429 retry, a per-provider OAuth refresh (codex,
-anthropic, nous, copilot), a long-context compression restart, a length-
+anthropic, nous), a long-context compression restart, a length-
 continuation restart, and a handful of format-recovery branches (thinking-
 signature stripping, multimodal-tool-content stripping, llama.cpp grammar
 fallback, image shrink, invalid-encrypted-content, 1M-beta header).
@@ -42,15 +42,6 @@ class TurnRetryState:
     # ── Per-provider OAuth / credential refresh guards ───────────────────
     codex_auth_retry_attempted: bool = False
     anthropic_auth_retry_attempted: bool = False
-    copilot_auth_retry_attempted: bool = False
-    # Copilot surfaces a stale/degraded credential as a 400
-    # ``model_not_available_for_integrator`` / ``model_not_supported`` instead
-    # of a clean 401 (e.g. a raw OAuth token seeded when the token exchange
-    # degraded at startup, routing the request to the restricted
-    # ``copilot-language-server`` integrator). Guard a single-shot forced
-    # re-exchange + client rebuild for that case, separate from the 401 guard
-    # so both can fire within one attempt if needed.
-    copilot_stale_cred_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False

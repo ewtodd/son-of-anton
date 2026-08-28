@@ -85,7 +85,7 @@ class CodexAppServerClient:
         # session token, AUXILIARY_* side-LLM keys, GATEWAY_RELAY_* auth — none
         # of which a coding subprocess has any use for. Route through the
         # centralized helper so Tier-1 + dynamic-internal secrets are always
-        # stripped while provider creds still flow, matching copilot_acp_client
+        # stripped while provider creds still flow, matching the ACP client
         # (#29157 sibling spawn-site gap).
         spawn_env = son_of_anton_subprocess_env(inherit_credentials=True)
         if env:

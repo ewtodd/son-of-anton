@@ -1386,18 +1386,6 @@ class AIAgent:
             url = getattr(self, "_base_url_lower", "") or ""
         return base_url_host_matches(url, "openai.azure.com")
 
-    def _is_github_copilot_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
-        if base_url is not None:
-            hostname = base_url_hostname(base_url)
-        else:
-            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
-                getattr(self, "_base_url_lower", "")
-            )
-        if not hostname:
-            return False
-        return hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com")
-
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
 
@@ -1566,28 +1554,6 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
-    def _is_copilot_url(self) -> bool:
-        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
-        return (
-            base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
-            or base_url_host_matches(self._base_url_lower, "models.github.ai")
-        )
-
-    def _is_copilot_provider(self) -> bool:
-        """True when the active provider is GitHub Copilot, however spelled.
-
-        ``self.provider`` is not always the normalized slug: ``/model`` and
-        profile configs can leave the alias ``github-copilot`` (or ``github``)
-        in place — a single session log can show both ``provider=copilot`` and
-        ``provider=github-copilot`` for the same account. A bare
-        ``provider == "copilot"`` gate silently skips credential recovery for
-        the alias spellings, so this is the single owner of the check; the
-        Copilot base URL is accepted as a fallback signal.
-        """
-        if (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"}:
-            return True
-        return self._is_copilot_url()
-
     def _is_codex_backend(self) -> bool:
         """Return True for the ChatGPT OAuth Codex Responses backend."""
         return (
@@ -1659,14 +1625,6 @@ class AIAgent:
             # relay GPT-5 models without full Responses semantics, so only
             # direct OpenAI/xAI URL detection should auto-upgrade them.
             return False
-        if normalized_provider == "copilot":
-            try:
-                from son_of_anton_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
-            except Exception:
-                # Fall back to the generic GPT-5 rule if Copilot-specific
-                # logic is unavailable for any reason.
-                pass
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
@@ -1687,7 +1645,6 @@ class AIAgent:
         if (
             self._is_direct_openai_url()
             or self._is_azure_openai_url()
-            or self._is_github_copilot_url()
             or model_forces_max_completion_tokens(self.model)
         ):
             return {"max_completion_tokens": value}
@@ -5146,11 +5103,6 @@ class AIAgent:
 
         return any(_contains_image(item) for item in candidates)
 
-    def _copilot_headers_for_request(self, *, is_vision: bool) -> dict:
-        from son_of_anton_cli.copilot_auth import copilot_request_headers
-
-        return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
-
     # Close reasons the request workers' own ``finally`` unwind reports for
     # a request that produced a response — the only closes that both come
     # from the thread that owns the pool's FDs AND attest a healthy pool.
@@ -5191,11 +5143,6 @@ class AIAgent:
         # Shared/primary clients and Anthropic / Bedrock paths are
         # unaffected (they don't go through here).
         request_kwargs["max_retries"] = 0
-        if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
-            and self._api_kwargs_have_image_parts(api_kwargs or {})
-        ):
-            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
         # Reuse the cached wire client while the effective kwargs are
         # unchanged: constructing openai.OpenAI + its httpx pool costs
         # ~19-35ms per LLM call (fresh TCP+TLS handshake), ~5x per turn.
@@ -6670,11 +6617,6 @@ class AIAgent:
 
         return any(_contains_image(item) for item in candidates)
 
-    def _copilot_headers_for_request(self, *, is_vision: bool) -> dict:
-        from son_of_anton_cli.copilot_auth import copilot_request_headers
-
-        return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
-
     # Close reasons the request workers' own ``finally`` unwind reports for
     # a request that produced a response — the only closes that both come
     # from the thread that owns the pool's FDs AND attest a healthy pool.
@@ -6715,11 +6657,6 @@ class AIAgent:
         # Shared/primary clients and Anthropic / Bedrock paths are
         # unaffected (they don't go through here).
         request_kwargs["max_retries"] = 0
-        if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
-            and self._api_kwargs_have_image_parts(api_kwargs or {})
-        ):
-            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
         # Reuse the cached wire client while the effective kwargs are
         # unchanged: constructing openai.OpenAI + its httpx pool costs
         # ~19-35ms per LLM call (fresh TCP+TLS handshake), ~5x per turn.
@@ -7409,134 +7346,6 @@ class AIAgent:
         return True
 
 
-    def _try_refresh_copilot_client_credentials(self) -> bool:
-        """Refresh Copilot credentials and rebuild the shared OpenAI client.
-
-        The raw GitHub OAuth token (`gh auth token`) is usually stable, but the
-        short-TTL *exchanged* IDE token minted from it is what Copilot actually
-        authenticates — and it expires mid-session. A heavy/long turn whose
-        request straddles that expiry gets a clean `401 IDE token expired:
-        unauthorized: token expired`. Simply re-resolving the (unchanged) raw
-        token and rebuilding the client leaves the SAME expired IDE token on the
-        wire, so the retry 401s again and the turn aborts as non-retryable —
-        only a gateway restart helped, because a cold process re-runs the
-        exchange. Fix: force a fresh exchange (evict the cached exchanged JWT,
-        then mint a new one) so the retry carries a valid IDE token. Mirrors the
-        400 stale-credential recovery; the caller enforces the single-shot guard.
-        """
-        if not self._is_copilot_provider():
-            return False
-
-        try:
-            from son_of_anton_cli.copilot_auth import (
-                resolve_copilot_token,
-                get_copilot_api_token,
-                evict_cached_exchanged_token,
-            )
-
-            new_token, token_source = resolve_copilot_token()
-        except Exception as exc:
-            logger.debug("Copilot credential refresh failed: %s", exc)
-            return False
-
-        if not isinstance(new_token, str) or not new_token.strip():
-            return False
-
-        new_token = new_token.strip()
-
-        # Force a fresh IDE-token exchange: the cached exchanged JWT is the thing
-        # that expired ("401 IDE token expired"), so evict it and re-mint before
-        # rebuilding the client. Fall back to the resolved (raw) token only if the
-        # exchange itself is unavailable (network blip) — a client rebuild on the
-        # raw token still clears stale client state and may recover on enterprise
-        # seats where headers matter.
-        try:
-            evict_cached_exchanged_token(new_token)
-            api_token, enterprise_base_url = get_copilot_api_token(new_token)
-            if isinstance(api_token, str) and api_token.strip():
-                new_token = api_token.strip()
-                if enterprise_base_url:
-                    self.base_url = enterprise_base_url.rstrip("/")
-        except Exception as exc:
-            logger.debug("Copilot 401 re-exchange failed, using resolved token: %s", exc)
-
-        self.api_key = new_token
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-        self._apply_client_headers_for_base_url(str(self.base_url or ""))
-
-        if not self._replace_primary_openai_client(reason="copilot_credential_refresh"):
-            return False
-
-        logger.info("Copilot credentials refreshed from %s", token_source)
-        return True
-
-    def _try_recover_stale_copilot_credential(self) -> bool:
-        """Force a fresh Copilot token exchange + client rebuild after a 400.
-
-        Copilot surfaces a stale/degraded credential as a
-        ``400 model_not_available_for_integrator`` /
-        ``model_not_supported`` — NOT a clean 401 — so the normal 401 refresh
-        path never fires. The most common trigger is a raw ``ghu_`` OAuth token
-        that got seeded (and cached) when the startup token exchange degraded:
-        the raw token routes the request to the restricted
-        ``copilot-language-server`` integrator whose allowlist omits
-        enterprise-only models (e.g. ``claude-opus-4.8``).
-
-        Recovery = evict the poisoned cache entry, force a fresh exchange to
-        mint the real ~437-char API token, re-apply the Copilot headers, and
-        rebuild the shared client. Single-shot (guarded by the caller) so a
-        genuinely unavailable model can't loop.
-        """
-        if not self._is_copilot_provider():
-            return False
-
-        try:
-            from son_of_anton_cli.copilot_auth import (
-                resolve_copilot_token,
-                get_copilot_api_token,
-                evict_cached_exchanged_token,
-            )
-
-            raw_token, token_source = resolve_copilot_token()
-            if not isinstance(raw_token, str) or not raw_token.strip():
-                return False
-            raw_token = raw_token.strip()
-
-            # Drop any cached (possibly degraded/raw) exchanged token so the
-            # next exchange hits the network and mints a fresh one.
-            evict_cached_exchanged_token(raw_token)
-
-            api_token, enterprise_base_url = get_copilot_api_token(raw_token)
-        except Exception as exc:
-            logger.debug("Copilot stale-credential recovery failed: %s", exc)
-            return False
-
-        if not isinstance(api_token, str) or not api_token.strip():
-            return False
-
-        # If the exchange STILL degraded to the raw token, a rebuild won't help
-        # — don't burn the single-shot retry on an identical request.
-        if api_token == raw_token and not enterprise_base_url:
-            logger.warning(
-                "Copilot stale-credential recovery: exchange still degraded to "
-                "raw token; skipping retry (network/exchange endpoint unavailable)."
-            )
-            return False
-
-        self.api_key = api_token.strip()
-        if enterprise_base_url:
-            self.base_url = enterprise_base_url.rstrip("/")
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-        self._apply_client_headers_for_base_url(str(self.base_url or ""))
-
-        if not self._replace_primary_openai_client(reason="copilot_stale_credential_recovery"):
-            return False
-
-        logger.info("Copilot credentials re-exchanged after stale-credential 400 (source=%s)", token_source)
-        return True
-
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
@@ -7608,10 +7417,6 @@ class AIAgent:
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
-        elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from son_of_anton_cli.models import copilot_default_headers
-
-            self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
             from agent.auxiliary_client import _AI_GATEWAY_HEADERS
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
@@ -8883,16 +8688,6 @@ class AIAgent:
             return True
         if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
-        if (
-            base_url_host_matches(self._base_url_lower, "models.github.ai")
-            or base_url_host_matches(self._base_url_lower, "githubcopilot.com")
-        ):
-            try:
-                from son_of_anton_cli.models import github_model_reasoning_efforts
-
-                return bool(github_model_reasoning_efforts(self.model))
-            except Exception:
-                return False
         if (self.provider or "").strip().lower() == "lmstudio":
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.

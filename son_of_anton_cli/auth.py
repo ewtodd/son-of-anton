@@ -362,20 +362,6 @@ def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
-    if provider_id == "copilot":
-        # Use the dedicated copilot auth module for proper token validation
-        try:
-            from son_of_anton_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-            token, source = resolve_copilot_token()
-            if token:
-                api_token, _base_url = get_copilot_api_token(token)
-                return api_token, source
-        except ValueError as exc:
-            logger.warning("Copilot token validation failed: %s", exc)
-        except Exception:
-            pass
-        return "", ""
-
     from son_of_anton_cli.config import get_env_value_prefer_dotenv
     for env_var in pconfig.api_key_env_vars:
         # Prefer ~/.son-of-anton/.env over os.environ so a deliberate key rotation
@@ -6885,26 +6871,6 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif provider_id == "copilot":
-        # Resolve the Copilot API base URL from the token-exchange response
-        # (endpoints.api, with a proxy-ep fallback), which is authoritative
-        # for Enterprise / proxied accounts. Falls back to the registry
-        # default and is guarded non-empty below so chat inference never
-        # resolves an empty base URL (#50252).
-        base_url = env_url.rstrip("/") if env_url else pconfig.inference_base_url
-        try:
-            from son_of_anton_cli.copilot_auth import (
-                resolve_copilot_token,
-                get_copilot_api_token,
-            )
-            raw_token, _ = resolve_copilot_token()
-            if raw_token:
-                _, resolved = get_copilot_api_token(raw_token)
-                resolved = (resolved or "").strip()
-                if resolved:
-                    base_url = resolved
-        except Exception as exc:
-            logger.debug("Copilot base URL resolution fell back to default: %s", exc)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
