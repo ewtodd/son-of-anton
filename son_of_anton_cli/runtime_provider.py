@@ -23,7 +23,6 @@ from son_of_anton_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
     DEFAULT_CODEX_BASE_URL,
-    DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
@@ -31,7 +30,6 @@ from son_of_anton_cli.auth import (
     resolve_provider,
     resolve_codex_runtime_credentials,
     resolve_xai_oauth_runtime_credentials,
-    resolve_qwen_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -441,9 +439,6 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "xai-oauth":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
-    elif provider == "qwen-oauth":
-        api_mode = "chat_completions"
-        base_url = base_url or DEFAULT_QWEN_BASE_URL
     elif provider == "minimax-oauth":
         # MiniMax OAuth tokens are valid only against the Anthropic Messages
         # compatible endpoint. Do not honor stale model.api_mode values from a
@@ -1699,24 +1694,6 @@ def resolve_runtime_provider(
             if requested_provider != "auto":
                 raise
             logger.info("Auto-detected xAI OAuth provider but credentials failed; "
-                        "falling through to next provider.")
-
-    if provider == "qwen-oauth":
-        try:
-            creds = resolve_qwen_runtime_credentials()
-            return {
-                "provider": "qwen-oauth",
-                "api_mode": "chat_completions",
-                "base_url": creds.get("base_url", "").rstrip("/"),
-                "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "qwen-cli"),
-                "expires_at_ms": creds.get("expires_at_ms"),
-                "requested_provider": requested_provider,
-            }
-        except AuthError:
-            if requested_provider != "auto":
-                raise
-            logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
     if provider == "minimax-oauth":

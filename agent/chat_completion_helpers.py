@@ -1828,13 +1828,11 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     _ct = agent._get_transport()
 
     # Provider detection flags
-    _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
         or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
     )
-    _is_nous = base_url_host_matches(agent._base_url_lower, "nousresearch.com")
     _is_nvidia = base_url_host_matches(agent._base_url_lower, "integrate.api.nvidia.com")
     _is_kimi = (
         base_url_host_matches(agent.base_url, "api.kimi.com")
@@ -1879,14 +1877,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     except Exception:
         pass
 
-    # Qwen session metadata
-    _qwen_meta = None
-    if _is_qwen:
-        _qwen_meta = {
-            "sessionId": agent.session_id or "son-of-anton",
-            "promptId": str(uuid.uuid4()),
-        }
-
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
     # found, delegate fully; otherwise fall through to the legacy flag path.
@@ -1926,7 +1916,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
-            qwen_session_metadata=_qwen_meta,
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -1954,8 +1943,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         cache_scope_id=_cache_scope_id,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
-        is_nous=_is_nous,
-        is_qwen_portal=_is_qwen,
         is_github_models=_is_gh,
         is_nvidia_nim=_is_nvidia,
         is_kimi=_is_kimi,
@@ -1965,9 +1952,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
-        qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
-        qwen_session_metadata=_qwen_meta,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
         supports_reasoning=agent._supports_reasoning_extra_body(),

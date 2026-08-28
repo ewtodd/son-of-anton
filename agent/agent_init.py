@@ -1117,8 +1117,6 @@ def init_agent(
             client_kwargs["default_headers"] = {
                 "User-Agent": "claude-code/0.1.0",
             }
-        elif base_url_host_matches(effective_base, "portal.qwen.ai"):
-            client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
         elif base_url_host_matches(effective_base, "chatgpt.com"):
             from agent.auxiliary_client import _codex_cloudflare_headers
             client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)

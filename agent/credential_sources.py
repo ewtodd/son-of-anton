@@ -312,19 +312,6 @@ def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     return result
 
 
-def _remove_qwen_cli(provider: str, removed) -> RemovalResult:
-    """~/.qwen/oauth_creds.json is owned by the Qwen CLI.
-
-    Same pattern as claude_code — suppress, don't delete.  The user's
-    Qwen CLI install still reads from that file.
-    """
-    return RemovalResult(hints=[
-        "Suppressed qwen-cli credential — it will not be re-seeded.",
-        "Note: Qwen CLI credentials still live in ~/.qwen/oauth_creds.json",
-        "Run `son-of-anton auth add qwen-oauth` to re-enable if needed.",
-    ])
-
-
 def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
     """Copilot token comes from `gh auth token` or COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN.
 

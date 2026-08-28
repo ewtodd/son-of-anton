@@ -471,8 +471,6 @@ class ChatCompletionsTransport(ProviderTransport):
             # (i.e. custom / unregistered providers). Known providers all go
             # through provider_profile.
             is_openrouter: bool
-            is_nous: bool
-            is_qwen_portal: bool
             is_github_models: bool
             is_nvidia_nim: bool
             is_kimi: bool
@@ -482,10 +480,6 @@ class ChatCompletionsTransport(ProviderTransport):
             ollama_num_ctx: int | None
             # Provider routing
             provider_preferences: dict | None
-            # Qwen-specific
-            qwen_prepare_fn: callable | None — runs AFTER codex sanitization
-            qwen_prepare_inplace_fn: callable | None — in-place variant for deepcopied lists
-            qwen_session_metadata: dict | None
             # Temperature
             fixed_temperature: Any — from _fixed_temperature_for_model()
             omit_temperature: bool
@@ -797,7 +791,6 @@ class ChatCompletionsTransport(ProviderTransport):
             profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config,
                 supports_reasoning=params.get("supports_reasoning", False),
-                qwen_session_metadata=params.get("qwen_session_metadata"),
                 model=model,
                 base_url=params.get("base_url"),
                 ollama_num_ctx=params.get("ollama_num_ctx"),
