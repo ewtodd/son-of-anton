@@ -469,8 +469,6 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     # Google
     "gemini":    ModelIdentity("google", "gemini"),
 
-    # DeepSeek
-    "deepseek":  ModelIdentity("deepseek", "deepseek-chat"),
 
     # X.AI
     "grok":      ModelIdentity("x-ai", "grok"),
@@ -1212,7 +1210,7 @@ def _resolve_alias_fallback(
     Falls back to the fork's provider set only when no authenticated
     providers are supplied (backwards compat for non-interactive callers).
     """
-    providers = authenticated_providers or ("deepseek", "openai-api")
+    providers = authenticated_providers or ("openai-api",)
     for provider in providers:
         # AmbiguousAliasError propagates: the alias exists on this provider,
         # the user just has to choose — trying the next provider instead
@@ -2318,7 +2316,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     other.
 
     :param provider_slugs: Son of Anton provider IDs to prefetch (e.g. ``["openrouter",
-        "anthropic", "deepseek"]``).  Unknown providers are silently skipped.
+        "anthropic", "openai-api"]``).  Unknown providers are silently skipped.
     """
     from son_of_anton_cli.models import cached_provider_model_ids
 

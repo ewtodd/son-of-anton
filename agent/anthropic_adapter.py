@@ -580,33 +580,6 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     return False
 
 
-def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
-    """Return True for DeepSeek's Anthropic-compatible endpoint.
-
-    DeepSeek's ``/anthropic`` route speaks the Anthropic Messages protocol
-    but, when thinking mode is enabled, requires the ``thinking`` blocks
-    from prior assistant turns to round-trip on subsequent requests — the
-    generic third-party path strips them and triggers HTTP 400::
-
-        The content[].thinking in the thinking mode must be passed back
-        to the API.
-
-    Per DeepSeek's published compatibility matrix the blocks are unsigned
-    (no Anthropic-proprietary signature, no ``redacted_thinking`` support),
-    so this endpoint is handled with the same strip-signed / keep-unsigned
-    policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
-    the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
-    base URL (which never reaches this adapter) is not misclassified.
-    See son-of-anton#16748.
-    """
-    if not base_url_host_matches(base_url or "", "api.deepseek.com"):
-        return False
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    return "/anthropic" in normalized.rstrip("/").lower()
-
-
 def _is_nous_portal_endpoint(base_url: str | None) -> bool:
     """Return True for Nous Portal's Anthropic Messages route.
 
@@ -2006,7 +1979,7 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
     Handles thinking blocks, regular content, tool calls, and
-    reasoning_content injection for Kimi/DeepSeek endpoints.
+    reasoning_content injection for Kimi endpoints.
     """
     content = m.get("content", "")
     # Anthropic interleaved-thinking fast path: when this turn carries a
@@ -2435,11 +2408,10 @@ def _manage_thinking_signatures(
 
     Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
     Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
-    and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See son-of-anton#13848 (Kimi) and
-    son-of-anton#16748 (DeepSeek).
+    and will reject them outright.  Kimi's /coding endpoint speaks the
+    Anthropic protocol upstream but requires unsigned thinking blocks
+    (synthesised from ``reasoning_content``) to round-trip on replayed
+    assistant tool-call messages.  See son-of-anton#13848.
 
     Nous Portal's ``/v1/messages`` route is the exception among third-party
     hosts: it proxies Claude to Anthropic/Vertex/Bedrock and validates the
@@ -2472,18 +2444,6 @@ def _manage_thinking_signatures(
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
             pass
-        elif _is_deepseek_anthropic_endpoint(base_url):
-            # DeepSeek: strip signed, preserve unsigned.
-            new_content = []
-            for b in m["content"]:
-                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
-                    new_content.append(b)
-                    continue
-                if b.get("signature") or b.get("data"):
-                    # Signed (or redacted-with-data) — upstream can't validate, strip.
-                    continue
-                new_content.append(b)
-            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.

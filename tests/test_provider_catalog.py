@@ -1,8 +1,12 @@
-"""Provider-catalog contracts — the fork ships exactly two API-key providers
-(deepseek, openai-api) plus config.yaml custom endpoints. These tests assert
-the catalog structure that the /model picker, setup wizard, and provider
-resolution all derive from, so a provider added or removed in one layer but
-not the others fails loudly.
+"""Provider-catalog contracts — the fork ships exactly one API-key provider
+(openai-api) plus config.yaml custom endpoints. These tests assert the catalog
+structure that the /model picker, setup wizard, and provider resolution all
+derive from, so a provider added or removed in one layer but not the others
+fails loudly.
+
+DeepSeek was the second API-key provider until 2026-08-27. Its models are
+still reachable — as any other model is — by pointing a custom endpoint or an
+aggregator at them; what went away is the direct-API integration.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from son_of_anton_cli.providers import (
 
 
 def test_registry_contains_exactly_the_fork_providers() -> None:
-    assert set(PROVIDER_REGISTRY) == {"deepseek", "openai-api"}
+    assert set(PROVIDER_REGISTRY) == {"openai-api"}
 
 
 def test_registry_entries_are_usable_api_key_providers() -> None:
@@ -31,7 +35,8 @@ def test_registry_entries_are_usable_api_key_providers() -> None:
 
 def test_canonical_providers_include_fork_providers() -> None:
     slugs = {p.slug for p in CANONICAL_PROVIDERS}
-    assert {"deepseek", "openai-api"} <= slugs
+    assert "openai-api" in slugs
+    assert "deepseek" not in slugs
     # The custom endpoint slot is the plugin-registered third surface.
     assert "custom" in slugs
 
@@ -65,6 +70,10 @@ def test_removed_providers_no_longer_resolve_offline() -> None:
         "bedrock", "aws", "aws-bedrock",
         "vertex", "google-vertex", "vertex-ai",
         "azure-foundry", "foundry",
+        # Removed 2026-08-27: the direct DeepSeek API, in favour of reaching
+        # those models over an OpenAI-compatible endpoint like everything
+        # else. The alias went with it.
+        "deepseek", "deep-seek",
     ):
         assert get_provider(slug, allow_network=False) is None, f"{slug} still resolves"
 

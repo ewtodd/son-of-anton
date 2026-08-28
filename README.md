@@ -92,15 +92,15 @@ OpenAI-compatible provider:
 
 ```yaml
 model:
-  default: deepseek-v4      # what the CLI opens with
+  default: qwen3.8-27b-coding   # what the CLI opens with
   provider: custom
 gateway:
-  model: gemma-4-26b        # what the gateway answers with, if different
+  model: gemma-4-26b            # what the gateway answers with, if different
 custom_providers:
   custom:
     base_url: http://127.0.0.1:8080/v1
 physics:
-  model: deepseek-v4
+  model: qwen3.8-27b-coding
   base_url: http://127.0.0.1:8080/v1
 ```
 

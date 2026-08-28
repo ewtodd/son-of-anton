@@ -643,9 +643,13 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 #     kimi     — provider kimi-coding/kimi-coding-cn, or host api.kimi.com /
 #                moonshot.ai / moonshot.cn.  Host-driven on purpose:
 #                aggregators re-exporting kimi models reject the echo.
-#     deepseek — provider "deepseek", model contains "deepseek", or host
-#                api.deepseek.com (#15250; V4 rejects empty-string pads,
-#                hence the " " single-space pad, #17341).
+#     deepseek — model contains "deepseek", or host api.deepseek.com
+#                (#15250; V4 rejects empty-string pads, hence the " "
+#                single-space pad, #17341).  Matched on the model and the
+#                host, never the provider: the direct DeepSeek provider is
+#                gone, but its weights are still reachable through any
+#                OpenAI-compatible endpoint and the contract travels with
+#                them.
 #     mimo     — provider "xiaomi", model contains "mimo", or host
 #                *.xiaomimimo.com.
 #   strict side (field rejected with 400/422 "Extra inputs are not
@@ -657,7 +661,7 @@ _REASONING_ECHO_RULES: tuple = (
     #  model substrings (lowered), base_url hosts)
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (),
      ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
-    ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",),
+    ("deepseek", frozenset(), frozenset(), ("deepseek",),
      ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",),
      ("api.xiaomimimo.com", "xiaomimimo.com")),

@@ -153,7 +153,7 @@ son-of-anton/
 │   └── platforms/        # signal (built-in); discord + slack live in plugins/platforms/
 ├── plugins/              # Plugin system (see "Plugins" below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
-│   ├── model-providers/  # Inference backend plugins (custom, deepseek)
+│   ├── model-providers/  # Inference backend plugins (custom)
 │   ├── platforms/        # discord, slack adapters
 │   └── web/              # Web-search provider plugins (exa, tavily, firecrawl, ...)
 ├── physics_intern/       # Vendored physics modes (Autophysicist + research pipeline)
@@ -318,7 +318,7 @@ alternation stays intact.
 ## Physics Modes (physics_intern/)
 
 - `physics_intern/llm.py` resolves endpoints in order: `physics.base_url` (config.yaml) →
-  provider defaults (deepseek → `api.deepseek.com`, openai → `api.openai.com`) →
+  provider defaults (openai → `api.openai.com`) →
   `custom_providers.<provider>.base_url` → `http://127.0.0.1:8080/v1`. Retry +
   context-length detection included.
 - Autophysicist is a callable `run_autophysicist(...)`; the research pipeline runs nine
@@ -475,7 +475,7 @@ providers are welcome.
 ### Model-provider plugins (`plugins/model-providers/<name>/`)
 
 Inference backend profiles, each calling `providers.register_provider(ProviderProfile(...))`
-at module load. The fork ships **custom** and **deepseek**; user plugins of the same name
+at module load. The fork ships **custom**; user plugins of the same name
 override bundled ones (last-writer-wins). Local endpoints (llama-swap, ollama, vllm) are
 configured as `custom_providers` in config.yaml — not as registry entries.
 

@@ -392,10 +392,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
-    "deepseek": [
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-    ],
     "xiaomi": [
         "mimo-v2.5-pro",
         "mimo-v2.5",
@@ -1108,7 +1104,6 @@ class ProviderEntry(NamedTuple):
 # self-hosted endpoints (llama-swap, ollama, vllm, ...) arrive as custom
 # providers via config.yaml and the providers/ plugin registry below.
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
-    ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, direct API)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
 ]
 
@@ -1276,7 +1271,6 @@ _PROVIDER_ALIASES = {
     "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
     "claude-code": "anthropic",
-    "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
     "go": "opencode-go",
@@ -3048,10 +3042,9 @@ def _provider_keys(provider: str) -> set[str]:
 
 
 # Retired model IDs kept for /model auto-detect only — not shown in pickers.
-# DeepSeek cut these off on 2026-07-24; model_normalize remaps them on the wire.
-_PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
-    "deepseek": ("deepseek-chat", "deepseek-reasoner"),
-}
+# Empty since the DeepSeek provider was dropped; the mechanism stays because
+# any provider can retire an ID mid-release.
+_PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {}
 
 
 def _provider_catalog_names(provider: str) -> tuple[str, ...]:
@@ -3453,7 +3446,6 @@ def _resolve_copilot_catalog_api_key() -> str:
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go",
     "opencode-zen",
-    "deepseek",
     "kilocode",
     "fireworks",
     "mistral",

@@ -12,14 +12,6 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** accepts only the first-class V-series IDs
-  (``deepseek-v4-pro``, ``deepseek-v4-flash``, and any future
-  ``deepseek-v<N>-*``).  The legacy aliases ``deepseek-chat`` and
-  ``deepseek-reasoner`` were retired on 2026-07-24 and are remapped to
-  ``deepseek-v4-flash`` (official non-thinking / thinking shims).  Older
-  Son of Anton revisions folded every non-reasoner input into
-  ``deepseek-chat``, which on aggregators routes to V3 — so a user
-  picking V4 Pro was silently downgraded.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -130,85 +122,6 @@ _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
 })
-
-# ---------------------------------------------------------------------------
-# DeepSeek special handling
-# ---------------------------------------------------------------------------
-# DeepSeek's direct API only accepts first-class V-series IDs after the
-# 2026-07-24 cut-off.  Legacy aliases and fuzzy names are remapped here so
-# saved configs / picker leftovers cannot keep sending retired IDs.
-
-_DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
-    "reasoner",
-    "r1",
-    "think",
-    "reasoning",
-    "cot",
-})
-
-# Retired on 2026-07-24 15:59 UTC. Official docs: both aliases mapped to
-# deepseek-v4-flash (chat = non-thinking, reasoner = thinking). Thinking
-# mode itself is controlled by extra_body.thinking on the DeepSeek profile.
-_DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
-    "deepseek-chat",
-    "deepseek-reasoner",
-})
-
-_DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro",     # V4 Pro — first-class model ID
-    "deepseek-v4-flash",   # V4 Flash — first-class model ID
-})
-
-# First-class V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,
-# future ``deepseek-v5-*``, dated variants like ``deepseek-v4-flash-20260423``).
-# Verified empirically 2026-04-24: DeepSeek's Chat Completions API returns
-# ``provider: DeepSeek`` / ``model: deepseek-v4-flash-20260423`` when called
-# with ``model=deepseek/deepseek-v4-flash``, so these names are not aliases
-# of ``deepseek-chat`` and must not be folded into it.
-_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
-
-
-def _normalize_for_deepseek(model_name: str) -> str:
-    """Map a model input to a DeepSeek-accepted identifier.
-
-    Rules:
-    - Retired aliases ``deepseek-chat`` / ``deepseek-reasoner`` (cut off
-      2026-07-24) -> ``deepseek-v4-flash``.
-    - Already a known canonical (``deepseek-v4-pro``/``deepseek-v4-flash``)
-      -> pass through.
-    - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
-      (covers future ``deepseek-v5-*`` and dated variants without a release).
-    - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
-      -> ``deepseek-v4-flash``.
-    - Everything else -> ``deepseek-v4-flash``.
-
-    Args:
-        model_name: The bare model name (vendor prefix already stripped).
-
-    Returns:
-        A DeepSeek-accepted model identifier.
-    """
-    bare = _strip_vendor_prefix(model_name).lower()
-
-    # Retired aliases must rewrite — DeepSeek returns HTTP 400 after the
-    # 2026-07-24 cut-off if these IDs are sent on the wire.
-    if bare in _DEEPSEEK_RETIRED_ALIASES:
-        return "deepseek-v4-flash"
-
-    if bare in _DEEPSEEK_CANONICAL_MODELS:
-        return bare
-
-    # V-series first-class IDs (v4-pro, v4-flash, future v5-*, dated variants)
-    if _DEEPSEEK_V_SERIES_RE.match(bare):
-        return bare
-
-    # Check for reasoner-like keywords anywhere in the name
-    for keyword in _DEEPSEEK_REASONER_KEYWORDS:
-        if keyword in bare:
-            return "deepseek-v4-flash"
-
-    return "deepseek-v4-flash"
-
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -438,7 +351,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             format (``"claude-sonnet-4-6"``).
         target_provider: The canonical Son of Anton provider id, e.g.
             ``"openrouter"``, ``"anthropic"``, ``"copilot"``,
-            ``"deepseek"``, ``"custom"``.  Should already be normalised
+            ``"openai-api"``, ``"custom"``.  Should already be normalised
             via ``son_of_anton_cli.models.normalize_provider()``.
 
     Returns:
@@ -467,15 +380,6 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
         >>> normalize_model_for_provider("minimax-m2.5-free", "opencode-zen")
         'minimax-m2.5-free'
-
-        >>> normalize_model_for_provider("deepseek-v3", "deepseek")
-        'deepseek-v4-flash'
-
-        >>> normalize_model_for_provider("deepseek-r1", "deepseek")
-        'deepseek-v4-flash'
-
-        >>> normalize_model_for_provider("deepseek-reasoner", "deepseek")
-        'deepseek-v4-flash'
 
         >>> normalize_model_for_provider("my-model", "custom")
         'my-model'
@@ -548,13 +452,6 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             # openai-codex maps openai/gpt-5.4 -> gpt-5.4
             return name.split("/", 1)[1]
         return stripped
-
-    # --- DeepSeek: map to one of two canonical names ---
-    if provider == "deepseek":
-        bare = _strip_matching_provider_prefix(name, provider)
-        if "/" in bare:
-            return bare
-        return _normalize_for_deepseek(bare)
 
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:

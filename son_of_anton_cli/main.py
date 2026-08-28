@@ -2085,7 +2085,7 @@ def select_provider_and_model(args=None):
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
-    elif selected_provider in {"openai-api", "deepseek"} or _is_profile_api_key_provider(
+    elif selected_provider == "openai-api" or _is_profile_api_key_provider(
         selected_provider
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
@@ -5059,7 +5059,7 @@ def _build_provider_choices() -> list[str]:
         return ["auto"] + [p.slug for p in _cp]
     except Exception:
         # Fallback: static list guarantees the CLI always works
-        return ["auto", "deepseek", "openai-api", "custom"]
+        return ["auto", "openai-api", "custom"]
 
 
 # Top-level subcommands that argparse knows about WITHOUT running plugin
@@ -6367,7 +6367,7 @@ def main():
         p.add_argument(
             "--provider",
             help="Only match sessions billed through this provider "
-            "(e.g. deepseek, openai-api, custom)",
+            "(e.g. openai-api, custom)",
         )
         p.add_argument(
             "--user", help="Only match sessions from this user ID"

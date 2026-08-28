@@ -2035,8 +2035,8 @@ class GoalManager:
                     "Check the goal_judge provider/key in ~/.son-of-anton/config.yaml:\n"
                     "  auxiliary:\n"
                     "    goal_judge:\n"
-                    "      provider: deepseek\n"
-                    "      model: deepseek-v4-flash\n"
+                    "      provider: custom\n"
+                    "      model: qwen3.8-27b-coding\n"
                     "Then /goal resume to continue."
                 ),
             }

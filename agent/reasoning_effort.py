@@ -119,8 +119,6 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint: low/medium/high/max; ``xhigh``
 #: requests the top tier (matches the shipped profile mapping).
-DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: Ollama Cloud /v1/chat/completions: accepts {none, low, medium, high, max};
 #: rejects ``minimal`` with HTTP 400. ``xhigh`` requests the top tier.

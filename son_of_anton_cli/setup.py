@@ -183,7 +183,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     print_info("  son-of-anton config set model.base_url http://localhost:8080/v1")
     print_info("  son-of-anton config set model.default your-model-name")
     print()
-    print_info("Or set OPENAI_API_KEY / DEEPSEEK_API_KEY in your environment.")
+    print_info("Or set OPENAI_API_KEY in your environment.")
     print_info("Run 'son-of-anton setup' in an interactive terminal to use the full wizard.")
     print()
 
@@ -1751,7 +1751,7 @@ def _run_first_time_quick_setup(config: dict, son_of_anton_home, is_existing: bo
     print()
     print_header("Inference Provider")
     print_info("Choose how to connect to your main chat model.")
-    print_info("  DeepSeek / OpenAI API keys, or a custom endpoint (llama-swap, ollama, ...).")
+    print_info("  An OpenAI API key, or a custom endpoint (llama-swap, ollama, vllm, ...).")
     print()
     try:
         from son_of_anton_cli.main import select_provider_and_model

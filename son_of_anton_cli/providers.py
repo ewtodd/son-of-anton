@@ -54,10 +54,6 @@ SON_OF_ANTON_OVERLAYS: Dict[str, SonOfAntonOverlay] = {
         base_url_override="https://api.openai.com/v1",
         base_url_env_var="OPENAI_BASE_URL",
     ),
-    "deepseek": SonOfAntonOverlay(
-        transport="openai_chat",
-        base_url_env_var="DEEPSEEK_BASE_URL",
-    ),
 }
 
 
@@ -87,9 +83,6 @@ class ProviderDef:
 ALIASES: Dict[str, str] = {
     # openai
     "openai": "openai-api",     # bare "openai" → the direct OpenAI API
-
-    # deepseek
-    "deep-seek": "deepseek",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "custom",
