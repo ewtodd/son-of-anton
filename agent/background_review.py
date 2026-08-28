@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 from son_of_anton_constants import get_son_of_anton_home
+from agent.hour_window import hour_in_window, parse_hour_window
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -325,24 +326,13 @@ def _review_schedule(task_cfg: Optional[Dict[str, Any]] = None) -> str:
 
 def _parse_daily_window(task_cfg: Optional[Dict[str, Any]] = None) -> tuple[int, int]:
     cfg = task_cfg if isinstance(task_cfg, dict) else {}
-    raw = cfg.get("daily_window", DEFAULT_DAILY_WINDOW)
-    try:
-        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
-            start = int(raw[0])
-            end = int(raw[1])
-            if 0 <= start < 24 and 0 <= end < 24 and start != end:
-                return (start, end)
-    except (TypeError, ValueError):
-        pass
-    return DEFAULT_DAILY_WINDOW
+    return parse_hour_window(cfg.get("daily_window"), DEFAULT_DAILY_WINDOW)
 
 
-def _hour_in_window(hour: int, window: tuple[int, int]) -> bool:
-    start, end = window
-    if start < end:
-        return start <= hour < end
-    # Window wraps midnight (e.g. 22 → 6).
-    return hour >= start or hour < end
+# Kept as a module-local alias: the wrapping-window predicate is now shared
+# with the gateway's active_hours gate (agent/hour_window.py) so the two
+# cannot drift.
+_hour_in_window = hour_in_window
 
 
 def automatic_review_due(

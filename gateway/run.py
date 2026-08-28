@@ -6434,6 +6434,13 @@ def _run_physics_mode_sync(mode: str, problem_text: str) -> str:
     return "\n".join(lines)
 
 
+def _active_hours_open(config) -> bool:
+    """Is *config*'s active-hours window open right now? No window = always."""
+    from gateway.active_hours import is_active
+
+    return is_active(getattr(config, "active_hours", None))
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -11216,6 +11223,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
                 continue
 
+            # A restart inside the closed stretch must not replay pending
+            # turns: auto-resume synthesizes real agent work, which is exactly
+            # what the window exists to hold. The marker survives, so the
+            # resume happens on the next restart inside the window.
+            if not _active_hours_open(self.config):
+                logger.info(
+                    "Skipping auto-resume for %s: outside active hours %s",
+                    entry.session_key,
+                    getattr(self.config, "active_hours", None),
+                )
+                continue
+
             # Validate the session owner against the current allowlist
             # before auto-resuming. A session created before
             # a platform allowlist (or equivalent) was configured, or
@@ -13971,6 +13990,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
 
+    def _turn_gate_passthrough(self, event: "MessageEvent", source) -> bool:
+        """Is this message control traffic that a turn gate must not swallow?
+
+        Shared by the two gates that hold NEW agent turns without taking the
+        gateway down — the global emergency stop and the active-hours window.
+        Both promise the same two things. Recognized slash commands keep
+        working, so ``/status``, ``/help`` and the in-band resume path stay
+        reachable while the gate is closed. And any message owned by
+        IN-FLIGHT work is delivered — a pending update prompt, clarify,
+        slash-confirm or dangerous-command approval, plus steering a session
+        whose agent is already running — because swallowing those stalls work
+        the gate never promised to touch.
+        """
+        try:
+            command = event.get_command()
+        except Exception:
+            command = None
+        if command:
+            try:
+                from son_of_anton_cli.commands import resolve_command
+
+                if resolve_command(command) is not None:
+                    return True
+            except Exception:
+                pass
+        try:
+            session_key = self._session_key_for_source(source)
+            state = self._peek_session_state(session_key)
+            if state is not None and state.persistent.update_prompt_pending:
+                return True
+            if self._is_session_running(session_key):
+                return True
+            from tools import slash_confirm as _confirm_mod
+
+            if _confirm_mod.get_pending(session_key):
+                return True
+            from tools.approval import has_blocking_approval
+
+            if has_blocking_approval(session_key):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _active_hours_notice(self, source, now=None) -> Optional[str]:
+        """Notice to send instead of a turn, or None when inside the window.
+
+        Three-valued on purpose: ``None`` means the window is open and the
+        turn should run, a string is the notice to send, and ``""`` means hold
+        the turn but stay quiet because this chat has already been told during
+        this closed stretch. A group that keeps talking through the day gets
+        told once, not once per message — a bot that answers every message
+        with the same line reads worse than silence.
+        """
+        window = getattr(self.config, "active_hours", None)
+        if not window:
+            return None
+        from gateway import active_hours as _hours
+
+        notice = _hours.inactive_notice(
+            window, getattr(self.config, "inactive_message", "") or "", now
+        )
+        if notice is None:
+            return None
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        gap = _hours.gap_key(window, now)
+        sent = getattr(self, "_active_hours_notified", None)
+        if sent is None:
+            sent = {}
+            self._active_hours_notified = sent
+        if sent.get(chat_id) == gap:
+            return ""
+        sent[chat_id] = gap
+        return notice
+
     def _primary_message_handler(self):
         """Return the message handler for a primary adapter."""
         return self._handle_message
@@ -14850,54 +14944,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 _paused_notice = _estop_paused_reply()
             except ImportError:
                 _paused_notice = None
-            if _paused_notice is not None:
-                _estop_allow = False
-                _estop_cmd = None
-                try:
-                    _estop_cmd = event.get_command()
-                except Exception:
-                    _estop_cmd = None
-                if _estop_cmd:
-                    try:
-                        from son_of_anton_cli.commands import (
-                            resolve_command as _resolve_estop_cmd,
-                        )
-                        _estop_allow = _resolve_estop_cmd(_estop_cmd) is not None
-                    except Exception:
-                        _estop_allow = False
-                if not _estop_allow:
-                    try:
-                        _estop_key = self._session_key_for_source(source)
-                        _estop_state = self._peek_session_state(_estop_key)
-                        if (
-                            _estop_state is not None
-                            and _estop_state.persistent.update_prompt_pending
-                        ):
-                            _estop_allow = True
-                        if not _estop_allow and self._is_session_running(_estop_key):
-                            # Steering / interrupting in-flight work (which
-                            # also covers pending clarify + tool approvals
-                            # held by the running agent).
-                            _estop_allow = True
-                        if not _estop_allow:
-                            from tools import slash_confirm as _estop_confirm_mod
-                            if _estop_confirm_mod.get_pending(_estop_key):
-                                _estop_allow = True
-                        if not _estop_allow:
-                            from tools.approval import (
-                                has_blocking_approval as _estop_has_approval,
-                            )
-                            if _estop_has_approval(_estop_key):
-                                _estop_allow = True
-                    except Exception:
-                        pass
-                if not _estop_allow:
-                    logger.info(
-                        "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
-                        getattr(getattr(source, "platform", None), "value", "unknown"),
-                        getattr(source, "chat_id", None) or "unknown",
-                    )
-                    return _paused_notice
+            if _paused_notice is not None and not self._turn_gate_passthrough(
+                event, source
+            ):
+                logger.info(
+                    "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
+                    getattr(getattr(source, "platform", None), "value", "unknown"),
+                    getattr(source, "chat_id", None) or "unknown",
+                )
+                return _paused_notice
+
+        # Active-hours window (`gateway.active_hours`). This instance shares
+        # hardware with somebody's working day, so outside its window it
+        # answers with a notice instead of starting a turn — the unit stays
+        # up, history stays intact, and slash commands keep working. Same
+        # passthroughs as the emergency stop above, and the same placement
+        # after auth so an unauthorized sender cannot probe the schedule.
+        if not is_internal:
+            _hours_notice = self._active_hours_notice(source)
+            if _hours_notice is not None and not self._turn_gate_passthrough(
+                event, source
+            ):
+                logger.info(
+                    "Gateway turn held outside active hours %s (platform=%s chat=%s)",
+                    self.config.active_hours,
+                    getattr(getattr(source, "platform", None), "value", "unknown"),
+                    getattr(source, "chat_id", None) or "unknown",
+                )
+                # "" = already announced in this closed stretch; hold quietly.
+                return _hours_notice or None
 
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
