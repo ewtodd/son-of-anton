@@ -1019,6 +1019,78 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
         result = bridge.respond_to_approval(id, decision)
         return json.dumps(result, indent=2)
 
+    # -- agent_pause -------------------------------------------------------
+
+    @mcp.tool()
+    def agent_pause(reason: Optional[str] = None) -> str:
+        """Pause this instance: it stops taking NEW work until resumed.
+
+        For when you need the machine back mid-shift. The instance stays
+        connected and keeps answering on its platforms, but every new turn
+        gets a short "paused" notice instead of running the agent, and its
+        cron jobs stop dispatching.
+
+        Work already in flight is never killed — a turn that has started
+        runs to completion, so nothing is left half-done. If you need that
+        turn gone too, wait for it or restart the unit.
+
+        The pause outlives this bridge connection and the agent process; it
+        holds until agent_resume. Use agent_status to check.
+
+        Args:
+            reason: Shown in the paused notice, e.g. "training run on the GPU"
+        """
+        from agent import estop
+
+        was_engaged = estop.is_engaged()
+        estop.engage(reason)
+        return json.dumps({
+            "paused": True,
+            "already_paused": was_engaged,
+            "reason": reason or None,
+            "note": "In-flight work finishes; new turns are held until resume.",
+        }, indent=2)
+
+    # -- agent_resume ------------------------------------------------------
+
+    @mcp.tool()
+    def agent_resume() -> str:
+        """Lift a pause set by agent_pause. Idempotent."""
+        from agent import estop
+
+        lifted = estop.disengage()
+        return json.dumps({
+            "paused": False,
+            "was_paused": lifted,
+        }, indent=2)
+
+    # -- agent_status ------------------------------------------------------
+
+    @mcp.tool()
+    def agent_status() -> str:
+        """Report whether this instance is paused, and its active hours.
+
+        ``active_hours`` is the window this instance answers in at all
+        (local time, may wrap past midnight). Outside it the instance holds
+        turns on its own, without anyone pausing it.
+        """
+        from agent import estop
+
+        state = estop.get_state()
+        out = {
+            "paused": state is not None,
+            "pause_reason": (state or {}).get("reason"),
+            "paused_at": (state or {}).get("engaged_at"),
+        }
+        try:
+            from gateway.config import load_gateway_config
+
+            window = load_gateway_config().active_hours
+            out["active_hours"] = list(window) if window else None
+        except Exception:
+            out["active_hours"] = None
+        return json.dumps(out, indent=2)
+
     return mcp
 
 
