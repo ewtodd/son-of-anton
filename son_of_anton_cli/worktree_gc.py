@@ -50,7 +50,6 @@ logger = logging.getLogger(__name__)
 _PROTECTED_BRANCHES = {"main", "master", "develop", "dev", "trunk"}
 
 # Trees owned by another lifecycle (kanban dispatcher gc) — never touched.
-_KANBAN_RE = re.compile(r"^t_[0-9a-f]+$")
 
 # Bounded cherry probe: a branch this far ahead of upstream is a stale-base
 # lane, not merged scratch; checking it is expensive and it stays preserved.
@@ -205,10 +204,6 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True) -> List[TreeReco
                 verdict=verdict, reason=reason,
                 untracked=untracked or [],
             ))
-
-        if _KANBAN_RE.match(entry.name):
-            rec("keep", "kanban task tree (owned by kanban gc)")
-            continue
 
         lock_state = _cli._worktree_lock_is_live(repo_root, str(entry), timeout=5)
         if lock_state == "live":

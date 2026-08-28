@@ -240,16 +240,6 @@ def _scrub_child_env(source_env, is_passthrough=None):
     # into the child env and strip dispatcher-owned Kanban variables after the
     # normal secret/passthrough scrub so an explicit passthrough cannot re-grant
     # a delegated child the parent's board mutation capability.
-    try:
-        from agent.delegation_context import (
-            is_delegated_child_process_context,
-            scrub_kanban_env,
-        )
-
-        if is_delegated_child_process_context():
-            scrubbed = scrub_kanban_env(scrubbed)
-    except Exception:
-        pass
     return scrubbed
 
 

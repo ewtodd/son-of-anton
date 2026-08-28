@@ -425,24 +425,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # check can still prove ownership against the repo layout.
     _strip_son_of_anton_owned_pythonpath_and_runtime_markers(sanitized)
 
-    sanitized = _scrub_delegated_child_kanban_env(sanitized)
 
     return sanitized
-
-
-def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
-    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
-    try:
-        from agent.delegation_context import (
-            is_delegated_child_process_context,
-            scrub_kanban_env,
-        )
-
-        if is_delegated_child_process_context():
-            return scrub_kanban_env(env)
-    except Exception:
-        pass
-    return env
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
@@ -565,7 +549,6 @@ def son_of_anton_subprocess_env(*, inherit_credentials: bool = False) -> dict[st
     # also need the delegate_task child lineage marker.  Otherwise a child
     # context that later imports Kanban DB code in the spawned process would
     # still see the parent's SON_OF_ANTON_HOME but lose the DB mutation guard.
-    env = _scrub_delegated_child_kanban_env(env)
 
     return env
 
@@ -902,7 +885,6 @@ def _make_run_env(env: dict, cwd: str | None = None) -> dict:
 
     _strip_son_of_anton_owned_pythonpath_and_runtime_markers(run_env)
 
-    run_env = _scrub_delegated_child_kanban_env(run_env)
 
     if cwd:
         # Marker for terminal.home_mode=cwd: get_subprocess_home() uses this
