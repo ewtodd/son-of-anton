@@ -1,0 +1,141 @@
+"""Every module compiles, and every `from X import name` names something real.
+
+The gap these close was found the hard way. A syntax error shipped in
+agent/transports/chat_completions.py and survived both the test suite and
+`nix flake check`, because the venv sweep imports a hand-written list of ~20
+modules and that file is imported lazily inside a try/except elsewhere. And a
+`from gateway.run import _profile_runtime_scope` outlived the profiles
+removal by two sessions, inert inside a try/except, invisible to the compiler
+and to every import sweep.
+
+Both are the same class: a reference to something that no longer exists,
+hidden from the interpreter because nothing on the tested path evaluates it.
+Aggressive deletion is only safe with these two checks standing.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+SKIP_DIRS = {".git", "__pycache__", ".venv", "result", "node_modules", ".mypy_cache"}
+
+
+def _first_party_files() -> list[Path]:
+    out = []
+    for p in ROOT.rglob("*.py"):
+        rel = p.relative_to(ROOT)
+        if any(part in SKIP_DIRS for part in rel.parts):
+            continue
+        # Skill scripts run as standalone subprocesses against their own deps.
+        if rel.parts and rel.parts[0] in {"skills", "optional-skills"}:
+            continue
+        out.append(p)
+    return sorted(out)
+
+
+def _dotted(rel: Path) -> str:
+    parts = list(rel.parts)
+    if parts[-1] == "__init__.py":
+        return ".".join(parts[:-1])
+    parts[-1] = parts[-1][:-3]
+    return ".".join(parts)
+
+
+def test_every_module_compiles() -> None:
+    """A syntax error anywhere is a shipped crash, however lazily imported."""
+    broken = []
+    for p in _first_party_files():
+        try:
+            ast.parse(p.read_text(encoding="utf-8", errors="replace"), filename=str(p))
+        except SyntaxError as exc:
+            broken.append(f"{p.relative_to(ROOT)}:{exc.lineno}: {exc.msg}")
+    assert not broken, "modules with syntax errors:\n  " + "\n  ".join(broken)
+
+
+def _module_exports(path: Path) -> set[str] | None:
+    """Top-level names a module binds, including inside if/try blocks.
+
+    Returns None when the module defines ``__getattr__`` (PEP 562): it can
+    synthesise any name, so its exports cannot be known statically.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        return None
+    names: set[str] = set()
+
+    def collect(nodes) -> None:
+        for n in nodes:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(n.name)
+            elif isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        names.add(t.id)
+            elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                names.add(n.target.id)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    names.add(a.asname or a.name.split(".")[0])
+            elif isinstance(n, ast.If):
+                collect(n.body)
+                collect(n.orelse)
+            elif isinstance(n, ast.Try):
+                collect(n.body)
+                collect(n.orelse)
+                collect(n.finalbody)
+                for h in n.handlers:
+                    collect(h.body)
+
+    collect(tree.body)
+    if "__getattr__" in names:
+        return None
+    return names
+
+
+def test_no_import_names_a_symbol_that_is_gone() -> None:
+    """Catches a removal that left its callers behind.
+
+    Scoped to first-party modules — third-party packages are the installer's
+    problem, and their conditional exports would produce noise.
+    """
+    files = _first_party_files()
+    modules = {_dotted(p.relative_to(ROOT)): p for p in files}
+    modules.pop("", None)
+    exports: dict[str, set[str] | None] = {}
+    orphans = []
+
+    for path in files:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue  # reported by the compile test
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+                continue
+            if node.module not in modules:
+                continue
+            if node.module not in exports:
+                exports[node.module] = _module_exports(modules[node.module])
+            have = exports[node.module]
+            if have is None:
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                if alias.name in have:
+                    continue
+                if f"{node.module}.{alias.name}" in modules:
+                    continue  # importing a submodule, not a symbol
+                orphans.append(
+                    f"{path.relative_to(ROOT)}:{node.lineno}: "
+                    f"from {node.module} import {alias.name}"
+                )
+
+    assert not orphans, (
+        "imports naming symbols that no longer exist:\n  " + "\n  ".join(orphans)
+    )
