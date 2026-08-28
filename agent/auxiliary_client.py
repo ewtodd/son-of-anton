@@ -2312,12 +2312,6 @@ def _maybe_wrap_anthropic(
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
         return client_obj
     try:
-        from agent.gemini_native_adapter import GeminiNativeClient
-        if _safe_isinstance(client_obj, GeminiNativeClient):
-            return client_obj
-    except ImportError:
-        pass
-    try:
         from agent.copilot_acp_client import CopilotACPClient
         if _safe_isinstance(client_obj, CopilotACPClient):
             return client_obj
@@ -2648,11 +2642,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
-            if provider_id == "gemini":
-                from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-
-                if is_native_gemini_base_url(base_url):
-                    return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -2688,11 +2677,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if model is None:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-
-            if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -5920,13 +5904,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     try:
-        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
-
-        if isinstance(sync_client, GeminiNativeClient):
-            return AsyncGeminiNativeClient(sync_client), model
-    except ImportError:
-        pass
-    try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
             return sync_client, model
@@ -6588,15 +6565,6 @@ def resolve_provider_client(
 
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
-
-        if provider == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-
-            if is_native_gemini_base_url(base_url):
-                client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                        else (client, final_model))
 
         # Provider-specific headers
         headers = {}
@@ -8257,21 +8225,6 @@ def _build_call_kwargs(
         # untitled and the next turn tries again. The endpoint honors max_tokens
         # perfectly when it is actually sent.
         _is_bounded_task = str(task or "") in _HARD_CAPPED_TASKS
-        # Gemini's native generateContent maps max_tokens → maxOutputTokens and,
-        # when it is omitted, applies a fixed 65,535-token ceiling rather than
-        # "the model's full budget" (see gemini_native_adapter.build_gemini_request).
-        # So an explicit cap is both safe and the ONLY way to honor it here —
-        # dropping max_tokens silently makes MoA's reference_max_tokens a no-op
-        # for gemini advisors (they run effectively uncapped).
-        _is_gemini_native = _provider_norm in {
-            "gemini", "google", "google-gemini", "google-ai-studio",
-        }
-        if not _is_gemini_native and _effective_base:
-            try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _is_gemini_native = is_native_gemini_base_url(_effective_base)
-            except Exception:
-                pass
         _nous_on_messages = False
         if _provider_norm in {"nous", "nous-portal", "nousresearch"}:
             from son_of_anton_cli.providers import nous_api_mode
@@ -8282,7 +8235,6 @@ def _build_call_kwargs(
             or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
-            or _is_gemini_native
             or _is_bounded_task
         ):
             # Use auxiliary_max_tokens_param() so models that require

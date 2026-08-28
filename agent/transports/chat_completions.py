@@ -202,8 +202,6 @@ def _raise_gemini_thinking_max_tokens(
     thinking_config = _build_gemini_thinking_config(model, reasoning_config)
     if not thinking_config:
         return requested
-    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
-
     return _effective_gemini_max_output_tokens(requested, thinking_config)
 
 
@@ -852,16 +850,6 @@ class ChatCompletionsTransport(ProviderTransport):
             # Gemini base_url — typical when only Google credentials are set and
             # a fallback/aux call lands on Gemini. The native client only reads
             # thinking_config from extra_body, so drop everything else here.
-            try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
-            except Exception:
-                _native_gemini = False
-            if _native_gemini:
-                extra_body = {
-                    k: v for k, v in extra_body.items()
-                    if k in ("thinking_config", "thinkingConfig")
-                }
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
@@ -1040,3 +1028,49 @@ class ChatCompletionsTransport(ProviderTransport):
 from agent.transports import register_transport  # noqa: E402
 
 register_transport("chat_completions", ChatCompletionsTransport)
+
+
+# Rescued from the deleted native Gemini adapter: these describe how
+# Gemini bills thought tokens against maxOutputTokens, which is true of its
+# OpenAI-compatible endpoint too — the one a `custom` provider can point at.
+GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
+
+
+def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(config, dict) or not config:
+        return None
+    budget = config.get("thinkingBudget", config.get("thinking_budget"))
+    include = config.get("includeThoughts", config.get("include_thoughts"))
+    level = config.get("thinkingLevel", config.get("thinking_level"))
+    normalized: Dict[str, Any] = {}
+    if isinstance(budget, (int, float)):
+        normalized["thinkingBudget"] = int(budget)
+    if isinstance(include, bool):
+        normalized["includeThoughts"] = include
+    if isinstance(level, str) and level.strip():
+        normalized["thinkingLevel"] = level.strip().lower()
+    return normalized or None
+
+
+def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
+    """Return True when Gemini will spend output tokens on thinking.
+
+    Gemini bills thought tokens against ``maxOutputTokens``. A global
+    Son of Anton ``max_tokens`` of 4096/16384 is enough for visible text, but
+    Ultra/high thinking can consume the entire budget and leave
+    ``finishReason=MAX_TOKENS`` with no complete answer. Continuations
+    then abort after 4 retries.
+    """
+    normalized = _normalize_thinking_config(thinking_config)
+    if not normalized:
+        return False
+    if normalized.get("includeThoughts") is False:
+        return "thinkingLevel" in normalized or bool(normalized.get("thinkingBudget"))
+    budget = normalized.get("thinkingBudget")
+    if isinstance(budget, int) and budget <= 0 and "thinkingLevel" not in normalized:
+        return False
+    return True
+
+
+def _effective_gemini_max_output_tokens(
+    max_tokens: Optional[int], thinking_config: Any

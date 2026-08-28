@@ -35,7 +35,6 @@ from agent.error_classifier import (
 )
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
@@ -3543,9 +3542,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     pool=_conn_cap,
                 ),
             }
-            # Native Gemini rejects OpenAI's usage-streaming extension.
-            if not is_native_gemini_base_url(agent.base_url):
-                stream_kwargs["stream_options"] = {"include_usage": True}
+            stream_kwargs["stream_options"] = {"include_usage": True}
             request_client = _set_request_client(
                 agent._create_request_openai_client(
                     reason="chat_completion_stream_request",
