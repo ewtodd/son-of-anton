@@ -352,30 +352,6 @@ def _fetch_picker_live_models(
 
 
 # ---------------------------------------------------------------------------
-# Non-agentic model warning
-# ---------------------------------------------------------------------------
-
-_SON_OF_ANTON_MODEL_WARNING = (
-    "Nous Research Son of Anton 3 & 4 models are NOT agentic and are not designed "
-    "for use with Son of Anton Agent. They lack the tool-calling capabilities "
-    "required for agent workflows. Consider using an agentic model instead "
-    "(Claude, GPT, Gemini, DeepSeek, etc.)."
-)
-
-# Match only the real Nous Research Son of Anton 3 / Son of Anton 4 chat families.
-# The previous substring check (`"son-of-anton" in name.lower()`) false-positived on
-# unrelated local Modelfiles like ``son-of-anton-brain:qwen3-14b-ctx16k`` that just
-# happen to carry "son-of-anton" in their tag but are fully tool-capable.
-#
-# Positive examples the regex must match:
-#   NousResearch/Son of Anton-3-Llama-3.1-70B, son-of-anton-4-405b, openrouter/son-of-anton3:70b
-# Negative examples it must NOT match:
-#   son-of-anton-brain:qwen3-14b-ctx16k, qwen3:14b, claude-opus-4-6
-_NOUS_SON_OF_ANTON_NON_AGENTIC_RE = re.compile(
-    r"(?:^|[/:])son-of-anton[-_ ]?[34](?:[-_.:]|$)",
-    re.IGNORECASE,
-)
-
 
 # Opaque internal model-ID display
 # ---------------------------------------------------------------------------
@@ -420,12 +396,6 @@ def format_model_for_display(model_name: str) -> str:
             return tail if tail else model_name
     return model_name
 
-
-def _check_son_of_anton_model_warning(model_name: str) -> str:
-    """Return a warning string if *model_name* is a Nous Son of Anton 3/4 chat model."""
-    if is_nous_son_of_anton_non_agentic(model_name):
-        return _SON_OF_ANTON_MODEL_WARNING
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -2135,10 +2105,6 @@ def switch_model(
     warnings: list[str] = []
     if validation.get("message"):
         warnings.append(validation["message"])
-    son_of_anton_warn = _check_son_of_anton_model_warning(new_model)
-    if son_of_anton_warn:
-        warnings.append(son_of_anton_warn)
-
     # --- Build result ---
     return ModelSwitchResult(
         success=True,
