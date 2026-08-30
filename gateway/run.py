@@ -14002,6 +14002,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             state = self._peek_session_state(session_key)
             if state is not None and state.persistent.update_prompt_pending:
                 return True
+            if state is not None and state.persistent.held_messages_pending:
+                return True
             if self._is_session_running(session_key):
                 return True
             from tools import slash_confirm as _confirm_mod
@@ -14938,8 +14940,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         # Active-hours window (`gateway.active_hours`). This instance shares
         # hardware with somebody's working day, so outside its window it
-        # answers with a notice instead of starting a turn — the unit stays
-        # up, history stays intact, and slash commands keep working. Same
+        # saves the message and answers with a notice — the unit stays up,
+        # history stays intact, and slash commands keep working. Same
         # passthroughs as the emergency stop above, and the same placement
         # after auth so an unauthorized sender cannot probe the schedule.
         if not is_internal:
@@ -14947,6 +14949,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if _hours_notice is not None and not self._turn_gate_passthrough(
                 event, source
             ):
+                _held_key = self._session_key_for_source(source)
+                try:
+                    from gateway import held_messages as _held
+
+                    _held.save_message(
+                        self.config.sessions_dir,
+                        _held_key,
+                        sender=getattr(source, "user_name", None)
+                        or getattr(source, "user_id", None)
+                        or "",
+                        text=event.text or "",
+                    )
+                except Exception:
+                    logger.debug("held_messages: save failed", exc_info=True)
                 logger.info(
                     "Gateway turn held outside active hours %s (platform=%s chat=%s)",
                     self.config.active_hours,
@@ -14956,6 +14972,95 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # "" = already announced in this closed stretch; hold quietly.
                 return _hours_notice or None
 
+        # Held-messages replay prompt. When active hours reopen and this
+        # session has messages saved during the closed stretch, present a
+        # summary and wait for confirmation before processing them.
+        _quick_key = self._session_key_for_source(source)
+        _hm_state = self._peek_session_state(_quick_key)
+
+        # --- Answer a pending held-messages confirmation ---
+        if (
+            _hm_state is not None
+            and _hm_state.persistent.held_messages_pending
+        ):
+            _hm_raw = (event.text or "").strip().lower()
+            _hm_cmd = None
+            try:
+                _hm_cmd = event.get_command()
+            except Exception:
+                pass
+            # Recognized slash command → cancel prompt, fall through.
+            _hm_recognized = None
+            if _hm_cmd:
+                try:
+                    from son_of_anton_cli.commands import resolve_command as _hm_resolve
+                except Exception:
+                    _hm_resolve = None
+                if _hm_resolve is not None:
+                    try:
+                        _hm_def = _hm_resolve(_hm_cmd)
+                        _hm_recognized = _hm_def.name if _hm_def else None
+                    except Exception:
+                        pass
+            if _hm_recognized:
+                _hm_state.persistent.held_messages_pending = False
+                try:
+                    from gateway import held_messages as _held
+                    _held.clear_messages(self.config.sessions_dir, _quick_key)
+                except Exception:
+                    pass
+            elif _hm_raw in ("yes", "y", "go", "proceed"):
+                _hm_state.persistent.held_messages_pending = False
+                try:
+                    from gateway import held_messages as _held
+
+                    _composed = _held.compose_held_turn(
+                        self.config.sessions_dir, _quick_key
+                    )
+                    if _composed:
+                        event.text = _composed
+                except Exception:
+                    logger.debug(
+                        "held_messages: compose failed", exc_info=True
+                    )
+                    return "Failed to compose held messages."
+            elif _hm_raw in ("no", "n", "skip", "discard"):
+                _hm_state.persistent.held_messages_pending = False
+                try:
+                    from gateway import held_messages as _held
+                    _held.clear_messages(self.config.sessions_dir, _quick_key)
+                except Exception:
+                    pass
+                return "Held messages discarded."
+            else:
+                return (
+                    "Reply **yes** to process the held messages, "
+                    "or **no** to discard them."
+                )
+
+        # --- Offer held-messages summary when window opens ---
+        if (
+            not is_internal
+            and (_hm_state is None or not _hm_state.persistent.held_messages_pending)
+            and getattr(self.config, "active_hours", None)
+        ):
+            try:
+                from gateway import held_messages as _held
+
+                if _held.has_messages(self.config.sessions_dir, _quick_key):
+                    _summary = _held.summarize(
+                        self.config.sessions_dir, _quick_key
+                    )
+                    if _summary:
+                        self._session_state(
+                            _quick_key
+                        ).persistent.held_messages_pending = True
+                        return _summary
+            except Exception:
+                logger.debug(
+                    "held_messages: summary failed", exc_info=True
+                )
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -14964,7 +15069,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
-        _quick_key = self._session_key_for_source(source)
         allow_gateway_control = event.allow_gateway_control
         _up_state = self._peek_session_state(_quick_key)
         if (
@@ -23433,6 +23537,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if _sec_state is not None:
             _sec_state.persistent.approvals = None
             _sec_state.persistent.update_prompt_pending = False
+            _sec_state.persistent.held_messages_pending = False
 
         try:
             from tools import slash_confirm as _slash_confirm_mod

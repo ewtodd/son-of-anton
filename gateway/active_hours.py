@@ -11,10 +11,9 @@ still works, and only agent turns are held.
 so ``[20, 7]`` means 8pm through 7am. Unset means always active, which is what
 every instance that isn't sharing scarce hardware wants.
 
-Messages arriving in the closed stretch are **not** queued for later. That is
-deliberate for now: a queue that replays a day of accumulated group chatter
-the moment the window opens is worse than a clear "not right now", and the
-person can simply send it again. See ``inactive_notice`` for the wording.
+Messages arriving in the closed stretch are saved to disk (see
+:mod:`gateway.held_messages`).  When the window reopens the gateway
+presents a summary and asks for confirmation before processing them.
 """
 
 from __future__ import annotations
@@ -66,5 +65,5 @@ def inactive_notice(
         return message.strip()
     return (
         f"💤 Not on duty right now — I run {format_window(window)}. "
-        "Send this again then; it isn't queued."
+        "Your message is saved; I'll ask about it when I'm back."
     )

@@ -166,6 +166,8 @@ class PersistentState:
     # not). gateway.run mirrors this value to the DB keyed by session_key so
     # the same semantics also survive gateway restarts.
     hygiene_failure_streak: int = 0
+    # Held-messages confirmation prompt awaiting a user response.
+    held_messages_pending: bool = False
 
 
 @dataclass
