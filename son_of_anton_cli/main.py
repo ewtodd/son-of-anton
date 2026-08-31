@@ -4564,6 +4564,7 @@ def cmd_problem(args, parser=None):
             args.spec,
             mode=mode,
             max_iterations=getattr(args, "max_iterations", None),
+            script_timeout=getattr(args, "script_timeout", None),
             workspace_root=getattr(args, "workspace", None),
         )
         print(render_report(workspace, mode))

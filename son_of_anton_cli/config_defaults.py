@@ -429,6 +429,13 @@ DEFAULT_CONFIG = {
         # an unattended run, and at ~10s a call with up to fifteen tool calls
         # an iteration the default is an afternoon.
         "max_iterations": 0,
+        # Seconds one model-authored script may run for. 0 uses the built-in
+        # default of 60, which came from a scaffold built for symbolic work.
+        # Experimental data inverts the assumption: reading a few hundred
+        # thousand waveforms out of a multi-GB file and training on them is
+        # legitimate work that does not fit in a minute, and the agent reads a
+        # timeout as "wrong approach" and retries something smaller.
+        "script_timeout": 0,
         # Interpreter that model-authored computations run under. The agent's
         # own venv deliberately ships no scientific stack, so leaving this
         # empty means numpy/scipy/matplotlib are unavailable to physics runs.

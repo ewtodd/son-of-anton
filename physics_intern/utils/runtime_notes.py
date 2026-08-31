@@ -25,17 +25,29 @@ LIBRARY_NOTES: dict[str, str] = {
 `analysis_utilities` is the lab's own library. PREFER IT over hand-written
 equivalents — it is faster, it caches, and its plots are the publication style.
 
-Reading ROOT data (do not write your own TTree loop, and do not reach for
-uproot when this will do — this caches to df_cache/ and skips the ROOT I/O
-entirely on every later call):
+Reading ROOT data — use these loaders. Do NOT write your own TTree loop, and
+there is no uproot here: waveforms live in TArray object branches and
+fixed-size array leaves, which these read straight into 2-D numpy and cache to
+df_cache/, so a second pass costs nothing. A hand-rolled per-event loop over a
+multi-GB file will spend your whole time budget and time out.
 
     from analysis_utilities.io import load_tree_data, load_leaf_array_data
+
+    # scalar branches -> DataFrame
     df = load_tree_data("data.root", tree_name="features")
+
+    # scalars + a TArrayF/TArrayS branch -> (DataFrame, (n_events, n_samples))
     df, waveforms = load_tree_data("data.root", tree_name="features",
-                                   array_branch="Samples")   # (n_events, n_samples)
+                                   array_branch="Samples")
+
+    # fixed-size array leaves, e.g. "Samples[1024]/S" -> {name: 2-D array}
     arrays = load_leaf_array_data("data.root", tree_name="Data_R",
-                                  array_branches=["Trace0"])
-    # max_events=N caps the read. cache_dir=None disables caching.
+                                  array_branches=["Samples"])
+
+    # ALWAYS pass max_events on a first look at a large file — these are
+    # multi-GB and the per-script timeout is short. Start at 50_000, confirm
+    # the shape and the physics, and only then scale up.
+    df = load_tree_data("data.root", tree_name="Data_R", max_events=50_000)
 
 Plots — every figure you produce should go through PlottingUtils, not
 matplotlib. It is an all-static class; no instantiation:

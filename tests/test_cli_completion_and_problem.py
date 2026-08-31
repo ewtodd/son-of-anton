@@ -235,3 +235,71 @@ def test_the_session_name_splitter_lists_only_real_commands(parser) -> None:
     assert listed <= known, (
         f"_SUBCOMMANDS names commands that do not exist: {sorted(listed - known)}"
     )
+
+
+# --- the spec builder's JSON parsing ---------------------------------------
+#
+# The task statement is several paragraphs. A model writing it into a JSON
+# string emits real newlines rather than \n, and strict JSON rejects that at
+# the first line break. The repair round-trip does not save it: re-emitting a
+# multi-line string as escaped JSON is exactly what it just failed at, so a
+# slow call buys the same error.
+
+
+def test_raw_newlines_inside_a_string_are_accepted() -> None:
+    from physics_intern.spec_builder import parse_json_object
+
+    payload = '{"name": "psd", "problem": "Line one.\nLine two.", "checks": []}'
+    parsed = parse_json_object(payload)
+    assert parsed["problem"] == "Line one.\nLine two."
+    assert parsed["name"] == "psd"
+
+
+def test_a_fenced_object_with_raw_newlines_is_accepted() -> None:
+    from physics_intern.spec_builder import parse_json_object
+
+    payload = '```json\n{"problem": "a\nb", "checks": []}\n```'
+    assert parse_json_object(payload)["problem"] == "a\nb"
+
+
+def test_tabs_and_carriage_returns_too() -> None:
+    from physics_intern.spec_builder import parse_json_object
+
+    assert parse_json_object('{"problem": "a\tb\r\nc"}')["problem"] == "a\tb\r\nc"
+
+
+def test_output_with_no_object_still_raises() -> None:
+    from physics_intern.spec_builder import parse_json_object
+
+    with pytest.raises(ValueError, match="no JSON object"):
+        parse_json_object("I could not produce a spec for this dataset.")
+
+
+def test_a_spec_with_no_checks_is_allowed() -> None:
+    """Some goals have nothing scoreable without a reference run.
+
+    A calibration gain or a classifier AUC cannot be known from a data
+    listing. Forcing a check there yields a made-up expected value that
+    reports PASS or FAIL against nothing — worse than admitting it is
+    unscored.
+    """
+    from physics_intern.spec_builder import validate_spec
+
+    spec = {
+        "name": "psd_ml",
+        "problem": "x" * 100 + " Write auc to RESULTS.txt.",
+        "checks": [],
+    }
+    assert validate_spec(spec) == []
+
+
+def test_a_check_on_a_key_the_task_never_asks_for_is_still_refused() -> None:
+    from physics_intern.spec_builder import validate_spec
+
+    spec = {
+        "name": "psd_ml",
+        "problem": "x" * 100 + " Write auc to RESULTS.txt.",
+        "checks": [{"id": "e", "key": "cs137_kev", "expected": 661.7, "tolerance": 5.0}],
+    }
+    issues = validate_spec(spec)
+    assert any("never asks the agent to write it" in i for i in issues)

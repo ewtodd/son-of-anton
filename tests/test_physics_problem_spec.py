@@ -235,3 +235,35 @@ def test_an_unknown_mode_is_refused() -> None:
 
     with pytest.raises(ValueError, match="unknown mode"):
         run_problem("x", mode="nonsense")
+
+
+def test_script_timeout_is_settable(monkeypatch) -> None:
+    """60s came from a symbolic-work scaffold; multi-GB reads do not fit in it."""
+    from physics_intern.run import resolve_script_timeout
+
+    monkeypatch.setattr("physics_intern.run._physics_config", dict)
+    assert resolve_script_timeout(None) == 60
+    assert resolve_script_timeout(900) == 900
+
+    monkeypatch.setattr(
+        "physics_intern.run._physics_config", lambda: {"script_timeout": 600}
+    )
+    assert resolve_script_timeout(None) == 600
+    assert resolve_script_timeout(120) == 120, "the flag must win over config"
+
+
+def test_the_runner_passes_the_script_timeout(monkeypatch, tmp_path) -> None:
+    import physics_intern.run as run_module
+
+    seen: dict = {}
+
+    def fake_autophysicist(**kwargs):
+        seen.update(kwargs)
+        return tmp_path
+
+    monkeypatch.setattr(
+        "physics_intern.autophysicist.runner.run_autophysicist", fake_autophysicist
+    )
+    monkeypatch.setattr("physics_intern.run._physics_config", dict)
+    run_module.run_problem("a question", mode="physics", script_timeout=900)
+    assert seen["sandbox_timeout"] == 900

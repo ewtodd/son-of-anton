@@ -11,9 +11,9 @@ what you want out of it — and keeps the LLM's share just as small. The split:
 
 * **The probe does the mechanical work, deterministically.** It walks the data
   directory and reports what is actually there: ROOT trees and their branches
-  and entry counts (via ``uproot``, no ROOT build needed), CSV headers and a
-  couple of rows, ``.npy`` shapes and dtypes, sizes, top-level definitions in
-  any ``.py`` alongside the data. The probe runs under the *physics
+  and entry counts (via PyROOT, reading the file the way the run will), CSV
+  headers and a couple of rows, ``.npy`` shapes and dtypes, sizes, top-level
+  definitions in any ``.py`` alongside the data. The probe runs under the *physics
   interpreter*, inside the *same bubblewrap sandbox* a run's computations use,
   with the data mounted read-only — so what it can see is exactly what the
   agent will be able to see.
@@ -78,38 +78,68 @@ report = {"roots": [str(r) for r in roots], "entries": [], "truncated": False}
 
 
 def describe_root_file(path):
+    """Structure of a ROOT file, via PyROOT.
+
+    PyROOT rather than uproot, for the same reason the runtime does not ship
+    uproot at all: this data keeps waveforms in TArray object branches and
+    fixed-size array leaves, and the probe should read the file the way the run
+    will.
+
+    The branch *title* is carried through because that is where a fixed-size
+    array declares its length — "Samples[1024]/S" — which is exactly what
+    `load_leaf_array_data` needs and what a model otherwise has to guess.
+    """
     try:
-        import uproot
+        import ROOT
     except ImportError:
-        return {"note": "uproot unavailable — install it in the physics runtime"}
+        return {"note": "PyROOT unavailable — check physics.python"}
+
+    ROOT.gROOT.SetBatch(True)
+    ROOT.gErrorIgnoreLevel = ROOT.kError
+
     out = {"trees": []}
+    handle = None
     try:
-        with uproot.open(str(path)) as handle:
-            for key, obj in handle.items(recursive=False):
-                classname = getattr(obj, "classname", "")
-                if "TTree" not in str(classname):
-                    out.setdefault("objects", []).append(
-                        {"name": key, "class": str(classname)}
-                    )
-                    continue
-                branches = []
-                for bname, branch in obj.items():
-                    branches.append(
-                        {
-                            "name": bname,
-                            "type": str(getattr(branch, "typename", "")),
-                        }
-                    )
-                out["trees"].append(
-                    {
-                        "name": key.split(";")[0],
-                        "entries": int(obj.num_entries),
-                        "branches": branches[:60],
-                        "branch_count": len(branches),
-                    }
+        handle = ROOT.TFile.Open(str(path), "READ")
+        if not handle or handle.IsZombie():
+            return {"error": "could not open as a ROOT file"}
+        # Keys carry cycles (Data_R;2, Data_R;1) and ROOT lists the newest
+        # first. Reporting both made one tree look like two.
+        seen = set()
+        for key in handle.GetListOfKeys():
+            name = key.GetName()
+            if name in seen:
+                continue
+            seen.add(name)
+            obj = key.ReadObj()
+            if not (obj and obj.InheritsFrom("TTree")):
+                out.setdefault("objects", []).append(
+                    {"name": name, "class": key.GetClassName()}
                 )
+                continue
+            branches = []
+            for branch in obj.GetListOfBranches():
+                bname = branch.GetName()
+                leaf = branch.GetLeaf(bname)
+                typename = leaf.GetTypeName() if leaf else branch.GetClassName()
+                entry = {"name": bname, "type": str(typename)}
+                title = branch.GetTitle()
+                if title and title != bname:
+                    entry["title"] = str(title)
+                branches.append(entry)
+            out["trees"].append(
+                {
+                    "name": name,
+                    "entries": int(obj.GetEntries()),
+                    "branches": branches[:60],
+                    "branch_count": len(branches),
+                }
+            )
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if handle:
+            handle.Close()
     return out
 
 
@@ -235,8 +265,12 @@ def render_data_card(report: dict, limit: int = MAX_PROBE_BYTES) -> str:
             lines.append(f"    error: {entry['error']}")
         root = entry.get("root") or {}
         for tree in root.get("trees", []):
+            # "Samples:Short_t[1024]" reads better than "Samples:Short_t", and
+            # the length is the thing a waveform loader needs.
             branch_names = ", ".join(
-                f"{b['name']}:{b['type']}" for b in tree.get("branches", [])
+                f"{b['name']}:{b['type']}"
+                + (f" {b['title']}" if b.get("title") else "")
+                for b in tree.get("branches", [])
             )
             lines.append(
                 f"    TTree {tree['name']}: {tree['entries']:,} entries, "
@@ -366,6 +400,23 @@ Rules for "checks":
 - One per scored quantity. "expected" and "tolerance" are numbers, never
   strings or nulls. "tolerance" is an absolute window and must be > 0.
 - Choose tolerances a competent independent reproduction would land inside.
+
+- PREFER quantities whose value is known independently of this dataset, and
+  use the known value. Photopeak energies, half-lives, branching ratios,
+  decay constants and the like are established physics: Cs-137 at 661.7 keV,
+  Co-60 at 1173.2 and 1332.5, Na-22 at 511 and 1274.5, Am-241 at 59.5. A
+  check on one of those scores the analysis against reality.
+
+- Do NOT invent a number for a quantity that is detector-, run- or
+  method-specific. Calibration gains and offsets, resolutions, count rates,
+  classifier AUC or figure of merit, and anything depending on this
+  crystal or these electronics cannot be known from the data listing, and a
+  guessed "expected" for one of them scores the run against nothing. When a
+  goal asks for such a quantity, still require it in RESULTS.txt so it is
+  reported and can be compared by hand — just leave it out of "checks".
+
+- If that leaves no checks at all, return "checks": [] rather than padding it.
+  An unscored spec that says so is worth more than a scored one that lies.
 """
 
 
@@ -390,6 +441,17 @@ def call_model(system: str, user: str, model: str | None) -> str:
     return response.text
 
 
+#: Tolerant of literal control characters inside strings. The task statement is
+#: several paragraphs, and a model writing it into a JSON string reliably emits
+#: real newlines instead of ``\n`` — which strict JSON rejects at the first
+#: line break. Asking it to try again does not help: re-emitting a multi-line
+#: string as escaped JSON is precisely what it just failed at, so the repair
+#: round-trip burns a slow call to produce the same error. ``strict=False`` is
+#: the stdlib switch for exactly this, and nothing downstream cares whether the
+#: newline arrived escaped or raw.
+_TOLERANT_JSON = json.JSONDecoder(strict=False)
+
+
 def parse_json_object(text: str) -> dict:
     """Extract the first JSON object from *text*, fenced or bare."""
     stripped = text.strip()
@@ -400,11 +462,18 @@ def parse_json_object(text: str) -> dict:
     end = stripped.rfind("}")
     if start == -1 or end == -1:
         raise ValueError("no JSON object in model output")
-    return json.loads(stripped[start : end + 1])
+    return _TOLERANT_JSON.decode(stripped[start : end + 1])
 
 
-def validate_spec(spec: dict, require_checks: bool = True) -> list[str]:
-    """Return a list of problems with *spec*. Empty means it is usable."""
+def validate_spec(spec: dict, require_checks: bool = False) -> list[str]:
+    """Return a list of problems with *spec*. Empty means it is usable.
+
+    An empty ``checks`` list is allowed. Some goals have nothing that can be
+    scored without a reference run — a calibration gain, a classifier AUC —
+    and forcing a check there only produces a made-up number that reports
+    PASS or FAIL against nothing. A spec that admits it is unscored is worth
+    more than one that lies; the caller says so loudly instead.
+    """
     problems: list[str] = []
     name = str(spec.get("name") or "")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_]{1,60}", name):
@@ -666,7 +735,9 @@ def run(args, parser: argparse.ArgumentParser | None = None) -> int:
                 user_message
                 + "\n\n## Your previous output was rejected\n"
                 + "\n".join(f"- {issue}" for issue in issues)
-                + "\n\nReturn the corrected JSON object. Nothing else."
+                + "\n\nReturn the corrected JSON object and nothing else. "
+                "Escape every newline inside a JSON string value as \\n; a "
+                "real line break inside a string is not valid JSON."
             )
             raw = call_model(system, repair, args.model)
             spec = parse_json_object(raw)
@@ -688,8 +759,17 @@ def run(args, parser: argparse.ArgumentParser | None = None) -> int:
     args.out.write_text(render_spec(spec, data_paths, args.goal, source_note))
     print(f"\nwrote {args.out}", file=sys.stderr)
     print(f"  name:   {spec['name']}", file=sys.stderr)
-    print(f"  checks: {len(spec['checks'])}", file=sys.stderr)
-    for check in spec["checks"]:
+    checks = spec["checks"]
+    print(f"  checks: {len(checks)}", file=sys.stderr)
+    if not checks:
+        print(
+            "\n  NOTE: this spec has no numeric checks, so the run will not be "
+            "scored.\n  FORMAL_EVAL.md will say so rather than report a pass. "
+            "Compare RESULTS.txt\n  by hand, or re-run with --truth once you "
+            "have reference values.",
+            file=sys.stderr,
+        )
+    for check in checks:
         print(
             f"    {check['key']} = {check['expected']} ± {check['tolerance']}",
             file=sys.stderr,

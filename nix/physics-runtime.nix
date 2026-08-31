@@ -53,13 +53,20 @@ let
       scikit-learn
       xgboost
       joblib
-      # ROOT files without a ROOT build, for the cases where PyROOT is the
-      # wrong tool — streaming a branch, or a quick structural probe.
-      uproot
-      awkward
       h5py
       tqdm
     ])
+    # Deliberately NOT uproot/awkward. ROOT I/O here goes through PyROOT and
+    # analysis_utilities' loaders, which is not a stylistic preference: the data
+    # this runs on stores waveforms in TArrayS/TArrayF object branches and
+    # fixed-size array leaves, which is uproot's worst case — jagged awkward
+    # arrays, no disk cache, and a per-event decode. `load_tree_data` and
+    # `load_leaf_array_data` read the same branches straight into 2-D numpy and
+    # cache the result, so the second pass costs nothing.
+    #
+    # Shipping both is worse than shipping one. A model that sees uproot in the
+    # package list reaches for it, because that is what it has read a thousand
+    # times, and then spends the run's budget waiting on it.
     ++ extraPythonPackages ps
   );
 in

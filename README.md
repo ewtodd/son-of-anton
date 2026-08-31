@@ -143,7 +143,7 @@ nix build .#physics-runtime
 ```
 <!---->
 That gives you ROOT, `analysis_utilities`, NumPy, SciPy, SymPy, matplotlib,
-pandas, scikit-learn, xgboost, uproot, awkward and h5py in one wrapper, built
+pandas, scikit-learn, xgboost and h5py in one wrapper, built
 from the [Analysis-Utilities](https://github.com/ewtodd/Analysis-Utilities)
 flake input rather than from this flake's nixpkgs — that project asks
 downstream flakes to leave its `nixpkgs` alone (overriding it defeats its
@@ -268,7 +268,16 @@ continues an existing run rather than starting a fresh one.
 **Set `--max-iterations` on a first run.** Physics mode has no wall-clock or
 cost gate — those exist only in the research pipeline — so it is the only
 ceiling, and the default is 50 iterations of up to fifteen tool calls each.
-`physics.max_iterations` sets it declaratively.
+
+**Raise `--script-timeout` for large data.** One model-authored script gets 60 s
+by default, which came from a scaffold built for symbolic work. Reading a few
+hundred thousand waveforms out of a multi-GB file and training on them is
+legitimate work that does not fit in a minute, and the agent reads a timeout as
+"wrong approach" — so it retries something smaller instead of the thing that
+would have worked.
+
+Both are settable declaratively as `physics.max_iterations` and
+`physics.script_timeout`.
 <!---->
 The same thing is reachable from a chat turn — `/mode physics`, then the path —
 which is what the gateway does with a Signal message.

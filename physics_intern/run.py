@@ -33,16 +33,33 @@ def _physics_config() -> dict:
         return {}
 
 
-def resolve_max_iterations(explicit: int | None, default: int) -> int:
-    """CLI flag, then ``physics.max_iterations``, then the mode's default."""
+def _resolve_limit(explicit: int | None, key: str, default: int) -> int:
+    """CLI flag, then ``physics.<key>``, then the built-in default."""
     if explicit is not None and explicit > 0:
         return explicit
-    configured = _physics_config().get("max_iterations")
     try:
-        configured = int(configured or 0)
+        configured = int(_physics_config().get(key) or 0)
     except (TypeError, ValueError):
         configured = 0
     return configured if configured > 0 else default
+
+
+def resolve_max_iterations(explicit: int | None, default: int) -> int:
+    """How many outer-loop iterations a run may take."""
+    return _resolve_limit(explicit, "max_iterations", default)
+
+
+def resolve_script_timeout(explicit: int | None) -> int:
+    """Wall-clock seconds one model-authored script may run for.
+
+    The default of 60 came from a scaffold built for symbolic work, where a
+    script that runs a minute is stuck. On experimental data it is the opposite
+    problem: reading a few hundred thousand waveforms out of a multi-GB file and
+    training on them is legitimate work that does not fit in a minute, and a
+    timeout there reads to the agent as "my approach was wrong" — so it retries
+    something smaller instead of the thing that would have worked.
+    """
+    return _resolve_limit(explicit, "script_timeout", 60)
 
 
 def run_problem(
@@ -50,6 +67,7 @@ def run_problem(
     *,
     mode: str = "physics",
     max_iterations: int | None = None,
+    script_timeout: int | None = None,
     workspace_root: Path | str | None = None,
     spec: ProblemSpec | None = None,
 ) -> Path:
@@ -71,6 +89,7 @@ def run_problem(
             problem_def=spec.definition,
             problem_name=spec.name,
             max_iterations=resolve_max_iterations(max_iterations, 50),
+            sandbox_timeout=resolve_script_timeout(script_timeout),
             workspace_root=workspace_root,
         )
 
@@ -84,6 +103,8 @@ def run_problem(
     config.max_iterations = resolve_max_iterations(
         max_iterations, config.max_iterations
     )
+    # The pipeline's computer agent reads its per-script timeout from here.
+    config.sympy_timeout_seconds = resolve_script_timeout(script_timeout)
     # An explicit, absolute workspace is mandatory: Config.workspace_dir
     # defaults to "" -> Path(".") -> the process cwd, and WorkspaceManager.init
     # runs `git init && git add -A && git commit` in it.

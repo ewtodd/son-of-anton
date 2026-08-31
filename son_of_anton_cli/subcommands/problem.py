@@ -79,6 +79,18 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         ),
     )
     run.add_argument(
+        "--script-timeout",
+        type=int,
+        default=None,
+        dest="script_timeout",
+        help=(
+            "Seconds one model-authored script may run for (default 60). "
+            "Overrides physics.script_timeout. Raise it for multi-GB data: a "
+            "timeout reads to the agent as a wrong approach, so it retries "
+            "something smaller instead of the thing that would have worked."
+        ),
+    )
+    run.add_argument(
         "--workspace",
         default=None,
         help=(

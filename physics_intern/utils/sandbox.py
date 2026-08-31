@@ -78,8 +78,6 @@ PROBE_PACKAGES = (
     "matplotlib",
     "pandas",
     "sklearn",
-    "uproot",
-    "awkward",
     "xgboost",
     "h5py",
     "torch",
