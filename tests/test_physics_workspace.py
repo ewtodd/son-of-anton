@@ -120,33 +120,56 @@ def test_resolver_honours_configured_workspace_root(tmp_path, monkeypatch) -> No
     assert str(root).startswith(str(custom.resolve()))
 
 
+def test_the_research_runner_pins_a_workspace() -> None:
+    """PhysicsIntern may never be constructed without a config.
+
+    ``PhysicsIntern(text)`` with no ``config=`` inherits workspace_dir="" and
+    lands in the process cwd — where ``init()`` runs ``git init && git add -A``.
+    Under the gateway that cwd is the profile's home directory.
+
+    This used to be asserted at each of the entry points; they now all go
+    through ``physics_intern.run.run_problem``, so this is the one construction
+    left to guard.
+    """
+    source = (REPO_ROOT / "physics_intern" / "run.py").read_text(encoding="utf-8")
+
+    assert "resolve_workspace_root(" in source, (
+        "physics_intern/run.py does not pin an explicit workspace root"
+    )
+    constructions = _physics_intern_call_args(source)
+    assert constructions, "no PhysicsIntern construction found in physics_intern/run.py"
+    for args in constructions:
+        assert "config=" in args, (
+            f"run.py constructs PhysicsIntern({args}) without config= "
+            f"— workspace_dir would default to the process cwd"
+        )
+
+
 @pytest.mark.parametrize(
     "path, symbol",
     [
-        ("cli.py", "_run_research_mode"),
+        ("cli.py", "_run_problem_mode"),
         ("gateway/run.py", "_run_physics_mode_sync"),
     ],
 )
-def test_research_entry_points_pin_a_workspace(path, symbol) -> None:
-    """Neither entry point may construct PhysicsIntern without a config.
+def test_entry_points_do_not_construct_their_own_runs(path, symbol) -> None:
+    """An entry point that builds its own run is a copy that can drift.
 
-    ``PhysicsIntern(text)`` with no ``config=`` inherits workspace_dir="" and
-    lands in the process cwd — the original defect.
+    Research mode already lost the problem spec that way, so its runs were
+    never scored.
     """
     source = (REPO_ROOT / path).read_text(encoding="utf-8")
     start = source.index(f"def {symbol}")
     body = source[start : start + 2500]
 
-    assert "resolve_workspace_root(" in body, (
-        f"{path}:{symbol} does not pin an explicit workspace root"
+    assert not _physics_intern_call_args(body), (
+        f"{path}:{symbol} constructs PhysicsIntern directly instead of calling "
+        f"physics_intern.run.run_problem"
     )
-    constructions = _physics_intern_call_args(body)
-    assert constructions, f"no PhysicsIntern construction found in {path}:{symbol}"
-    for args in constructions:
-        assert "config=" in args, (
-            f"{path}:{symbol} constructs PhysicsIntern({args}) without config= "
-            f"— workspace_dir would default to the process cwd"
-        )
+    assert "run_autophysicist(" not in body, (
+        f"{path}:{symbol} calls run_autophysicist directly instead of calling "
+        f"physics_intern.run.run_problem"
+    )
 
 
 def test_autophysicist_default_workspace_is_not_relative() -> None:

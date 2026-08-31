@@ -107,8 +107,15 @@ class WorkspaceManager:
                     f"{resolved}."
                 )
 
-    def init(self, problem: str):
-        """Create workspace, initialize all .md files, git init."""
+    def init(self, problem: str, problem_def: dict | None = None):
+        """Create workspace, initialize all .md files, git init.
+
+        *problem_def* is the parsed problem spec. It is written to
+        ``problem.yaml`` here rather than by the caller so it lands in the
+        initial commit — and so it is present at all: the formal evaluator and
+        ``PhysicsIntern.resume`` both read that file out of the workspace, and
+        a run that never writes one is silently never scored.
+        """
         self._assert_safe_workspace_root()
         self.problem_statement = problem.strip()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -182,6 +189,11 @@ Claims use ## ER-NNN (established, verified) or ## WH-NNN (working hypothesis, p
                 "# Per-Iteration Metrics\n\n# Alerts\n",
             ),
         )
+
+        if problem_def:
+            from .problem_spec import ProblemSpec, write_spec
+
+            write_spec(self.root, ProblemSpec(text=problem, definition=problem_def))
 
         # Git init
         subprocess.run(

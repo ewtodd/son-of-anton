@@ -43,8 +43,8 @@ class AdjudicatorAgent(BaseAgent):
     prompt_file = "prompt.md"
     tools = []  # one-shot: no tools
 
-    def __init__(self, config, workspace, metrics):
-        super().__init__(config, workspace, metrics)
+    def __init__(self, config, workspace, metrics, mcp=None):
+        super().__init__(config, workspace, metrics, mcp=mcp)
         self.research_state: ResearchState | None = None
         self.adjudication_result: dict | None = None
 

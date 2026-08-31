@@ -188,6 +188,71 @@ def _log_usage(config, agent_name, iteration, response, duration):
         )
 
 
+
+CONTINUATION_PROMPT = (
+    "Your previous message stopped because it reached the output token limit, "
+    "mid-sentence. Continue from exactly where it stopped. Do not repeat any "
+    "text you have already written, and do not restate the question — emit "
+    "only the remainder."
+)
+
+
+def _continue_truncated(
+    client,
+    model,
+    system: str,
+    messages: list[dict],
+    config,
+    agent_name: str,
+    iteration: int,
+    result: LLMResponse,
+    max_tokens: int,
+) -> LLMResponse:
+    """Extend *result* while it is truncated, up to ``max_tokens_retries``.
+
+    ``config.default.yaml`` documents this ("The helper resends the visible-text
+    portion of the truncated response as an assistant turn and asks the model to
+    continue from where it stopped") but nothing implemented it, so a response
+    that hit the output cap was returned as a half-finished string — and for the
+    one-shot agents, that is a JSON object with no closing brace.
+    """
+    retries = int(getattr(config, "max_tokens_retries", 0) or 0)
+    attempt = 0
+    while result.stop_reason == "max_tokens" and attempt < retries:
+        attempt += 1
+        conversation = (
+            [{"role": "system", "content": system}]
+            + list(messages)
+            + [
+                {"role": "assistant", "content": result.text},
+                {"role": "user", "content": CONTINUATION_PROMPT},
+            ]
+        )
+        start = time.time()
+        resp = _create_with_retry(client, model, conversation, max_tokens, config)
+        duration = time.time() - start
+        choice = resp.choices[0]
+        finish = choice.finish_reason or "end_turn"
+        continuation = LLMResponse(
+            text=choice.message.content or "",
+            input_tokens=getattr(resp.usage, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(resp.usage, "completion_tokens", 0) or 0,
+            stop_reason="max_tokens" if finish == "length" else finish,
+            duration=duration,
+        )
+        _log_usage(
+            config, f"{agent_name}_continue{attempt}", iteration, continuation, duration
+        )
+        if not continuation.text:
+            break
+        result.text += continuation.text
+        result.input_tokens += continuation.input_tokens
+        result.output_tokens += continuation.output_tokens
+        result.duration += continuation.duration
+        result.stop_reason = continuation.stop_reason
+    return result
+
+
 def call_llm(
     system: str,
     user_content: str,
@@ -220,7 +285,17 @@ def call_llm(
         duration=duration,
     )
     _log_usage(config, agent_name, iteration, result, duration)
-    return result
+    return _continue_truncated(
+        client,
+        model,
+        system,
+        messages,
+        config,
+        agent_name,
+        iteration,
+        result,
+        max_tokens,
+    )
 
 
 def call_llm_continuation(
@@ -253,7 +328,17 @@ def call_llm_continuation(
         duration=duration,
     )
     _log_usage(config, agent_name, iteration, result, duration)
-    return result
+    return _continue_truncated(
+        client,
+        model,
+        system,
+        list(messages),
+        config,
+        agent_name,
+        iteration,
+        result,
+        max_tokens,
+    )
 
 
 def run_agent_loop(
@@ -267,10 +352,29 @@ def run_agent_loop(
     iteration: int = 0,
     on_round: Optional[Callable] = None,
 ) -> AgentResult:
-    """Run a tool-use agent loop until end_turn or max_rounds.
+    """Run a tool-use agent loop until the executor stops it, or max_rounds.
 
     *tools* are in OpenAI canonical format (``type: "function"``), the same
     format the agents already use — no adapter pass needed.
+
+    The loop honours the executor duck-type protocol that the executors in
+    this package document and depend on:
+
+    ``active_tools``
+        Optional property returning the tool set for the coming round, so an
+        executor can gate tools by lifecycle stage (the computer agent must
+        call ``document_approach`` before it may call ``execute_python``; the
+        Manager loses ``dispatch_subagent`` during wind-down). ``None`` keeps
+        *tools*.
+    ``end_round()``
+        Optional hook called after each round's tool results are appended. A
+        returned string is injected as a user turn — this is how the Manager's
+        budget and tool-call-cap warnings reach the model.
+    ``stop_after_round``
+        Checked after ``end_round()``. This is what makes the exit tools exit:
+        ``end_turn`` / ``submit_final_answer`` / ``submit_result`` set it, and
+        without this check the loop ran on to ``max_rounds`` every time and
+        ``submit_final_answer`` did not terminate anything.
     """
     client, model = _resolve_endpoint(config)
     max_tokens = config.max_tokens_for_agent(agent_name)
@@ -285,7 +389,10 @@ def run_agent_loop(
     start = time.time()
 
     for round_num in range(1, max_rounds + 1):
-        resp = _create_with_retry(client, model, messages, max_tokens, config, tools=tools)
+        round_tools = getattr(tool_executor, "active_tools", None) or tools
+        resp = _create_with_retry(
+            client, model, messages, max_tokens, config, tools=round_tools
+        )
         round_input = getattr(resp.usage, "prompt_tokens", 0) or 0
         round_output = getattr(resp.usage, "completion_tokens", 0) or 0
         total_input += round_input
@@ -293,8 +400,10 @@ def run_agent_loop(
 
         choice = resp.choices[0]
         message = choice.message
+        truncated = choice.finish_reason == "length"
 
         if not getattr(message, "tool_calls", None):
+            stop_reason = "max_tokens" if truncated else "end_turn"
             result = AgentResult(
                 text=message.content or "",
                 tool_calls=all_tool_calls,
@@ -302,10 +411,11 @@ def run_agent_loop(
                 total_output_tokens=total_output,
                 rounds=round_num,
                 duration=time.time() - start,
-                stop_reason="end_turn",
+                stop_reason=stop_reason,
+                truncated=truncated,
             )
             if on_round:
-                on_round(round_num, "end_turn", [], total_input, total_output, round_input, round_output)
+                on_round(round_num, stop_reason, [], total_input, total_output, round_input, round_output)
             return result
 
         round_calls: list[ToolCall] = []
@@ -362,9 +472,27 @@ def run_agent_loop(
         messages.extend(tool_messages)
         all_tool_calls.extend(round_calls)
 
-        stop_reason = "max_tokens" if choice.finish_reason == "length" else "tool_use"
+        stop_reason = "max_tokens" if truncated else "tool_use"
         if on_round:
             on_round(round_num, stop_reason, round_calls, total_input, total_output, round_input, round_output)
+
+        end_round = getattr(tool_executor, "end_round", None)
+        if callable(end_round):
+            injected = end_round()
+            if injected:
+                messages.append({"role": "user", "content": injected})
+
+        if getattr(tool_executor, "stop_after_round", False):
+            return AgentResult(
+                text=message.content or "",
+                tool_calls=all_tool_calls,
+                total_input_tokens=total_input,
+                total_output_tokens=total_output,
+                rounds=round_num,
+                duration=time.time() - start,
+                stop_reason="exit_tool",
+                truncated=truncated,
+            )
 
     return AgentResult(
         text="",

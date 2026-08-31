@@ -6,6 +6,8 @@ from typing import ClassVar
 
 from ..core.config import Config
 from ..state.tool_call import ToolCall
+from ..utils.mcp import MCPToolset
+from ..utils.sandbox import SandboxPolicy
 from .memory import PermanentMemory, Scratchpad
 from .subagent import dispatch_subagent
 
@@ -170,7 +172,9 @@ class ManagerToolExecutor:
         },
     }
 
-    # Tool sets for active and wind-down phases
+    # The Manager's own tools. MCP tools are added per instance (they are
+    # discovered from an endpoint at run time, not known at import time), so
+    # the tool sets the loop actually sees come from the methods below.
     ALL_TOOLS: ClassVar[list[dict]] = [
         _DISPATCH_SUBAGENT_DEF,
         _WRITE_PERMANENT_MEMORY_DEF,
@@ -186,6 +190,23 @@ class ManagerToolExecutor:
         _SUBMIT_FINAL_ANSWER_DEF,
     ]
 
+    def all_tools(self) -> list[dict]:
+        """Manager tools plus whatever MCP is configured and reachable."""
+        return list(self.ALL_TOOLS) + self._mcp_tools()
+
+    def wind_down_tools(self) -> list[dict]:
+        """Wind-down drops dispatch_subagent AND the lookups.
+
+        Wind-down means the iteration's budget is spent and the Manager should
+        be writing down what it found. A literature search at that point starts
+        work it has no budget to finish, and the result is lost with the
+        context.
+        """
+        return list(self.WIND_DOWN_TOOLS)
+
+    def _mcp_tools(self) -> list[dict]:
+        return self.mcp.tools() if self.mcp else []
+
     HARD_BUDGET_MULTIPLIER = 1.5
 
     def __init__(
@@ -198,6 +219,9 @@ class ManagerToolExecutor:
         token_budget: int = 64_000,
         tool_call_cap: int = 15,
         sandbox_timeout: int = 60,
+        policy: SandboxPolicy | None = None,
+        coder_model: str = "",
+        mcp: MCPToolset | None = None,
     ):
         self.config = config
         self.permanent_memory = permanent_memory
@@ -207,6 +231,11 @@ class ManagerToolExecutor:
         self.token_budget = token_budget
         self.tool_call_cap = tool_call_cap
         self.sandbox_timeout = sandbox_timeout
+        self.coder_model = coder_model
+        self.mcp = mcp
+        self.policy = policy or SandboxPolicy.from_config()
+        if self.policy.workspace is None:
+            self.policy.workspace = Path(workspace_root)
 
         # Duck-type protocol state for run_agent_loop
         self.stop_after_round = False
@@ -233,8 +262,8 @@ class ManagerToolExecutor:
     def active_tools(self) -> list[dict] | None:
         """Dynamic tool switching for wind-down phase."""
         if self._wind_down:
-            return self.WIND_DOWN_TOOLS
-        return self.ALL_TOOLS
+            return self.wind_down_tools()
+        return self.all_tools()
 
     def update_manager_tokens(self, total_input: int, total_output: int) -> None:
         """Called by on_round callback to track manager conversation tokens."""
@@ -300,11 +329,26 @@ class ManagerToolExecutor:
             output, is_error = self._end_turn()
         elif tool_name == "submit_final_answer":
             output, is_error = self._submit_final_answer(tool_input)
+        elif self.mcp is not None and self.mcp.handles(tool_name):
+            if self._wind_down:
+                output, is_error = (
+                    f"ERROR: {tool_name} is unavailable during wind-down. Write "
+                    "your results to memory/scratchpad and call end_turn()."
+                ), True
+            else:
+                output, is_error = self.mcp.call(tool_name, tool_input)
         else:
+            available = [
+                "dispatch_subagent",
+                "write_to_permanent_memory",
+                "write_to_scratchpad",
+                "end_turn",
+                "submit_final_answer",
+            ] + [t["function"]["name"] for t in self._mcp_tools()]
             output = (
                 f"ERROR: Unknown tool '{tool_name}'. Available: "
-                "dispatch_subagent, write_to_permanent_memory, "
-                "write_to_scratchpad, end_turn."
+                + ", ".join(available)
+                + "."
             )
             is_error = True
 
@@ -340,6 +384,8 @@ class ManagerToolExecutor:
             iteration=self.iteration,
             subagent_counter=self._subagent_counter,
             sandbox_timeout=self.sandbox_timeout,
+            policy=self.policy,
+            model=self.coder_model,
         )
 
         self.subagent_input_tokens += result.total_input_tokens

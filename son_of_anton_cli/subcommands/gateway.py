@@ -1,9 +1,16 @@
-"""``son-of-anton gateway`` and ``son-of-anton proxy`` subcommand parsers.
+"""``son-of-anton gateway`` subcommand parser.
 
-Extracted verbatim from ``son_of_anton_cli/main.py:main()`` (god-file Phase 2).
-Both parsers are built together because they shared one inline block (the
-``gateway`` section also defined ``proxy``). Handlers injected to avoid
-importing ``main``.
+Two actions: ``run`` — the foreground gateway, which is also what a bare
+``son-of-anton gateway`` does and what the systemd unit's ExecStart invokes —
+and ``status``.
+
+The service lifecycle verbs (``install``, ``uninstall``, ``start``, ``stop``,
+``restart``, ``setup``, ``migrate-legacy``) are deliberately gone. This is not
+an imperative program: the unit is declared by the NixOS or Home Manager
+module, ``systemctl`` starts and stops it, and ``settings`` configures the
+platforms. They already refused to run under managed mode — but leaving them in
+the parser meant they were still advertised in ``--help``, offered by shell
+completion, and read as things the CLI can do.
 """
 
 from __future__ import annotations
@@ -17,9 +24,9 @@ from son_of_anton_cli.subcommands._shared import add_accept_hooks_flag
 def _add_compat_platform_flag(parser: argparse.ArgumentParser) -> None:
     """Accept stale `gateway <verb> --platform X` docs without advertising it.
 
-    Gateway service lifecycle commands operate on the gateway process, not a
-    single messaging adapter.  Keep the flag parseable so users following the
-    old hint don't get blocked by argparse before the gateway can start.
+    Gateway commands operate on the gateway process, not a single messaging
+    adapter.  Keep the flag parseable so users following the old hint don't get
+    blocked by argparse before the gateway can start.
     """
     parser.add_argument(
         "--platform",
@@ -97,51 +104,6 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
-    # gateway start
-    gateway_start = gateway_subparsers.add_parser(
-        "start", help="Start the installed systemd/launchd background service"
-    )
-    gateway_start.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_start.add_argument(
-        "--all",
-        action="store_true",
-        help="Kill ALL stale gateway processes across all profiles before starting",
-    )
-    _add_compat_platform_flag(gateway_start)
-
-    # gateway stop
-    gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
-    gateway_stop.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_stop.add_argument(
-        "--all",
-        action="store_true",
-        help="Stop ALL gateway processes across all profiles",
-    )
-
-    # gateway restart
-    gateway_restart = gateway_subparsers.add_parser(
-        "restart", help="Restart gateway service"
-    )
-    gateway_restart.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_restart.add_argument(
-        "--all",
-        action="store_true",
-        help="Kill ALL gateway processes across all profiles before restarting",
-    )
-    _add_compat_platform_flag(gateway_restart)
-
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
@@ -157,93 +119,5 @@ def build_gateway_parser(
         help="Target the Linux system-level gateway service",
     )
     _add_compat_platform_flag(gateway_status)
-
-    # gateway install
-    gateway_install = gateway_subparsers.add_parser(
-        "install", help="Install gateway as a systemd/launchd background service"
-    )
-    gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
-    gateway_install.add_argument(
-        "--system",
-        action="store_true",
-        help="Install as a Linux system-level service (starts at boot)",
-    )
-    gateway_install.add_argument(
-        "--run-as-user",
-        dest="run_as_user",
-        help="User account the Linux system service should run as",
-    )
-    gateway_install.add_argument(
-        "--start-now",
-        dest="start_now",
-        action="store_true",
-        default=None,
-        help="Start the gateway service immediately after installing",
-    )
-    gateway_install.add_argument(
-        "--no-start-now",
-        dest="start_now",
-        action="store_false",
-        help="Do not start the gateway service after installing",
-    )
-    gateway_install.add_argument(
-        "--start-on-login",
-        dest="start_on_login",
-        action="store_true",
-        default=None,
-        help="Enable the service to start automatically on login/boot",
-    )
-    gateway_install.add_argument(
-        "--no-start-on-login",
-        dest="start_on_login",
-        action="store_false",
-        help="Do not enable the service to start on login/boot",
-    )
-    gateway_install.add_argument(
-        "--elevated-handoff",
-        dest="elevated_handoff",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-
-    # gateway uninstall
-    gateway_uninstall = gateway_subparsers.add_parser(
-        "uninstall", help="Uninstall gateway service"
-    )
-    gateway_uninstall.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-
-    # gateway list
-
-    # gateway setup
-    gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
-
-    # gateway migrate-legacy
-    gateway_migrate_legacy = gateway_subparsers.add_parser(
-        "migrate-legacy",
-        help="Remove legacy son-of-anton.service units from pre-rename installs",
-        description=(
-            "Stop, disable, and remove legacy Son of Anton gateway unit files "
-            "(e.g. son-of-anton.service) left over from older installs. Profile "
-            "units (son-of-anton-gateway-<profile>.service) and unrelated "
-            "third-party services are never touched."
-        ),
-    )
-    gateway_migrate_legacy.add_argument(
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        help="List what would be removed without doing it",
-    )
-    gateway_migrate_legacy.add_argument(
-        "-y",
-        "--yes",
-        dest="yes",
-        action="store_true",
-        help="Skip the confirmation prompt",
-    )
 
     gateway_parser.set_defaults(func=cmd_gateway)

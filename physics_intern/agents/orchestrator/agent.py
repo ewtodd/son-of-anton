@@ -23,8 +23,8 @@ class OrchestratorAgent(BaseAgent):
     prompt_file = "prompt.md"
     tools = OrchestratorToolExecutor.TOOL_DEFINITIONS
 
-    def __init__(self, config, workspace, metrics):
-        super().__init__(config, workspace, metrics)
+    def __init__(self, config, workspace, metrics, mcp=None):
+        super().__init__(config, workspace, metrics, mcp=mcp)
         self.context_suffix: str = ""
         self.dispatch_history_text: str = ""
         self._tool_executor: OrchestratorToolExecutor | None = None

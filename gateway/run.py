@@ -6399,39 +6399,16 @@ _SESSION_DB_UNPINNED = object()
 
 
 def _run_physics_mode_sync(mode: str, problem_text: str) -> str:
-    """Run one physics/research mode run synchronously (worker-thread body)."""
-    from pathlib import Path as _Path
+    """Run one physics/research mode run synchronously (worker-thread body).
 
-    if mode == "physics":
-        from physics_intern.autophysicist.runner import run_autophysicist
-        workspace = run_autophysicist(
-            problem_text=problem_text,
-            problem_name="session",
-        )
-    else:
-        from physics_intern.core.config import build_config
-        from physics_intern.core.workspace import resolve_workspace_root
-        from physics_intern.engine import PhysicsIntern
+    Same path the CLI takes — see cli._run_problem_mode. A message naming a
+    problem.yaml runs that spec; both modes need it in the workspace, since it
+    is what the formal evaluation scores against and what resume reads.
+    """
+    from physics_intern.run import render_report, run_problem
 
-        # Explicit absolute workspace — see the note in cli._run_research_mode.
-        # The gateway's cwd is the profile's HOME, so an unpinned workspace_dir
-        # would `git add -A` the user's entire home directory.
-        _config = build_config(None)
-        _config.workspace_dir = str(
-            resolve_workspace_root("session", _config.model, "research")
-        )
-
-        engine = PhysicsIntern(problem_text, config=_config)
-        engine.run()
-        workspace = engine.workspace.root
-
-    lines = [f"{mode} run complete. Workspace: {workspace}"]
-    for name in ("ANSWER.md", "FORMAL_EVAL.md"):
-        report = _Path(workspace) / name
-        if report.exists():
-            lines.append("")
-            lines.append(report.read_text().strip())
-    return "\n".join(lines)
+    workspace = run_problem(problem_text, mode=mode)
+    return render_report(workspace, mode)
 
 
 def _active_hours_open(config) -> bool:

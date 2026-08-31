@@ -92,8 +92,8 @@ class CriticAgent(BaseAgent):
             "```"
         )
 
-    def __init__(self, config, workspace, metrics):
-        super().__init__(config, workspace, metrics)
+    def __init__(self, config, workspace, metrics, mcp=None):
+        super().__init__(config, workspace, metrics, mcp=mcp)
         self._no_critiques_filed: bool = False
         self.research_state: ResearchState | None = None
 

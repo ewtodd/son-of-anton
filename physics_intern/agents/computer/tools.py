@@ -5,7 +5,12 @@ import time
 from pathlib import Path
 from typing import ClassVar
 
-from physics_intern.utils.sandbox import execute_python
+from physics_intern.utils.sandbox import (
+    SandboxPolicy,
+    describe_runtime,
+    execute_python,
+    runtime_guidance,
+)
 from physics_intern.state.task import TaskType
 from physics_intern.state.tool_call import ToolCall  # noqa: F401 — re-export for backward compat
 
@@ -17,55 +22,83 @@ class ToolExecutor:
     ToolExecutor writes it to computations/tool_exec_NNN.py.
     """
 
-    _EXECUTE_PYTHON_DEF: ClassVar[dict] = {
-        "type": "function",
-        "function": {
-            "name": "execute_python",
-            "description": (
-                "Execute a Python script and return its stdout/stderr. "
-                "Available packages: Python 3.12+, NumPy >= 2.0, SciPy >= 1.14, "
-                "SymPy >= 1.13, matplotlib >= 3.9, standard library.\n\n"
-                "BANNED APIs (will crash):\n"
-                "- scipy.misc.derivative -> manual finite differences\n"
-                "- numpy.trapz -> numpy.trapezoid\n"
-                "- numpy.math -> math (stdlib)\n"
-                "- scipy.integrate.simps -> scipy.integrate.simpson\n\n"
-                "The script must be self-contained. Never call plt.show() "
-                "(use plt.savefig() then plt.close()). "
-                "Timeout: scripts are killed after the configured timeout "
-                "(default 60s). If you hit a timeout, simplify your approach: "
-                "reduce grid sizes, use fewer iterations, or switch to "
-                "analytical methods."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "purpose": {
-                        "type": "string",
-                        "description": (
-                            "What this script computes and what you expect to learn "
-                            "from the output. Be specific: state the quantity being "
-                            "computed, the method used, and how the result advances "
-                            "toward the deliverable."
-                        ),
+    @staticmethod
+    def _execute_python_def(policy: "SandboxPolicy | None" = None) -> dict:
+        """Build the execute_python schema against the real runtime.
+
+        The description is generated, not hardcoded: it names the packages the
+        configured interpreter can actually import, and the directories the
+        sandbox actually exposes. A hardcoded list is how the tool came to
+        advertise NumPy/SciPy/SymPy/matplotlib to an interpreter that has none
+        of them.
+        """
+        interpreter = policy.interpreter if policy else None
+        data_note = ""
+        if policy and policy.data_dirs:
+            listed = ", ".join(str(d) for d in policy.data_dirs)
+            data_note = (
+                f"\n\nRead-only data available at: {listed}. "
+                "These paths are mounted read-only; write everything you "
+                "produce into the working directory instead."
+            )
+        guidance = runtime_guidance(interpreter)
+        if guidance:
+            guidance = "\n\n" + guidance
+        return {
+            "type": "function",
+            "function": {
+                "name": "execute_python",
+                "description": (
+                    "Execute a Python script and return its stdout/stderr.\n\n"
+                    f"Available: {describe_runtime(interpreter)}\n\n"
+                    "BANNED APIs (will crash):\n"
+                    "- scipy.misc.derivative -> manual finite differences\n"
+                    "- numpy.trapz -> numpy.trapezoid\n"
+                    "- numpy.math -> math (stdlib)\n"
+                    "- scipy.integrate.simps -> scipy.integrate.simpson\n\n"
+                    "The script runs in a sandbox with no network access and "
+                    "no access to the home directory. The working directory is "
+                    "writable and persists between calls; everything else is "
+                    "discarded when the script exits."
+                    f"{data_note}\n\n"
+                    "The script must be self-contained. Never call plt.show() "
+                    "(use plt.savefig() then plt.close()). "
+                    "Timeout: scripts are killed after the configured timeout "
+                    "(default 60s). If you hit a timeout, simplify your "
+                    "approach: reduce grid sizes, use fewer iterations, or "
+                    "switch to analytical methods."
+                    f"{guidance}"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "purpose": {
+                            "type": "string",
+                            "description": (
+                                "What this script computes and what you expect "
+                                "to learn from the output. Be specific: state "
+                                "the quantity being computed, the method used, "
+                                "and how the result advances toward the "
+                                "deliverable."
+                            ),
+                        },
+                        "code": {
+                            "type": "string",
+                            "description": "The complete Python script to execute.",
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": (
+                                "A short, descriptive filename for this script "
+                                "(e.g. 'verify_enumeration.py'). Each script "
+                                "runs as an independent .py file."
+                            ),
+                        },
                     },
-                    "code": {
-                        "type": "string",
-                        "description": "The complete Python script to execute.",
-                    },
-                    "filename": {
-                        "type": "string",
-                        "description": (
-                            "A short, descriptive filename for this script "
-                            "(e.g. 'verify_enumeration.py'). Each script runs "
-                            "as an independent .py file."
-                        ),
-                    },
+                    "required": ["purpose", "code"],
                 },
-                "required": ["purpose", "code"],
             },
-        },
-    }
+        }
 
     _SUBMIT_RESULT_DEF: ClassVar[dict] = {
         "type": "function",
@@ -196,37 +229,46 @@ class ToolExecutor:
         },
     }
 
-    # Tool sets by agent type
-    COMPUTER_TOOLS: ClassVar[list[dict]] = [
-        _DOCUMENT_APPROACH_DEF,
-        _EXECUTE_PYTHON_DEF,
-        _SUBMIT_RESULT_DEF,
-    ]
+    # Tool sets by agent type. These are built per instance rather than as
+    # ClassVars: the execute_python schema names the packages and data mounts
+    # of the sandbox this executor was constructed with, which is not known at
+    # import time.
+    def computer_tools(self) -> list[dict]:
+        """Full computer tool set, with the runtime-derived execute_python."""
+        return [
+            self._DOCUMENT_APPROACH_DEF,
+            self._execute_python_def(self._policy),
+            self._SUBMIT_RESULT_DEF,
+        ] + self._lookup_tools()
 
-    # Default tool set (computer tools)
-    TOOL_DEFINITIONS: ClassVar[list[dict]] = COMPUTER_TOOLS
+    def _lookup_tools(self) -> list[dict]:
+        """Documentation lookups, when this role is configured for them."""
+        return self._mcp.tools_for("computer") if self._mcp else []
 
-    @classmethod
-    def tools_for_task_type(cls, task_type: "TaskType") -> list[dict]:
+    def tools_for_task_type(self, task_type: "TaskType") -> list[dict]:
         """Return the appropriate tool set for a task type."""
         if task_type == TaskType.COMPUTE:
-            return cls.COMPUTER_TOOLS
-        return cls.TOOL_DEFINITIONS  # default fallback
+            return self.computer_tools()
+        return self.computer_tools()  # default fallback
 
     # Dynamic tool sets for computer agent lifecycle
     _COMPUTER_TOOLS_INITIAL: ClassVar[list[dict]] = [
         _DOCUMENT_APPROACH_DEF,
         _SUBMIT_RESULT_DEF,
     ]
-    COMPUTER_TOOLS_POST_APPROACH: ClassVar[list[dict]] = [
-        _EXECUTE_PYTHON_DEF,
-        _SUBMIT_RESULT_DEF,
-    ]
-    _COMPUTER_TOOLS_PROGRESS: ClassVar[list[dict]] = [
-        _EXECUTE_PYTHON_DEF,
-        _SUBMIT_RESULT_DEF,
-        _REPORT_PROGRESS_DEF,
-    ]
+
+    def _computer_tools_post_approach(self) -> list[dict]:
+        return [
+            self._execute_python_def(self._policy),
+            self._SUBMIT_RESULT_DEF,
+        ] + self._lookup_tools()
+
+    def _computer_tools_progress(self) -> list[dict]:
+        return [
+            self._execute_python_def(self._policy),
+            self._SUBMIT_RESULT_DEF,
+            self._REPORT_PROGRESS_DEF,
+        ] + self._lookup_tools()
 
     def __init__(
         self,
@@ -234,11 +276,22 @@ class ToolExecutor:
         timeout: int = 60,
         output_limit: int = 10_000,
         task_type: "TaskType | None" = None,
+        policy: "SandboxPolicy | None" = None,
+        progress_check_interval: int = 0,
+        mcp=None,
     ):
         self.workspace_root = workspace_root
+        # The workspace root — not the computations subdirectory — is the
+        # sandbox's writable mount: problem specs tell the model to write
+        # RESULTS.txt where the formal evaluator reads it, at the root.
+        self._policy = policy or SandboxPolicy.from_config()
+        self._mcp = mcp
+        if self._policy.workspace is None:
+            self._policy.workspace = Path(workspace_root)
         self.timeout = timeout
         self._output_limit = output_limit
         self._counter = 0
+        self._progress_check_interval = progress_check_interval
         self._computations_dir = workspace_root / "computations"
         self._task_type = task_type
         self.ready_to_conclude_signaled = False
@@ -296,6 +349,8 @@ class ToolExecutor:
             output, is_error = self._document_approach(tool_input)
         elif tool_name == "report_progress":
             output, is_error = self._report_progress(tool_input)
+        elif self._mcp is not None and self._mcp.handles(tool_name):
+            output, is_error = self._mcp.call(tool_name, tool_input)
         else:
             output = (
                 f"ERROR: Unknown tool '{tool_name}'. "
@@ -343,8 +398,8 @@ class ToolExecutor:
         if not self._approach_documented:
             return self._COMPUTER_TOOLS_INITIAL
         if self._progress_check_pending:
-            return self._COMPUTER_TOOLS_PROGRESS
-        return self.COMPUTER_TOOLS_POST_APPROACH
+            return self._computer_tools_progress()
+        return self._computer_tools_post_approach()
 
     def _report_progress(self, params: dict) -> tuple[str, bool]:
         """Acknowledge progress report and guide next action."""
@@ -402,6 +457,7 @@ class ToolExecutor:
             script_path,
             timeout=self.timeout,
             cwd=str(self._computations_dir),
+            policy=self._policy,
         )
 
         # Determine exit status label
@@ -454,9 +510,30 @@ class ToolExecutor:
                     "functions, or imports carry over from previous calls. You must include\n"
                     "ALL imports and function definitions in every script."
                 )
-            return header + body, True
+            return header + body + self._progress_check_nudge(), True
 
-        return header + body, False
+        return header + body + self._progress_check_nudge(), False
+
+    def _progress_check_nudge(self) -> str:
+        """Arm the periodic progress check and return the model-facing prompt.
+
+        ``progress_check_interval`` and ``report_progress`` shipped wired to
+        nothing: no code ever set ``_progress_check_pending``, so the tool was
+        never offered and the interval was inert. Every N scripts the executor
+        now arms it, which puts ``report_progress`` into ``active_tools`` for
+        the next round.
+        """
+        interval = self._progress_check_interval
+        if interval <= 0 or self._counter % interval != 0:
+            return ""
+        self._progress_check_pending = True
+        return (
+            f"\n\n--- PROGRESS CHECK ---\n"
+            f"You have run {self._counter} scripts. Call `report_progress` "
+            "before your next execute_python call: summarize what the "
+            "computations have shown, what you still need, and whether you "
+            "are ready to conclude."
+        )
 
     def _save_output_file(self, script_name: str, content: str) -> None:
         """Save script output to a companion .output file."""

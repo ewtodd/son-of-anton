@@ -16,6 +16,7 @@ sets ``problem_solved`` on the executor and breaks the outer loop;
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -38,6 +39,8 @@ def load_problem(path: Path) -> tuple[dict, str, str]:
 
 from ..core.config import Config, DEFAULTS, build_config  # noqa: E402
 from ..core.console import console  # noqa: E402
+from ..core.models import resolve_models  # noqa: E402
+from ..core.problem_spec import ProblemSpec, write_spec  # noqa: E402
 from ..llm import run_agent_loop, AgentResult  # noqa: E402
 from ..core.metrics import MetricsTracker  # noqa: E402
 from ..verification import (  # noqa: E402
@@ -47,6 +50,9 @@ from ..verification import (  # noqa: E402
     write_formal_eval_report,
 )
 from ..core.workspace import log_scaffold_event  # noqa: E402
+
+from ..utils.mcp import MCPToolset  # noqa: E402
+from ..utils.sandbox import SandboxPolicy  # noqa: E402
 
 from .memory import PermanentMemory, Scratchpad  # noqa: E402
 from .tools import ManagerToolExecutor  # noqa: E402
@@ -117,6 +123,9 @@ def _run_iteration(
     max_rounds: int,
     sandbox_timeout: int,
     metrics: MetricsTracker,
+    policy: SandboxPolicy | None = None,
+    coder_model: str = "",
+    mcp: MCPToolset | None = None,
 ) -> tuple[AgentResult, ManagerToolExecutor]:
     """Run one iteration of the Research Manager."""
     user_content = _build_user_content(
@@ -137,6 +146,9 @@ def _run_iteration(
         token_budget=token_budget,
         tool_call_cap=tool_call_cap,
         sandbox_timeout=sandbox_timeout,
+        policy=policy,
+        coder_model=config.coder_model,
+        mcp=mcp,
     )
 
     def on_round(
@@ -156,7 +168,7 @@ def _run_iteration(
         user_content=user_content,
         config=config,
         tool_executor=executor,
-        tools=ManagerToolExecutor.ALL_TOOLS,
+        tools=executor.all_tools(),
         max_rounds=max_rounds,
         agent_name="manager",
         iteration=iteration,
@@ -295,6 +307,7 @@ def run_autophysicist(
     scratchpad_window: int = 5,
     workspace_root: Path | None = None,
     config_overrides: dict | None = None,
+    sandbox_timeout: int = 60,
 ) -> Path:
     """Run the Autophysicist loop on one problem and return the workspace root.
 
@@ -303,22 +316,8 @@ def run_autophysicist(
     and the final verification against the problem spec.
     """
     # --- Config ---
-    if not model:
-        # The CLI/gateway callers pass no model: bridge physics.model from the
-        # son-of-anton config.yaml so the Config carries the real model name
-        # (headers/logging), while the endpoint layer keeps its own
-        # base_url/model resolution order.
-        try:
-            from son_of_anton_cli.config import load_config
-
-            _cfg = load_config() or {}
-            _physics = _cfg.get("physics") or {}
-            model = str(_physics.get("model") or "").strip() or None
-        except Exception:
-            model = None
     config = build_config(None, overrides=config_overrides)
-    if model:
-        config.model = model
+    resolve_models(config, model)
 
     # --- Workspace ---
     if workspace_root is not None:
@@ -342,6 +341,29 @@ def run_autophysicist(
     config.logs_dir = str(workspace_root / "logs")
     Path(config.logs_dir).mkdir(parents=True, exist_ok=True)
     config.save(workspace_root)
+
+    # --- Sandbox policy ---
+    # The spec's `data:` list names host directories the run may read. They are
+    # bind-mounted read-only into every computation; nothing else outside the
+    # workspace is visible. Config-level physics.data_dirs are merged in.
+    spec_data = list((problem_def or {}).get("data") or [])
+    policy = SandboxPolicy.from_config(extra_data_dirs=spec_data)
+    policy.workspace = workspace_root
+    if spec_data:
+        missing = [
+            d for d in spec_data
+            if Path(os.path.expanduser(str(d))).resolve() not in policy.data_dirs
+        ]
+        if missing:
+            console.print(
+                f"[yellow]Data paths in the spec do not exist and were not "
+                f"mounted: {', '.join(str(m) for m in missing)}[/]"
+            )
+
+    # --- Lookup tools (arXiv, library docs, ...) ---
+    # Discovered once per run; an unreachable endpoint degrades to no lookups
+    # rather than failing the run.
+    mcp = MCPToolset.from_config()
 
     # --- Console log ---
     console.setup_log(workspace_root / "console.log")
@@ -368,10 +390,12 @@ def run_autophysicist(
             f"# Problem\n\n{problem_text}\n"
         )
         if problem_def is not None:
-            problem_data = dict(problem_def)
-            problem_data["name"] = problem_data.get("name") or problem_name
-            with open(workspace_root / "problem.yaml", "w", encoding="utf-8") as f:
-                yaml.dump(problem_data, f, default_flow_style=False, sort_keys=False)
+            write_spec(
+                workspace_root,
+                ProblemSpec(
+                    text=problem_text, name=problem_name, definition=problem_def
+                ),
+            )
         subprocess.run(
             ["git", "add", "-A"],
             cwd=str(workspace_root),
@@ -388,11 +412,33 @@ def run_autophysicist(
     # --- Header ---
     console.print(f"[bold]Autophysicist[/bold] — {problem_name}")
     console.print(f"Model:      {config.model}")
+    if config.coder_model:
+        console.print(f"Code:       {config.coder_model}")
     console.print(f"Workspace:  {workspace_root}")
     console.print(
         f"Iterations: up to {max_iterations}, "
         f"budget {token_budget:,} tokens/iter"
     )
+    console.print(f"Runtime:    {policy.interpreter}")
+    console.print(
+        "Sandbox:    "
+        + (
+            "bubblewrap (no network, workspace-only writes)"
+            if policy.mode != "off"
+            else "OFF — computations run unconfined"
+        )
+    )
+    if policy.data_dirs:
+        console.print(
+            "Data (ro):  " + ", ".join(str(d) for d in policy.data_dirs)
+        )
+    if mcp is not None:
+        names = [t["function"]["name"] for t in mcp.tools()]
+        console.print(
+            f"Lookups:    {', '.join(names)}" if names
+            else "[yellow]Lookups:    configured but the endpoint returned "
+                 "nothing — continuing without them[/]"
+        )
     console.rule()
 
     # --- Outer iteration loop ---
@@ -414,8 +460,11 @@ def run_autophysicist(
                 token_budget=token_budget,
                 tool_call_cap=15,
                 max_rounds=30,
-                sandbox_timeout=60,
+                sandbox_timeout=sandbox_timeout,
                 metrics=metrics,
+                policy=policy,
+                coder_model=config.coder_model,
+                mcp=mcp,
             )
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted by user.[/yellow]")

@@ -71,20 +71,22 @@ def _parse_number(value: str) -> float | None:
 
 
 def _run_checker_script(workspace: Path, problem_def: dict) -> None:
-    """Run the spec's optional checker script inside the workspace."""
+    """Run the spec's optional checker script inside the workspace.
+
+    Uses the resolved physics interpreter, not a bare ``python3``: the sealed
+    install has no ``python3`` on ``PATH``, so a checker invoked that way
+    silently never ran and every check fell back to whatever RESULTS.txt
+    already held.
+    """
     checker = problem_def.get("checker")
     if not checker:
         return
     script = workspace / checker
     if not script.exists():
         return
-    subprocess.run(
-        ["python3", str(script)],
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    from physics_intern.utils.sandbox import execute_python
+
+    execute_python(script, timeout=300, cwd=workspace)
 
 
 def _check_one(spec: dict, results: dict[str, str]) -> dict:

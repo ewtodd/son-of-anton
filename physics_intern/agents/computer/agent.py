@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import copy
+
 from physics_intern.llm import AgentResult, ParseFailureError, run_agent_loop
 from physics_intern.state.research_state import Evidence
 from physics_intern.state.tool_call import ToolCall
@@ -17,9 +19,15 @@ if TYPE_CHECKING:
 
 
 class ComputerAgent(EvidenceAgent):
+    #: Sandbox policy for this run — carries the problem spec's `data:` mounts.
+    policy = None
+
     name = "computer"
     prompt_file = "prompt.md"
-    tools = ToolExecutor.COMPUTER_TOOLS
+    # Built per call from the executor: the execute_python schema depends on
+    # the sandbox's interpreter and data mounts, not known at import time.
+    tools: list[dict] = []
+    uses_tools = True
     raise_on_parse_failure = True
 
     def _call_with_tools(
@@ -36,13 +44,23 @@ class ComputerAgent(EvidenceAgent):
             timeout=self.config.sympy_timeout_seconds,
             output_limit=self.config.tool_output_limit,
             task_type=task.task_type,
+            progress_check_interval=self.config.progress_check_interval,
+            policy=self.policy,
+            mcp=self.mcp,
         )
+        # The computer is the pipeline's code-writing role, so it takes
+        # physics.coder_model for the same reason the Autophysicist's
+        # execute_code sub-agents do.
+        config = self.config
+        if config.coder_model and config.coder_model != config.model:
+            config = copy.copy(config)
+            config.model = config.coder_model
         result = run_agent_loop(
             system=self.system_prompt,
             user_content=context,
-            config=self.config,
+            config=config,
             tool_executor=tool_executor,
-            tools=self.tools,
+            tools=tool_executor.computer_tools(),
             max_rounds=self.max_tool_rounds or self.config.max_tool_rounds,
             agent_name=self.name,
             iteration=iteration,

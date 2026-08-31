@@ -5,42 +5,26 @@ Son of Anton CLI - Main entry point.
 Usage:
     son-of-anton                     # Interactive chat (default)
     son-of-anton chat                # Interactive chat
-    son-of-anton gateway             # Run gateway in foreground
-    son-of-anton gateway start       # Start gateway as service
-    son-of-anton gateway stop        # Stop gateway service
-    son-of-anton gateway status      # Show gateway status
-    son-of-anton gateway install     # Install gateway service
-    son-of-anton gateway uninstall   # Uninstall gateway service
-    son-of-anton setup               # Interactive setup wizard
-    son-of-anton logout              # Clear stored authentication
-    son-of-anton status              # Show status of all components
-    son-of-anton cron                # Manage cron jobs
+    son-of-anton model               # Select the default model
+    son-of-anton config              # View configuration
+    son-of-anton sessions list       # List past sessions
     son-of-anton cron list           # List cron jobs
-    son-of-anton cron status         # Check if cron scheduler is running
-    son-of-anton doctor              # Check configuration and dependencies
-    son-of-anton honcho setup                    # Configure Honcho AI memory integration
-    son-of-anton honcho status                   # Show Honcho config and connection status
-    son-of-anton honcho sessions                 # List directory → session name mappings
-    son-of-anton honcho map <name>               # Map current directory to a session name
-    son-of-anton honcho peer                     # Show peer names and dialectic settings
-    son-of-anton honcho peer --user NAME         # Set user peer name
-    son-of-anton honcho peer --ai NAME           # Set AI peer name
-    son-of-anton honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    son-of-anton honcho mode                     # Show current memory mode
-    son-of-anton honcho mode [hybrid|honcho|local]  # Set memory mode
-    son-of-anton honcho tokens                   # Show token budget settings
-    son-of-anton honcho tokens --context N       # Set session.context() token cap
-    son-of-anton honcho tokens --dialectic N     # Set dialectic result char cap
-    son-of-anton honcho identity                 # Show AI peer identity representation
-    son-of-anton honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    son-of-anton honcho migrate                  # Step-by-step migration guide: OpenClaw native → Son of Anton + Honcho
-    son-of-anton --version           Show version and update status
-    son-of-anton update              Update to latest version
-    son-of-anton uninstall           Uninstall Son of Anton Agent
-    son-of-anton acp                 Run as an ACP server for editor integration
-    son-of-anton sessions browse     Interactive session picker with search
+    son-of-anton skills              # Manage skills
+    son-of-anton mcp                 # Manage MCP servers
+    son-of-anton gateway             # Run gateway in foreground
+    son-of-anton gateway status      # Show gateway status
+    son-of-anton status              # Show status of all components
+    son-of-anton pause / resume      # Engage / clear the global emergency stop
+    son-of-anton problem create      # Build a physics problem spec from a dataset
+    son-of-anton completion bash     # Print a shell completion script
+    son-of-anton --version           # Show version
 
-    son-of-anton claw migrate --dry-run  # Preview migration without changes
+The fork ships no imperative installation surface. There is no `setup`,
+`update`, `uninstall`, `login`/`logout`, `doctor` or `gateway install`: the
+deployment is declared by the NixOS or Home Manager module, `systemctl` runs
+the service, and `settings` in that module owns config.yaml. Commands that
+mutated an install were carried over from upstream, already refused under
+managed mode, and are gone.
 """
 
 # IMPORTANT: son_of_anton_bootstrap must be the very first import — it hardens
@@ -304,6 +288,8 @@ from son_of_anton_cli.subcommands.pause import build_pause_parser
 from son_of_anton_cli.subcommands.config import build_config_parser
 from son_of_anton_cli.subcommands.skills import build_skills_parser
 from son_of_anton_cli.subcommands.mcp import build_mcp_parser
+from son_of_anton_cli.subcommands.problem import build_problem_parser
+from son_of_anton_cli.subcommands.completion import build_completion_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -4516,37 +4502,24 @@ def _coalesce_session_name_args(argv: list) -> list:
     Tokens are collected after the flag until we hit another flag (``-*``)
     or a known top-level subcommand.
     """
+    # Exactly the top-level subcommands this fork registers. A name in here
+    # that is not a real command is not harmless: it ends the session name
+    # early, so `son-of-anton -c auth notes` would lose everything from "auth"
+    # on. This list carried eleven commands the fork does not have.
     _SUBCOMMANDS = {
         "chat",
-        "model",
-        "gateway",
-        "setup",
-        "login",
-        "logout",
-        "auth",
-        "status",
-        "cron",
-        "doctor",
-        "config",
-        "pairing",
-        "skills",
-        "tools",
-        "mcp",
-        "sessions",
-        "insights",
-        "update",
-        "uninstall",
-        "honcho",
-        "claw",
-        "plugins",
-        "security",
-        "memory",
-        "dump",
-        "debug",
-        "backup",
-        "import",
         "completion",
-        "logs",
+        "config",
+        "cron",
+        "gateway",
+        "mcp",
+        "model",
+        "pause",
+        "problem",
+        "resume",
+        "sessions",
+        "skills",
+        "status",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -4572,6 +4545,36 @@ def _coalesce_session_name_args(argv: list) -> list:
             result.append(token)
             i += 1
     return result
+
+
+def cmd_problem(args, parser=None):
+    """Create or run a physics problem spec."""
+    action = getattr(args, "problem_action", None)
+
+    if action == "create":
+        from physics_intern.spec_builder import run as run_spec_builder
+
+        return run_spec_builder(args, parser)
+
+    if action == "run":
+        from physics_intern.run import render_report, run_problem
+
+        mode = getattr(args, "mode", "physics")
+        workspace = run_problem(
+            args.spec,
+            mode=mode,
+            max_iterations=getattr(args, "max_iterations", None),
+            workspace_root=getattr(args, "workspace", None),
+        )
+        print(render_report(workspace, mode))
+        return 0
+
+    print(
+        "usage: son-of-anton problem create --data PATH --goal TEXT -o FILE\n"
+        "       son-of-anton problem run SPEC [--mode physics|research]\n"
+        "Run 'son-of-anton problem <action> --help' for the full options."
+    )
+    return 2
 
 
 def cmd_completion(args, parser=None):
@@ -4608,8 +4611,8 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "chat", "config", "cron", "gateway", "mcp", "model", "pause",
-        "resume", "sessions", "skills", "status",
+        "chat", "completion", "config", "cron", "gateway", "mcp", "model",
+        "pause", "problem", "resume", "sessions", "skills", "status",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -5241,6 +5244,8 @@ def main():
     # mcp command  (parser built in son_of_anton_cli/subcommands/mcp.py)
     # =========================================================================
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
+    build_problem_parser(subparsers, cmd_problem=cmd_problem)
+    build_completion_parser(subparsers, parser, cmd_completion=cmd_completion)
 
     # =========================================================================
     # sessions command

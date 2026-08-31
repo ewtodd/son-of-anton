@@ -398,6 +398,20 @@ DEFAULT_CONFIG = {
     # configuration; override the endpoint here for a dedicated server.
     "physics": {
         "model": "",
+        # Model for whichever agent is WRITING CODE, in either mode: the
+        # Autophysicist's execute_code sub-agents, and the research pipeline's
+        # computer agent. Empty means `model` does everything.
+        #
+        # Roles that are not writing code keep `model` — the Manager, and a
+        # sub-agent dispatched WITHOUT execute_code (derive this, find the
+        # error in that, argue the other side). Those are doing physics
+        # reasoning, and routing them to a coding model to save latency trades
+        # away what they were dispatched for.
+        #
+        # Code is where the volume is — one call per script, plus up to three
+        # more each time a script fails — so a faster, stronger coding model is
+        # worth the most there and costs the least.
+        "coder_model": "",
         "base_url": "",
         "api_key_env": "",
         # Base directory for physics/research run workspaces. Each run gets its
@@ -405,6 +419,72 @@ DEFAULT_CONFIG = {
         # directory the agent owns: the run commits its whole contents.
         # Empty = ~/.son-of-anton/workspaces.
         "workspace_root": "",
+        # Ceiling on the outer loop, for both modes. 0 uses the mode's own
+        # default (50 for the Autophysicist, max_iterations from
+        # config.default.yaml for the pipeline). `problem run --max-iterations`
+        # overrides it.
+        #
+        # Worth setting. Physics mode has no wall-clock or cost gate — those
+        # exist only in the research pipeline — so this is the only ceiling on
+        # an unattended run, and at ~10s a call with up to fifteen tool calls
+        # an iteration the default is an afternoon.
+        "max_iterations": 0,
+        # Interpreter that model-authored computations run under. The agent's
+        # own venv deliberately ships no scientific stack, so leaving this
+        # empty means numpy/scipy/matplotlib are unavailable to physics runs.
+        # Point it at a Python environment carrying the stack — see
+        # nix/physics-runtime.nix. Empty falls back to
+        # SON_OF_ANTON_PHYSICS_PYTHON, then SON_OF_ANTON_PYTHON, then the
+        # agent's own interpreter.
+        "python": "",
+        # Confinement for those computations: "auto" (sandbox under bubblewrap
+        # when it is installed, refuse to run when it is not), "bwrap"
+        # (require it), or "off" (run unconfined — model-authored code then
+        # has the agent's full filesystem access and environment).
+        "sandbox": "auto",
+        # Host directories exposed read-only inside the sandbox, for every
+        # run. A problem spec's `data:` list adds to this per run.
+        "data_dirs": [],
+        # Leave the network reachable from computations. Off by default.
+        "sandbox_net": False,
+        # Extra text appended to the code-execution instructions both physics
+        # agents see, for house libraries or local conventions the built-in
+        # notes do not cover (physics_intern/utils/runtime_notes.py). The
+        # built-in note for analysis_utilities appears on its own whenever that
+        # package imports in the configured runtime.
+        "runtime_notes": "",
+        # Lookup tools for the Research Manager — literature and library docs.
+        # `server` names an entry in the top-level `mcp_servers` so an endpoint
+        # the main agent already declares is written once, not twice with its
+        # own credential; `url`/`headers`/`api_key_env` are the standalone
+        # alternative. `allow` is required and is what keeps this usable: an
+        # aggregating gateway can expose dozens of tools, and handing all of
+        # them to an agent with a fifteen-call budget crowds out the problem.
+        # An entry matches a whole tool name ("arxiv-get_abstract") or a
+        # server, which matches everything it prefixes ("context7"). Empty
+        # `allow` means no MCP tools at all.
+        "mcp": {
+            "server": "",
+            "url": "",
+            "headers": {},
+            "api_key_env": "",
+            "allow": [],
+            # Which agent roles get lookups. Empty uses the default set: the
+            # Autophysicist's manager, and the pipeline's surveyor, researcher
+            # and computer — the reasoning and coding roles in both modes.
+            # The orchestrator is deliberately not in it: it dispatches over a
+            # state machine under a one-exit-tool-per-round rule and a ten
+            # round budget, where lookups buy little and risk it never
+            # dispatching.
+            "agents": [],
+            "timeout": 120.0,
+        },
+        # Resource caps inside the sandbox. 0 disables a limit. cpu_seconds
+        # counts CPU time summed over threads, so it is off by default —
+        # the per-script wall-clock timeout is the limit that matches intent.
+        "memory_limit_mb": 0,
+        "file_size_limit_mb": 8192,
+        "cpu_seconds": 0,
     },
 
     "terminal": {

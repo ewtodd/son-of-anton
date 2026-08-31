@@ -16,11 +16,13 @@ from ..llm import (
     ParseFailureError,
     call_llm,
     call_llm_continuation,
+    run_agent_loop,
 )
 from ..core.metrics import MetricsTracker
 from ..state.tool_call import ToolCall
 from ..utils.categories import CompensationCategory as CC
 from ..core.workspace import WorkspaceManager, log_scaffold_event
+from ..utils.mcp import MCPToolset
 
 if TYPE_CHECKING:
     from ..state.task import Task
@@ -37,13 +39,28 @@ class BaseAgent(ABC):
     # parse_retries is now read from self.config.parse_retries (config.default.yaml)
 
     def __init__(
-        self, config: Config, workspace: WorkspaceManager, metrics: MetricsTracker
+        self,
+        config: Config,
+        workspace: WorkspaceManager,
+        metrics: MetricsTracker,
+        mcp: MCPToolset | None = None,
     ):
         self.config = config
         self.workspace = workspace
         self.metrics = metrics
+        self.mcp = mcp
         self._system_prompt: str | None = None
         self._last_script_names: list[str] = []
+
+    def lookup_tools(self) -> list[dict]:
+        """Literature / documentation tools this agent may use.
+
+        Gated per role by ``physics.mcp.agents``, so the same configuration
+        gives the Autophysicist's Manager and the pipeline's surveyor,
+        researcher and computer the same lookups without handing them to every
+        agent in both loops.
+        """
+        return self.mcp.tools_for(self.name) if self.mcp else []
 
     @property
     def system_prompt(self) -> str:
@@ -76,7 +93,7 @@ class BaseAgent(ABC):
     ) -> LLMResponse | AgentResult:
         """Template method: build context -> call LLM -> process response."""
         context = self.build_context(task, iteration)
-        if self.tools:
+        if self.uses_tools:
             response = self._call_with_tools(
                 context, task, iteration, on_round=on_round
             )
@@ -86,6 +103,17 @@ class BaseAgent(ABC):
         self.process_response(response, task, iteration)
         return response
 
+    @property
+    def uses_tools(self) -> bool:
+        """Whether ``run()`` takes the tool-use path.
+
+        Defaults to "this agent declares a static ``tools`` list, or has
+        lookups". Agents whose schemas are built per call (the computer agent's
+        execute_python names the sandbox's packages and data mounts) override
+        this to True and leave ``tools`` empty.
+        """
+        return bool(self.tools) or bool(self.lookup_tools())
+
     def _call_with_tools(
         self,
         context: str,
@@ -94,9 +122,34 @@ class BaseAgent(ABC):
         on_round: Callable[[int, str, list[ToolCall], int, int, int, int, float], None]
         | None = None,
     ) -> AgentResult:
-        """Run the tool-use agent loop. Subclasses with ``tools`` must override."""
-        raise NotImplementedError(
-            f"{type(self).__name__} declares tools but does not implement _call_with_tools"
+        """Run a lookup-only tool loop, then parse the final text as usual.
+
+        A one-shot agent that gains lookups does not become a different agent:
+        it may call arXiv or the docs a few times and then produces exactly the
+        structured output its prompt asks for and its ``process_response``
+        already parses. ``AgentResult.text`` is the final message, so nothing
+        downstream changes. Subclasses with tools of their own — the
+        orchestrator, the computer — override this and merge lookups into their
+        own executor instead.
+        """
+        lookups = self.lookup_tools()
+        if not lookups:
+            raise NotImplementedError(
+                f"{type(self).__name__} declares tools but does not implement "
+                "_call_with_tools"
+            )
+        from ..utils.mcp import LookupExecutor
+
+        return run_agent_loop(
+            system=self.system_prompt,
+            user_content=context,
+            config=self.config,
+            tool_executor=LookupExecutor(self.mcp, self.name),
+            tools=lookups,
+            max_rounds=self.max_tool_rounds or self.config.max_tool_rounds,
+            agent_name=self.name,
+            iteration=iteration,
+            on_round=on_round,
         )
 
     def _validate_response(self, response: LLMResponse) -> bool:

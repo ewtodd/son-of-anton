@@ -56,6 +56,8 @@ from .control.validation import (
     ViolationSeverity,
 )
 from .core.workspace import WorkspaceManager, log_scaffold_event
+from .utils.mcp import MCPToolset
+from .utils.sandbox import SandboxPolicy
 from .agents.orchestrator import OrchestratorAgent
 from .agents.researcher import ResearcherAgent
 from .agents.computer import ComputerAgent
@@ -84,11 +86,18 @@ class PhysicsIntern:
         config: Config | None = None,
         problem_meta: dict | None = None,
         answer_template: str = "",
+        problem_def: dict | None = None,
     ):
+        """*problem_def* is the parsed problem spec, when the run has one.
+
+        Without it the run is unscored: ``_run_formal_verification`` reads
+        ``problem.yaml`` out of the workspace, so a spec that never reaches the
+        workspace means the numeric checks never run.
+        """
         self.config = config or Config()
         self.metrics = MetricsTracker()
         self.workspace = WorkspaceManager(self.config)
-        self.workspace.init(problem)
+        self.workspace.init(problem, problem_def=problem_def)
         self.config.logs_dir = str(self.workspace.logs_dir)
         console.setup_log(Path(self.workspace.logs_dir) / "console.log")
         self.iteration = 0
@@ -99,20 +108,45 @@ class PhysicsIntern:
             answer_template.strip() if answer_template else ""
         )
         self.research_state.title = self.workspace.root.name
-        self.problem_meta = problem_meta or {}
+        self.problem_meta = problem_meta or {
+            "steps": (problem_def or {}).get("steps", [])
+        }
+
+        # Lookup tools and the sandbox policy are per run, not per agent: one
+        # discovery, one set of read-only data mounts, shared by everything
+        # that is configured to use them. Both are what the Autophysicist gets;
+        # the pipeline had neither.
+        self.mcp = MCPToolset.from_config()
+        self.policy = SandboxPolicy.from_config(
+            extra_data_dirs=(problem_def or {}).get("data") or []
+        )
+        self.policy.workspace = self.workspace.root
 
         # Initialize agents
-        self.orchestrator = OrchestratorAgent(self.config, self.workspace, self.metrics)
-        self.researcher = ResearcherAgent(self.config, self.workspace, self.metrics)
-        self.computer = ComputerAgent(self.config, self.workspace, self.metrics)
-        self.reviewer = ReviewerAgent(self.config, self.workspace, self.metrics)
-        self.critic = CriticAgent(self.config, self.workspace, self.metrics)
+        self.orchestrator = OrchestratorAgent(
+            self.config, self.workspace, self.metrics, mcp=self.mcp
+        )
+        self.researcher = ResearcherAgent(
+            self.config, self.workspace, self.metrics, mcp=self.mcp
+        )
+        self.computer = ComputerAgent(
+            self.config, self.workspace, self.metrics, mcp=self.mcp
+        )
+        self.computer.policy = self.policy
+        self.reviewer = ReviewerAgent(
+            self.config, self.workspace, self.metrics, mcp=self.mcp
+        )
+        self.critic = CriticAgent(self.config, self.workspace, self.metrics, mcp=self.mcp)
         self.formatter = FormatterAgent(
             self.config, self.workspace, self.metrics, answer_template
         )
-        self.surveyor = SurveyorAgent(self.config, self.workspace, self.metrics)
-        self.planner = PlannerAgent(self.config, self.workspace, self.metrics)
-        self.adjudicator = AdjudicatorAgent(self.config, self.workspace, self.metrics)
+        self.surveyor = SurveyorAgent(
+            self.config, self.workspace, self.metrics, mcp=self.mcp
+        )
+        self.planner = PlannerAgent(self.config, self.workspace, self.metrics, mcp=self.mcp)
+        self.adjudicator = AdjudicatorAgent(
+            self.config, self.workspace, self.metrics, mcp=self.mcp
+        )
 
     @classmethod
     def resume(

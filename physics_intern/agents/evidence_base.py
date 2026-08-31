@@ -83,8 +83,8 @@ class EvidenceAgent(BaseAgent):
     target resolution, and evidence storage. Subclasses implement process_response.
     """
 
-    def __init__(self, config, workspace, metrics):
-        super().__init__(config, workspace, metrics)
+    def __init__(self, config, workspace, metrics, mcp=None):
+        super().__init__(config, workspace, metrics, mcp=mcp)
         self.research_state: ResearchState | None = None
 
     def build_context(self, task: Task, iteration: int) -> str:

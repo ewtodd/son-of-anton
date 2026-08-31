@@ -1,33 +1,16 @@
-# nix/configMergeScript.nix — Deep-merge Nix settings into existing config.yaml
+# nix/configMergeScript.nix — merge Nix settings into an existing config.yaml
 #
-# Used by the NixOS module activation script and by checks.nix tests.
-# Nix keys override; user-added keys (skills, streaming, etc.) are preserved.
+# Used by the NixOS and Home Manager activation scripts. The logic lives in
+# ./config_merge.py rather than in a Nix string: it is a real three-way merge
+# with a state file, and embedding it here would mean escaping every `${` and
+# `''` a Python program happens to contain.
+#
+# Read through it with `builtins.readFile` and plain concatenation, NOT into an
+# indented string — interpolation would treat the Python as Nix source.
 { pkgs }:
-pkgs.writeScript "son-of-anton-config-merge" ''
-  #!${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3
-  import json, yaml, sys
-  from pathlib import Path
-
-  nix_json, config_path = sys.argv[1], Path(sys.argv[2])
-
-  with open(nix_json) as f:
-      nix = json.load(f)
-
-  existing = {}
-  if config_path.exists():
-      with open(config_path) as f:
-          existing = yaml.safe_load(f) or {}
-
-  def deep_merge(base, override):
-      result = dict(base)
-      for k, v in override.items():
-          if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-              result[k] = deep_merge(result[k], v)
-          else:
-              result[k] = v
-      return result
-
-  merged = deep_merge(existing, nix)
-  with open(config_path, "w") as f:
-      yaml.dump(merged, f, default_flow_style=False, sort_keys=False)
-''
+let
+  python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+in
+pkgs.writeScript "son-of-anton-config-merge" (
+  "#!" + "${python}/bin/python3" + "\n" + builtins.readFile ./config_merge.py
+)

@@ -81,6 +81,8 @@ max_compaction_retries: 2
 # not listed here use the model-level default. Useful for capping agents
 # that don't need deep reasoning (e.g. orchestrator, formatter) so they
 # fail fast instead of burning 15 min on a reasoning loop.
+# Keys match the agent name exactly, or as a prefix (so every
+# "subagent_iter3_2" style name picks up the "subagent" entry).
 agent_max_tokens:
   orchestrator: 16384
   formatter: 16384
@@ -89,6 +91,14 @@ agent_max_tokens:
   deep_critic: 65536
   planner: 65536
   adjudicator: 65536
+  # Autophysicist (physics mode). Without these the Research Manager and its
+  # sub-agents fell back to the 8192 model-level default, which a reasoning
+  # model can spend entirely on reasoning before writing a single visible
+  # token.
+  manager: 32768
+  # Matches every "subagent_iter<N>_<M>" dispatch by prefix.
+  subagent: 65536
+  spec_writer: 16384
 
 # --- Pipeline retry ---
 # Max retries for mandatory pipeline stages (surveyor, planner).

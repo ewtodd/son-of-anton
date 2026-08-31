@@ -34,9 +34,13 @@ class SurveyorAgent(BaseAgent):
     prompt_file = "prompt.md"
 
     def __init__(
-        self, config: Config, workspace: WorkspaceManager, metrics: MetricsTracker
+        self,
+        config: Config,
+        workspace: WorkspaceManager,
+        metrics: MetricsTracker,
+        mcp=None,
     ):
-        super().__init__(config, workspace, metrics)
+        super().__init__(config, workspace, metrics, mcp=mcp)
         self.research_state: ResearchState | None = None
         self.parsed_survey: dict | None = None
 

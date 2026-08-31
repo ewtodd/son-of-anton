@@ -22,6 +22,14 @@
       inputs.pyproject-nix.follows = "pyproject-nix";
       inputs.uv2nix.follows = "uv2nix";
     };
+    # The lab's analysis library, for the physics modes' computation runtime
+    # (nix/physics-runtime.nix). Its nixpkgs is deliberately NOT followed: the
+    # runtime is built from Analysis-Utilities' own pin, where its Python
+    # package and ROOT are already built and cached. Following ours would make
+    # a physics runtime that compiles ROOT from source and pairs a
+    # differently-built python with that package's interpreter.
+    analysis-utilities.url = "github:ewtodd/Analysis-Utilities";
+
     # Used only by nix/checks.nix, to evaluate homeManagerModules.default
     # against the real Home Manager module system rather than a stub of it.
     # Consuming the module does not require this input — import it from your

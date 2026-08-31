@@ -1,15 +1,40 @@
 """Sub-agent dispatch with optional code execution and retry."""
 
+import copy
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.config import Config
 from ..llm import call_llm, call_llm_continuation
-from ..utils.sandbox import execute_python
+from ..utils.sandbox import (
+    SandboxPolicy,
+    describe_runtime,
+    execute_python,
+    runtime_guidance,
+)
 
 
-CODE_EXECUTION_SUFFIX = """
+def code_execution_suffix(
+    policy: SandboxPolicy | None = None, timeout: int = 60
+) -> str:
+    """Build the code-execution rules from the runtime the code will run in.
+
+    The package list is probed, not asserted: the previous hardcoded
+    "NumPy, SciPy, SymPy, matplotlib" was a promise the agent's own venv could
+    not keep, and a sub-agent that believes it has NumPy writes NumPy.
+    """
+    interpreter = policy.interpreter if policy else None
+    guidance = runtime_guidance(interpreter)
+    guidance = ("\n\n" + guidance) if guidance else ""
+    data_note = ""
+    if policy and policy.data_dirs:
+        listed = "\n".join(f"   - {d}" for d in policy.data_dirs)
+        data_note = (
+            "\n8. Read-only data is mounted at these paths — read from them "
+            f"directly, do not copy them:\n{listed}"
+        )
+    return f"""
 
 ## Code execution instructions
 
@@ -19,9 +44,11 @@ You will write Python code to perform the requested computation. Follow these ru
 2. Write exactly ONE Python code block using triple backticks with the `python` language tag.
 3. The script must be completely self-contained: include all imports and definitions.
 4. Print all results to stdout. The printed output is what will be returned.
-5. Available packages: Python 3.12+, NumPy, SciPy, SymPy, matplotlib, standard library.
+5. Available: {describe_runtime(interpreter)}
 6. Do NOT call plt.show() — use plt.savefig() then plt.close().
-7. Timeout: 60 seconds. Keep computations efficient.
+7. Timeout: {timeout} seconds. The script runs sandboxed with no network access
+   and no access to the home directory; the working directory is writable and
+   persists, everything else is discarded.{data_note}{guidance}
 """
 
 
@@ -76,18 +103,44 @@ def dispatch_subagent(
     subagent_counter: int = 0,
     sandbox_timeout: int = 60,
     max_retries: int = 3,
+    policy: SandboxPolicy | None = None,
+    model: str = "",
 ) -> SubAgentResult:
     """Dispatch an ephemeral sub-agent LLM call.
 
     If *execute_code* is True, extracts Python code from the response,
     executes in a sandbox, and retries up to *max_retries* times on failure.
+
+    *model* overrides the Manager's model, but only when *execute_code* is set.
+    That is the whole distinction worth drawing: a sub-agent asked to write a
+    self-contained fitting script is doing a coding job, and a deployment may
+    have a model that is much faster and better at exactly that. A sub-agent
+    asked to derive a result, check a derivation for a dropped factor, or argue
+    the other side is doing the same physics reasoning the Manager does, and
+    routing it to a coding model to save latency trades away the thing the
+    sub-agent was dispatched for.
+
+    Code-writing dispatches are also where the volume is — one per script, plus
+    up to three more each time a script fails — so this is where a faster model
+    is worth the most and costs the least.
     """
     total_in = 0
     total_out = 0
 
+    if model and execute_code and model != config.model:
+        config = copy.copy(config)
+        config.model = model
+
+    if policy is None:
+        policy = SandboxPolicy.from_config()
+    if policy.workspace is None:
+        policy.workspace = Path(workspace_root)
+
     effective_system = system_prompt
     if execute_code:
-        effective_system = system_prompt + CODE_EXECUTION_SUFFIX
+        effective_system = system_prompt + code_execution_suffix(
+            policy, sandbox_timeout
+        )
 
     agent_label = f"subagent_iter{iteration}_{subagent_counter}"
 
@@ -154,6 +207,7 @@ def dispatch_subagent(
             # write artifacts (decay.csv, RESULTS.txt) relative to the
             # workspace, and the formal evaluator reads them there.
             cwd=str(workspace_root),
+            policy=policy,
         )
 
         if result.returncode == 0 and not result.timed_out:

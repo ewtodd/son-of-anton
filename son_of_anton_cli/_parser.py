@@ -44,38 +44,23 @@ Examples:
     son-of-anton -c                     Resume the most recent session
     son-of-anton -c "my project"        Resume a session by name (latest in lineage)
     son-of-anton --resume <session_id>  Resume a specific session by ID
-    son-of-anton --resume latest        Resume the most recent session (same as -c)
     son-of-anton --in ./dir             Run in a specific directory
-    son-of-anton setup                  Run setup wizard
-    son-of-anton logout                 Clear stored authentication
-    son-of-anton auth add <provider>    Add a pooled credential
-    son-of-anton auth list              List pooled credentials
-    son-of-anton auth remove <p> <t>    Remove pooled credential by index, id, or label
-    son-of-anton auth reset <provider>  Clear exhaustion status for a provider
-    son-of-anton model                  Select default model
-    son-of-anton fallback [list]        Show fallback provider chain
-    son-of-anton fallback add           Add a fallback provider (same picker as `son-of-anton model`)
-    son-of-anton fallback remove        Remove a fallback provider from the chain
+    son-of-anton -w                     Start in isolated git worktree
+    son-of-anton -s skill-a,skill-b     Start with specific skills loaded
+    son-of-anton model                  Select the default model
     son-of-anton config                 View configuration
     son-of-anton config edit            Edit config in $EDITOR
-    son-of-anton config set model gpt-4 Set a config value
-    son-of-anton gateway                Run messaging gateway
-    son-of-anton -s son-of-anton-dev,github-auth
-    son-of-anton -w                     Start in isolated git worktree
-    son-of-anton gateway install        Install gateway background service
     son-of-anton sessions list          List past sessions
     son-of-anton sessions browse        Interactive session picker
-    son-of-anton sessions rename ID T   Rename/title a session
-    son-of-anton logs                   View agent.log (last 50 lines)
-    son-of-anton logs -f                Follow agent.log in real time
-    son-of-anton logs errors            View errors.log
-    son-of-anton logs --since 1h        Lines from the last hour
-    son-of-anton debug share             Upload debug report for support
-    son-of-anton console                Open the safe Son of Anton command console
-    son-of-anton update                 Update to latest version
-    son-of-anton dashboard              Start web UI dashboard (port 9119)
-    son-of-anton dashboard --stop       Stop running dashboard processes
-    son-of-anton dashboard --status     List running dashboard processes
+    son-of-anton cron list              List scheduled jobs
+    son-of-anton skills                 Manage skills
+    son-of-anton mcp                    Manage MCP servers
+    son-of-anton gateway                Run the messaging gateway in the foreground
+    son-of-anton status                 Show component status
+    son-of-anton pause                  Engage the global emergency stop
+    son-of-anton resume                 Clear the emergency stop
+    son-of-anton problem create         Build a physics problem spec from a dataset
+    son-of-anton completion bash        Print a shell completion script
 
 For more help on a command:
     son-of-anton <command> --help

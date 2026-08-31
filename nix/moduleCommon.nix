@@ -273,10 +273,17 @@ let
           The Son of Anton configuration, as an attribute set. The module joins the
           definitions from all modules and writes the result to config.yaml.
 
-          The merge into the config.yaml on disk is also a deep merge. These
-          keys replace the keys on disk. The module keeps all other keys,
-          which includes the keys that `son-of-anton config set` and the settings
-          panes of the TUI and the desktop app write at runtime.
+          The merge into the config.yaml on disk is a three-way merge
+          against `.nix-managed.json`, which records what the previous
+          activation wrote. These keys replace the keys on disk; a key this
+          option USED to declare and no longer does is removed from disk,
+          unless its value changed after Nix wrote it. Every key Nix has never
+          declared is kept, which is what `son-of-anton config set` and the
+          settings panes of the TUI and the desktop app rely on.
+
+          The first activation after this state file is introduced cannot
+          attribute anything to Nix, so it removes nothing and instead reports
+          the undeclared keys it found. See nix/config_merge.py (--adopt).
         '';
         example = literalExpression ''
           {
@@ -284,6 +291,33 @@ let
             terminal.backend = "local";
             compression = { enabled = true; threshold = 0.85; };
           }
+        '';
+      };
+
+      pruneUnmanagedSettings = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Treat `settings` as the whole truth for config.yaml: on every
+          activation, remove any key on disk that Nix does not declare.
+
+          Off by default, because the keys Nix does not declare are the ones
+          `son-of-anton config set`, the TUI settings panes and the desktop
+          app write, and a rebuild silently discarding a user's settings is
+          worse than a stale key.
+
+          Two reasons to turn it on. As a one-off, to adopt an install whose
+          config.yaml predates `.nix-managed.json`: the first activation after
+          that state file appears cannot attribute anything to Nix, so it
+          removes nothing and instead lists the undeclared keys it found — set
+          this for one rebuild to clear the ones that are leftovers, then unset
+          it. Or permanently, if this deployment wants config.yaml to be purely
+          declarative and is willing to lose runtime edits on every rebuild.
+
+          Leaving it off does not mean keys can never be removed. The ordinary
+          three-way merge already retracts anything Nix declared and has since
+          dropped; this option only additionally claims the keys Nix has never
+          declared at all.
         '';
       };
 
@@ -667,13 +701,21 @@ let
       # writes this file at runtime. A read-only symlink to the Nix store
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
+      #
+      # --state is what makes retiring a key work. The merge records its own
+      # output there each run, so the next run can tell a key Nix has dropped
+      # from a key something wrote at runtime, and remove the first without
+      # touching the second. Without it the merge can only ever add and
+      # overwrite, and a `nixos-rebuild` that drops a setting leaves it live on
+      # disk with nothing reporting that it did.
       ${
         if cfg.configFile != null then
           "${inst} -m ${modes.config} -D ${configFiles.effective} ${son-of-antonHome}/config.yaml"
         else
           ''
-            ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.yaml
+            ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.yaml --state ${son-of-antonHome}/.nix-managed.json${lib.optionalString cfg.pruneUnmanagedSettings " --adopt"}
             ${run}chmod ${modes.config} ${son-of-antonHome}/config.yaml
+            ${run}chmod ${modes.config} ${son-of-antonHome}/.nix-managed.json
           ''
       }
 

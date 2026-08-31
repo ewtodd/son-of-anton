@@ -76,6 +76,10 @@ class Config:
     max_cost_usd: float = DEFAULTS["max_cost_usd"]
     best_guess_every_n: int = DEFAULTS["best_guess_every_n"]
     provider: str = ""
+    # Model for whichever agent is writing code — the Autophysicist's
+    # execute_code sub-agents and the research pipeline's computer. Empty means
+    # `model` does everything. Resolved from physics.coder_model in config.yaml.
+    coder_model: str = ""
     workspace_dir: str = ""
     logs_dir: str = ""
     api_key: str = ""
@@ -87,10 +91,19 @@ class Config:
     def max_tokens_for_agent(self, agent_name: str) -> int:
         """Return the max output tokens for a specific agent.
 
-        Falls back to the model-level ``max_tokens`` when no per-agent
-        override is configured.
+        Matches ``agent_max_tokens`` by exact name first, then by longest
+        prefix — the Autophysicist's sub-agents are named per dispatch
+        ("subagent_iter3_2"), so an exact-match-only lookup could never give
+        them anything but the model-level default.
         """
-        return self.agent_max_tokens.get(agent_name, self.max_tokens)
+        if agent_name in self.agent_max_tokens:
+            return self.agent_max_tokens[agent_name]
+        matches = [
+            key for key in self.agent_max_tokens if agent_name.startswith(key)
+        ]
+        if matches:
+            return self.agent_max_tokens[max(matches, key=len)]
+        return self.max_tokens
 
     def to_dict(self) -> dict:
         """Serialize config fields for persistence (excludes sensitive/derived fields)."""
@@ -123,58 +136,26 @@ class Config:
         return cls(**data)
 
     def __post_init__(self):
-        """Resolve ``max_tokens`` when it was not set explicitly.
+        """Resolve what ``models.yaml`` can tell us; defer the rest to ``llm``.
 
-        Endpoint/model resolution is deferred to ``physics_intern.llm``,
-        which reads the son-of-anton ``config.yaml`` at call time — the
-        physics modes share the main agent's model configuration.
+        The fork ships no ``models.yaml`` — the endpoint, model name and API
+        key all come from the son-of-anton ``config.yaml`` at call time (see
+        ``physics_intern.llm._resolve_endpoint``). What survives here is the
+        optional registry: when a ``models.yaml`` is present it still supplies
+        the token budget and the per-million costs the budget gates and the
+        cost report read.
         """
-        if not self.max_tokens:
-            self.max_tokens = DEFAULTS.get("max_tokens", 8192)
-
-    def to_dict(self) -> dict:
-        """Serialize config fields for persistence (excludes sensitive/derived fields)."""
-        return {f: getattr(self, f) for f in _PERSIST_FIELDS}
-
-    def save(self, workspace_root: Path) -> None:
-        """Write config.json to the workspace root."""
-        (workspace_root / "config.json").write_text(
-            json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
-        )
-
-    @classmethod
-    def load(cls, workspace_root: Path, overrides: dict | None = None) -> "Config":
-        """Load config from workspace config.json, merging optional overrides."""
-        path = workspace_root / "config.json"
-        if not path.exists():
-            raise FileNotFoundError(f"No config.json found in {workspace_root}")
-        data = json.loads(path.read_text())
-        if overrides:
-            # If user switches model, clear provider/model_id so __post_init__ re-resolves
-            if "model" in overrides and overrides["model"] is not None:
-                data.pop("provider", None)
-                data.pop("model_id", None)
-                data.pop("input_cost", None)
-                data.pop("output_cost", None)
-                data.pop("reasoning", None)
-            for k, v in overrides.items():
-                if v is not None:
-                    data[k] = v
-        return cls(**data)
-
-    def __post_init__(self):
         resolved = _resolve_model(self.model)
-        # Resolve provider from models.yaml if not explicitly set
-        if not self.provider:
-            if resolved:
-                self.provider = resolved["provider"]
-                self.model_id = resolved["model_id"]
-                self.input_cost = resolved.get("input_cost", 0.0)
-                self.output_cost = resolved.get("output_cost", 0.0)
-                self.reasoning = resolved.get("reasoning", {})
-            else:
-                # Default to anthropic for backward compatibility
-                self.provider = "anthropic"
+        # Resolve provider from models.yaml if not explicitly set. No fallback
+        # provider: upstream defaulted to "anthropic", which in this fork named
+        # a provider nothing talks to and put a misleading value in every
+        # workspace's config.json.
+        if not self.provider and resolved:
+            self.provider = resolved["provider"]
+            self.model_id = resolved["model_id"]
+            self.input_cost = resolved.get("input_cost", 0.0)
+            self.output_cost = resolved.get("output_cost", 0.0)
+            self.reasoning = resolved.get("reasoning", {})
         # Resolve max_tokens from models.yaml — the single source of truth.
         # Runs on every init (including resume) so the value always reflects
         # the current registry even if the persisted config.json is stale.
@@ -196,13 +177,12 @@ class Config:
         # If model_id wasn't resolved, fall back to model (direct API id)
         if not self.model_id:
             self.model_id = self.model
-        # Resolve API key from environment if not already set (needed on resume,
-        # where provider is already populated so the block above is skipped)
-        if not self.api_key:
-            if resolved:
-                self.api_key = os.environ.get(resolved["env_key"], "")
-            if not self.api_key:
-                self.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        # Resolve the API key only from the model registry, when there is one.
+        # There is deliberately no ANTHROPIC_API_KEY fallback: the physics
+        # endpoint reads physics.api_key_env from config.yaml, and a stray
+        # Anthropic key here was never the credential any request used.
+        if not self.api_key and resolved:
+            self.api_key = os.environ.get(resolved["env_key"], "")
 
 
 # Fields settable via config.yaml (workspace_dir, logs_dir, api_key excluded)
@@ -242,6 +222,7 @@ _YAML_CONFIG_FIELDS = frozenset(
         "max_cost_usd",
         "best_guess_every_n",
         "provider",
+        "coder_model",
     }
 )
 

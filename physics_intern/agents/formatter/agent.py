@@ -32,8 +32,9 @@ class FormatterAgent(BaseAgent):
         workspace: WorkspaceManager,
         metrics: MetricsTracker,
         answer_template: str = "",
+        mcp=None,
     ):
-        super().__init__(config, workspace, metrics)
+        super().__init__(config, workspace, metrics, mcp=mcp)
         self.answer_template = answer_template
         self.research_state: ResearchState | None = None
         self.rejection_reason: str | None = None
