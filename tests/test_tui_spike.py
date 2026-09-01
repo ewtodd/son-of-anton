@@ -47,6 +47,17 @@ def test_tui_layout_streams_markdown_and_handles_a_turn() -> None:
             assert app.query_one("#context") is not None
             assert app.query_one("#input") is not None
 
+            # terminal-native chrome invariants: the app runs an `ansi-*` theme
+            # (terminal defaults) and never hardcodes a hex surface color.
+            assert app.theme.startswith("ansi-"), f"not an ansi theme: {app.theme}"
+            vars_ = app.get_css_variables()
+            for key in ("background", "panel", "surface", "text", "foreground"):
+                assert "#" not in vars_.get(key, ""), f"{key} hardcodes a hex: {vars_.get(key)!r}"
+
+            # the input auto-focuses on mount so keystrokes land (the scrollable
+            # feed is the first focusable widget and would otherwise steal focus)
+            assert app.focused is app.query_one("#input"), "input not focused on mount"
+
             # drive a real user turn
             app.query_one("#input").focus()
             app.query_one("#input").value = "hello from pilot"
