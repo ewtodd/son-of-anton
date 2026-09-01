@@ -161,8 +161,7 @@ son-of-anton/
 │   └── verification/     # Experimental verification (RESULTS.txt, checker scripts)
 ├── problems/             # Toy physics problems (cobalt_calibration, bromine_halflife, ...)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
-├── skills/               # Built-in skills bundled with the repo
-├── optional-skills/      # Heavier/niche skills shipped but NOT active by default
+├── skills/               # Bundled skills (skills/<category>/<skill>/SKILL.md)
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 └── tests/                # Pytest suite (small, focused set — see "Testing")
 ```
@@ -265,7 +264,8 @@ everything else uses the standard loop.
 - **Skin engine** (`son_of_anton_cli/skin_engine.py`) — data-driven CLI theming;
   initialized from `display.skin` at startup. Skins are pure data (colors, spinner
   faces/verbs, tool prefix, branding) — built-ins: `default`, `ares`, `mono`, `slate`,
-  plus user skins in `~/.son-of-anton/skins/*.yaml`. `/skin <name>` switches live.
+  `daylight`, `warm-lightmode`, `poseidon`, `sisyphus`, `charizard`, plus user skins
+  in `~/.son-of-anton/skins/*.yaml`. `/skin <name>` switches live.
 - `process_command()` dispatches on the canonical command name resolved via
   `resolve_command()` from the central registry (`son_of_anton_cli/commands.py`).
 - Skill slash commands: `agent/skill_commands.py` scans `~/.son-of-anton/skills/` and
@@ -428,10 +428,13 @@ wrong loader.
 ## Skin/Theme System
 
 `son_of_anton_cli/skin_engine.py` — data-driven CLI theming; skins are **pure data**.
-Built-ins: `default` (classic gold), `ares`, `mono`, `slate`. User skins drop into
-`~/.son-of-anton/skins/<name>.yaml` and inherit missing values from `default`. Activate
-with `/skin <name>` or `display.skin` in config.yaml. See the file for the full key list
-(colors, spinner faces/verbs/wings, tool prefix, branding).
+Built-ins: `default` (classic gold), `ares` (crimson/bronze), `mono` (grayscale),
+`slate` (cool blue), `daylight` (light bg), `warm-lightmode` (light bg, warm brown/gold),
+`poseidon` (deep blue/seafoam), `sisyphus` (austere grayscale), `charizard`
+(volcanic orange/ember). User skins drop into `~/.son-of-anton/skins/<name>.yaml` and
+inherit missing values from `default`. Activate with `/skin <name>` or `display.skin` in
+config.yaml. See the file for the full key list (colors, spinner faces/verbs/wings, tool
+prefix, branding).
 
 ## Plugins
 
@@ -483,10 +486,13 @@ configured as `custom_providers` in config.yaml — not as registry entries.
 
 Two parallel surfaces:
 
-- **`skills/`** — built-in skills shipped and loadable by default (43 bundled).
-- **`optional-skills/`** — heavier/niche skills shipped but NOT active by default.
-  Installed explicitly via `son-of-anton skills install official/<category>/<skill>`;
-  adapter lives in `tools/skills_hub.py`.
+- **`skills/`** — bundled skills, loadable by default (18 across 4 categories, laid out
+  `skills/<category>/<skill>/SKILL.md`).
+- **`optional-skills/`** — no longer shipped in the tree. Niche/official-but-inactive
+  skills come from the Skills Hub's `OptionalSkillSource` (fetched from the
+  `ewtodd/son-of-anton` repo) and are installed explicitly via
+  `son-of-anton skills install official/<category>/<skill>`; the adapter lives in
+  `tools/skills_hub.py`.
 
 SKILL.md frontmatter: `name`, `description`, `version`, `author`, `license`, `platforms`,
 and `metadata.son-of-anton.*` (tags, category, related_skills, config).
@@ -502,7 +508,8 @@ Skill authoring standards:
 5. Modern section order: `# <Skill> Skill` title, intro, `## When to Use`, `## Prerequisites`,
    `## How to Run`, `## Quick Reference`, `## Procedure`, `## Pitfalls`, `## Verification`.
 6. Scripts in `scripts/`, references in `references/`, templates in `templates/`.
-7. Tests at `tests/skills/test_<skill>_skill.py` — stdlib + pytest + `unittest.mock` only.
+7. Tests for a bundled skill go under `tests/` (e.g. `tests/test_<skill>_skill.py`) —
+   stdlib + pytest + `unittest.mock` only.
 8. `.env.example` additions isolated to a clearly delimited block.
 
 ## Toolsets
@@ -564,31 +571,34 @@ with an opt-in `--now` flag for immediate invalidation.
 process completion and triggers a new agent turn. Verbosity via
 `display.background_process_notifications`: `concise` (default), `all`, `result`, `error`, `off`.
 
-## Profiles: Multi-Instance Support
+## Home Scoping (`SON_OF_ANTON_HOME`)
 
-Profiles are fully isolated instances, each with its own `SON_OF_ANTON_HOME`. The core
-mechanism: `_apply_profile_override()` in `son_of_anton_cli/main.py` sets `SON_OF_ANTON_HOME`
-before any module imports; every `get_son_of_anton_home()` call scopes to the active
-profile.
+The multi-instance **profile** system was deleted (commit `2067d1be`, "delete the profiles
+system"): there is no `/profile` command, no `_apply_profile_override()`, no
+`_get_profiles_root()`, and `son_of_anton_cli/profiles.py` (plus the profile gateway
+modules) are gone. `tests/test_no_profiles.py` guards that none of those modules become
+importable again.
 
-Rules for profile-safe code:
+The only home-scoping mechanisms that remain are:
+
+1. **`SON_OF_ANTON_HOME` env var** — the scope the process was launched under.
+   `get_son_of_anton_home()` resolves it (falling back to `~/.son-of-anton`).
+2. **In-process override** — `set_son_of_anton_home_override()` /
+   `get_son_of_anton_home_override()` in `son_of_anton_constants.py` for context-local
+   scoping; it deliberately does not mutate `os.environ`.
+
+Rules that still hold for home-safe code:
 1. **`get_son_of_anton_home()` for all SON_OF_ANTON_HOME paths** — never hardcode
    `~/.son-of-anton` or `Path.home() / ".son-of-anton"`.
 2. **`display_son_of_anton_home()` for user-facing messages.**
-3. Module-level constants are fine — they cache the env var at import time, which is after
-   the override.
-4. Tests that mock `Path.home()` must also set `SON_OF_ANTON_HOME`.
-5. Gateway platform adapters should use token locks (`acquire_scoped_lock()` /
-   `release_scoped_lock()` in `gateway.status`) to prevent two profiles sharing one
-   credential.
-6. Profile operations are HOME-anchored, not SON_OF_ANTON_HOME-anchored
-   (`_get_profiles_root()` = `Path.home() / ".son-of-anton" / "profiles"`).
+3. Module-level constants are fine — they cache the home at import time, which is after
+   the env var is available.
 
 ## Known Pitfalls
 
 ### DO NOT hardcode `~/.son-of-anton` paths
 Use `get_son_of_anton_home()` for code paths, `display_son_of_anton_home()` for
-user-facing output. Hardcoding breaks profiles.
+user-facing output. Hardcoding ignores a configured `SON_OF_ANTON_HOME`.
 
 ### All CLI menu-pickers MUST use curses.
 Interactive menus must use `son_of_anton_cli/curses_ui.py`. See
@@ -617,13 +627,12 @@ temp `SON_OF_ANTON_HOME`.
 ### Tests must not write to `~/.son-of-anton/`
 The `_isolate_son_of_anton_home` autouse fixture in `tests/conftest.py` redirects
 `SON_OF_ANTON_HOME` to a temp dir. Never hardcode `~/.son-of-anton/` paths in tests.
-Profile tests also mock `Path.home()` (see `tests/son_of_anton_cli/test_profiles.py`).
 
 ## Testing
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
-scripts/run_tests.sh tests/skills/                    # one directory
+scripts/run_tests.sh tests/agent/                     # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test
 ```
 
@@ -642,7 +651,7 @@ nix develop -c pre-commit install   # one time
 ```
 
 - `ruff check` — the repo's single enabled rule (PLW1514, explicit `encoding=`)
-- `scripts/run_tests.sh` — the full contract suite (<1s)
+- `scripts/run_tests.sh` — the full contract suite (runs in seconds)
 
 ### Don't write change-detector tests
 
@@ -672,10 +681,11 @@ platform as data can stay unmarked.
   repos directly.
 - **The agent name:** the GitHub account is `son-of-anton-bot`, and it is the only
   author on a commit — see "Commit convention" above.
-- **Known loose ends** (tracked in `STATUS.md`): a small deep-Nous tail
-  (auth.py's Nous OAuth flow, the `auxiliary_client.py` Nous branch,
-  `nous_account.py`/`portal_tags.py`, Nous-curated model helpers, the proxy's
-  `nous_portal.py` adapter) remains inert after the cleanup layers — it is
-  credential-gated dead code, to be excised with a live smoke test in hand;
-  physics runs are
+- **Known loose ends** (tracked in `STATUS.md`): the credential-gated deep-Nous tail
+  has been excised — `son_of_anton_cli/auth.py`'s Nous OAuth/portal flow and the
+  `agent/auxiliary_client.py` Nous branch are gone (`nous_account.py`,
+  `agent/portal_tags.py`, root `models.py`, and the proxy's `nous_portal.py` adapter
+  were already gone). Only stale prose remains: the gateway relay's enroll docstring
+  still names `resolve_nous_access_token()` (never called in code), and `openrouter`
+  stays a live provider (used by `tools/openrouter_client.py`). Physics runs are
   synchronous turns.

@@ -50,7 +50,6 @@ from son_of_anton_cli.config import (
     managed_error,
     read_raw_config,
     save_env_value,
-    write_platform_config_field,
 )
 
 # display_son_of_anton_home is imported lazily at call sites to avoid ImportError

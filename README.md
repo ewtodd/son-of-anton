@@ -104,7 +104,7 @@ Other things worth knowing:
 <!---->
 - Talks over Discord, Slack, and Signal.
 One gateway process also runs cron.
-- Same agent core in the CLI and the TUI.
+- The prompt_toolkit CLI is the only interface (the TUI was removed).
 - `/perm default|ask|lockdown|yolo` sets how much it asks before running
   commands.
   Some things stay blocked even under yolo.
@@ -469,7 +469,7 @@ users.users.YOUR-ACCOUNT.linger = true;
 ## What `settings` does to config.yaml
 <!---->
 Son of Anton writes `config.yaml` at runtime too — `son-of-anton config set`,
-the TUI settings panes, `/model` — so activation merges into it rather than
+the settings panes, `/model` — so activation merges into it rather than
 replacing it. The merge is three-way: it records what it wrote in
 `~/.son-of-anton/.nix-managed.json`, so the next activation can tell a key you
 have *dropped from Nix* from a key something wrote at runtime. Dropping a

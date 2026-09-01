@@ -702,6 +702,13 @@ let
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
       #
+      # Activation runs as root, so anything it CREATES is root-owned. The
+      # merge only inherited the right owner by rewriting a config.yaml that
+      # already had it — which silently stopped being true the moment the file
+      # had to be created, and was never true for the state file, which is new
+      # every install. A 0600 root:root config.yaml is unreadable by the very
+      # service that needs it. Hence an explicit chown, like .env has.
+      #
       # --state is what makes retiring a key work. The merge records its own
       # output there each run, so the next run can tell a key Nix has dropped
       # from a key something wrote at runtime, and remove the first without
@@ -716,6 +723,9 @@ let
             ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.yaml --state ${son-of-antonHome}/.nix-managed.json${lib.optionalString cfg.pruneUnmanagedSettings " --adopt"}
             ${run}chmod ${modes.config} ${son-of-antonHome}/config.yaml
             ${run}chmod ${modes.config} ${son-of-antonHome}/.nix-managed.json
+            ${lib.optionalString (
+              owner != null
+            ) "${run}chown ${owner} ${son-of-antonHome}/config.yaml ${son-of-antonHome}/.nix-managed.json"}
           ''
       }
 

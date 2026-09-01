@@ -51,7 +51,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
+from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union)
 
 from son_of_anton_constants import (
     get_son_of_anton_home,

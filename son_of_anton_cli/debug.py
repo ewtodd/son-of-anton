@@ -18,7 +18,6 @@ Currently supports:
 """
 
 import datetime
-import gzip
 import io
 import json
 import logging

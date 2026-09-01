@@ -2626,85 +2626,6 @@ def _resolve_codex_oauth_context_length(
     return context_length
 
 
-def _resolve_nous_context_length(
-    model: str,
-    base_url: str = "",
-    api_key: str = "",
-) -> Tuple[Optional[int], str]:
-    """Resolve Nous Portal model context length.
-
-    Tries the live Nous inference endpoint first (authoritative), then falls
-    back to OpenRouter metadata with suffix/version matching.
-
-    Nous model IDs are bare after prefix-stripping (e.g. 'qwen3.6-plus',
-    'claude-opus-4-6') while OpenRouter uses prefixed IDs (e.g.
-    'qwen/qwen3.6-plus', 'anthropic/claude-opus-4.6').  Version
-    normalization (dot↔dash) is applied to handle name drifts.
-
-    Returns ``(context_length, source)`` where ``source`` is one of:
-      - ``"portal"``    — live /v1/models response (authoritative)
-      - ``"openrouter"`` — OpenRouter cache fallback (non-authoritative;
-        callers must NOT persist this to the on-disk cache or a single
-        portal blip will freeze the wrong value in forever)
-      - ``""``           — could not resolve
-    """
-    # Portal first — the Nous /models endpoint is authoritative for what our
-    # infrastructure enforces and may differ from OR (e.g. OR reports 1M for
-    # qwen3.6-plus; the portal correctly says 262144).  Fall back to the OR
-    # catalog only if the portal doesn't list the model.
-    if base_url:
-        portal_ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
-        if portal_ctx is not None:
-            return portal_ctx, "portal"
-
-    metadata = fetch_model_metadata()
-
-    def _safe_ctx(or_id: str, entry: dict) -> Optional[int]:
-        """Return context length, but reject known stale 32K underreports.
-
-        Apply the same guard used for the generic OpenRouter path (step 6 in
-        resolve_context_length) so the Nous portal path does not short-circuit it.
-        """
-        ctx = entry.get("context_length")
-        if ctx is None:
-            return None
-        if ctx <= 32768 and _model_name_suggests_stale_32k_underreport(or_id):
-            logger.info(
-                "Rejecting OpenRouter metadata context=%s for %r "
-                "(known 32K underreport, Nous path); falling through to hardcoded defaults",
-                ctx, or_id,
-            )
-            return None
-        return ctx
-
-    if model in metadata:
-        ctx = _safe_ctx(model, metadata[model])
-        if ctx is not None:
-            return ctx, "openrouter"
-
-    normalized = _normalize_model_version(model).lower()
-
-    for or_id, entry in metadata.items():
-        bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
-        if bare.lower() == model.lower() or _normalize_model_version(bare).lower() == normalized:
-            ctx = _safe_ctx(or_id, entry)
-            if ctx is not None:
-                return ctx, "openrouter"
-
-    model_lower = model.lower()
-    for or_id, entry in metadata.items():
-        bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
-        for candidate, query in [(bare.lower(), model_lower), (_normalize_model_version(bare).lower(), normalized)]:
-            if candidate.startswith(query) and (
-                len(candidate) == len(query) or candidate[len(query)] in "-:."
-            ):
-                ctx = _safe_ctx(or_id, entry)
-                if ctx is not None:
-                    return ctx, "openrouter"
-
-    return None, ""
-
-
 def get_model_context_length(
     model: str,
     base_url: str = "",
@@ -2799,18 +2720,42 @@ def get_model_context_length(
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
     # See #15779.
-    if custom_providers and base_url and model:
-        try:
-            from son_of_anton_cli.config import get_custom_provider_context_length
-            cp_ctx = get_custom_provider_context_length(
-                model=model,
-                base_url=base_url,
-                custom_providers=custom_providers,
-            )
-            if cp_ctx:
-                return cp_ctx
-        except Exception:
-            pass  # fall through to probing
+    #
+    # ``custom_providers`` is loaded here when the caller did not pass it.
+    # Gating this step on the ARGUMENT meant it only ran for callers that
+    # happened to thread the list through — one of the three call sites did.
+    # The rest (the CLI's @-reference sizing, the context compressor) skipped
+    # straight past a context_length sitting in config.yaml and fell through to
+    # the catalog's generic 128K. The compressor is the worst place for that:
+    # it sizes compaction against a window eight times smaller than the real
+    # one, so it compacts a conversation that had plenty of room left.
+    if base_url and model:
+        effective_custom_providers = custom_providers
+        if effective_custom_providers is None:
+            try:
+                from son_of_anton_cli.config import (
+                    get_compatible_custom_providers,
+                    load_config,
+                )
+                effective_custom_providers = get_compatible_custom_providers(
+                    load_config()
+                )
+            except Exception:
+                effective_custom_providers = None
+        if effective_custom_providers:
+            try:
+                from son_of_anton_cli.config import (
+                    get_custom_provider_context_length,
+                )
+                cp_ctx = get_custom_provider_context_length(
+                    model=model,
+                    base_url=base_url,
+                    custom_providers=effective_custom_providers,
+                )
+                if cp_ctx:
+                    return cp_ctx
+            except Exception:
+                pass  # fall through to probing
 
     # Malformed user-provided URLs (for example an unmatched IPv6 bracket)
     # make urllib.parse raise. Context resolution should treat those as an
@@ -3030,20 +2975,6 @@ def get_model_context_length(
         except Exception:
             pass  # Fall through to models.dev
 
-    if effective_provider == "nous":
-        ctx, source = _resolve_nous_context_length(
-            model, base_url=base_url or "", api_key=api_key or ""
-        )
-        if ctx:
-            # Persist ONLY portal-derived values.  Caching an OR-fallback
-            # value here would freeze in a wrong number on the first portal
-            # blip / auth glitch and step-1 would short-circuit it forever.
-            # OR's catalog is community-maintained and is precisely why the
-            # Kimi/Qwen DEFAULT_CONTEXT_LENGTHS overrides exist — we don't
-            # want it leaking into the persistent cache for Nous URLs.
-            if base_url and source == "portal":
-                save_context_length(model, base_url, ctx)
-            return ctx
     if effective_provider == "openai-codex":
         # Codex OAuth enforces lower context limits than the direct OpenAI
         # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K

@@ -2035,9 +2035,6 @@ def _current_max_iterations() -> int:
     return _resolve_turn_limit(os.getenv("SON_OF_ANTON_MAX_ITERATIONS"))
 
 
-from contextlib import contextmanager as _contextmanager
-
-
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.
 

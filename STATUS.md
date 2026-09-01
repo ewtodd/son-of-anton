@@ -484,32 +484,33 @@ The /etc/nixos changes from the round are committed there; the fork is at
 - **User's home skills are stale**: `~/.son-of-anton/skills/` still holds the
   pre-prune 78 skills. One-time: `rm -rf ~/.son-of-anton/skills` (then
    optionally `son-of-anton setup` to install the bundled 43).
-- **Remaining deep-Nous tail** (one final pass, all credential-gated dead
-  paths — nothing user-visible reaches them):
-  - `nous_account.py` + `agent/portal_tags.py` + `agent/aux_accounting.py`
-  - auth.py's Nous OAuth flow: portal device-code login, invoke-JWT checks,
-    `resolve_nous_runtime_credentials`, `step_up_nous_billing_scope`, and the
-    nous model-fetch block (`get_curated_nous_model_ids` callers)
-  - `agent/auxiliary_client.py`'s Nous branch: the auto-chain no longer
-    PROBES OpenRouter/Nous (`e301d230` — the runtime noise is gone), but the
-    dead functions linger for the final excise pass (`auxiliary_is_nous`,
-    `_NOUS_MODEL`, `_try_openrouter`/`_try_nous`, pool resolution,
-    `_nous_extra_body`)
-  - models.py Nous-curated helpers: `check_nous_free_tier`,
-    `fetch_nous_recommended_models`, `get_curated_nous_model_ids`,
-    `partition_nous_models_by_tier`, `union_with_portal_*`
-  - lmstudio runtime-load cluster (`_ensure_lmstudio_runtime_loaded` +
-    models.py `ensure_lmstudio_model_loaded`/`fetch_lmstudio_models`) and
-    the opencode api-mode helpers in model_switch/runtime_provider/cli
-  - the iron-proxy's `nous_portal.py` adapter (kept deliberately — the proxy
-    is retained and this is its only OAuth upstream; fails closed without
-    legacy auth.json state)
-  - doctor.py's removed-provider connectivity probes
-  The live gateway now exercises the standard loop end-to-end, so this pass
-  can proceed with a real smoke net in hand.
-- **doctor.py** keeps a few removed-provider probes (Nous auth row,
-  connectivity checks); `runtime_provider.py` keeps openrouter host-guards as
-  defense-in-depth. Triage with the final pass above.
+- **Deep-Nous tail excised** (this session). `nous_account.py`, `agent/portal_tags.py`,
+  root `models.py`, and the proxy's `nous_portal.py` adapter were gone already; this
+  pass removed the remaining credential-gated Nous surface:
+  - `son_of_anton_cli/auth.py` — the `NOUS_*`/`DEFAULT_NOUS_*` constants, the Nous
+    host-allowlist frozensets, `_NOUS_EFFECTIVE_STATE_IGNORED_KEYS`, the "Nous Portal
+    token refresh/model discovery" section (shared token store, `_refresh_access_token`,
+    the `_RESOLVE_TOKEN_CACHE_*` memo), the `get_nous_auth_status` cache
+    (`_NOUS_AUTH_STATUS_CACHE_TTL`/`_nous_auth_status_cache`), the `NOUS_SESSION_*`
+    enums, the `get_auth_status` `"nous"` dispatch arm, and the `DEFAULT_NOUS_PORTAL_URL`
+    upgrade-footer path.
+  - `agent/auxiliary_client.py` — the Nous routing arms in `resolve_provider_client`
+    and the vision/OAuth resolvers, `auxiliary_is_nous`, the `_try_nous` / `_nous_extra_body`
+    / `_nous_portal_tags` dead calls, the deleted-module `agent.portal_tags` import,
+    the Nous self-heal + auth-refresh blocks in both `_call_llm_impl` and
+    `_async_call_llm_impl`, `get_auxiliary_extra_body`, `_AUTO_PROVIDER_LABELS`, and the
+    nous host/alias/`_VISION_AUTO_PROVIDER_ORDER`/`_AUX_UNHEALTHY_LABEL_ALIASES` entries.
+  - `agent/model_metadata.py` — `_resolve_nous_context_length` and the
+    `effective_provider == "nous"` branch; `agent/chat_completion_helpers.py` — the
+    nous-only fallback-entry check; `tools/vision_tools.py` + `tools/delegate_tool.py` —
+    the nous provider entries/help text.
+  - Plus the unused imports flagged by vulture and an unreachable block in
+    `run_agent.py`.
+  `agent.aux_accounting` is live (imported by the aux client and title generator) and was
+  left in place; `openrouter` remains a live provider (used by `tools/openrouter_client.py`).
+  Stale prose still names `resolve_nous_access_token()` in the gateway relay's enroll
+  docstring (never called in code). `doctor.py` still carries inert removed-provider
+  probes (Nous auth row).
 - **Physics mode live-smoke-tested** (`012bd9df`) against llama-swap
   (`qwen3.6-35b-a3b` @ `http://10.0.0.5:8080/v1`). The run solved
   bromine_halflife end-to-end (workspace → RESULTS.txt → FORMAL_EVAL.md,
@@ -598,8 +599,12 @@ this repo's cwd/env-bridge class needs a subprocess test.
 
 ## What's left
 
-1. **Final deep-Nous pass** — the tail above; the live gateway now provides
-   the standard-loop smoke net, so this can proceed.
+1. **Final deep-Nous pass** — DONE this session: the credential-gated Nous
+   surface in `son_of_anton_cli/auth.py` and `agent/auxiliary_client.py` (plus
+   the model_metadata / vision_tools / delegate_tool nous bits and the vulture-flagged
+   unused imports, and an unreachable block in `run_agent.py`) has been excised.
+   Only stale prose (`resolve_nous_access_token` in the relay enroll docstring)
+   and the inert `doctor.py` removed-provider probes remain.
 2. **Research-mode live smoke test** — same litellm/llama-swap chain.
 3. **README** stays in sync with the above (TUI removal + CLI-only).
 

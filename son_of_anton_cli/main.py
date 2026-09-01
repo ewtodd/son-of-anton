@@ -276,9 +276,6 @@ from pathlib import Path
 from typing import Optional
 
 
-import functools as _functools
-
-from son_of_anton_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from son_of_anton_cli.subcommands.cron import build_cron_parser
 from son_of_anton_cli.subcommands.gateway import build_gateway_parser
 from son_of_anton_cli.subcommands.model import build_model_parser

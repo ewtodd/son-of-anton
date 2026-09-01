@@ -1996,7 +1996,7 @@ class SessionStore:
         return entry
 
     def _query_recoverable_session(
-        self, *, session_key, source, now, lookup_session_key=None
+        self, *, session_key, source, now
     ):
         """DB-only half of _recover_session_from_db (no lock needed).
 

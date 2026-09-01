@@ -300,9 +300,9 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         return disk_data
 
     # Stale-while-revalidate: an expired disk copy is served immediately and
-    # refreshed off-thread, so interactive surfaces (the /model picker calls
-    # this via get_curated_nous_model_ids on every open) never block on the
-    # manifest fetch. Only a cold cache (no disk copy at all) still blocks.
+    # refreshed off-thread, so interactive surfaces (the /model picker) never
+    # block on the manifest fetch. Only a cold cache (no disk copy at all)
+    # still blocks.
     if not force_refresh and disk_data is not None:
         _catalog_cache = disk_data
         _catalog_cache_source_mtime = disk_mtime

@@ -2205,22 +2205,11 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
 
 
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
-    """Return a skip reason for fallback entries known to be unusable locally."""
-    fb_provider = (fb.get("provider") or "").strip().lower()
-    if fb_provider != "nous":
-        return None
-    try:
-        from son_of_anton_cli.auth import get_provider_auth_state
+    """Return a skip reason for fallback entries known to be unusable locally.
 
-        state = get_provider_auth_state("nous") or {}
-    except Exception as exc:
-        return f"nous_auth_unreadable:{type(exc).__name__}"
-    access_value = state.get("access_token")
-    refresh_value = state.get("refresh_token")
-    has_access = isinstance(access_value, str) and bool(access_value.strip())
-    has_refresh = isinstance(refresh_value, str) and bool(refresh_value.strip())
-    if not (has_access or has_refresh):
-        return "nous_token_missing"
+    The Nous Portal provider was removed; no fallback entry is known to be
+    unusable without the network anymore.
+    """
     return None
 
 

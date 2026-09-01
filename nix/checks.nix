@@ -162,8 +162,33 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             workUnit = units."son-of-anton-work";
             playUnit = units."son-of-anton-play";
             rules = pair.config.systemd.tmpfiles.rules;
+
+            # Activation runs as root, so every file it CREATES is root-owned
+            # until something says otherwise. config.yaml only ever inherited
+            # the right owner by having the merge rewrite a file that already
+            # had it, and .nix-managed.json is new on every install — a 0600
+            # root:root config.yaml is unreadable by the service that needs it.
+            activation = lib.concatStringsSep "\n" (
+              map (v: if builtins.isString v then v else v.text) (
+                builtins.attrValues (
+                  lib.filterAttrs (
+                    n: _: lib.hasPrefix "son-of-anton" n
+                  ) pair.config.system.activationScripts
+                )
+              )
+            );
           in
           assert lib.hasInfix "bin/son-of-anton gateway" exec;
+
+          # Everything the merge path writes must be chowned to the instance.
+          assert lib.hasInfix
+            "chown e-work:son-of-anton /home/e-work/.son-of-anton/config.yaml"
+            activation;
+          assert lib.hasInfix "/home/e-work/.son-of-anton/.nix-managed.json" activation;
+          assert lib.hasInfix
+            "chown e-play:son-of-anton /home/e-play/.son-of-anton/config.yaml"
+            activation;
+
           assert units ? "son-of-anton-work" && units ? "son-of-anton-play";
           assert workUnit.environment.SON_OF_ANTON_HOME == "/home/e-work/.son-of-anton";
           assert playUnit.environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton";
@@ -223,6 +248,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             ));
           in
           assert lib.hasInfix "bin/son-of-anton gateway" exec;
+
           pkgs.runCommand "son-of-anton-home-manager-module" { } ''
             echo "PASS: Home Manager module gateway unit is correct"
             mkdir -p $out

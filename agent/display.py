@@ -111,8 +111,12 @@ def _diff_ansi() -> dict[str, str]:
     dim = "\033[90m"      # gray
     file_c = "\033[95m"   # lavender -> bright magenta
     hunk = "\033[90m"     # gray-blue -> gray
-    minus = "\033[97;41m" # white on dark red
-    plus = "\033[97;42m"  # white on dark green
+    # Removed/added lines are plain colored text on the terminal's normal
+    # background — no highlight fill.  A red/green background bar over the
+    # whole line reads as a garish block and clashes with the theme; the
+    # +/- prefix and the text color already carry the add/remove meaning.
+    minus = "\033[31m"    # red
+    plus = "\033[32m"     # green
 
     try:
         from son_of_anton_cli.skin_engine import get_active_skin

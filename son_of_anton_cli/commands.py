@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from utils import is_truthy_value
-from son_of_anton_constants import INDICATOR_STYLES
 
 # mtime-keyed memo of the /personality completion source. load_cli_config()
 # does a full YAML parse + deep merge of the built-in defaults on every call,

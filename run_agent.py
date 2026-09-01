@@ -1264,12 +1264,6 @@ class AIAgent:
         should follow the same retry path as a truncated JSON body.
         """
         return False
-        if not isinstance(error, ValueError):
-            return False
-        if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
-            return False
-        message = str(error).strip().lower()
-        return "expected ident at line" in message
 
     def _log_stream_retry(
         self,

@@ -4479,33 +4479,6 @@ def _poll_for_token(
     raise TimeoutError(_nous_device_auth_timeout_message(portal_base_url))
 
 
-# =============================================================================
-# Nous Portal — token refresh and model discovery
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# Shared Nous token store — lets OAuth credentials persist across profiles
-# so a new `son-of-anton --profile <name> auth add nous --type oauth` can one-tap
-# import instead of running the full device-code flow every time.
-#
-# File lives at ${SON_OF_ANTON_SHARED_AUTH_DIR}/nous_auth.json, defaulting to
-# ``<son-of-anton-root>/shared/nous_auth.json`` where ``<son-of-anton-root>`` is what
-# ``get_default_son_of_anton_root()`` returns — ``~/.son-of-anton`` on Linux/macOS,
-# or a custom ``SON_OF_ANTON_HOME`` root.
-# It is OUTSIDE any named profile's SON_OF_ANTON_HOME so named profiles (which
-# typically live under ``<son-of-anton-root>/profiles/<name>/``) all see the
-# same file.
-#
-# Written on successful login and on every runtime refresh so the stored
-# refresh_token stays current even if one profile refreshes and rotates it.
-# If ever the stored refresh_token does go stale server-side, import fails
-# gracefully and the user falls back to the normal device-code flow.
-# -----------------------------------------------------------------------------
-
-NOUS_SHARED_STORE_FILENAME = "nous_auth.json"
-_nous_shared_lock_holder = threading.local()
-
-
 def _is_terminal_xai_oauth_refresh_error(exc: Exception) -> bool:
     """True when retrying the same xAI OAuth refresh token cannot succeed.
 
@@ -4546,91 +4519,9 @@ def _is_terminal_codex_oauth_refresh_error(exc: Exception) -> bool:
     )
 
 
-def _refresh_access_token(
-    *,
-    client: httpx.Client,
-    portal_base_url: str,
-    client_id: str,
-    refresh_token: str,
-) -> Dict[str, Any]:
-    response = client.post(
-        f"{portal_base_url}/api/oauth/token",
-        headers={"x-nous-refresh-token": refresh_token},
-        data={
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-        },
-    )
-
-    if response.status_code == 200:
-        payload = response.json()
-        if "access_token" not in payload:
-            raise AuthError("Refresh response missing access_token",
-                            provider="nous", code="invalid_token", relogin_required=True)
-        return payload
-
-    try:
-        error_payload = response.json()
-    except Exception as exc:
-        raise AuthError("Refresh token exchange failed",
-                        provider="nous", relogin_required=True) from exc
-
-    code = str(error_payload.get("error", "invalid_grant"))
-    description = str(error_payload.get("error_description") or "Refresh token exchange failed")
-    relogin = code in {"invalid_grant", "invalid_token", "refresh_token_reused"}
-
-    # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
-    # server and surface an actionable message.  This fires when an external
-    # process (health-check script, monitoring tool, custom self-heal hook)
-    # called POST /api/oauth/token with Son of Anton's refresh_token without
-    # persisting the rotated token back to auth.json — the server then
-    # retires the original RT, Son of Anton's next refresh uses it, and the whole
-    # session chain gets revoked as a token-theft signal (#15099).
-    lowered = description.lower()
-    if code == "refresh_token_reused" or "reuse" in lowered or "reuse detected" in lowered:
-        description = (
-            "Nous Portal detected refresh-token reuse and revoked this session.\n"
-            "This usually means an external process (monitoring script, "
-            "custom self-heal hook, or another Son of Anton install sharing "
-            "~/.son-of-anton/auth.json) called POST /api/oauth/token with Son of Anton's "
-            "refresh token without persisting the rotated token back.\n"
-            "Nous refresh tokens are single-use — only Son of Anton may call the "
-            "refresh endpoint. For health checks, use `son-of-anton auth status` "
-            "instead.\n"
-            "Re-authenticate with: son-of-anton auth add nous"
-        )
-        relogin = True
-
-    raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
-
-
-# Per-process memo for resolve_nous_access_token. Startup runs
-# check_tool_availability once per managed-tool check_fn (browser, image_gen,
-# etc.), and each one independently triggers a ~15s blocking token-refresh
-# network call when the stored token is expired. On a slow/constrained host that
-# serial burst stretches startup to many minutes. A short-TTL memo collapses the
-# burst into a single network round-trip; callers that need freshness use
-# separate flows (force_fresh / refresh_nous_oauth_pure) and are unaffected.
-_RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "tuple[float, str] | None" = None
-_RESOLVE_TOKEN_CACHE_TTL_S = 5.0
-
-
 # =============================================================================
 # Status helpers
 # =============================================================================
-
-# ── Process-level memo for get_nous_auth_status() ──
-# get_nous_auth_status() validates state by calling resolve_nous_runtime_credentials(),
-# which does a synchronous OAuth refresh POST to portal.nousresearch.com. That can take
-# ~350ms even on the failure path, and read-only UI surfaces (`son-of-anton tools`, status panels,
-# subscription-feature checks) call it many times per render — `son-of-anton tools` → "All Platforms"
-# was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
-# single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
-# path + mtime so that profile switches do not share a process memo and
-# `son-of-anton auth login/logout/add/remove` invalidate naturally on the next call.
-_NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
 # mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store).
 # Same invalidation contract as _nous_auth_status_cache — the global auth
@@ -4652,13 +4543,6 @@ def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
         return auth_file_key, None
 
 
-# Enum values reported on the dashboard /api/status as ``nous_session_valid``.
-# NAS's health sweep re-mints the bootstrap session ONLY on "terminal"; "valid"
-# and "unknown" are no-ops. Keep this set small and stable — NAS parses it with
-# a permissive schema, so new members are non-breaking but should stay rare.
-NOUS_SESSION_VALID = "valid"
-NOUS_SESSION_TERMINAL = "terminal"
-NOUS_SESSION_UNKNOWN = "unknown"
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
@@ -4867,8 +4751,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return {"logged_in": False}
     if target == "spotify":
         return get_spotify_auth_status()
-    if target == "nous":
-        return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
     if target == "xai-oauth":
