@@ -324,7 +324,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "yellow",
             "ui_tool": "yellow",
             "ui_thinking": "cyan",
-            "prompt": "default",
+            "prompt": "yellow",
             "input_rule": "default",
             "response_border": "bold yellow",
             "status_bar_bg": "#1a1a2e",
