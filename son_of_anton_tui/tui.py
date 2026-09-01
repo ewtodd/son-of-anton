@@ -224,6 +224,11 @@ if _TEXTUAL_AVAILABLE:
             width: 1fr;
             height: 1fr;
             padding: 0 2;
+            scrollbar-size-vertical: 1;
+            scrollbar-color: $text-muted;
+            scrollbar-color-hover: $primary;
+            scrollbar-color-active: $primary;
+            scrollbar-background: transparent;
         }
         #statusline {
             height: 1;
@@ -272,8 +277,6 @@ if _TEXTUAL_AVAILABLE:
         }
         #feed .user {
             color: $text;
-            background: $primary 12%;
-            border-left: solid $primary;
             padding: 0 1;
             margin-top: 1;
         }
@@ -372,6 +375,7 @@ if _TEXTUAL_AVAILABLE:
 
         def on_resize(self, event: Any) -> None:
             self._apply_sidebar(event.size.width)
+            self._show_wordmark()
 
         def _apply_sidebar(self, width: int) -> None:
             """Show the right context panel only when the terminal is wide."""
@@ -382,18 +386,30 @@ if _TEXTUAL_AVAILABLE:
             except Exception:
                 pass
 
-        def _show_wordmark(self) -> None:
-            feed_w = self.size.width - (
-                SIDEBAR_WIDTH if self.size.width > SIDEBAR_THRESHOLD else 0
-            )
+        def _wordmark_text(self, feed_w: int) -> str:
             lines = _wordmark(feed_w).splitlines()
             if not lines:
-                return
+                return ""
             avail = max(0, feed_w - 4)  # #feed padding: 0 2
             width = max(len(line) for line in lines)
             pad = max(0, (avail - width) // 2)
-            padded = "\n".join(f"{' ' * pad}{line}" for line in lines)
-            self._feed.mount(Static(padded, classes="wordmark"))
+            return "\n".join(f"{' ' * pad}{line}" for line in lines)
+
+        def _show_wordmark(self) -> None:
+            """Render (or re-render) the wordmark at the top of the feed.
+
+            Recomputes the variant from the current feed width so it switches
+            between the wide / stacked forms live as the window is resized.
+            """
+            if getattr(self, "_feed", None) is None:
+                return
+            if getattr(self, "_wordmark_widget", None) is None:
+                self._wordmark_widget = Static("", id="wordmark", classes="wordmark")
+                self._feed.mount(self._wordmark_widget)
+            feed_w = self.size.width - (
+                SIDEBAR_WIDTH if self.size.width > SIDEBAR_THRESHOLD else 0
+            )
+            self._wordmark_widget.update(self._wordmark_text(feed_w))
 
         async def _append_user(self, text: str) -> None:
             # Highlight the user's message by the *prompt symbol*-less prefix
