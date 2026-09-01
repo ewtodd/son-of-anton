@@ -80,6 +80,14 @@ class Config:
     # execute_code sub-agents and the research pipeline's computer. Empty means
     # `model` does everything. Resolved from physics.coder_model in config.yaml.
     coder_model: str = ""
+    # Per-role overrides, from physics.agent_models. Beats coder_model and
+    # model. Matched by exact agent name, then by longest prefix.
+    agent_models: dict = field(default_factory=dict)
+    # Sent as `reasoning_effort` when set. Vocabulary is the endpoint's:
+    # low/medium/xhigh for Qwen3.8 on vLLM, low/medium/high for OpenAI.
+    reasoning_effort: str = ""
+    # Autophysicist only: run the critic after every Nth iteration. 0 disables.
+    critique_every_n: int = 1
     workspace_dir: str = ""
     logs_dir: str = ""
     api_key: str = ""
@@ -104,6 +112,28 @@ class Config:
         if matches:
             return self.agent_max_tokens[max(matches, key=len)]
         return self.max_tokens
+
+    def model_for_agent(self, agent_name: str, *, coding: bool = False) -> str:
+        """Which model *agent_name* runs under.
+
+        Three tiers, most specific first: an explicit ``physics.agent_models``
+        entry, then ``coder_model`` when the call is writing code, then
+        ``model``.
+
+        The middle tier exists because "is this call writing code" is not the
+        same question as "which agent is this". A sub-agent dispatched with
+        execute_code is doing the coding job whatever it is called, and the
+        pipeline's computer agent is doing it under a fixed name — while the
+        same computer agent's non-coding turns are not.
+        """
+        if agent_name in self.agent_models:
+            return str(self.agent_models[agent_name])
+        matches = [k for k in self.agent_models if agent_name.startswith(k)]
+        if matches:
+            return str(self.agent_models[max(matches, key=len)])
+        if coding and self.coder_model:
+            return self.coder_model
+        return self.model
 
     def to_dict(self) -> dict:
         """Serialize config fields for persistence (excludes sensitive/derived fields)."""
@@ -223,6 +253,9 @@ _YAML_CONFIG_FIELDS = frozenset(
         "best_guess_every_n",
         "provider",
         "coder_model",
+        "agent_models",
+        "reasoning_effort",
+        "critique_every_n",
     }
 )
 

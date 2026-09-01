@@ -130,7 +130,28 @@ def _resolve_endpoint(config):
     return client, model
 
 
+#: Substrings that actually mean "the request was too long for the model".
+_CONTEXT_ERROR_MARKERS = (
+    "maximum context length",
+    "context length",
+    "context_length_exceeded",
+    "too many tokens",
+    "reduce the length",
+    "input is too long",
+    "prompt is too long",
+)
+
+
 def _raise_if_context_error(exc: BaseException) -> None:
+    """Reclassify a genuine context overflow, and only that.
+
+    This used to treat EVERY 400 as a context error. A malformed request —
+    a duplicated system turn, an unsupported parameter, a bad tool schema —
+    surfaced as ``ContextTooLongError: context too long (estimated 0 input
+    tokens)``, which is not merely a wrong message: the loops respond to it by
+    shrinking context and retrying, so the real fault is never seen and the
+    run burns its budget compacting a request that was never too big.
+    """
     text = str(exc).lower()
     if isinstance(exc, APIStatusError):
         body = ""
@@ -139,9 +160,7 @@ def _raise_if_context_error(exc: BaseException) -> None:
         except Exception:
             pass
         text = f"{text} {body}".lower()
-    if "maximum context length" in text or "context length" in text or (
-        isinstance(exc, APIStatusError) and exc.status_code == 400
-    ):
+    if any(marker in text for marker in _CONTEXT_ERROR_MARKERS):
         raise ContextTooLongError() from exc
 
 
@@ -157,6 +176,13 @@ def _create_with_retry(client, model, messages, max_tokens, config, tools=None):
                 "messages": messages,
                 "max_tokens": max_tokens,
             }
+            # A thinking model's default effort is its highest. Qwen3.8's is
+            # "xhigh", which spent 80,000 characters reasoning and produced no
+            # answer at all inside a 24k budget. Endpoints that do not take the
+            # parameter ignore it.
+            effort = str(getattr(config, "reasoning_effort", "") or "").strip()
+            if effort:
+                kwargs["reasoning_effort"] = effort
             if tools:
                 kwargs["tools"] = tools
             return client.chat.completions.create(**kwargs)
@@ -169,6 +195,33 @@ def _create_with_retry(client, model, messages, max_tokens, config, tools=None):
                 raise
             time.sleep(min(delay * (2**attempt), 60.0))
     raise RuntimeError("unreachable") from last_exc
+
+
+def _log_round(config, agent_name, iteration, round_num, resp, duration, finish):
+    """Record one tool-loop round in EVENT_LOG.jsonl.
+
+    ``run_agent_loop`` logged nothing, so the Manager — which runs entirely
+    through it — was invisible: a run's event log showed only its sub-agents,
+    and questions like "was this iteration faster because of the model or
+    because the prefix was cached" had no data behind them. Rounds are where
+    the Manager's time actually goes.
+    """
+    if not config.workspace_dir:
+        return
+    log_llm_call(
+        config.workspace_dir,
+        agent_name,
+        iteration,
+        getattr(config, "model", "") or "default",
+        getattr(resp.usage, "prompt_tokens", 0) or 0,
+        getattr(resp.usage, "completion_tokens", 0) or 0,
+        finish,
+        round(duration, 2),
+        0,
+        0,
+        0,
+        round=round_num,
+    )
 
 
 def _log_usage(config, agent_name, iteration, response, duration):
@@ -285,11 +338,15 @@ def call_llm(
         duration=duration,
     )
     _log_usage(config, agent_name, iteration, result, duration)
+    # messages[1:] — the system turn is prepended by _continue_truncated, and
+    # passing the whole list produced [system, system, user, ...]. Providers
+    # reject that ("System message must be at the beginning"), so every
+    # truncated one-shot response failed instead of continuing.
     return _continue_truncated(
         client,
         model,
         system,
-        messages,
+        messages[1:],
         config,
         agent_name,
         iteration,
@@ -390,8 +447,18 @@ def run_agent_loop(
 
     for round_num in range(1, max_rounds + 1):
         round_tools = getattr(tool_executor, "active_tools", None) or tools
+        round_start = time.time()
         resp = _create_with_retry(
             client, model, messages, max_tokens, config, tools=round_tools
+        )
+        _log_round(
+            config,
+            agent_name,
+            iteration,
+            round_num,
+            resp,
+            time.time() - round_start,
+            resp.choices[0].finish_reason or "end_turn",
         )
         round_input = getattr(resp.usage, "prompt_tokens", 0) or 0
         round_output = getattr(resp.usage, "completion_tokens", 0) or 0

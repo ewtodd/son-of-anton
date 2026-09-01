@@ -21,6 +21,29 @@ from __future__ import annotations
 
 #: Importable module name -> guidance shown when that module is present.
 LIBRARY_NOTES: dict[str, str] = {
+    "ROOT": """\
+PyROOT is a binding to a C++ API, and guessing at it fails in ways that look
+like Python. Every one of these was a real failed script:
+
+    tree.GetBranch(0)          # WRONG - takes a NAME, not an index
+    branch.GetLeaf(0)          # WRONG - same
+    branch.GetLeaves()         # WRONG - the method is GetListOfLeaves()
+    leaf.GetBufferSize()       # WRONG - not on TLeafS
+
+Iterate; do not index:
+
+    for branch in tree.GetListOfBranches():
+        for leaf in branch.GetListOfLeaves():
+            print(branch.GetName(), leaf.GetTypeName())
+
+A method returning a null pointer raises `ReferenceError: attempt to access a
+null-pointer` on the NEXT call, so the traceback points one line past the
+mistake. If you get one, check what the previous line returned.
+
+Better still: DO NOT INTROSPECT THE FILE AT ALL. The task statement already
+lists every tree, its entry count, and every branch with its type. Reading that
+costs nothing and cannot fail; rediscovering it has already cost several
+attempts. Go straight to the analysis.""",
     "analysis_utilities": """\
 `analysis_utilities` is the lab's own library. PREFER IT over hand-written
 equivalents — it is faster, it caches, and its plots are the publication style.
@@ -44,9 +67,12 @@ multi-GB file will spend your whole time budget and time out.
     arrays = load_leaf_array_data("data.root", tree_name="Data_R",
                                   array_branches=["Samples"])
 
-    # ALWAYS pass max_events on a first look at a large file — these are
-    # multi-GB and the per-script timeout is short. Start at 50_000, confirm
-    # the shape and the physics, and only then scale up.
+    # PASS max_events. Your script is killed after {timeout} seconds, and a
+    # full read of a multi-GB file does not finish in that — it dies partway,
+    # having written gigabytes of cache for nothing. A timeout here does NOT
+    # mean your approach was wrong; it means you asked for too many events.
+    # Start at 50_000, confirm the shape and the physics, scale up only when
+    # you know what you are scaling.
     df = load_tree_data("data.root", tree_name="Data_R", max_events=50_000)
 
 Plots — every figure you produce should go through PlottingUtils, not
@@ -65,24 +91,55 @@ matplotlib. It is an all-static class; no instantiation:
 absolute paths, so the same script writes to the same place from any working
 directory. Call it once at the top.
 
-Also available through PyROOT after `load_cpp_library()`: WaveformProcessingUtils
-(baseline subtraction, trigger finding, pulse height, short/long integrals, PSD
-ratio, quality cuts) and FittingUtils/RooFitUtils (RooFit photopeak fits). If a
-task needs waveform features or a peak fit, use these rather than writing the
-arithmetic yourself — they are what the lab's published results were produced
-with, and matching them is usually the point.""",
+RAW WAVEFORMS. If the data card says a trace is a raw digitizer waveform, it
+sits on a DC baseline and the pulse goes NEGATIVE. Integrating those samples as
+they come off disk gives you a number dominated by the baseline offset, a
+meaningless tail-to-total ratio, and results that look entirely plausible and
+are wrong. Do not hand-roll the correction; WaveformProcessingUtils does it,
+and it is what the lab's published numbers were produced with:
+
+    from analysis_utilities import load_cpp_library
+    ROOT = load_cpp_library()
+
+    cfg = ROOT.FileProcessingConfig()
+    cfg.polarity = -1            # negative-going pulses; +1 if positive
+    cfg.num_samples_baseline = 10   # pre-trigger samples averaged for baseline
+    cfg.pre_gate, cfg.short_gate, cfg.long_gate = 10, 10, 200
+    cfg.max_events = 50000
+    proc = ROOT.WaveformProcessingUtils(cfg)
+
+    proc.ProcessWaveform(samples)      # one TArrayS -> features
+    proc.ProcessFile(in_path, out_name)  # whole file -> a features TTree
+
+Each processed waveform yields a `WaveformFeatures`: raw_pulse_height,
+pulse_height, peak_position, trigger_position, short_integral, long_integral,
+negative_fraction, passes_cuts, timestamp. short_integral / long_integral is
+the charge-comparison PSD ratio, computed off the baseline-subtracted,
+polarity-corrected trace. `ProcessingStats` reports why events were rejected
+(no trigger, clipped, negative integral, bad baseline) — read it, because a
+cut that silently removes most of your data will otherwise look like a clean
+result.
+
+FittingUtils / RooFitUtils do RooFit photopeak fits, for the same reason: they
+are what the published fits used.""",
 }
 
 
-def notes_for(packages, extra: str = "") -> str:
+def notes_for(packages, extra: str = "", timeout: int = 60) -> str:
     """Return the guidance for whichever known libraries *packages* contains.
 
     *packages* is the probe result from :func:`physics_intern.utils.sandbox.
     runtime_summary` — a mapping of importable module name to version. *extra*
-    is appended verbatim (``physics.runtime_notes``).
+    is appended verbatim (``physics.runtime_notes``). *timeout* is substituted
+    into the notes: "the timeout is short" was ignored, and a real number with
+    the consequence spelled out is harder to skim past.
     """
     names = set(packages or ())
-    blocks = [note for name, note in LIBRARY_NOTES.items() if name in names]
+    blocks = [
+        note.replace("{timeout}", str(timeout))
+        for name, note in LIBRARY_NOTES.items()
+        if name in names
+    ]
     extra = (extra or "").strip()
     if extra:
         blocks.append(extra)

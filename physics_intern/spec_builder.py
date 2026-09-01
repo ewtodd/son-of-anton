@@ -126,6 +126,9 @@ def describe_root_file(path):
                 title = branch.GetTitle()
                 if title and title != bname:
                     entry["title"] = str(title)
+                shape = describe_waveform(obj, bname)
+                if shape:
+                    entry["waveform"] = shape
                 branches.append(entry)
             out["trees"].append(
                 {
@@ -141,6 +144,67 @@ def describe_root_file(path):
         if handle:
             handle.Close()
     return out
+
+
+def describe_waveform(tree, bname, n_entries=8):
+    """Measure a waveform branch: length, baseline, and which way pulses go.
+
+    Raw digitizer traces sit on a DC baseline and, from a PMT or SiPM, go
+    NEGATIVE. Nothing in a branch listing says so, and it is the kind of step
+    that is tacit to anyone who has handled the data and invisible otherwise —
+    integrate the raw samples and the charge is dominated by the offset, the
+    tail/total ratio is meaningless, and every number downstream looks
+    plausible and is wrong.
+
+    So it is measured rather than assumed, and reported in the spec the agent
+    actually reads.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    try:
+        n = min(int(tree.GetEntries()), n_entries)
+        if n <= 0:
+            return None
+        traces = []
+        for i in range(n):
+            tree.GetEntry(i)
+            raw = getattr(tree, bname, None)
+            if raw is None:
+                return None
+            try:
+                values = np.asarray([raw[j] for j in range(len(raw))], dtype=float)
+            except TypeError:
+                return None
+            if values.size < 16:
+                return None
+            traces.append(values)
+        if not traces:
+            return None
+
+        length = int(min(t.size for t in traces))
+        pre = max(length // 10, 4)
+        baselines, swings_low, swings_high = [], [], []
+        for values in traces:
+            baseline = float(np.median(values[:pre]))
+            baselines.append(baseline)
+            swings_low.append(float(values.min() - baseline))
+            swings_high.append(float(values.max() - baseline))
+
+        below = abs(float(np.median(swings_low)))
+        above = abs(float(np.median(swings_high)))
+        polarity = "negative-going" if below > above else "positive-going"
+        return {
+            "samples": length,
+            "baseline_adc": round(float(np.median(baselines)), 1),
+            "median_swing_below_baseline": round(float(np.median(swings_low)), 1),
+            "median_swing_above_baseline": round(float(np.median(swings_high)), 1),
+            "polarity": polarity,
+            "entries_sampled": len(traces),
+        }
+    except Exception:
+        return None
 
 
 def describe_npy(path):
@@ -272,12 +336,27 @@ def render_data_card(report: dict, limit: int = MAX_PROBE_BYTES) -> str:
                 + (f" {b['title']}" if b.get("title") else "")
                 for b in tree.get("branches", [])
             )
+            waveforms = [
+                (b["name"], b["waveform"])
+                for b in tree.get("branches", [])
+                if b.get("waveform")
+            ]
             lines.append(
                 f"    TTree {tree['name']}: {tree['entries']:,} entries, "
                 f"{tree['branch_count']} branches"
             )
             if branch_names:
                 lines.append(f"      branches: {branch_names}")
+            for name, shape in waveforms:
+                lines.append(
+                    f"      {name}: {shape['samples']} samples per event, "
+                    f"RAW digitizer trace — {shape['polarity']}, sitting on a "
+                    f"baseline of ~{shape['baseline_adc']:.0f} ADC "
+                    f"(median swing {shape['median_swing_below_baseline']:.0f} "
+                    f"below / {shape['median_swing_above_baseline']:.0f} above, "
+                    f"over {shape['entries_sampled']} events). It is NOT "
+                    f"baseline-subtracted and NOT inverted."
+                )
         for obj in root.get("objects", []) or []:
             lines.append(f"    object {obj['name']} ({obj['class']})")
         if root.get("error"):
@@ -425,18 +504,16 @@ def call_model(system: str, user: str, model: str | None) -> str:
     from physics_intern.core.config import build_config
     from physics_intern.llm import call_llm
 
-    config = build_config(None)
-    if model:
-        config.model = model
-    elif not config.model:
-        try:
-            from son_of_anton_cli.config import load_config
+    from physics_intern.core.models import resolve_models
 
-            config.model = str(
-                ((load_config() or {}).get("physics") or {}).get("model") or ""
-            )
-        except Exception:
-            pass
+    config = build_config(None)
+    resolve_models(config, model)
+    # The spec writer emits one JSON object to a fixed schema. That is a
+    # formatting job, not a reasoning one, and the physics it needs — that
+    # Cs-137 is 661.7 keV — is recall rather than derivation. On a thinking
+    # model it spent its whole budget reasoning and returned no object at all,
+    # so it follows coder_model unless agent_models says otherwise.
+    config.model = config.model_for_agent("spec_writer", coding=True)
     response = call_llm(system, user, config, agent_name="spec_writer")
     return response.text
 

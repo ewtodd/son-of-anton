@@ -195,3 +195,149 @@ def test_truncated_final_response_is_flagged(monkeypatch) -> None:
     )
     assert result.truncated is True
     assert result.stop_reason == "max_tokens"
+
+
+# --- request shape -----------------------------------------------------------
+
+
+def test_a_truncated_one_shot_continues_without_duplicating_the_system_turn(
+    monkeypatch,
+) -> None:
+    """[system, system, user, ...] is rejected: "System message must be at the
+    beginning". call_llm passed the whole message list to the continuation
+    helper, which prepends its own system turn — so every truncated one-shot
+    response failed instead of continuing."""
+    from physics_intern.llm import call_llm
+
+    seen: list[list[dict]] = []
+    replies = iter(
+        [
+            _response(_message(content="half a sent"), finish_reason="length"),
+            _response(_message(content="ence."), finish_reason="stop"),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "physics_intern.llm._resolve_endpoint", lambda config: (None, "m")
+    )
+
+    def _create(client, model, messages, max_tokens, config, tools=None):
+        seen.append([dict(m) for m in messages])
+        return next(replies)
+
+    monkeypatch.setattr("physics_intern.llm._create_with_retry", _create)
+
+    config = _Config()
+    config.max_tokens_retries = 1
+    result = call_llm("SYSTEM", "question", config)
+
+    continuation = seen[1]
+    assert [m["role"] for m in continuation].count("system") == 1
+    assert continuation[0]["role"] == "system"
+    assert result.text == "half a sentence."
+
+
+def test_reasoning_effort_is_sent_only_when_configured(monkeypatch) -> None:
+    """A thinking model's default effort is its highest."""
+    from physics_intern.llm import call_llm
+
+    seen: list[dict] = []
+
+    monkeypatch.setattr(
+        "physics_intern.llm._resolve_endpoint", lambda config: (None, "m")
+    )
+
+    class _Client:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(**kwargs):
+                    seen.append(kwargs)
+                    return _response(_message(content="ok"), finish_reason="stop")
+
+    monkeypatch.setattr(
+        "physics_intern.llm._resolve_endpoint", lambda config: (_Client(), "m")
+    )
+
+    config = _Config()
+    call_llm("s", "u", config)
+    assert "reasoning_effort" not in seen[-1]
+
+    config.reasoning_effort = "medium"
+    call_llm("s", "u", config)
+    assert seen[-1]["reasoning_effort"] == "medium"
+
+
+def test_a_malformed_request_is_not_reported_as_context_too_long() -> None:
+    """Every 400 used to become ContextTooLongError, so the loops responded by
+    compacting a request that was never too big and never saw the real fault."""
+    from physics_intern.llm import ContextTooLongError, _raise_if_context_error
+
+    class _Resp:
+        status_code = 400
+
+        def json(self):
+            return {"error": {"message": "System message must be at the beginning."}}
+
+    class _Bad(Exception):
+        status_code = 400
+        response = _Resp()
+
+        def __str__(self):
+            return "System message must be at the beginning."
+
+    _raise_if_context_error(_Bad())  # must not raise
+
+    class _TooLong(_Bad):
+        def __str__(self):
+            return "This model's maximum context length is 131072 tokens"
+
+    with pytest.raises(ContextTooLongError):
+        _raise_if_context_error(_TooLong())
+
+
+def test_every_round_is_logged(monkeypatch, tmp_path) -> None:
+    """The Manager runs entirely through this loop and logged nothing.
+
+    A run's EVENT_LOG.jsonl showed only its sub-agents, so where the Manager's
+    time actually went — and questions like "was that iteration faster because
+    of the model or because the prefix was cached" — had no data behind them.
+    """
+    import json
+
+    monkeypatch.setattr(
+        "physics_intern.llm._resolve_endpoint", lambda config: (None, "test-model")
+    )
+    replies = iter(
+        [
+            _response(_message(tool_calls=[_tool_call("c1", "end_turn")])),
+            _response(_message(content="done"), finish_reason="stop"),
+        ]
+    )
+    monkeypatch.setattr(
+        "physics_intern.llm._create_with_retry",
+        lambda *a, **k: next(replies),
+    )
+
+    config = _Config()
+    config.workspace_dir = str(tmp_path)
+
+    run_agent_loop(
+        system="s",
+        user_content="u",
+        config=config,
+        tool_executor=_Executor(),
+        tools=[{"type": "function", "function": {"name": "end_turn"}}],
+        max_rounds=5,
+        agent_name="manager",
+        iteration=3,
+    )
+
+    entries = [
+        json.loads(line)
+        for line in (tmp_path / "EVENT_LOG.jsonl").read_text().splitlines()
+    ]
+    assert len(entries) == 2, "one entry per round"
+    assert [e["round"] for e in entries] == [1, 2]
+    assert all(e["agent"] == "manager" and e["iter"] == 3 for e in entries)
+    assert all(e["duration_s"] >= 0 for e in entries)

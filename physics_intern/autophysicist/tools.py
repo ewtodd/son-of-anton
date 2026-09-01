@@ -79,6 +79,65 @@ class ManagerToolExecutor:
         },
     }
 
+    _LIST_WORKSPACE_FILES_DEF: ClassVar[dict] = {
+        "type": "function",
+        "function": {
+            "name": "list_workspace_files",
+            "description": (
+                "List the files in your workspace: every script a sub-agent "
+                "has run (computations/), every artifact they produced, and "
+                "the run's own files. Use this before re-deriving something — "
+                "the work of previous iterations is on disk even though it is "
+                "not in your context."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subdirectory": {
+                        "type": "string",
+                        "description": (
+                            "Restrict to one subdirectory, e.g. 'computations' "
+                            "or 'plots'. Omit for the whole workspace."
+                        ),
+                    },
+                },
+            },
+        },
+    }
+
+    _READ_WORKSPACE_FILE_DEF: ClassVar[dict] = {
+        "type": "function",
+        "function": {
+            "name": "read_workspace_file",
+            "description": (
+                "Read a file from your workspace — most usefully a script a "
+                "sub-agent wrote, so you can hand the next one the actual code "
+                "to change instead of a description of it. Paraphrasing a long "
+                "script into a prompt loses detail and costs an iteration."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Workspace-relative path, e.g. "
+                            "'computations/subagent_iter3_1_attempt1.py'."
+                        ),
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": (
+                            "Truncate to this many characters (default 20000). "
+                            "The head and tail are kept."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    }
+
     _WRITE_PERMANENT_MEMORY_DEF: ClassVar[dict] = {
         "type": "function",
         "function": {
@@ -177,6 +236,8 @@ class ManagerToolExecutor:
     # the tool sets the loop actually sees come from the methods below.
     ALL_TOOLS: ClassVar[list[dict]] = [
         _DISPATCH_SUBAGENT_DEF,
+        _LIST_WORKSPACE_FILES_DEF,
+        _READ_WORKSPACE_FILE_DEF,
         _WRITE_PERMANENT_MEMORY_DEF,
         _WRITE_SCRATCHPAD_DEF,
         _END_TURN_DEF,
@@ -184,6 +245,7 @@ class ManagerToolExecutor:
     ]
 
     WIND_DOWN_TOOLS: ClassVar[list[dict]] = [
+        _READ_WORKSPACE_FILE_DEF,
         _WRITE_PERMANENT_MEMORY_DEF,
         _WRITE_SCRATCHPAD_DEF,
         _END_TURN_DEF,
@@ -205,7 +267,7 @@ class ManagerToolExecutor:
         return list(self.WIND_DOWN_TOOLS)
 
     def _mcp_tools(self) -> list[dict]:
-        return self.mcp.tools() if self.mcp else []
+        return self.mcp.tools_for("manager") if self.mcp else []
 
     HARD_BUDGET_MULTIPLIER = 1.5
 
@@ -220,7 +282,6 @@ class ManagerToolExecutor:
         tool_call_cap: int = 15,
         sandbox_timeout: int = 60,
         policy: SandboxPolicy | None = None,
-        coder_model: str = "",
         mcp: MCPToolset | None = None,
     ):
         self.config = config
@@ -231,7 +292,6 @@ class ManagerToolExecutor:
         self.token_budget = token_budget
         self.tool_call_cap = tool_call_cap
         self.sandbox_timeout = sandbox_timeout
-        self.coder_model = coder_model
         self.mcp = mcp
         self.policy = policy or SandboxPolicy.from_config()
         if self.policy.workspace is None:
@@ -323,13 +383,17 @@ class ManagerToolExecutor:
             output, is_error = self._dispatch_subagent(tool_input)
         elif tool_name == "write_to_permanent_memory":
             output, is_error = self._write_permanent_memory(tool_input)
+        elif tool_name == "list_workspace_files":
+            output, is_error = self._list_workspace_files(tool_input)
+        elif tool_name == "read_workspace_file":
+            output, is_error = self._read_workspace_file(tool_input)
         elif tool_name == "write_to_scratchpad":
             output, is_error = self._write_scratchpad(tool_input)
         elif tool_name == "end_turn":
             output, is_error = self._end_turn()
         elif tool_name == "submit_final_answer":
             output, is_error = self._submit_final_answer(tool_input)
-        elif self.mcp is not None and self.mcp.handles(tool_name):
+        elif self.mcp is not None and self.mcp.handles(tool_name, "manager"):
             if self._wind_down:
                 output, is_error = (
                     f"ERROR: {tool_name} is unavailable during wind-down. Write "
@@ -385,13 +449,90 @@ class ManagerToolExecutor:
             subagent_counter=self._subagent_counter,
             sandbox_timeout=self.sandbox_timeout,
             policy=self.policy,
-            model=self.coder_model,
+            # execute_code decides the role, so the resolver is asked per
+            # dispatch rather than once per executor.
+            model=self.config.model_for_agent(
+                "subagent", coding=bool(execute_code)
+            ),
+            mcp=self.mcp,
         )
 
         self.subagent_input_tokens += result.total_input_tokens
         self.subagent_output_tokens += result.total_output_tokens
 
         return result.format_for_manager(), False
+
+    def _resolve_in_workspace(self, raw: str) -> "Path | None":
+        """Resolve a workspace-relative path, refusing anything outside it."""
+        root = Path(self.workspace_root).resolve()
+        try:
+            candidate = (root / str(raw or "").lstrip("/")).resolve()
+        except OSError:
+            return None
+        if candidate != root and root not in candidate.parents:
+            return None
+        return candidate
+
+    def _list_workspace_files(self, params: dict) -> tuple[str, bool]:
+        """List workspace files, so the Manager can find prior work on disk."""
+        target = self._resolve_in_workspace(params.get("subdirectory", ""))
+        if target is None:
+            return "ERROR: subdirectory is outside the workspace.", True
+        if not target.exists():
+            return f"No such directory: {params.get('subdirectory', '')}", True
+
+        root = Path(self.workspace_root).resolve()
+        rows: list[str] = []
+        for path in sorted(target.rglob("*")):
+            if not path.is_file() or ".git" in path.parts:
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            rows.append(f"{path.relative_to(root)}  ({size:,} bytes)")
+            if len(rows) >= 200:
+                rows.append("... (truncated at 200 files)")
+                break
+        return "\n".join(rows) or "(no files)", False
+
+    def _read_workspace_file(self, params: dict) -> tuple[str, bool]:
+        """Read one workspace file.
+
+        The Manager writes the sub-agent prompts but never saw what the
+        sub-agents produced, so a script that failed on one line got
+        paraphrased into the scratchpad and rewritten from the paraphrase —
+        losing an iteration and the details at once. The file was on disk the
+        whole time.
+        """
+        raw = str(params.get("path") or "").strip()
+        if not raw:
+            return "ERROR: 'path' is required.", True
+        target = self._resolve_in_workspace(raw)
+        if target is None:
+            return f"ERROR: {raw!r} is outside the workspace.", True
+        if not target.is_file():
+            return (
+                f"ERROR: no such file {raw!r}. Call list_workspace_files to "
+                "see what is there."
+            ), True
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return f"ERROR reading {raw}: {exc}", True
+
+        try:
+            limit = int(params.get("max_chars") or 20_000)
+        except (TypeError, ValueError):
+            limit = 20_000
+        if len(text) > limit:
+            half = limit // 2
+            text = (
+                text[:half]
+                + f"\n\n[... truncated {len(text) - limit} chars ...]\n\n"
+                + text[-half:]
+            )
+        return f"=== {raw} ===\n{text}", False
 
     def _write_permanent_memory(self, params: dict) -> tuple[str, bool]:
         content = params.get("content", "")

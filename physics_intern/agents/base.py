@@ -34,6 +34,9 @@ class BaseAgent(ABC):
     name: str = "base"
     prompt_file: str = ""
     tools: ClassVar[list[dict]] = []
+    #: True for the role that writes analysis scripts, which is what
+    #: ``physics.coder_model`` addresses.
+    writes_code: ClassVar[bool] = False
     max_tool_rounds: ClassVar[int | None] = None
     raise_on_parse_failure: ClassVar[bool] = False
     # parse_retries is now read from self.config.parse_retries (config.default.yaml)
@@ -51,6 +54,22 @@ class BaseAgent(ABC):
         self.mcp = mcp
         self._system_prompt: str | None = None
         self._last_script_names: list[str] = []
+
+    @property
+    def agent_config(self):
+        """This agent's config, with ``model`` resolved for its role.
+
+        Copied, never mutated in place: the run's config is shared by nine
+        agents and a swap that leaked would silently move the others too.
+        """
+        model = self.config.model_for_agent(self.name, coding=self.writes_code)
+        if model == self.config.model:
+            return self.config
+        import copy
+
+        config = copy.copy(self.config)
+        config.model = model
+        return config
 
     def lookup_tools(self) -> list[dict]:
         """Literature / documentation tools this agent may use.
@@ -143,7 +162,7 @@ class BaseAgent(ABC):
         return run_agent_loop(
             system=self.system_prompt,
             user_content=context,
-            config=self.config,
+            config=self.agent_config,
             tool_executor=LookupExecutor(self.mcp, self.name),
             tools=lookups,
             max_rounds=self.max_tool_rounds or self.config.max_tool_rounds,
@@ -196,7 +215,7 @@ class BaseAgent(ABC):
         response = call_llm(
             self.system_prompt,
             context,
-            self.config,
+            self.agent_config,
             agent_name=self.name,
             iteration=iteration,
         )
@@ -289,7 +308,7 @@ class BaseAgent(ABC):
                     retry = call_llm_continuation(
                         self.system_prompt,
                         messages,
-                        self.config,
+                        self.agent_config,
                         agent_name=self.name,
                         iteration=iteration,
                         append_to_log=response.log_path,
@@ -300,7 +319,7 @@ class BaseAgent(ABC):
                     retry = call_llm(
                         self.system_prompt,
                         retry_context,
-                        self.config,
+                        self.agent_config,
                         agent_name=self.name,
                         iteration=iteration,
                     )

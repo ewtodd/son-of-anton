@@ -122,7 +122,7 @@ class OrchestratorAgent(BaseAgent):
         result = run_agent_loop(
             system=self.system_prompt,
             user_content=context,
-            config=self.config,
+            config=self.agent_config,
             tool_executor=self._tool_executor,
             tools=self.tools,
             max_rounds=self.config.max_tool_rounds,

@@ -268,7 +268,9 @@ def describe_runtime(interpreter: str | None = None) -> str:
     return available
 
 
-def runtime_guidance(interpreter: str | None = None, extra: str = "") -> str:
+def runtime_guidance(
+    interpreter: str | None = None, extra: str = "", timeout: int = 60
+) -> str:
     """House-library guidance for whatever the runtime actually provides.
 
     Separate from :func:`describe_runtime`, which only lists what imports. A
@@ -280,7 +282,9 @@ def runtime_guidance(interpreter: str | None = None, extra: str = "") -> str:
 
     if not extra:
         extra = str(_physics_config().get("runtime_notes") or "")
-    return notes_for(runtime_summary(interpreter).get("packages") or {}, extra)
+    return notes_for(
+        runtime_summary(interpreter).get("packages") or {}, extra, timeout
+    )
 
 
 def bwrap_path() -> str | None:

@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from physics_intern.core.config import Config
-from physics_intern.utils.mcp import DEFAULT_AGENTS, MCPToolset
+from physics_intern.utils.mcp import DEFAULT_ROLES, MCPToolset
 
 SPEC = {
     "name": "parity",
@@ -30,27 +30,29 @@ SPEC = {
 }
 
 
+class _Tool:
+    def __init__(self, name):
+        self.name = name
+        self.description = ""
+        self.inputSchema = {"type": "object", "properties": {}}
+
+
 class _FakeToolset(MCPToolset):
     """A reachable toolset without an endpoint."""
 
-    def __init__(self, agents=DEFAULT_AGENTS):
+    def __init__(self, roles=None):
         super().__init__(
             {
                 "url": "http://gateway.invalid/mcp/",
                 "headers": {},
-                "allow": ["arxiv", "context7"],
-                "agents": list(agents),
+                "roles": dict(roles or DEFAULT_ROLES),
                 "timeout": 5.0,
             }
         )
-        self._tools = [
-            {
-                "type": "function",
-                "function": {"name": n, "description": "", "parameters": {}},
-            }
-            for n in ("arxiv-get_abstract", "context7-query-docs")
+        self._discovered = [
+            _Tool("arxiv-get_abstract"),
+            _Tool("context7-query-docs"),
         ]
-        self._names = frozenset({"arxiv-get_abstract", "context7-query-docs"})
 
 
 @pytest.fixture
@@ -94,12 +96,25 @@ def test_the_computer_agent_runs_under_that_policy(engine) -> None:
 # --- lookups reach the same roles in both modes -----------------------------
 
 
-@pytest.mark.parametrize("role", ["surveyor", "researcher", "computer"])
-def test_reasoning_and_coding_roles_get_lookups(engine, role) -> None:
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [
+        ("surveyor", "arxiv-get_abstract"),
+        ("researcher", "arxiv-get_abstract"),
+        ("computer", "context7-query-docs"),
+    ],
+)
+def test_each_role_gets_the_tools_its_job_needs(engine, role, expected) -> None:
+    """Not the same set: the literature roles get arXiv, the coder gets docs."""
     agent = getattr(engine, role)
     names = [t["function"]["name"] for t in agent.lookup_tools()]
-    assert "arxiv-get_abstract" in names
+    assert expected in names
     assert agent.uses_tools is True
+
+
+def test_the_coder_does_not_get_the_literature(engine) -> None:
+    names = [t["function"]["name"] for t in engine.computer.lookup_tools()]
+    assert "arxiv-get_abstract" not in names
 
 
 def test_the_orchestrator_is_left_out_by_default(engine) -> None:
@@ -128,6 +143,16 @@ def test_a_lookup_only_agent_can_call_one(engine) -> None:
     assert executor.exit_tool_names == frozenset()
     call = executor.execute("nope", {})
     assert call.is_error and "arxiv-get_abstract" in call.output
+
+
+def test_a_role_cannot_call_a_tool_outside_its_allowlist(engine) -> None:
+    """Role-scoped, not global: a sub-agent asking for a paper is refused."""
+    from physics_intern.utils.mcp import LookupExecutor
+
+    assert engine.mcp.handles("arxiv-get_abstract", "manager") is True
+    assert engine.mcp.handles("arxiv-get_abstract", "subagent") is False
+    call = LookupExecutor(engine.mcp, "subagent").execute("arxiv-get_abstract", {})
+    assert call.is_error is True
 
 
 def test_no_mcp_leaves_every_agent_one_shot(tmp_path, monkeypatch) -> None:
@@ -174,7 +199,10 @@ def test_a_non_coding_agent_keeps_the_reasoning_model(engine) -> None:
     assert engine.researcher.config.model == "reasoning-model"
 
 
-def test_default_roles_are_the_same_two_in_both_modes() -> None:
-    assert "manager" in DEFAULT_AGENTS  # the Autophysicist's reasoning role
-    assert {"surveyor", "researcher", "computer"} <= set(DEFAULT_AGENTS)
-    assert "orchestrator" not in DEFAULT_AGENTS
+def test_both_modes_share_one_role_table() -> None:
+    """Parity is the point: the same names mean the same thing in both loops.
+
+    The exact contents are asserted in test_physics_mcp.py.
+    """
+    assert {"manager", "subagent"} <= set(DEFAULT_ROLES)
+    assert {"surveyor", "researcher", "computer"} <= set(DEFAULT_ROLES)

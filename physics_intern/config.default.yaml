@@ -97,7 +97,13 @@ agent_max_tokens:
   # token.
   manager: 32768
   # Matches every "subagent_iter<N>_<M>" dispatch by prefix.
-  subagent: 65536
+  #
+  # 24576, not 65536: a sub-agent writes ONE self-contained script, and the
+  # scripts that come back are 13-19 KB. Given 64k it used 40-55k per call and
+  # took nine to twenty minutes, because a budget that large is an invitation
+  # to keep going. If a task genuinely needs more than this, it is too big for
+  # one sub-agent and the Manager should split it.
+  subagent: 24576
   spec_writer: 16384
 
 # --- Pipeline retry ---

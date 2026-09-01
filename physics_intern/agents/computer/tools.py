@@ -23,7 +23,9 @@ class ToolExecutor:
     """
 
     @staticmethod
-    def _execute_python_def(policy: "SandboxPolicy | None" = None) -> dict:
+    def _execute_python_def(
+        policy: "SandboxPolicy | None" = None, timeout: int = 60
+    ) -> dict:
         """Build the execute_python schema against the real runtime.
 
         The description is generated, not hardcoded: it names the packages the
@@ -41,7 +43,7 @@ class ToolExecutor:
                 "These paths are mounted read-only; write everything you "
                 "produce into the working directory instead."
             )
-        guidance = runtime_guidance(interpreter)
+        guidance = runtime_guidance(interpreter, timeout=timeout)
         if guidance:
             guidance = "\n\n" + guidance
         return {
@@ -63,10 +65,10 @@ class ToolExecutor:
                     f"{data_note}\n\n"
                     "The script must be self-contained. Never call plt.show() "
                     "(use plt.savefig() then plt.close()). "
-                    "Timeout: scripts are killed after the configured timeout "
-                    "(default 60s). If you hit a timeout, simplify your "
-                    "approach: reduce grid sizes, use fewer iterations, or "
-                    "switch to analytical methods."
+                    f"Timeout: scripts are killed after {timeout}s. A timeout "
+                    "usually means you asked for too much data, not that the "
+                    "approach was wrong — read fewer events before you read "
+                    "more."
                     f"{guidance}"
                 ),
                 "parameters": {
@@ -237,7 +239,7 @@ class ToolExecutor:
         """Full computer tool set, with the runtime-derived execute_python."""
         return [
             self._DOCUMENT_APPROACH_DEF,
-            self._execute_python_def(self._policy),
+            self._execute_python_def(self._policy, self.timeout),
             self._SUBMIT_RESULT_DEF,
         ] + self._lookup_tools()
 
@@ -259,13 +261,13 @@ class ToolExecutor:
 
     def _computer_tools_post_approach(self) -> list[dict]:
         return [
-            self._execute_python_def(self._policy),
+            self._execute_python_def(self._policy, self.timeout),
             self._SUBMIT_RESULT_DEF,
         ] + self._lookup_tools()
 
     def _computer_tools_progress(self) -> list[dict]:
         return [
-            self._execute_python_def(self._policy),
+            self._execute_python_def(self._policy, self.timeout),
             self._SUBMIT_RESULT_DEF,
             self._REPORT_PROGRESS_DEF,
         ] + self._lookup_tools()
@@ -349,7 +351,7 @@ class ToolExecutor:
             output, is_error = self._document_approach(tool_input)
         elif tool_name == "report_progress":
             output, is_error = self._report_progress(tool_input)
-        elif self._mcp is not None and self._mcp.handles(tool_name):
+        elif self._mcp is not None and self._mcp.handles(tool_name, "computer"):
             output, is_error = self._mcp.call(tool_name, tool_input)
         else:
             output = (

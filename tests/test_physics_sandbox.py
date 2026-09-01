@@ -291,3 +291,62 @@ def test_a_shell_is_available_in_the_sandbox(tmp_path: Path) -> None:
         script, timeout=60, cwd=tmp_path, policy=_policy(tmp_path)
     )
     assert result.stdout.strip() == "shell-ok", result.stderr
+
+
+def test_pyroot_notes_appear_when_root_is_present() -> None:
+    """Every failed script in the first fast run guessed at the C++ API."""
+    from physics_intern.utils.runtime_notes import notes_for
+
+    note = notes_for({"ROOT": "6.40.00"})
+    assert "GetListOfBranches" in note
+    assert "DO NOT INTROSPECT" in note
+    assert notes_for({"numpy": "2.0"}) == ""
+
+
+def test_both_notes_compose() -> None:
+    from physics_intern.utils.runtime_notes import notes_for
+
+    note = notes_for({"ROOT": "6.40.00", "analysis_utilities": "26.8.27"})
+    assert "GetListOfBranches" in note and "load_tree_data" in note
+
+
+def test_the_guidance_states_the_real_timeout(monkeypatch) -> None:
+    """"The timeout is short" was ignored; a number with the consequence is not.
+
+    The first run to get this far timed out twice on byte-identical scripts,
+    reading a multi-GB file in full under a 60 s limit.
+    """
+    from physics_intern.utils.runtime_notes import notes_for
+
+    note = notes_for({"analysis_utilities": "26.8.27"}, timeout=900)
+    # The note is wrapped and comment-prefixed, so compare on normalised text.
+    flat = " ".join(note.replace("#", " ").split())
+    assert "killed after 900 seconds" in flat
+    assert "{timeout}" not in note
+    assert "does NOT mean your approach was wrong" in flat
+
+
+def test_the_execute_python_schema_states_the_real_timeout() -> None:
+    from physics_intern.agents.computer.tools import ToolExecutor
+
+    description = ToolExecutor._execute_python_def(None, 900)["function"][
+        "description"
+    ]
+    assert "killed after 900s" in description
+
+
+def test_the_notes_warn_about_raw_waveforms() -> None:
+    """Baseline-subtract and invert is tacit domain knowledge.
+
+    Integrating raw CAEN samples gives a charge dominated by the DC offset and
+    a meaningless tail-to-total ratio — and every number downstream looks
+    plausible. The agent is told, and pointed at the lab's implementation
+    rather than left to hand-roll it.
+    """
+    from physics_intern.utils.runtime_notes import notes_for
+
+    note = " ".join(notes_for({"analysis_utilities": "26.8.27"}).split())
+    assert "goes NEGATIVE" in note
+    assert "WaveformProcessingUtils" in note
+    assert "cfg.polarity" in note
+    assert "ProcessingStats" in note

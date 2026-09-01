@@ -23,10 +23,21 @@ research pipeline.
 Son of Anton is a hard fork of
 [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
 v0.20.5 (2026.8.19, upstream commit `fcbd1076a9`), stripped down to a smaller
-daemon, and extended with the physics modes ported from
+daemon. Hermes's learning loop (skills, memory, session search, cron) is kept.
+
+The Autophysicist mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
-(commit `5553bb6`). Both projects are MIT licensed and so is this fork.
-Hermes's learning loop (skills, memory, session search, cron) is kept.
+(commit `5553bb6`) and has since taken its own path. physics-intern was built
+for theoretical physics, where a sub-agent derives a result and there is
+nothing to look up; this one is built for experimental data, where the work is
+calibrating a detector and training a classifier on recorded waveforms, and the
+dominant failure is guessing at a library API. What that changed: computations
+run under a separate scientific interpreter inside a bubblewrap sandbox with
+the lab's data mounted read-only; the Manager can read its own workspace and
+look up literature; sub-agents can pull documentation; the reasoning and coding
+roles can run on different models; and each iteration is reviewed from outside
+by a critic. The debt is real and gladly acknowledged — the architecture is no
+longer theirs. Both upstream projects are MIT licensed and so is this fork.
 <!---->
 It replaces the archived [temple](https://github.com/ewtodd/temple) harness.
 The daemon design, permission modes, and request router come from there.
@@ -46,9 +57,10 @@ A router picks one per request, and `/mode` overrides it:
 <!---->
 - `standard`: the hermes loop, terminal, files, web, skills, memory,
   delegation, cron.
-- `physics`: one research manager with append-only memory, a windowed
-  scratchpad, a token budget, and a `submit_final_answer` tool, working in a
-  git-versioned scratch directory.
+- `physics`: the Autophysicist — one research manager with append-only memory,
+  a windowed scratchpad, a token budget and a `submit_final_answer` tool,
+  dispatching ephemeral sub-agents that run code in a sandbox, with each
+  iteration reviewed by a critic. Works in a git-versioned scratch directory.
 - `research`: a nine-agent pipeline (surveyor, planner, orchestrator,
   researcher, computer, reviewer, critic, adjudicator, formatter) over a
   shared `ResearchState`, also in a git-versioned directory.
@@ -179,11 +191,37 @@ physics:
   sandbox: bwrap                    # auto | bwrap | off
   data_dirs: [~/lab-data]           # mounted read-only into every computation
   workspace_root: ~/runs            # each run gets a fresh git-versioned subdir
-  mcp:                              # lookup tools for the Manager
+  critique_every_n: 1               # review each iteration from outside
+  mcp:                              # lookup tools, per role
     server: oracle                  # an entry in the top-level mcp_servers
-    allow: [context7, arxiv-search_papers, arxiv-get_abstract]
+    roles:
+      manager:  [arxiv, context7]   # strategy wants the literature
+      subagent: [context7]          # writing a script wants the API
 ```
 <!---->
+### The critic
+
+The Autophysicist is one agent that decides what to investigate, judges its own
+sub-agents and decides what is true — and its own prompt names that as the weak
+point. "Nothing is reliable until independently verified" is a norm with nothing
+enforcing it, and in practice iterations end with a confident plan and an empty
+permanent memory.
+
+So each iteration is reviewed from outside: one prompt, one answer, no tools, no
+verdict that gates anything. The critique goes into the next iteration's context
+and the Manager does what it likes with it; every one is kept in
+`CRITIQUE_LOG.md`. `physics.critique_every_n` sets the interval (0 = off).
+
+One call per iteration is a rounding error against a Manager that spends five
+rounds and several sub-agent dispatches, which makes this the one place a slow,
+more knowledgeable model earns its latency:
+
+```yaml
+physics:
+  agent_models:
+    critic: deepseek-v4-flash-local
+```
+
 ### Two models, split by role
 <!---->
 There are two jobs here, not two modes.
@@ -207,24 +245,26 @@ slower one with better physics, this is where the first pays for itself and the
 second is not missed.
 <!---->
 ### Lookups
-<!---->
-`physics.mcp` gives literature and library-documentation tools from an MCP
-endpoint to the reasoning and coding roles in both modes: the Autophysicist's
-Manager, and the pipeline's surveyor, researcher and computer. `physics.mcp.agents`
-overrides that set. The orchestrator is left out by default — it dispatches over
-a state machine under a one-exit-tool-per-round rule and a ten-round budget,
-where lookups buy little and risk it never dispatching.
-<!---->
-`allow` is required and is what keeps this usable: an aggregating gateway can
-expose dozens of tools, and an agent's budget is a handful of tools and fifteen
-calls an iteration.
-An entry matches a whole tool name (`arxiv-get_abstract`) or
-a server, matching everything it prefixes (`context7`).
-An unreachable endpoint
-degrades to no lookups rather than failing the run.
-The Autophysicist's
-sub-agents do not get these; the Manager relays what it found.
-<!---->
+
+`physics.mcp.roles` maps an agent role to the tools it may call, and the split
+is the point. The Manager decides strategy and wants the literature; a sub-agent
+writing one script wants the API signature it is about to get wrong, and nothing
+else. Handing every role everything is how an agent with a fifteen-call budget
+ends up browsing instead of working.
+
+An entry matches a whole tool name (`arxiv-get_abstract`) or a server, matching
+everything it prefixes (`context7`). A role with no entry gets no tools, and
+`roles: {}` turns lookups off entirely. Enforcement is role-scoped, so a
+sub-agent asking for a paper is refused rather than quietly served.
+
+Sub-agents get lookups on their retries too — that is precisely when the docs
+are worth reading, since the failure is usually an API that does not exist. The
+tool loop is lookups only, with no exit tool: the turn ends when the sub-agent
+stops calling tools and answers, exactly as it did before, so the "one Python
+code block" contract is unchanged.
+
+An unreachable endpoint degrades to no lookups rather than failing the run.
+
 These are called by the agent process, so they are unaffected by the sandbox —
 computations still have no network.
 <!---->

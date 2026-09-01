@@ -412,6 +412,53 @@ DEFAULT_CONFIG = {
         # more each time a script fails — so a faster, stronger coding model is
         # worth the most there and costs the least.
         "coder_model": "",
+        # Per-agent-role model overrides. Beats coder_model and model, matched
+        # by exact agent name then longest prefix.
+        #
+        # The pipeline's nine roles are not the same job — a formatter
+        # rendering an answer template and a critic hunting a dropped factor of
+        # two want different things — and on a host serving one thinking model
+        # and one instruct profile of the same weights, that distinction costs
+        # nothing.
+        #
+        # Keys are the agent's own name. Autophysicist: manager, subagent.
+        # Pipeline: surveyor, planner, orchestrator, researcher, computer,
+        # reviewer, deep_critic, adjudicator, formatter. Note deep_critic, not
+        # critic.
+        #
+        #   agent_models:
+        #     manager: qwen3.8-27b-coding           # thinking profile
+        #     subagent: qwen3.8-27b-instruct        # no thinking, much faster
+        #     deep_critic: deepseek-v4-flash-local  # knowledge where it pays
+        "agent_models": {},
+        # Sent as `reasoning_effort` on every physics call. The vocabulary is
+        # the endpoint's: Qwen3.8 on vLLM takes low / medium / xhigh, and
+        # xhigh is its DEFAULT — which on a script-writing prompt spent 80,000
+        # characters reasoning and produced no script at all inside a 24k
+        # budget. Empty leaves the endpoint's default alone.
+        #
+        # Harmless for a model with thinking disabled: measured against
+        # qwen3.8-27b-instruct at low, medium and xhigh, the reasoning channel
+        # stays empty — chat_template_kwargs.enable_thinking=false wins — so
+        # one global setting can cover a deployment running both profiles of
+        # the same weights.
+        "reasoning_effort": "",
+        # Autophysicist only: review each iteration from outside before the
+        # next one starts. 1 = every iteration, 0 = off.
+        #
+        # The Autophysicist is one agent that decides what to investigate,
+        # judges its own sub-agents and decides what is true, and its own
+        # prompt names that as the weak point — but "nothing is reliable until
+        # verified" is a norm with nothing enforcing it. This is the cheapest
+        # possible enforcement: one prompt, one answer, no tools, no verdict
+        # that gates anything. The critique lands in the next iteration's
+        # context; every one is kept in CRITIQUE_LOG.md.
+        #
+        # A single call per iteration is a rounding error against a Manager
+        # that spends five rounds and several sub-agent dispatches, so this is
+        # where a slower, more knowledgeable model earns its latency:
+        #   agent_models: { critic: deepseek-v4-flash-local }
+        "critique_every_n": 1,
         "base_url": "",
         "api_key_env": "",
         # Base directory for physics/research run workspaces. Each run gets its
@@ -475,15 +522,22 @@ DEFAULT_CONFIG = {
             "url": "",
             "headers": {},
             "api_key_env": "",
-            "allow": [],
-            # Which agent roles get lookups. Empty uses the default set: the
-            # Autophysicist's manager, and the pipeline's surveyor, researcher
-            # and computer — the reasoning and coding roles in both modes.
-            # The orchestrator is deliberately not in it: it dispatches over a
-            # state machine under a one-exit-tool-per-round rule and a ten
-            # round budget, where lookups buy little and risk it never
-            # dispatching.
-            "agents": [],
+            # Per-role allowlists. Different roles want different tools, and
+            # handing every role everything is how an agent with a fifteen-call
+            # budget ends up browsing instead of working: the Manager decides
+            # strategy and wants the literature, while a sub-agent writing one
+            # script wants the API signature it is about to get wrong and
+            # nothing else.
+            #
+            # An entry matches a whole tool name ("arxiv-get_abstract") or a
+            # server, matching everything it prefixes ("context7"). A role with
+            # no entry gets no tools. Omit `roles` entirely for the defaults
+            # below; set it to {} to turn MCP off.
+            #
+            #   roles:
+            #     manager:  [arxiv, context7]
+            #     subagent: [context7]
+            "roles": None,
             "timeout": 120.0,
         },
         # Resource caps inside the sandbox. 0 disables a limit. cpu_seconds

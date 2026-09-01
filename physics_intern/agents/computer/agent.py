@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import copy
-
 from physics_intern.llm import AgentResult, ParseFailureError, run_agent_loop
 from physics_intern.state.research_state import Evidence
 from physics_intern.state.tool_call import ToolCall
@@ -23,6 +21,7 @@ class ComputerAgent(EvidenceAgent):
     policy = None
 
     name = "computer"
+    writes_code = True
     prompt_file = "prompt.md"
     # Built per call from the executor: the execute_python schema depends on
     # the sandbox's interpreter and data mounts, not known at import time.
@@ -48,17 +47,13 @@ class ComputerAgent(EvidenceAgent):
             policy=self.policy,
             mcp=self.mcp,
         )
-        # The computer is the pipeline's code-writing role, so it takes
-        # physics.coder_model for the same reason the Autophysicist's
-        # execute_code sub-agents do.
-        config = self.config
-        if config.coder_model and config.coder_model != config.model:
-            config = copy.copy(config)
-            config.model = config.coder_model
+        # The computer is the pipeline's code-writing role, so `agent_config`
+        # gives it physics.coder_model — or whatever physics.agent_models says
+        # for "computer", which wins over both.
         result = run_agent_loop(
             system=self.system_prompt,
             user_content=context,
-            config=config,
+            config=self.agent_config,
             tool_executor=tool_executor,
             tools=tool_executor.computer_tools(),
             max_rounds=self.max_tool_rounds or self.config.max_tool_rounds,

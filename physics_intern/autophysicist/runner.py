@@ -54,6 +54,7 @@ from ..core.workspace import log_scaffold_event  # noqa: E402
 from ..utils.mcp import MCPToolset  # noqa: E402
 from ..utils.sandbox import SandboxPolicy  # noqa: E402
 
+from .critic import run_critique  # noqa: E402
 from .memory import PermanentMemory, Scratchpad  # noqa: E402
 from .tools import ManagerToolExecutor  # noqa: E402
 
@@ -71,6 +72,7 @@ def _build_user_content(
     scratchpad: Scratchpad,
     iteration: int,
     max_iterations: int,
+    critique: str = "",
 ) -> str:
     """Assemble the user message for one Manager iteration."""
     mem_text = permanent_memory.read_full().strip()
@@ -105,6 +107,16 @@ def _build_user_content(
     else:
         parts.append("\n\n<scratchpad>\n(Empty — no working notes yet.)\n</scratchpad>")
 
+    # Last, so it is the freshest thing before the model starts deciding.
+    if critique.strip():
+        parts.append(
+            "\n\n<critique_of_your_last_iteration>\n"
+            "An independent reviewer read your last iteration from the "
+            "outside. It cannot see your reasoning and has no stake in it.\n\n"
+            f"{critique.strip()}\n"
+            "</critique_of_your_last_iteration>"
+        )
+
     return "".join(parts)
 
 
@@ -123,8 +135,8 @@ def _run_iteration(
     max_rounds: int,
     sandbox_timeout: int,
     metrics: MetricsTracker,
+    critique: str = "",
     policy: SandboxPolicy | None = None,
-    coder_model: str = "",
     mcp: MCPToolset | None = None,
 ) -> tuple[AgentResult, ManagerToolExecutor]:
     """Run one iteration of the Research Manager."""
@@ -135,6 +147,7 @@ def _run_iteration(
         scratchpad,
         iteration,
         max_iterations,
+        critique,
     )
 
     executor = ManagerToolExecutor(
@@ -147,7 +160,6 @@ def _run_iteration(
         tool_call_cap=tool_call_cap,
         sandbox_timeout=sandbox_timeout,
         policy=policy,
-        coder_model=config.coder_model,
         mcp=mcp,
     )
 
@@ -410,10 +422,28 @@ def run_autophysicist(
         )
 
     # --- Header ---
+    critique_every_n = max(int(getattr(config, "critique_every_n", 1) or 0), 0)
     console.print(f"[bold]Autophysicist[/bold] — {problem_name}")
+    # Every role's EFFECTIVE model, resolved the same way the calls resolve it.
+    # Printing only the agent_models overrides showed nothing when the map was
+    # empty, so a critic silently inheriting the Manager's model looked exactly
+    # like a critic configured to use it.
     console.print(f"Model:      {config.model}")
-    if config.coder_model:
-        console.print(f"Code:       {config.coder_model}")
+    console.print(f"Code:       {config.model_for_agent('subagent', coding=True)}")
+    if critique_every_n:
+        every = (
+            "every iteration"
+            if critique_every_n == 1
+            else f"every {critique_every_n} iterations"
+        )
+        console.print(
+            f"Critic:     {config.model_for_agent('critic')}  ({every})"
+        )
+    else:
+        console.print("Critic:     off")
+    for role, role_model in sorted(config.agent_models.items()):
+        if role not in ("critic", "subagent"):
+            console.print(f"  {role:9s} {role_model}")
     console.print(f"Workspace:  {workspace_root}")
     console.print(
         f"Iterations: up to {max_iterations}, "
@@ -433,15 +463,24 @@ def run_autophysicist(
             "Data (ro):  " + ", ".join(str(d) for d in policy.data_dirs)
         )
     if mcp is not None:
-        names = [t["function"]["name"] for t in mcp.tools()]
-        console.print(
-            f"Lookups:    {', '.join(names)}" if names
-            else "[yellow]Lookups:    configured but the endpoint returned "
-                 "nothing — continuing without them[/]"
-        )
+        for role in ("manager", "subagent"):
+            names = [t["function"]["name"] for t in mcp.tools_for(role)]
+            if names:
+                console.print(f"Lookups ({role}): {', '.join(names)}")
+        if not mcp.tools_for("manager") and not mcp.tools_for("subagent"):
+            console.print(
+                "[yellow]Lookups:    configured but the endpoint returned "
+                "nothing — continuing without them[/]"
+            )
     console.rule()
 
     # --- Outer iteration loop ---
+    # The critique of the previous iteration, shown once and then replaced.
+    # Not accumulated: the Manager's context is the scarce resource, and a
+    # stack of old critiques competes with the problem it is meant to sharpen.
+    # Every one is kept in CRITIQUE_LOG.md.
+    critique = ""
+
     for iteration in range(start_iteration, max_iterations + 1):
         console.rule(f"[bold]Iteration {iteration}[/bold]")
         iter_start = time.time()
@@ -463,8 +502,8 @@ def run_autophysicist(
                 sandbox_timeout=sandbox_timeout,
                 metrics=metrics,
                 policy=policy,
-                coder_model=config.coder_model,
                 mcp=mcp,
+                critique=critique,
             )
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted by user.[/yellow]")
@@ -501,6 +540,24 @@ def run_autophysicist(
             f"  Memory: {permanent_memory.size_chars:,} chars, "
             f"Scratchpad: {scratchpad.entry_count} entries"
         )
+
+        # Review the iteration from outside before the next one starts. One
+        # call, no tools, and it cannot fail the run.
+        if critique_every_n and iteration % critique_every_n == 0:
+            critique = run_critique(
+                config=config,
+                problem_text=problem_text,
+                permanent_memory=permanent_memory,
+                scratchpad=scratchpad,
+                workspace_root=workspace_root,
+                iteration=iteration,
+                result=result,
+            )
+            if critique:
+                console.print(
+                    f"  [cyan]Critic[/cyan] ({config.model_for_agent('critic')}): "
+                    f"{critique.splitlines()[0][:120]}"
+                )
 
         _git_commit(workspace_root, iteration, result)
         _write_iteration_counter(workspace_root, iteration)

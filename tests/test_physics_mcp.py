@@ -15,7 +15,12 @@ from __future__ import annotations
 import pytest
 
 from physics_intern.autophysicist.tools import ManagerToolExecutor
-from physics_intern.utils.mcp import MCPToolset, is_allowed, resolve_mcp_config
+from physics_intern.utils.mcp import (
+    DEFAULT_ROLES,
+    MCPToolset,
+    is_allowed,
+    resolve_mcp_config,
+)
 
 GATEWAY = {
     "mcp_servers": {
@@ -24,7 +29,12 @@ GATEWAY = {
             "headers": {"Authorization": "Bearer ${TEST_MCP_KEY}"},
         }
     },
-    "physics": {"mcp": {"server": "oracle", "allow": ["context7", "arxiv-get_abstract"]}},
+    "physics": {
+        "mcp": {
+            "server": "oracle",
+            "roles": {"manager": ["context7", "arxiv-get_abstract"]},
+        }
+    },
 }
 
 
@@ -41,10 +51,36 @@ def test_a_server_name_does_not_match_a_longer_server_name() -> None:
     assert not is_allowed("context7x-tool", ["context7"])
 
 
-def test_no_allowlist_means_no_mcp() -> None:
-    config = {"physics": {"mcp": {"server": "oracle", "allow": []}}}
+def test_an_empty_roles_map_means_no_mcp() -> None:
+    """`roles: {}` is how a deployment turns lookups off."""
+    config = {"physics": {"mcp": {"server": "oracle", "roles": {}}}}
     assert resolve_mcp_config(config) is None
     assert MCPToolset.from_config(config) is None
+
+
+def test_omitting_roles_takes_the_defaults() -> None:
+    settings = resolve_mcp_config(
+        {"physics": {"mcp": {"url": "http://x.invalid/mcp/"}}}
+    )
+    assert settings["roles"] == DEFAULT_ROLES
+
+
+def test_a_config_still_using_the_old_flat_allowlist_is_warned_about() -> None:
+    """Silently ignoring a hand-curated allowlist is the bug class this audit
+    kept finding: present, plausible, and read by nothing."""
+    with pytest.warns(UserWarning, match="no longer read"):
+        settings = resolve_mcp_config(
+            {
+                "physics": {
+                    "mcp": {
+                        "url": "http://x.invalid/mcp/",
+                        "allow": ["arxiv-get_abstract"],
+                        "agents": ["manager"],
+                    }
+                }
+            }
+        )
+    assert settings["roles"] == DEFAULT_ROLES
 
 
 def test_missing_mcp_section_means_no_mcp() -> None:
@@ -66,7 +102,7 @@ def test_api_key_env_builds_the_header_when_none_is_declared(monkeypatch) -> Non
                 "mcp": {
                     "url": "http://gateway.invalid/mcp/",
                     "api_key_env": "SOME_KEY",
-                    "allow": ["arxiv"],
+                    "roles": {"manager": ["arxiv"]},
                 }
             }
         }
@@ -80,29 +116,31 @@ def test_an_unreachable_endpoint_degrades_to_no_tools() -> None:
         {
             "url": "http://127.0.0.1:1/mcp/",
             "headers": {},
-            "allow": ["arxiv"],
+            "roles": {"manager": ("arxiv",)},
             "timeout": 2.0,
         }
     )
-    assert toolset.tools() == []
-    assert toolset.handles("arxiv-get_abstract") is False
+    assert toolset.tools_for("manager") == []
+    assert toolset.handles("arxiv-get_abstract", "manager") is False
 
 
 # --- how the Manager sees them ---------------------------------------------
 
 
 class _FakeToolset:
-    def __init__(self, names):
-        self._names = list(names)
+    """Role-scoped, like the real one."""
 
-    def tools(self):
+    def __init__(self, roles):
+        self.roles = {k: tuple(v) for k, v in roles.items()}
+
+    def tools_for(self, role):
         return [
             {"type": "function", "function": {"name": n, "description": "", "parameters": {}}}
-            for n in self._names
+            for n in self.roles.get(role, ())
         ]
 
-    def handles(self, name):
-        return name in self._names
+    def handles(self, name, role):
+        return name in self.roles.get(role, ())
 
     def call(self, name, arguments):
         return f"called {name} with {sorted(arguments)}", False
@@ -121,7 +159,12 @@ def executor(tmp_path):
         workspace_root=tmp_path,
         iteration=1,
         policy=SandboxPolicy(workspace=tmp_path, mode="off"),
-        mcp=_FakeToolset(["arxiv-get_abstract", "context7-query-docs"]),
+        mcp=_FakeToolset(
+            {
+                "manager": ["arxiv-get_abstract", "context7-query-docs"],
+                "subagent": ["context7-query-docs"],
+            }
+        ),
     )
 
 
@@ -172,3 +215,100 @@ def test_no_mcp_configured_leaves_the_manager_unchanged(tmp_path) -> None:
     )
     assert executor.all_tools() == list(ManagerToolExecutor.ALL_TOOLS)
 
+
+
+def test_the_manager_prompt_describes_the_tools_it_actually_has() -> None:
+    """It said "You have four tools" and listed them.
+
+    The schemas reach the API, but a model reading an authoritative-sounding
+    enumeration does not reach for a tool outside it — so the lookup tools and
+    the workspace tools sat unused.
+    """
+    from pathlib import Path
+
+    prompt = (
+        Path(__file__).resolve().parent.parent
+        / "physics_intern"
+        / "autophysicist"
+        / "prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert "You have four tools" not in prompt
+    assert "read_workspace_file" in prompt
+    assert "context7" in prompt
+    assert "arxiv" in prompt
+    # ...and it must still say the sub-agents cannot look anything up, since
+    # that is why the Manager has to do it for them.
+    assert "The sub-agent cannot look anything up" in prompt
+
+
+def test_a_subagent_gets_documentation_lookups(monkeypatch, tmp_path) -> None:
+    """The failure mode is guessing at an API; the answer is reading the API.
+
+    A sub-agent used to be a pure function of its prompt — no memory, no tools.
+    That is right for a derivation and wrong for writing code against a library
+    the model has not memorised.
+    """
+    from physics_intern.autophysicist import subagent as subagent_module
+    from physics_intern.core.config import Config
+
+    toolset = _FakeToolset({"subagent": ["context7-query-docs"]})
+    seen: dict = {}
+
+    def fake_loop(*, system, user_content, config, tool_executor, tools, **kwargs):
+        seen["tools"] = [t["function"]["name"] for t in tools]
+        seen["role"] = tool_executor.agent_name
+
+        class _R:
+            text = "no code block here"
+            total_input_tokens = 1
+            total_output_tokens = 1
+
+        return _R()
+
+    monkeypatch.setattr(subagent_module, "run_agent_loop", fake_loop)
+    subagent_module.dispatch_subagent(
+        system_prompt="s",
+        user_message="write a script",
+        execute_code=True,
+        config=Config(),
+        workspace_root=tmp_path,
+        iteration=1,
+        mcp=toolset,
+    )
+    assert seen["tools"] == ["context7-query-docs"]
+    assert seen["role"] == "subagent"
+
+
+def test_a_subagent_without_lookups_stays_a_plain_call(monkeypatch, tmp_path) -> None:
+    """No MCP configured must not change how a sub-agent runs."""
+    from physics_intern.autophysicist import subagent as subagent_module
+    from physics_intern.core.config import Config
+
+    called = {"loop": 0, "plain": 0}
+
+    def fake_loop(**kwargs):
+        called["loop"] += 1
+        raise AssertionError("should not run a tool loop without lookups")
+
+    class _Resp:
+        text = "no code"
+        input_tokens = 1
+        output_tokens = 1
+
+    def fake_call_llm(**kwargs):
+        called["plain"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(subagent_module, "run_agent_loop", fake_loop)
+    monkeypatch.setattr(subagent_module, "call_llm", fake_call_llm)
+    subagent_module.dispatch_subagent(
+        system_prompt="s",
+        user_message="u",
+        execute_code=True,
+        config=Config(),
+        workspace_root=tmp_path,
+        iteration=1,
+        mcp=None,
+    )
+    assert called == {"loop": 0, "plain": 1}

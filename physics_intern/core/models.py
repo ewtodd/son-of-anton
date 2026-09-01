@@ -1,13 +1,18 @@
 """Which model each physics role runs under.
 
-Two roles, not two modes. The reasoning role — the Autophysicist's Research
-Manager, the research pipeline's other agents — reads state, decides strategy
-and judges results. The coding role — the Autophysicist's ``execute_code``
-sub-agents, the pipeline's computer agent — writes one self-contained script.
+Two roles to start with, not two modes. The reasoning role — the
+Autophysicist's Research Manager, the research pipeline's judging agents —
+reads state, decides strategy and judges results. The coding role — the
+Autophysicist's ``execute_code`` sub-agents, the pipeline's computer — writes
+one self-contained script. A deployment may have a model much better and faster
+at the second and weaker at the first, so ``physics.model`` and
+``physics.coder_model`` apply to those two roles in both modes.
 
-A deployment may have a model that is much faster and better at the second job
-and weaker at the first, so both modes read the same two keys and apply them to
-the same two roles.
+``physics.agent_models`` goes finer, per agent name, and beats both. The
+pipeline has nine roles and they are not all the same job: a formatter
+rendering an answer template and a critic hunting for a dropped factor of two
+want different things, and on a host serving one thinking model and one
+instruct profile of the same weights, that distinction is free.
 """
 
 from __future__ import annotations
@@ -37,3 +42,19 @@ def resolve_models(config, model: str | None = None) -> None:
         config.model = str(physics.get("model") or "").strip()
     if not config.coder_model:
         config.coder_model = str(physics.get("coder_model") or "").strip()
+    if not config.reasoning_effort:
+        config.reasoning_effort = str(
+            physics.get("reasoning_effort") or ""
+        ).strip()
+    declared_critique = physics.get("critique_every_n")
+    if declared_critique is not None:
+        try:
+            config.critique_every_n = max(int(declared_critique), 0)
+        except (TypeError, ValueError):
+            pass
+    if not config.agent_models:
+        declared = physics.get("agent_models")
+        if isinstance(declared, dict):
+            config.agent_models = {
+                str(k): str(v) for k, v in declared.items() if str(v).strip()
+            }

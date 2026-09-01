@@ -29,18 +29,44 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import warnings
 from typing import Any
 
 DEFAULT_TIMEOUT = 120.0
 
-#: Agents that get lookup tools when ``physics.mcp.agents`` is not set.
-#: The reasoning and coding roles in both modes, and nothing else: the
-#: Autophysicist's Research Manager, and the research pipeline's surveyor
-#: (background and known methods), researcher (derivations) and computer
-#: (library APIs). Deliberately excludes the orchestrator, which dispatches
-#: over a state machine under a one-exit-tool-per-round discipline and a ten
-#: round budget — lookups there buy little and risk it never dispatching.
-DEFAULT_AGENTS = ("manager", "surveyor", "researcher", "computer")
+#: Default per-role allowlists, used when ``physics.mcp.roles`` is absent.
+#:
+#: Named tools, not server prefixes. ``"arxiv"`` matches all nineteen tools
+#: that server exposes — including topic watches, alert checks, a reindexer and
+#: four LaTeX-source readers, which are a human's library-management workflow —
+#: and putting nineteen schemas in front of an agent with a fifteen-call budget
+#: is the crowding the allowlist exists to prevent.
+#:
+#: The Manager gets reading tools only: find, triage, fetch, read, search
+#: within. It does not get ``context7``, because it does not write code — it
+#: writes the brief, and the sub-agent that writes the code has its own
+#: documentation lookup.
+_ARXIV_READING = (
+    "arxiv-search_papers",
+    "arxiv-get_abstract",
+    "arxiv-download_paper",
+    "arxiv-read_paper",
+    "arxiv-search_paper_text",
+)
+
+DEFAULT_ROLES: dict[str, tuple[str, ...]] = {
+    "manager": _ARXIV_READING,
+    "subagent": ("context7",),
+    # The research pipeline's equivalents, for as long as it exists.
+    "surveyor": _ARXIV_READING,
+    "researcher": _ARXIV_READING,
+    "computer": ("context7",),
+}
+
+#: Keys from the flat pre-``roles`` shape. Present-but-ignored config is the
+#: failure mode this whole audit kept turning up, so it is named rather than
+#: dropped.
+_RETIRED_KEYS = ("allow", "agents")
 #: Tool results are truncated before they reach the model's context.
 RESULT_LIMIT = 20_000
 
@@ -70,13 +96,29 @@ def resolve_mcp_config(config: dict | None = None) -> dict | None:
     if not isinstance(section, dict):
         return None
 
-    allow = [str(a).strip() for a in (section.get("allow") or []) if str(a).strip()]
-    if not allow:
-        return None
+    stale = [k for k in _RETIRED_KEYS if k in section]
+    if stale:
+        warnings.warn(
+            f"physics.mcp.{{{', '.join(stale)}}} is no longer read — allowlists "
+            f"are per role now. Move them under physics.mcp.roles, e.g. "
+            f"roles: {{manager: [arxiv-search_papers], subagent: [context7]}}. "
+            f"Until then the built-in defaults apply and your list is ignored.",
+            stacklevel=2,
+        )
 
-    agents = [str(a).strip() for a in (section.get("agents") or []) if str(a).strip()]
-    if not agents:
-        agents = list(DEFAULT_AGENTS)
+    declared = section.get("roles")
+    roles: dict[str, tuple[str, ...]] = {}
+    if isinstance(declared, dict):
+        for role, allow in declared.items():
+            entries = tuple(
+                str(a).strip() for a in (allow or []) if str(a).strip()
+            )
+            if entries:
+                roles[str(role)] = entries
+    elif declared is None:
+        roles = dict(DEFAULT_ROLES)
+    if not roles:
+        return None
 
     url = str(section.get("url") or "").strip()
     headers: dict[str, str] = {}
@@ -101,8 +143,7 @@ def resolve_mcp_config(config: dict | None = None) -> dict | None:
     return {
         "url": url,
         "headers": headers,
-        "allow": allow,
-        "agents": agents,
+        "roles": roles,
         "timeout": float(section.get("timeout") or DEFAULT_TIMEOUT),
     }
 
@@ -157,54 +198,70 @@ class MCPToolset:
     def __init__(self, settings: dict):
         self.url = settings["url"]
         self.headers = settings["headers"]
-        self.allow = settings["allow"]
-        self.agents = frozenset(settings.get("agents") or DEFAULT_AGENTS)
+        self.roles: dict[str, tuple[str, ...]] = dict(
+            settings.get("roles") or DEFAULT_ROLES
+        )
         self.timeout = settings["timeout"]
-        self._tools: list[dict] | None = None
-        self._names: frozenset[str] = frozenset()
+        self._discovered: list | None = None
 
     @classmethod
     def from_config(cls, config: dict | None = None) -> "MCPToolset | None":
         settings = resolve_mcp_config(config)
         return cls(settings) if settings else None
 
-    def enabled_for(self, agent_name: str) -> bool:
-        """Whether *agent_name* is one of the roles that gets lookups."""
-        return agent_name in self.agents
+    def enabled_for(self, role: str) -> bool:
+        """Whether *role* is configured for any lookups at all."""
+        return bool(self._allow_for(role))
 
-    def tools_for(self, agent_name: str) -> list[dict]:
-        """The tools *agent_name* may use — empty for roles that get none."""
-        return self.tools() if self.enabled_for(agent_name) else []
+    def _allow_for(self, role: str) -> tuple[str, ...]:
+        """The allowlist for *role*: exact name, then longest prefix."""
+        if role in self.roles:
+            return self.roles[role]
+        matches = [k for k in self.roles if role.startswith(k)]
+        return self.roles[max(matches, key=len)] if matches else ()
 
-    def tools(self) -> list[dict]:
-        """The allowed tools, fetched once per run. [] if the endpoint is down.
+    def _discover(self) -> list:
+        """Fetch the endpoint's tool list once per run.
 
-        A research run must not abort because a documentation server is
-        unreachable — it degrades to the tools it already had.
+        A run must not abort because a documentation server is unreachable —
+        it degrades to the tools it already had.
         """
-        if self._tools is not None:
-            return self._tools
+        if self._discovered is not None:
+            return self._discovered
 
         async def _list(session):
             return (await session.list_tools()).tools
 
         try:
-            discovered = asyncio.run(
+            self._discovered = asyncio.run(
                 _with_session(self.url, self.headers, self.timeout, _list)
             )
         except Exception:
-            self._tools = []
-            self._names = frozenset()
-            return self._tools
+            self._discovered = []
+        return self._discovered
 
-        selected = [t for t in discovered if is_allowed(t.name, self.allow)]
-        self._tools = [_to_openai_schema(t) for t in selected]
-        self._names = frozenset(t.name for t in selected)
-        return self._tools
+    def tools_for(self, role: str) -> list[dict]:
+        """The tools *role* may use, as OpenAI schemas. [] if it gets none."""
+        allow = self._allow_for(role)
+        if not allow:
+            return []
+        return [
+            _to_openai_schema(t)
+            for t in self._discover()
+            if is_allowed(t.name, list(allow))
+        ]
 
-    def handles(self, tool_name: str) -> bool:
-        self.tools()
-        return tool_name in self._names
+    def handles(self, tool_name: str, role: str) -> bool:
+        """Whether *role* is allowed to call *tool_name*.
+
+        Role-scoped, not global: the whole point of splitting the allowlists is
+        that a sub-agent asking for a paper should be told it cannot, rather
+        than quietly getting one because the Manager may.
+        """
+        allow = self._allow_for(role)
+        if not allow or not is_allowed(tool_name, list(allow)):
+            return False
+        return any(t.name == tool_name for t in self._discover())
 
     def call(self, tool_name: str, arguments: dict) -> tuple[str, bool]:
         """Call one tool. Returns (text, is_error) — never raises."""
@@ -259,7 +316,7 @@ class LookupExecutor:
         from ..state.tool_call import ToolCall
 
         start = time.time()
-        if self.toolset is not None and self.toolset.handles(tool_name):
+        if self.toolset is not None and self.toolset.handles(tool_name, self.agent_name):
             output, is_error = self.toolset.call(tool_name, tool_input)
         else:
             available = [

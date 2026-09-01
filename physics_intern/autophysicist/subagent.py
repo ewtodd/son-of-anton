@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.config import Config
-from ..llm import call_llm, call_llm_continuation
+from ..llm import call_llm, run_agent_loop
+from ..utils.mcp import LookupExecutor, MCPToolset
 from ..utils.sandbox import (
     SandboxPolicy,
     describe_runtime,
@@ -25,7 +26,7 @@ def code_execution_suffix(
     not keep, and a sub-agent that believes it has NumPy writes NumPy.
     """
     interpreter = policy.interpreter if policy else None
-    guidance = runtime_guidance(interpreter)
+    guidance = runtime_guidance(interpreter, timeout=timeout)
     guidance = ("\n\n" + guidance) if guidance else ""
     data_note = ""
     if policy and policy.data_dirs:
@@ -81,6 +82,36 @@ def _extract_python_code(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _save_output(script_path: Path, result) -> None:
+    """Write a script's stdout/stderr next to it as <stem>.output."""
+    parts = []
+    if result.stdout:
+        parts.append(result.stdout)
+    if result.stderr:
+        parts.append(f"\n--- STDERR ---\n{result.stderr}")
+    try:
+        script_path.with_suffix(".output").write_text(
+            "".join(parts) or "(no output)", encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _error_headline(result) -> str:
+    """The last non-empty stderr line — the exception, not the traceback.
+
+    A retry that gets 5000 characters of truncated traceback tends to fix
+    whatever it notices first. Leading with `AttributeError: 'TTree' object has
+    no attribute 'SetMaxTreeError'` puts the actual cause where it cannot be
+    skimmed past; the run this came from repaired an unrelated syntax error
+    instead and kept the bad call.
+    """
+    for line in reversed((result.stderr or "").strip().splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
 def _truncate(text: str, limit: int = 10_000) -> str:
     """Truncate output, preserving head and tail."""
     if len(text) <= limit:
@@ -105,6 +136,7 @@ def dispatch_subagent(
     max_retries: int = 3,
     policy: SandboxPolicy | None = None,
     model: str = "",
+    mcp: MCPToolset | None = None,
 ) -> SubAgentResult:
     """Dispatch an ephemeral sub-agent LLM call.
 
@@ -143,21 +175,51 @@ def dispatch_subagent(
         )
 
     agent_label = f"subagent_iter{iteration}_{subagent_counter}"
+    lookups = mcp.tools_for("subagent") if mcp else []
 
-    # Initial LLM call
-    resp = call_llm(
-        system=effective_system,
-        user_content=user_message,
-        config=config,
-        agent_name=agent_label,
-        iteration=iteration,
-    )
-    total_in += resp.input_tokens
-    total_out += resp.output_tokens
+    def _ask(user_content: str, label: str):
+        """One sub-agent turn, with documentation lookups if it has any.
+
+        A sub-agent used to be a pure function of its prompt: no memory, no
+        tools, nothing but what the Manager wrote. That is a real anti-drift
+        property and it costs nothing for a derivation, where there is nothing
+        to look up. It is the wrong trade for writing code against a library
+        the model has not memorised — that failure mode is guessing at an API,
+        and it is answered by reading the API.
+
+        The tool loop is lookups ONLY. There is no exit tool: the turn ends
+        when the sub-agent stops calling tools and answers, which is exactly
+        what it did before, so the "one Python code block" contract is
+        unchanged.
+        """
+        if not lookups:
+            response = call_llm(
+                system=effective_system,
+                user_content=user_content,
+                config=config,
+                agent_name=label,
+                iteration=iteration,
+            )
+            return response.text, response.input_tokens, response.output_tokens
+        result = run_agent_loop(
+            system=effective_system,
+            user_content=user_content,
+            config=config,
+            tool_executor=LookupExecutor(mcp, "subagent"),
+            tools=lookups,
+            max_rounds=6,
+            agent_name=label,
+            iteration=iteration,
+        )
+        return result.text, result.total_input_tokens, result.total_output_tokens
+
+    text, used_in, used_out = _ask(user_message, agent_label)
+    total_in += used_in
+    total_out += used_out
 
     if not execute_code:
         return SubAgentResult(
-            reasoning_text=resp.text,
+            reasoning_text=text,
             code="",
             execution_output="",
             execution_status="no_code",
@@ -166,18 +228,18 @@ def dispatch_subagent(
         )
 
     # --- Code execution path ---
-    code = _extract_python_code(resp.text)
+    code = _extract_python_code(text)
     # Strip the code block from reasoning to avoid duplication in format_for_manager
     if code:
         reasoning_text = re.sub(
             r"```(?:python)?\s*\n.*?```",
             "",
-            resp.text,
+            text,
             count=1,
             flags=re.DOTALL,
         ).strip()
     else:
-        reasoning_text = resp.text
+        reasoning_text = text
 
     if not code:
         return SubAgentResult(
@@ -193,7 +255,6 @@ def dispatch_subagent(
     computations_dir.mkdir(parents=True, exist_ok=True)
 
     last_error = ""
-    log_path = resp.log_path
 
     for attempt in range(1, max_retries + 1):
         script_name = f"{agent_label}_attempt{attempt}.py"
@@ -209,6 +270,11 @@ def dispatch_subagent(
             cwd=str(workspace_root),
             policy=policy,
         )
+        # Keep what the script printed. Only the truncated head and tail reach
+        # the Manager, and nothing else records it at all — so a run's actual
+        # numeric output was unrecoverable afterwards, by the Manager or by a
+        # human reading the workspace.
+        _save_output(script_path, result)
 
         if result.returncode == 0 and not result.timed_out:
             output = result.stdout
@@ -233,30 +299,47 @@ def dispatch_subagent(
         last_error = _truncate(last_error, 5_000)
 
         if attempt < max_retries:
+            headline = _error_headline(result)
+            # A missing module is not a bug in the script, it is a wrong
+            # premise about the environment — and repeating "fix the error"
+            # gets the same import back. Say what is actually installed.
+            available = ""
+            if "ModuleNotFoundError" in headline or "ImportError" in headline:
+                from ..utils.sandbox import describe_runtime
+
+                available = (
+                    "\n\nTHAT PACKAGE IS NOT INSTALLED AND WILL NOT BECOME "
+                    "INSTALLED. Do not import it again, and do not try to "
+                    "install it — there is no network. Available: "
+                    f"{describe_runtime(policy.interpreter if policy else None)}\n"
+                    "If your instructions named that package, they were wrong; "
+                    "use what is available instead."
+                )
             retry_msg = (
                 f"Your code failed (attempt {attempt}/{max_retries}).\n\n"
-                f"Error:\n```\n{last_error}\n```\n\n"
-                f"Please fix the code and try again. Write the complete corrected "
-                f"script in a single Python code block."
+                + (f"WHAT WENT WRONG: {headline}\n" if headline else "")
+                + available
+                + "\n"
+                + f"Full output:\n```\n{last_error}\n```\n\n"
+                + "Fix THAT specific cause — do not rewrite parts that were "
+                "working, and do not assume an API exists because it sounds "
+                "plausible. Write the complete corrected script in a single "
+                "Python code block."
             )
-            messages = [
-                {"role": "user", "content": user_message},
-                {"role": "assistant", "content": resp.text},
-                {"role": "user", "content": retry_msg},
-            ]
-            retry_resp = call_llm_continuation(
-                system=effective_system,
-                messages=messages,
-                config=config,
-                agent_name=f"{agent_label}_retry{attempt}",
-                iteration=iteration,
-                append_to_log=log_path,
+            # The retry gets lookups too — this is precisely the moment the
+            # docs are worth reading, since the failure is usually an API that
+            # does not exist.
+            retry_content = (
+                f"{user_message}\n\n---\n\nYou already tried this:\n\n"
+                f"```python\n{code}\n```\n\n{retry_msg}"
             )
-            total_in += retry_resp.input_tokens
-            total_out += retry_resp.output_tokens
-            resp = retry_resp
-            reasoning_text = resp.text
-            new_code = _extract_python_code(resp.text)
+            text, used_in, used_out = _ask(
+                retry_content, f"{agent_label}_retry{attempt}"
+            )
+            total_in += used_in
+            total_out += used_out
+            reasoning_text = text
+            new_code = _extract_python_code(text)
             if new_code:
                 code = new_code
 
