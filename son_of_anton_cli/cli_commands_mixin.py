@@ -1802,7 +1802,7 @@ class CLICommandsMixin:
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
-        from cli import _ACCENT, save_config_value
+        from cli import _ACCENT, _THINKING, save_config_value
         try:
             from son_of_anton_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
         except ImportError:
@@ -1833,6 +1833,7 @@ class CLICommandsMixin:
 
         set_active_skin(new_skin)
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin
+        _THINKING.reset()  # Re-resolve the reasoning-text accent too
         # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
         # so it doesn't need re-resolving on skin switch.
         if save_config_value("display.skin", new_skin):

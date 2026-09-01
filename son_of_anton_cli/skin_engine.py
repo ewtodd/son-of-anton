@@ -304,27 +304,33 @@ def snap_pt_style_to_theme(style_str: str) -> str:
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
         "name": "default",
-        "description": "Classic Son of Anton — gold and kawaii",
-        # Dark-authored. Values match the TUI's DARK_THEME so the classic CLI
-        # and the TUI render the same Son of Anton gold.
+        "description": "Son of Anton — obsidian and gold",
+        # Dark-authored, terminal-native: every value is a terminal-palette
+        # token (named ANSI color or attribute) rather than a fixed hex, so
+        # the chrome follows the user's terminal theme instead of imposing
+        # one.  Dark-dock surfaces (status bar, completion menu, voice)
+        # keep a persistent dark fill + light text so they read in BOTH
+        # terminal polarities without a light-mode remap.
         "colors": {
-            "banner_border": "yellow",
-            "banner_title": "bold yellow",
+            "banner_border": "dim yellow",
+            "banner_title": "bold",
             "banner_accent": "yellow",
-            "banner_dim": "dim yellow",
+            "banner_dim": "dim",
             "banner_text": "default",
             "ui_accent": "yellow",
-            "ui_label": "yellow",
+            "ui_label": "bold",
             "ui_ok": "green",
             "ui_error": "red",
             "ui_warn": "yellow",
+            "ui_tool": "yellow",
+            "ui_thinking": "cyan",
             "prompt": "default",
-            "input_rule": "yellow",
+            "input_rule": "default",
             "response_border": "bold yellow",
             "status_bar_bg": "#1a1a2e",
             "status_bar_text": "default",
             "status_bar_strong": "bold yellow",
-            "status_bar_dim": "dim yellow",
+            "status_bar_dim": "dim",
             "status_bar_good": "green",
             "status_bar_warn": "yellow",
             "status_bar_bad": "red",
@@ -351,7 +357,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_dim": "dim yellow",
             "banner_text": "default",
             "ui_accent": "yellow",
-            "ui_label": "yellow",
+            "ui_label": "bold",
             "ui_ok": "green",
             "ui_error": "red",
             "ui_warn": "yellow",
@@ -360,7 +366,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_label": "yellow",
             "status_bar_text": "default",
             "status_bar_strong": "bold yellow",
-            "status_bar_dim": "dim yellow",
+            "status_bar_dim": "dim",
             "status_bar_good": "green",
             "status_bar_warn": "yellow",
             "status_bar_bad": "red",
@@ -374,15 +380,29 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "voice_status_bg": "#F5F5F5",
         },
         "spinner": {
-            # Empty = use hardcoded defaults in display.py
+            # A calm, modern pulse for the default look — a soft breathing
+            # face instead of noisy kawaii.  (The interactive TUI renders its
+            # own status line; these faces drive the non-TUI / quiet-mode
+            # spinner in display.py.)
+            "waiting_faces": ["(◕)", "(◡)", "(◠)", "(◒)", "(◜)"],
+            "thinking_faces": ["(⌁)", "(◉)", "(◔)", "(⌬)", "(◌)"],
+            "thinking_verbs": [
+                "reasoning", "working the angles", "checking the facts",
+                "weighing options", "threading it together", "cross-referencing",
+                "drafting a reply", "holding the thread",
+            ],
+            "wings": [
+                ["⟪◉", "◉⟫"],
+                ["⟪·", "·⟫"],
+            ],
         },
         "branding": {
             "agent_name": "Son of Anton Agent",
-            "welcome": "Welcome to Son of Anton Agent! Type your message or /help for commands.",
+            "welcome": "Welcome to Son of Anton Agent. Type a message, or /help for commands.",
             "goodbye": "Goodbye! ⚛",
             "response_label": " ⚛ Son of Anton ",
             "prompt_symbol": "❯",
-            "help_header": "(^_^)? Available Commands",
+            "help_header": "Commands",
         },
         "tool_prefix": "┊",
     },

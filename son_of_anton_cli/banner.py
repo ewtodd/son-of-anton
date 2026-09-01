@@ -1161,6 +1161,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         skin_logo=getattr(_bskin, "banner_logo", "") if _bskin else "",
     )
     if _logo:
-        console.print(_logo)
+        # Tint the wordmark with the skin's accent so it reads as brand,
+        # not as flat default terminal text.  The block-char art itself is
+        # unchanged; only the applied Rich style differs.
+        logo_style = _skin_color("banner_accent", "yellow")
+        console.print(_logo, style=logo_style)
         console.print()
     console.print(outer_panel)

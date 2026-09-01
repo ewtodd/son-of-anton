@@ -3304,6 +3304,11 @@ class _SkinAwareAnsi:
 
 
 _ACCENT = _SkinAwareAnsi("response_border", "bold yellow", bold=True)
+# Reasoning/thinking text — a distinct terminal-palette accent for skins that
+# opt in via `ui_thinking` (the default skin uses cyan), so model thinking
+# reads differently from the response.  Skins that don't set `ui_thinking`
+# get terminal-default reasoning (the classic dim look), never a forced hue.
+_THINKING = _SkinAwareAnsi("ui_thinking", "default")
 # Use ANSI dim+italic attributes (\x1b[2;3m) instead of a hardcoded
 # hex color so dim/thinking text inherits the terminal's default
 # foreground color and stays readable in both light and dark
@@ -7147,8 +7152,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._reasoning_box_opened = True
             w = self._scrollback_box_width()
             r_label = " Reasoning "
-            r_fill = w - 2 - len(r_label)
-            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            label_w = len(r_label)
+            side = max((w - 2 - label_w) // 2, 0)
+            _cprint(f"\n{_DIM}┌{'─' * side}{r_label}{'─' * (w - 2 - label_w - side)}┐{_RST}")
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
@@ -7156,9 +7162,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # reasoning is visible in real-time even without newlines.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            _cprint(f"{_THINKING}{line}{_RST}")
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            _cprint(f"{_THINKING}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -7167,7 +7173,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                _cprint(f"{_THINKING}{buf}{_RST}")
                 self._reasoning_buf = ""
             w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
@@ -7361,8 +7367,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             w = self._scrollback_box_width()
-            fill = w - 2 - SonOfAntonCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            # Centre the label in the box top so the run of dashes is
+            # symmetric instead of one short dash + a long tail.
+            label_w = SonOfAntonCLI._status_bar_display_width(label)
+            side = max((w - 2 - label_w) // 2, 0)
+            _cprint(f"\n{_ACCENT}╭{'─' * side}{label}{'─' * (w - 2 - label_w - side)}╮{_RST}")
 
         self._stream_buf += text
 
