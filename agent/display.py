@@ -23,6 +23,9 @@ from agent.tool_result_classification import file_mutation_result_landed
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
 _RESET = "\033[0m"
+# Dim a trailing value (e.g. a tool's elapsed time) so the action text reads
+# as the foreground signal and the timing recedes. Terminal-palette neutral.
+_DIM = "\033[2m"
 
 logger = logging.getLogger(__name__)
 
@@ -1438,7 +1441,7 @@ def _get_cute_tool_message(
     Failed tool calls get a red prefix and an informational suffix.
     """
     args = redact_tool_args_for_display(tool_name, args) or args
-    dur = f"{duration:.1f}s"
+    dur = f"{_DIM}{duration:.1f}s{_ANSI_RESET}"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
 
