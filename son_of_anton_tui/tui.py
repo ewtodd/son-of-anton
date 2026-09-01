@@ -1,25 +1,28 @@
-"""Phase-2 spike: a Textual front-end for Son of Anton.
+"""Phase-2 spike: a Textual front-end for Son of Anton (opencode-inspired).
 
 NOT yet wired into the live AIAgent loop.  This is the layout iteration from
-``TUI_AESTHETICS.md`` (Phase 2): a real application frame rather than a REPL.
+``TUI_AESTHETICS.md`` (Phase 2): a real application frame rather than a REPL,
+mimicking opencode's terminal layout as closely as Textual allows.
 
-  1. streaming markdown rendering (Textual's ``Markdown`` widget)
-  2. a left context panel (model / context / mode / session / toolset counts)
-  3. a chat transcript that separates user and assistant turns
-  4. a status line + input dock + header/footer
-  5. terminal-native palette mapped from the existing skin engine
+Layout (mirrors opencode):
+  * the transcript + prompt occupy the main column on the LEFT;
+  * a 42-col context panel sits on the RIGHT;
+  * the right panel only renders when the terminal is wide enough (opencode's
+    threshold is width > 120) — below that it disappears and the transcript
+    takes the full width;
+  * a multi-line prompt editor (TextArea) that grows with your typing, where
+    Enter submits and Shift+Enter inserts a newline;
+  * the ASCII "SON OF ANTON" wordmark is shown at startup ("at least in the
+    beginning!").
 
-The chrome is terminal-native: Textual's ``ansi-dark`` / ``ansi-light`` theme
-is selected by the detected terminal polarity, and every surface token
+Chrome is terminal-native: Textual's ``ansi-dark`` / ``ansi-light`` theme is
+selected from the detected terminal polarity, so every surface token
 (background, foreground, panel, surface, text) resolves to the terminal's own
-defaults (``ansi_default``) rather than a hardcoded hex.  Only the accents
-(primary / secondary / success / warning / error) are taken from the active
-Son of Anton skin, remapped onto the terminal's ANSI palette.
+defaults (``ansi_default``) rather than a hardcoded hex.  Only the accents ride
+the active Son of Anton skin, remapped onto the terminal's ANSI palette.
 
-It stays self-contained (runs with only ``textual`` installed) so it can be
-exercised in a throwaway venv; if the skin engine isn't importable it degrades
-to the ``ansi-*`` theme's own defaults.  ``textual`` lives in the opt-in ``tui``
-extra, so importing this module must never hard-fail on a lean install.
+The transcript renders **without syntax highlighting**: fenced code blocks are
+shown as plain text (opencode-style), keeping only the markdown structure.
 """
 
 from __future__ import annotations
@@ -32,24 +35,31 @@ from typing import Any
 # Guard the module-level import so importing this module never hard-fails.
 try:
     from textual.app import App, ComposeResult
+    from textual import events, on
     from textual.containers import Horizontal, Vertical, VerticalScroll
-    from textual.widgets import Footer, Header, Input, Markdown, Static
+    from textual.content import Content
+    from textual.message import Message
+    from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
     _TEXTUAL_AVAILABLE = True
 except Exception:  # pragma: no cover - import-time guard
     App = None  # type: ignore
     ComposeResult = None  # type: ignore
+    events = None  # type: ignore
+    on = None  # type: ignore
     Horizontal = Vertical = VerticalScroll = None  # type: ignore
-    Footer = Header = Input = Markdown = Static = None  # type: ignore
+    Content = None  # type: ignore
+    Message = None  # type: ignore
+    Footer = Header = Markdown = Static = TextArea = None  # type: ignore
     _TEXTUAL_AVAILABLE = False
 
 _DEFAULT_AGENT = "Son of Anton Agent"
 
-# The 16 ANSI palette names Textual maps to the terminal's own colors.
-_ANSI_NAMES = {
-    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-    "gray", "grey", "default",
-}
+# opencode: the right panel only appears when the terminal is wide and is 42
+# columns wide (see packages/tui/src/routes/session/index.tsx: `width > 120`,
+# `contentWidth ... (sidebarVisible() ? 42 : 0)`).
+SIDEBAR_THRESHOLD = 120
+SIDEBAR_WIDTH = 42
 
 
 def _to_ansi(value: str, default: str) -> str:
@@ -67,7 +77,8 @@ def _to_ansi(value: str, default: str) -> str:
     if not v:
         return default
     for word in v.replace(",", " ").split():
-        if word in _ANSI_NAMES and word != "default":
+        if word in {"black", "red", "green", "yellow", "blue", "magenta", "cyan",
+                    "white", "gray", "grey"}:
             return f"ansi_{word}"
         if word == "default":
             return "ansi_default"
@@ -92,16 +103,15 @@ def _polarity() -> str:
     Textual does not auto-detect the terminal background, so we infer it from
     the environment.  ``COLORFGBG`` (exported by several terminals) is
     ``<fg>;<bg>`` of 16-color indices; a bright background index (>= 8) means a
-    light terminal.  Otherwise we default to dark, which is the app's authored
-    polarity and the common case.  Accent defaults differ slightly between the
-    two ANSI themes; backgrounds/foregrounds are ``ansi_default`` either way.
+    light terminal.  Otherwise we default to dark.  Accent defaults differ
+    slightly between the two ANSI themes; backgrounds/foregrounds are
+    ``ansi_default`` either way.
     """
     fgbg = os.environ.get("COLORFGBG", "")
     if fgbg:
         try:
             parts = fgbg.split(";")
             if len(parts) >= 2:
-                # Dim indexes 0-7 = dark palette; bright 8-15 = light palette.
                 return "light" if int(parts[-1]) >= 8 else "dark"
         except (ValueError, IndexError):
             pass
@@ -113,30 +123,124 @@ def _theme_name() -> str:
     return f"ansi-{_polarity()}"
 
 
+def _wordmark(width: int) -> str:
+    """Return the ASCII wordmark for ``width`` (opencode renders a logo at start).
+
+    Reuses the CLI banner's logo (wide / stacked) so the TUI and the classic
+    CLI show the same wordmark; falls back to a compact one-liner on very
+    narrow terminals.
+    """
+    try:
+        from son_of_anton_cli.banner import pick_banner_logo
+
+        logo = pick_banner_logo(width)
+    except Exception:
+        logo = ""
+    if not logo:
+        logo = "SON OF ANTON"
+    return logo
+
+
 def is_available() -> bool:
     """Return True when Textual is installed (the ``tui`` extra is present)."""
     return _TEXTUAL_AVAILABLE
 
 
 if _TEXTUAL_AVAILABLE:
+    from textual.widgets._markdown import MarkdownFence  # type: ignore
+
+    class _PlainFence(MarkdownFence):
+        """A fenced code block rendered as plain text (no syntax highlighting).
+
+        Mirrors opencode: the transcript keeps markdown structure but code is
+        uncoloured, not rainbowed by a Pygments theme.
+        """
+
+        @classmethod
+        def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
+            return Content(code)
+
+    class PlainMarkdown(Markdown):
+        """Markdown that renders fenced code without syntax highlighting."""
+
+        BLOCKS = {**Markdown.BLOCKS, "fence": _PlainFence, "code_block": _PlainFence}
+
+    class PromptArea(TextArea):
+        """A multi-line prompt editor: Enter submits, Shift+Enter newlines."""
+
+        class Submitted(Message):
+            """Posted when the user presses Enter to submit the prompt."""
+
+            def __init__(self, prompt: "PromptArea", value: str) -> None:
+                super().__init__()
+                self.prompt = prompt
+                self.value = value
+
+        async def _on_key(self, event: events.Key) -> None:
+            """Enter submits; Shift+Enter inserts a newline.
+
+            TextArea's own ``_on_key`` consumes ``enter`` as a newline before
+            bindings get a chance, so we intercept it here (opencode's prompt
+            editor submits on Enter too).
+            """
+            key = event.key or ""
+            if key == "enter":
+                event.stop()
+                event.prevent_default()
+                self.post_message(self.Submitted(self, self.text.rstrip("\n")))
+                return
+            if key.endswith("+enter"):
+                event.stop()
+                event.prevent_default()
+                self.insert("\n")
+                return
+            await super()._on_key(event)
 
     class SonOfAntonTUIApp(App):
-        """Textual scaffold: a context panel, a streaming transcript, and a dock."""
+        """opencode-inspired frame: right panel, transcript, and a prompt dock."""
 
         TITLE = _DEFAULT_AGENT
         SUB_TITLE = "Textual front-end"
 
-        # Terminal-native chrome: every surface token resolves to the
-        # terminal's own defaults (ansi_default) via the ansi-* theme.  Only
-        # the accents ride the active Son of Anton skin.
         CSS = """
         Screen {
             background: $background;
         }
-        #context {
-            width: 34;
+        Horizontal#split {
+            width: 1fr;
+            height: 1fr;
+        }
+        Vertical#content {
+            width: 1fr;
+        }
+        VerticalScroll#feed {
+            width: 1fr;
+            height: 1fr;
+            padding: 0 2;
+        }
+        #statusline {
+            height: 1;
             padding: 0 1;
-            border-right: solid $primary;
+            color: $text-muted;
+            background: $background;
+        }
+        #cmd {
+            height: auto;
+            max-height: 10;
+            border-top: solid $primary;
+            background: $background;
+        }
+        #cmd PromptArea {
+            height: auto;
+            min-height: 3;
+            max-height: 10;
+            padding: 0 1;
+            background: $background;
+        }
+        Vertical#context {
+            width: 42;
+            padding: 0 1;
+            border-left: solid $primary;
             background: $background;
         }
         #context .label {
@@ -154,8 +258,10 @@ if _TEXTUAL_AVAILABLE:
         #context .muted {
             color: $text-muted;
         }
-        #feed {
-            padding: 0 2;
+        #feed .wordmark {
+            text-style: bold;
+            color: $primary;
+            margin: 1 0;
         }
         #feed .user {
             color: $text;
@@ -164,25 +270,9 @@ if _TEXTUAL_AVAILABLE:
             padding: 0 1;
             margin-top: 1;
         }
-        #feed Markdown {
+        #feed PlainMarkdown {
             background: transparent;
             margin-top: 1;
-            padding: 0 1;
-        }
-        #statusline {
-            height: 1;
-            padding: 0 1;
-            color: $text-muted;
-            background: $background;
-        }
-        #cmd {
-            dock: bottom;
-            height: 3;
-            border-top: solid $primary;
-            background: $background;
-        }
-        #cmd Input {
-            height: 3;
             padding: 0 1;
         }
         Footer {
@@ -190,7 +280,10 @@ if _TEXTUAL_AVAILABLE:
         }
         """
 
-        BINDINGS = [("ctrl+q", "quit", "Quit"), ("ctrl+l", "clear", "Clear")]
+        BINDINGS = [
+            ("ctrl+q", "quit", "Quit"),
+            ("ctrl+l", "clear", "Clear"),
+        ]
 
         def __init__(self, agent_name: str = _DEFAULT_AGENT, **kwargs: Any) -> None:
             self.agent_name = agent_name
@@ -231,6 +324,15 @@ if _TEXTUAL_AVAILABLE:
         def compose(self) -> ComposeResult:
             yield Header()
             with Horizontal(id="split"):
+                with Vertical(id="content"):
+                    with VerticalScroll(id="feed"):
+                        yield Static("", id="feed-anchor")
+                    yield Static(" ready", id="statusline")
+                    with Vertical(id="cmd"):
+                        yield PromptArea(
+                            placeholder="Send a message… (Enter submits, Shift+Enter newline, ctrl+q / :q quit)",
+                            id="input",
+                        )
                 with Vertical(id="context"):
                     yield Static("Session", classes="label")
                     yield Static(f" {self.agent_name}", classes="value")
@@ -246,31 +348,50 @@ if _TEXTUAL_AVAILABLE:
                     yield Static("", classes="kv")
                     yield Static("Tools", classes="label")
                     yield Static(" wired", classes="kv value")
-                with VerticalScroll(id="feed"):
-                    yield Static("", id="feed-anchor")
-            yield Static(" ready", id="statusline")
-            with Vertical(id="cmd"):
-                yield Input(
-                    placeholder="Send a message… (Tab to toggle focus, ctrl+q quit)",
-                    id="input",
-                )
             yield Footer()
 
         def on_mount(self) -> None:
             self._feed = self.query_one("#feed", VerticalScroll)
             self._statusline = self.query_one("#statusline", Static)
-            self._input = self.query_one("#input", Input)
-            # Focus the input immediately: the scrollable feed is the first
+            self._prompt = self.query_one("#input", PromptArea)
+            # Focus the prompt immediately: the scrollable feed is the first
             # focusable widget in DOM order, so Textual otherwise parks focus
-            # there and keystrokes never reach the input.
-            self._input.focus()
-            # Opening assistant message, streamed in chunks.
+            # there and keystrokes never reach the prompt.
+            self._prompt.focus()
+            self._apply_sidebar(self.size.width)
+            # Opening frame: wordmark, then the streaming welcome.
+            self._show_wordmark()
             self.run_worker(self._stream_assistant(_WELCOME), group="demo", exclusive=True)
 
-        async def _append_user(self, text: str) -> None:
-            await self._feed.mount(
-                Static(f"[b]you[/b]  {text}", classes="user")
+        def on_resize(self, event: Any) -> None:
+            self._apply_sidebar(event.size.width)
+
+        def _apply_sidebar(self, width: int) -> None:
+            """Show the right context panel only when the terminal is wide."""
+            try:
+                self.query_one("#context", Vertical).display = (
+                    "block" if width > SIDEBAR_THRESHOLD else "none"
+                )
+            except Exception:
+                pass
+
+        def _show_wordmark(self) -> None:
+            logo = _wordmark(self.size.width)
+            lines = logo.splitlines()
+            if not lines:
+                return
+            feed_w = self.size.width - (
+                SIDEBAR_WIDTH if self.size.width > SIDEBAR_THRESHOLD else 0
             )
+            width = max(len(line) for line in lines)
+            pad = max(0, (feed_w - width) // 2)
+            padded = "\n".join(f"{' ' * pad}{line}" for line in lines)
+            self._feed.mount(Static(padded, classes="wordmark"))
+
+        async def _append_user(self, text: str) -> None:
+            # Highlight the user's message by the *prompt symbol*-less prefix
+            # but keep it uncoloured (no syntax highlighting).
+            await self._feed.mount(Static(f"[b]you[/b]  {text}", classes="user"))
             self._feed.scroll_end(animate=False)
 
         async def _stream_assistant(self, chunks: list[str], *, reply: str = "") -> None:
@@ -281,7 +402,7 @@ if _TEXTUAL_AVAILABLE:
             ``_transcript`` always accumulates the full assistant history (for
             recap/tests), while the on-screen block shows only its own content.
             """
-            md = Markdown("")
+            md = PlainMarkdown("")
             await self._feed.mount(md)
             self._feed.scroll_end(animate=False)
             block = ""
@@ -302,24 +423,26 @@ if _TEXTUAL_AVAILABLE:
             self._status = text
             self._statusline.update(f" {text}")
 
-        async def on_input_submitted(self, event: Input.Submitted) -> None:
-            value = (event.value or "").strip()
+        @on(PromptArea.Submitted)
+        async def _handle_submit(self, event: Any) -> None:
+            value = (getattr(event, "value", "") or "").strip()
+            if value == ":q" or value == ":quit":
+                self.exit()
+                return
             if not value:
-                event.input.value = ""
+                self._prompt.text = ""
                 return
             await self._append_user(value)
-            event.input.value = ""
+            self._prompt.text = ""
             self._set_status("thinking…")
             await self._stream_assistant([], reply=_CANNED_REPLY)
 
         def action_clear(self) -> None:
             """Ctrl+L — clear the transcript (and reset the accumulator)."""
-            from textual.widgets import Markdown as _MD
-
             for w in list(self._feed.children):
                 w.remove()
             self._transcript = ""
-            self._feed.mount(_MD(""))
+            self._feed.mount(PlainMarkdown(""))
 
 else:
     # Textual absent on a lean install: expose a consistent None so callers
@@ -331,13 +454,13 @@ _WELCOME = [
     "## Son of Anton\n\n",
     "This is the **Textual** front-end — a real app frame, not a REPL.\n\n",
     "- streaming markdown\n",
-    "- a left context panel\n",
-    "- user / assistant turns\n",
-    "\n```python\nprint('fenced code with syntax highlighting')\n```\n",
+    "- a right-hand context panel (wide terminals)\n",
+    "- multi-line prompt (Enter submits, Shift+Enter newline)\n",
+    "\n```python\nprint('fenced code renders as PLAIN text — no syntax highlighting')\n```\n",
     "\n| k | v |\n|---|---|\n| a | 1 |\n| b | 2 |\n",
     "\n> A blockquote with a link and math source: "
     r"`\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}`" "\n",
-    "\nType below and press Enter to see the turn pattern.\n",
+    "\nType below and press Enter to see the turn pattern. `:q` quits.\n",
 ]
 
 _CANNED_REPLY = (
