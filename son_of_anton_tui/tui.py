@@ -123,22 +123,29 @@ def _theme_name() -> str:
     return f"ansi-{_polarity()}"
 
 
-def _wordmark(width: int) -> str:
-    """Return the ASCII wordmark for ``width`` (opencode renders a logo at start).
+def _wordmark(feed_w: int) -> str:
+    """Return the ASCII wordmark that fits a *feed* column of ``feed_w``.
 
-    Reuses the CLI banner's logo (wide / stacked) so the TUI and the classic
-    CLI show the same wordmark; falls back to a compact one-liner on very
-    narrow terminals.
+    Picks the wide form -> the stacked form -> a compact one-liner so the
+    block letters never wrap into rubble.  The width we must fit is the feed
+    column (``width - SIDEBAR_WIDTH`` when the right panel is shown), not the
+    full terminal width — the old bug was choosing by the full width and then
+    dropping a 109-col logo into a ~79-col feed.
     """
     try:
-        from son_of_anton_cli.banner import pick_banner_logo
-
-        logo = pick_banner_logo(width)
+        from son_of_anton_cli.banner import (
+            SON_OF_ANTON_AGENT_LOGO_WIDE as _WIDE,
+            SON_OF_ANTON_AGENT_LOGO_STACKED as _STACKED,
+        )
     except Exception:
-        logo = ""
-    if not logo:
-        logo = "SON OF ANTON"
-    return logo
+        return "SON OF ANTON"
+    # #feed has `padding: 0 2`, so the usable width is feed_w - 4.
+    avail = feed_w - 4
+    if avail >= 109:  # the wide wordmark is 109 cols
+        return _WIDE
+    if avail >= 52:   # the stacked wordmark is 52 cols
+        return _STACKED
+    return "SON OF ANTON"
 
 
 def is_available() -> bool:
@@ -376,15 +383,15 @@ if _TEXTUAL_AVAILABLE:
                 pass
 
         def _show_wordmark(self) -> None:
-            logo = _wordmark(self.size.width)
-            lines = logo.splitlines()
-            if not lines:
-                return
             feed_w = self.size.width - (
                 SIDEBAR_WIDTH if self.size.width > SIDEBAR_THRESHOLD else 0
             )
+            lines = _wordmark(feed_w).splitlines()
+            if not lines:
+                return
+            avail = max(0, feed_w - 4)  # #feed padding: 0 2
             width = max(len(line) for line in lines)
-            pad = max(0, (feed_w - width) // 2)
+            pad = max(0, (avail - width) // 2)
             padded = "\n".join(f"{' ' * pad}{line}" for line in lines)
             self._feed.mount(Static(padded, classes="wordmark"))
 
