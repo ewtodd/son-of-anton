@@ -175,32 +175,31 @@ The entire agent stack stays as-is and is *not* touched:
 
 ### Phased plan
 
-1. **Spike** — a standalone Textual app rendering a static transcript + input
-   dock, wired to the skin palette. Validate streaming render perf.
+1. **Spike** — a standalone Textual app rendering a streaming transcript + input
+   dock, wired to the skin palette. Validate streaming render perf. *(done)*
 2. **Live turn** — worker-thread loop + queue → token streaming, tool-call
    timeline, collapsible reasoning. Reuse `agent/display.py` builders.
 3. **Port interactive widgets** — approval / clarify / model-picker /
    command-palette / session-switch as Textual screens/modals.
-4. **Gate it** — enable behind `display.interface: tui` (and/or a `/tui` toggle),
-   keep prompt_toolkit the default; add a parity smoke test.
+4. **Supersede** — make Textual the one interface `son-of-anton` launches, then
+   retire the prompt_toolkit path. Textual is not a sibling interface; it is the
+   replacement. (The prompt_toolkit path stays until step 2/3 reach parity.)
 
 ### Status
 
-Phase 2 step 1 (the spike) is **done and proven** — see
-`son_of_anton_tui/tui.py`, which demonstrates streaming markdown (headings,
-bold/italic, fenced code, tables), the LaTeX-source-in-a-code-block default, an
-application frame (header / transcript / input dock / footer), and a skin-palette
-hook. It was run headlessly against Textual 8.2.8 and verified. The dependency
-is registered policy-correctly: opt-in `tui` extra + `tui.textual` LAZY_DEPS
-entry + regenerated `uv.lock`, deliberately excluded from `[all]` during the
-parity gate. `tests/test_tui_spike.py` guards the import-never-crashes contract
-and runs the streaming demo when Textual is present.
+The Textual spike is **done and proven** — `son_of_anton_tui/tui.py` renders a
+chat-app frame (left context panel, streaming markdown transcript, user/assistant
+turns, status line, input dock, footer) with a terminal-native palette mapped
+from the skin engine via `get_css_variables()`. It was run headlessly against
+Textual 8.2.8 and verified. It **ships via Nix**: `tui` is in `[all]`, so
+`nix build`/`nix run .# --` bundle the TUI (the `tui.textual` LAZY_DEPS entry
+is retained only for non-Nix installs that skip `[all]`). `tests/test_tui_spike.py`
+guards the import-never-crashes contract and exercises the layout when Textual is
+present.
 
-Remaining phase-2 work is in the plan below.
-
-### Decision needed before starting
-
-- Confirm Textual replaces the Ink TUI at `display.interface: tui`.
-- Confirm whether to port any Ink-era widgets (recommend no, initially).
-- Confirm the retirement stance for the prompt_toolkit path (recommend: keep it as
-  a fallback until Textual reaches parity).
+**Direction (confirmed):** Textual **supersedes** prompt_toolkit — it is the one
+interface, not a separate one. Once the agent loop is threaded in (step 2),
+`son-of-anton` launches Textual and the prompt_toolkit path is removed. Ink-era
+widgets (petdex, clocks) are dropped, not ported. On Nix there is **no** `uv venv`
+/ manual pip — `nix develop`, `nix build`, and `nix run .# --` are the only flows,
+and the package is fully self-contained.

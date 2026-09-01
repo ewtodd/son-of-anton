@@ -85,6 +85,11 @@ def build_top_level_parser():
         "--version", "-V", action="store_true", help="Show version and exit"
     )
     parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Launch the Textual front-end instead of the prompt_toolkit CLI.",
+    )
+    parser.add_argument(
         "-z",
         "--oneshot",
         metavar="PROMPT",

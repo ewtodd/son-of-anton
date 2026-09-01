@@ -239,10 +239,10 @@ def _set_process_title() -> None:
         pass
 
 
-# Son of Anton ships the classic prompt_toolkit CLI only. The Ink TUI was
-# removed (2026-08-25): the Nix package never shipped its esbuild bundle, so
-# `--tui` could only ever fail with a bogus "workspace missing" error, and the
-# CLI covers every surface this project needs.
+# The classic prompt_toolkit CLI is the default. The Ink TUI was removed
+# (2026-08-25) and replaced by a Textual front-end: `--tui` now launches the
+# Textual app (son_of_anton_tui), which supersedes the prompt_toolkit interface
+# once the agent loop is threaded into it.
 
 
 def _read_openai_version_fast() -> str | None:
@@ -4896,6 +4896,20 @@ def _try_fast_chat_launch() -> bool:
         return False
     if getattr(args, "version", False):
         return False
+    if getattr(args, "tui", False):
+        # --tui: launch the Textual front-end from the fast path before the
+        # classic CLI takes over. Textual ships via [all]; degrade politely.
+        from son_of_anton_tui.tui import is_available as _tui_available
+        from son_of_anton_tui.tui import SonOfAntonTUIApp as _TUIApp
+
+        if not _tui_available() or _TUIApp is None:
+            print(
+                "Textual is not installed. Install the `tui` extra: "
+                "pip install -e '.[tui]' (the Nix build ships it via [all])."
+            )
+            return True
+        _TUIApp().run()
+        return True
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
 
@@ -5813,6 +5827,22 @@ def main():
     else:
         subparsers.required = False
         args = parser.parse_args(_processed_argv)
+
+    # --tui: launch the Textual front-end and return before any of the
+    # prompt_toolkit CLI setup / agent startup.  Textual ships via [all], so
+    # the Nix build always has it; degrade politely on lean installs.
+    if getattr(args, "tui", False):
+        from son_of_anton_tui.tui import is_available as _tui_available
+        from son_of_anton_tui.tui import SonOfAntonTUIApp as _TUIApp
+
+        if not _tui_available() or _TUIApp is None:
+            print(
+                "Textual is not installed. Install the `tui` extra: "
+                "pip install -e '.[tui]' (the Nix build ships it via [all])."
+            )
+            sys.exit(1)
+        _TUIApp().run()
+        return
 
     # Handle --version flag
     if args.version:

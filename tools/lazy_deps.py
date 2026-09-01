@@ -211,12 +211,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (tests/test_project_metadata.py enforces both). When bumping: update
     # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
     "tool.trace_upload": ("huggingface-hub==1.24.0",),
-    # ─── Alternative TUI front-end ──────────────────────────────────────────
-    # Textual powers the rebuilt interactive shell (see TUI_AESTHETICS.md,
-    # Phase 2). Not a core dependency: it is an opt-in interface, lazy-installed
-    # on first launch of the Textual UI (display.interface: tui), and deliberately
-    # excluded from [all] during the parity gate. Pin must stay in lockstep with
-    # the `tui` extra in pyproject.toml.
+    # ─── Interactive TUI (Textual) ─────────────────────────────────────────
+    # Textual is the go-forward interface that SUPERSEDES prompt_toolkit (see
+    # TUI_AESTHETICS.md). It ships via the `tui` extra in [all], so the Nix
+    # package bundles it; this lazy entry lets non-Nix installs that didn't
+    # grab [all] still use it on first launch. Pin stays in lockstep with the
+    # `tui` extra in pyproject.toml.
     "tui.textual": ("textual==8.2.8",),
 }
 
