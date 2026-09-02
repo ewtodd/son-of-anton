@@ -35,8 +35,8 @@ every turn.
 editor cannot share the tty with a full-screen app: both write to it and both
 read stdin, so the child's output and its escape-sequence replies surface as
 stray characters. `TextualBackend.run_with_terminal()` hops to the app thread
-and wraps the call in `App.suspend()`; `_compose_in_editor` (used by `/prompt`
-and by ctrl+g) goes through it. The same reasoning is why
+and wraps the call in `App.suspend()`; `_compose_in_editor` (ctrl+g)
+goes through it. The same reasoning is why
 `son_of_anton_constants.is_frontend_active()` exists: `tools/approval.py` and
 `tools/lazy_deps.py` must never fall back to a bare `input()` while the app
 holds stdin.

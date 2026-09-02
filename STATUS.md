@@ -1,12 +1,20 @@
 # Son of Anton — Status & Handoff
 
-Written 2026-08-22 after the fork/build-out session; updated 2026-08-24 after
-the Phase 7 + deep-Nous cleanup layers, the live deployment-and-testing
-round, the UI hygiene round (cwd contract, rebrand tail, emoji strip,
-status-bar theming), and the gateway-routing round (searxng URL fix, aux
-chain prune, title scope, /help slimming, picker key_env, deployment
-defaults + supra-title titling). Everything below is the state as of commit
-`76b92591` on `main` (pushed to `github.com:ewtodd/son-of-anton`).
+Written 2026-08-22 after the fork/build-out session. Last updated **2026-09-02**.
+State as of commit `c4635dac` on `main` (`github.com:ewtodd/son-of-anton`),
+plus one uncommitted round (see "Textual front-end — bug round").
+
+Two things below reverse earlier entries; the dated sections are kept as
+history, but read the later one:
+
+- **The TUI is back, and it is now the only interface.** The 2026-08-25
+  "TUI removed" round killed a *different* TUI (the `ui-tui/` TypeScript
+  app). A Textual front-end replaced it, and on 2026-09-02 `9906a30b` deleted
+  the prompt_toolkit REPL, so there is no longer a CLI to fall back to and
+  no `--tui` flag to pass.
+- **Profiles are gone.** `2067d1be` + `292ab53e` deleted the profiles system
+  and gateway multiplexing (8k lines); `7e79f545` replaced them with one
+  systemd service per account.
 
 ---
 
@@ -21,7 +29,10 @@ surface, extended with the physics modes from
 [temple](https://github.com/ewtodd/temple) harness — the daemon design,
 permission modes, and request router carry over from it.
 
-Three agent modes, selected per request by a heuristic router with `/mode` override:
+Three agent modes. A keyword router classifies the FIRST message of a session
+(physics/research get no conversation history, so re-routing a follow-up would
+discard the exchange); `/mode` pins one explicitly on any turn, and
+`router.modes` switches the optional two off per deployment:
 - `standard` — the hermes agent loop (terminal, files, web, skills, memory, delegation, cron)
 - `physics` — Autophysicist: single research manager, permanent memory + scratchpad, token budget, `submit_final_answer`, git workspace
 - `research` — nine-agent critical self-research pipeline (surveyor → planner → orchestrator → researcher/computer → reviewer → critic → adjudicator → formatter)
@@ -47,7 +58,8 @@ Three agent modes, selected per request by a heuristic router with `/mode` overr
 
 ### Phase 4 — platforms + router + permissions
 - Gateway down to Discord (`plugins/platforms/discord/`), Slack (`plugins/platforms/slack/`), Signal (`gateway/platforms/signal.py`)
-- `son_of_anton_cli/router.py`: `classify_mode()` (physics/research/standard keywords), `classify_complexity()` (simple/default/complex), config section `router:`
+- `son_of_anton_cli/router.py`: `classify_mode()` (physics/research/standard keywords), config section `router:`
+  (the ported `classify_complexity()` model-slot half was never wired to model resolution and was deleted 2026-09-02)
 - `/mode auto|standard|physics|research`, `/model auto|NAME`, `/perm default|ask|lockdown|yolo`
 - `:q`/`q` quit (was aliased to `queue` in hermes — fixed); command resolution accepts `:` prefix
 
@@ -377,6 +389,11 @@ What the user is still hitting:
 
 ### TUI removed (2026-08-25, this round — "cli is all i want. kill tui!")
 
+> **Superseded.** This removed the `ui-tui/` TypeScript app. A Textual
+> front-end was built in its place on 2026-09-01, and `9906a30b` then deleted
+> the prompt_toolkit REPL — so the conclusion below ("the CLI is the only
+> interface") is now exactly inverted. See "Textual front-end" below.
+
 - `ui-tui/`, `tui_gateway/`, `scripts/profile-tui.py` deleted (501 tracked
   files). Root cause of the flag's failure: the Nix package (son-of-anton.nix)
   explicitly excludes `ui-tui` from the build and never shipped the esbuild
@@ -463,27 +480,134 @@ but the worst turn-class bugs ARE:
 The /etc/nixos changes from the round are committed there; the fork is at
 `114a8483` on `main` (pushed).
 
+### Provider + dead-code sweep (2026-08-25 → 09-01)
+
+The largest arc since Phase 7: roughly 40 commits whose only theme is
+"delete what nothing calls". Providers cut to the three this fork actually
+ships (custom / openai-api / deepseek-via-litellm): the native Gemini wire
+(`dfdc225c`), the Anthropic Messages wire (`ba850a9e`) and its `api_mode`
+(`801d46d5`), the Copilot ACP client + OAuth flow (`a9563978`), Nous Portal
+(`66e16084`) and its deep tail (`2b843a4d`), Qwen Portal (`fb54ddbf`), the
+direct DeepSeek API (`c355fae5`), AWS Bedrock + Azure Foundry (`092ed9e4`),
+Vertex AI + google-workspace deps (`6d284990`), and the vendor-host header
+layer (`c1c5bb53`). Subsystems: 17 modules nothing imported (`b8d2a395`),
+the Kanban worker (`2424f0e6`), the codex app-server runtime (`a15bcd29`),
+the automation blueprint/suggestion subsystem (`c089d5ab`), upstream
+community + JS scaffolding (`36a0cb57`, 23.5k lines), and the profiles
+system + gateway multiplexing (`2067d1be` + `292ab53e`, 8k lines).
+
+The lesson worth keeping: `e8a3e7dc` added a test that catches dead
+references the interpreter never sees, and it immediately found more
+(`53375a2b`, `0836fe88`) — an import sweep only proves a module loads, not
+that anything calls into it.
+
+### Multi-instance gateway (2026-08-26)
+
+Profiles were the wrong shape: one process multiplexing several identities.
+`7e79f545` replaced them with one systemd service per account, each with its
+own `SON_OF_ANTON_HOME`, working directory and model. `39bc6c16` added
+`gateway.model` so a surface's default comes out of one config.yaml;
+`5b6220ab` added `router.modes` so an instance can switch physics/research
+off; `c57573c3` swapped the ACL allowlist for a kernel-enforced credential
+denylist; `73f4116c` + `309b7ae3` + `120bf2dd` finished the Signal DM/home
+channel/attachment routing. `8f1e2557` and `abad9565` gave an instance
+active hours — turns held outside them, then summarized when the window
+opens.
+
+### Physics round (2026-08-31)
+
+`2e7e694e` sandboxed computation, added problem specs and MCP lookups, and
+split coder/critic models. `f0fe99cd` made the run read `ROOT` the way the
+run itself will, and stopped reporting unscoreable results as scored.
+`a55eb8eb` added an outside critic, per-role models, and a Manager that can
+read its own workspace.
+
+### Textual front-end (2026-09-01 → 09-02)
+
+The interface question reopened, and the answer inverted the 2026-08-25
+round. `35b0745c` proved a Textual spike; `674b92a7` grew it into a chat-app
+layout; `8bc898e5` shipped Textual via nix and wired `--tui`; `04f54890`
+ported opencode's session frame (right panel > 120 cols, multi-line prompt,
+wordmark, `:q`). Then `9906a30b` deleted the prompt_toolkit REPL outright.
+
+Design constraint that must survive: `son_of_anton_tui/backend.py` defines
+`TextualBackend(SonOfAntonCLI)` and overrides only rendering seams and the
+queue-answering modal prompts. The agent loop, prompt caching and slash
+commands are the unchanged `cli.SonOfAntonCLI`. Extend by overriding more
+seams, not by touching `cli.py` output paths. Anything that draws its own
+screen (an editor) must go through `run_with_terminal()`, which suspends the
+app first.
+
+`c4635dac` made `/commit` pin the configured account as **author** only,
+leaving the committer as-is, so the log reads "authored by son-of-anton-bot,
+committed by me".
+
+### Textual front-end — bug round (2026-09-02, UNCOMMITTED)
+
+Six defects, all found by using the thing. Four were live bugs:
+
+1. **A `[` in model prose killed the app.** `Static.update()` runs Textual's
+   content-markup parser by default, so one bracket in a reasoning stream
+   raised `MarkupError` out of the render and ended the session mid-turn.
+   Every Static showing text this codebase did not author is now
+   `markup=False`: the reasoning body, modal titles and details (a
+   tool-approval title carries shell commands), and the sidebar's session
+   title and cwd.
+2. **Steering mid-turn always failed.** The interrupt itself worked — see
+   `~/.son-of-anton/interrupt_debug.log`. But `chat()` then took its
+   non-streamed branch and rendered the interrupt notice through
+   `_render_final_assistant_content` → `realign_markdown_tables`, which
+   imported `wcwidth` — a prompt_toolkit transitive that left the tree with
+   the REPL. The import fires before the function looks for a table, so
+   *every* steer died with `Error: No module named 'wcwidth'`, table or no
+   table. Widths now come from `rich.cells` (a core dep, and more accurate:
+   `wcswidth` returned -1 for emoji with a variation selector).
+   Pinned by `tests/test_markdown_tables.py`, including a test asserting
+   `import wcwidth` still fails so the fix can't quietly stop mattering.
+3. **No prompt history.** Deleting the REPL took prompt_toolkit's
+   `FileHistory` with it and nothing replaced it, so ↑ did nothing. New
+   `PromptHistory` reads and appends the same
+   `~/.son-of-anton/.son_of_anton_history` in the same format, so history
+   from before the interface swap is still under the arrow key. ↑ still
+   moves the cursor inside a multi-line draft and only recalls off the top
+   row.
+4. **Mouse selection stole the prompt.** Textual focuses whatever focusable
+   widget you press on, so a click or drag in the transcript left the caret
+   stranded. Focus is handed back on mouse-up; selections live on the screen,
+   not the focus, so the highlight survives.
+
+Plus: drag-select auto-copies with a toast (terminals do this natively and
+Textual's mouse capture takes it away), `ctrl+shift+v` bound to paste for
+terminals that forward the chord instead of swallowing it, and the status
+row grows instead of clipping the "waiting Ns with no output" heartbeat.
+
+Also removed in this round: **`/prompt`** (ctrl+g already opened the draft in
+`$EDITOR` and sent it; `/prompt` was the same thing one keystroke slower),
+and the **model-slot half of the router** — `classify_complexity()` /
+`resolve_model_slot()` plus six `router.*_model` config keys, ported from
+temple, given a config surface and tests, and never wired to model
+resolution. 80 of 257 lines in `router.py`. The mode half is live and
+load-bearing: four production call sites, and four of the five deployed
+gateway instances set `router.modes = [ "standard" ]`.
+
 ## Current state / known loose ends
 
-- **Deployed live on e-desktop** (see `/etc/nixos`): gateway system service
-  under the `son-of-anton` user; litellm on oracle (`10.0.0.6:4000`, pinned
-  to nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
-  `expression` dependency); llama-swap on son-of-anton; SearXNG on oracle;
-  signal-cli in HTTP mode on mu with `--send-read-receipts` (read receipts
-  work; the 👀/✅ emoji reaction set is disabled via
-  `SIGNAL_REACTIONS=false`; typing indicators off). Two multiplex profiles,
-  `play` → `/home/e-play` and `work` → `/home/e-work`, switchable per chat
-  with `/profile`; subprocess HOME follows the cwd (`terminal.home_mode =
-  "cwd"`). Scoped filesystem grants: home dirs r-x, recursive rwx ACLs only
-  on each profile's `allowedPaths` (project dirs), `.ssh`/`.gnupg`/dotdirs
-  stay private; `SIGNAL_ALLOWED_USERS` pinned to Ethan's number. Gateway
-  default model is `gemma-4-26B-A4B-it`; session titles come from
-  `supra-title` on oracle via litellm. The swap matrix on son-of-anton
-  permits any non-solo co-residency (gemma/qwen3.6 on ROCm2, qwen3.8 split
-  on ROCm0/1, deepseek solo over all three).
-- **User's home skills are stale**: `~/.son-of-anton/skills/` still holds the
-  pre-prune 78 skills. One-time: `rm -rf ~/.son-of-anton/skills` (then
-   optionally `son-of-anton setup` to install the bundled 43).
+- **Deployed live on e-desktop** (see `/etc/nixos/hosts/e-desktop/configuration.nix`):
+  **five gateway instances**, one systemd service per account —
+  `work` → `/home/e-work`, `play` → `/home/e-play`, `house` → `/srv/household`,
+  `ricky` → `/srv/ricky`, `markets` → `/srv/markets`. All five run
+  `qwen3.8-27b-coding`. Only `work` gets all three agent modes; the other
+  four pin `settings.router.modes = [ "standard" ]`, which is what that knob
+  exists for. Supporting infra: litellm on oracle (`10.0.0.6:4000`, pinned to
+  nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
+  `expression` dependency); SearXNG on oracle; signal-cli in HTTP mode on mu
+  with `--send-read-receipts` (read receipts work; the 👀/✅ reaction set is
+  off via `SIGNAL_REACTIONS=false`; typing indicators off). Session titles
+  come from `supra-title` on oracle via litellm.
+  Verified 2026-09-02: litellm answers `qwen3.8-27b-coding` in ~0.7s, served
+  by **vllm** (`vllm-0.28.0-tp2`), not the llama-swap this section used to
+  name. The instance/ACL details beyond the file above were not re-verified
+  this round.
 - **Deep-Nous tail excised** (this session). `nous_account.py`, `agent/portal_tags.py`,
   root `models.py`, and the proxy's `nous_portal.py` adapter were gone already; this
   pass removed the remaining credential-gated Nous surface:
@@ -516,8 +640,10 @@ The /etc/nixos changes from the round are committed there; the fork is at
   bromine_halflife end-to-end (workspace → RESULTS.txt → FORMAL_EVAL.md,
   3/3 PASS with halflife 119.279s vs 119.2 true on the first solve).
 - **Standard mode live-tested via Signal** — the full loop (pairing, home
-  channel, /reset, /profile switching, agent turns through litellm) works;
-  the bot answered real questions after the fix round above.
+  channel, /reset, agent turns through litellm) works; the bot answered real
+  questions after the fix round above. Tested when the gateway still
+  multiplexed profiles; the per-instance replacement (`7e79f545`) has not had
+  the same end-to-end pass.
 - **Research mode was destructive until 2026-08-25 (round 3) — now fixed.**
   It had never been run, which is why nobody caught it. `Config.workspace_dir`
   defaults to `""` → `Path(".")` → **the process cwd**, and both entry points
@@ -541,8 +667,11 @@ The /etc/nixos changes from the round are committed there; the fork is at
   finishes; the priority queue is the eventual fix.
 - **Research pipeline prompts are theory-era text** — experimental-language
   prompt tuning is a follow-up.
-- **TUI removed** (see above) — the classic prompt_toolkit CLI is the only
-  interface now; `--tui` errors as an unknown argument.
+- **Textual is the only interface** — `cli.main()` builds a `TextualBackend`
+  unconditionally and hands it to `son_of_anton_tui.tui.run_app()`. There is
+  no `--tui`/`--cli` flag and no fallback REPL: if Textual will not start,
+  nothing interactive starts. Single-query mode (`son-of-anton "..."`) still
+  bypasses the front-end entirely.
 
 ### `_SON_OF_ANTON_GATEWAY` made truthful (2026-08-25, round 3)
 
@@ -599,22 +728,28 @@ this repo's cwd/env-bridge class needs a subprocess test.
 
 ## What's left
 
-1. **Final deep-Nous pass** — DONE this session: the credential-gated Nous
-   surface in `son_of_anton_cli/auth.py` and `agent/auxiliary_client.py` (plus
-   the model_metadata / vision_tools / delegate_tool nous bits and the vulture-flagged
-   unused imports, and an unreachable block in `run_agent.py`) has been excised.
-   Only stale prose (`resolve_nous_access_token` in the relay enroll docstring)
-   and the inert `doctor.py` removed-provider probes remain.
-2. **Research-mode live smoke test** — same litellm/llama-swap chain.
-3. **README** stays in sync with the above (TUI removal + CLI-only).
+1. **Commit the 2026-09-02 bug round.** It is green (621 tests, `ruff` clean)
+   but sitting uncommitted in the tree at the user's request.
+2. **Research-mode live smoke test** — never driven against a real endpoint.
+   The destructive-path fix is verified; end-to-end model behaviour is not.
+3. **Docs** — done 2026-09-02: README's inverted interface line is fixed, and
+   the "the router picks the model per request" claim is gone from README,
+   `/model auto` (cli.py) and the gateway's `/model`+`/mode` replies. The
+   router never picked models; the half that claimed to is deleted.
+4. **Deep-Nous residue** — stale prose still names `resolve_nous_access_token()`
+   in the gateway relay's enroll docstring (never called), and `doctor.py`
+   still carries inert removed-provider probes (Nous auth row).
+5. **TUI gaps** — image attachments in the prompt and an `/agents` viewer were
+   never carried over from the REPL.
 
 ## Operational notes
 
 - Commits: author `son-of-anton-bot <307402699+son-of-anton-bot@users.noreply.github.com>`, trailer `Co-authored-by: Ethan Todd <30243637+ewtodd@users.noreply.github.com>` (repo git config already set)
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
 - Verify: `nix flake check` (package + modules + venv import sweep), full-tree compile via `/tmp/opencode/compile_all.py` (path points at `/home/e-play/Software/son-of-anton`), import sweep via `/tmp/opencode/import_sweep.py` (run inside the sealed venv)
-- Python tests: `nix develop -c scripts/run_tests.sh` (94 tests, <1s); hooks: `nix develop -c pre-commit install`
-- The TUI is gone; the CLI is the only interface. `son-of-anton` = classic prompt_toolkit REPL; `--tui` is an unknown argument.
+- Python tests: `nix develop -c scripts/run_tests.sh` (621 tests across 47 files, ~32s); hooks: `nix develop -c pre-commit install`
+- `son-of-anton` = the Textual app, unconditionally. No `--tui`/`--cli` flag, no REPL fallback.
+- Ad-hoc Python: there is no `python` on PATH and `nix develop -c python` is a bare 3.14 without deps. Use the editable venv — `nix develop -c bash -c 'echo $SON_OF_ANTON_PYTHON'` for the current store path, then run it with `SON_OF_ANTON_PYTHON_SRC_ROOT=/home/e-work/son-of-anton` exported. Point `SON_OF_ANTON_HOME` at a scratch dir for backend experiments.
 - **Deployment**: the gateway lives in the user's `/etc/nixos` repo (host
   `e-desktop`), input `son-of-anton` following `main` — bump with
   `nix flake lock --update-input son-of-anton` + `nixos-rebuild switch`.
@@ -629,6 +764,5 @@ this repo's cwd/env-bridge class needs a subprocess test.
   `physics.model/base_url` set; run `/tmp/opencode/smoke/run_phys.py` in the
   sealed venv with a `python` shim on PATH (compute scripts shell out to
   bare `python`).
-- Python for ad-hoc checks: `/nix/store/sgr5qv39ji4gddv37jw1iw069gqxa0x2-python3-3.12.14/bin/python3.12` (bare) or the sealed venv's `bin/python3` (has deps)
-- uv (for lock regen): `nix shell nixpkgs#uv -c env UV_PYTHON=/nix/store/sgr5qv39ji4gddv37jw1iw069gqxa0x2-python3-3.12.14/bin/python3.12 uv lock`
+- uv (for lock regen): `nix shell nixpkgs#uv -c env UV_PYTHON="$(nix develop -c bash -c 'echo $SON_OF_ANTON_PYTHON')" uv lock` — the store path this used to hardcode has been garbage-collected; never pin one here
 - The agent name: the user renamed the GitHub account to `son-of-anton-bot`; do not create a DeepSeek co-author trailer (no such account exists)

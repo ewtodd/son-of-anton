@@ -23,18 +23,15 @@ custom_providers:
     base_url: "http://127.0.0.1:8080/v1"
 
 # =============================================================================
-# Request Router (mode + complexity selection per request)
+# Request Router (agent mode selection per session)
 # =============================================================================
 router:
   enabled: true
-  mode: "auto"               # auto | standard | physics | research (/mode overrides)
-  # Per-slot model overrides (empty = inherit model.default):
-  simple_model: ""
-  default_model: ""
-  planner_model: ""
-  executor_model: ""
-  reviewer_model: ""
-  researcher_model: ""
+  # Selectable agent modes. Keyword classification runs on the FIRST message of
+  # a session only; /mode pins it explicitly on any turn. "standard" is always
+  # available - drop the others on a deployment with no use for them and their
+  # keywords stop routing.
+  modes: ["standard", "physics", "research"]
 
 # =============================================================================
 # Physics Mode

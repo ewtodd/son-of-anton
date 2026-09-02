@@ -65,7 +65,8 @@ If you are not happy with AI-developed code, this software is not for you.
 ## What it does
 <!---->
 Three agent modes.
-A router picks one per request, and `/mode` overrides it:
+A router picks one from the first message of a session, and `/mode` overrides
+it on any turn:
 <!---->
 - `standard`: the hermes loop, terminal, files, web, skills, memory,
   delegation, cron.
@@ -116,12 +117,14 @@ Other things worth knowing:
 <!---->
 - Talks over Discord, Slack, and Signal.
 One gateway process also runs cron.
-- The prompt_toolkit CLI is the only interface (the TUI was removed).
+- The Textual TUI is the only interface. There is no `--tui` flag and no
+  fallback REPL; `son-of-anton "..."` still answers a single query without it.
 - `/perm default|ask|lockdown|yolo` sets how much it asks before running
   commands.
   Some things stay blocked even under yolo.
-- `/model auto` routes each request to a model slot; `/model NAME` pins one for
-  the session.
+- `/model NAME` pins a model for the session; `/model auto` drops the pin and
+  falls back to the configured default. The router picks the *mode*, never the
+  model.
 <!---->
 ## Running it
 <!---->

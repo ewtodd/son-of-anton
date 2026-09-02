@@ -9103,10 +9103,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _handle_mode_command(self, cmd_original: str) -> None:
         """Handle /mode — pin the session agent mode.
 
-        ``auto`` re-enables per-request router classification; the other
-        modes pin the session. The physics/research loops land in a later
-        release — until then a pinned non-standard mode prints a notice and
-        runs the standard loop.
+        ``auto`` re-enables router classification (first turn of a session
+        only); the other modes pin it for every turn. A pin runs the real
+        loop — ``_run_problem_mode`` through ``physics_intern.run``.
         """
         from son_of_anton_cli.router import resolve_enabled_modes
 
@@ -9185,7 +9184,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
-          /model auto                         — clear the session pin, re-enable routing
+          /model auto                         — clear the session pin, back to the configured default
 
         Persistence defaults to off (``model.persist_switch_by_default`` in
         config.yaml, default False — switches are session-scoped). Use
@@ -9202,7 +9201,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        # /model auto — drop the session pin and fall back to router/model config.
+        # /model auto — drop the session pin and fall back to the model config.
         if raw_args.lower() == "auto":
             self.requested_provider = None
             self.provider = None
@@ -9212,7 +9211,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.api_mode = None
             self.agent = None
             self._pending_model_switch_note = None
-            print("(._.) Model routing re-enabled (auto). The router picks the model per request.")
+            print("(._.) Model pin cleared. Back to the configured default.")
             return
 
         # Parse --provider, --global, --session, --once, and --refresh flags
@@ -9882,8 +9881,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if retry_msg and hasattr(self, '_pending_input'):
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
-        elif canonical == "prompt":
-            self._handle_prompt_compose_command(cmd_original)
         elif canonical == "commit":
             self._handle_commit_command(cmd_original)
         elif canonical == "undo":

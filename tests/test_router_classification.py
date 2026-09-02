@@ -7,10 +7,8 @@ from __future__ import annotations
 
 from son_of_anton_cli.router import (
     AGENT_MODES,
-    classify_complexity,
     classify_mode,
     resolve_mode,
-    resolve_model_slot,
 )
 
 
@@ -57,26 +55,6 @@ def test_mode_pins_override_classification() -> None:
     # auto / None mean "classify"
     assert resolve_mode(None, "fit the histogram") == "physics"
     assert resolve_mode("auto", "fit the histogram") == "physics"
-
-
-def test_complexity_short_greetings_are_simple() -> None:
-    for text in ("hi", "thanks", "ok", "status"):
-        assert classify_complexity(text) == "simple"
-
-
-def test_complexity_code_signals_are_complex() -> None:
-    assert classify_complexity("fix the bug in src/utils.py and rebuild") == "complex"
-    assert classify_complexity("implement a new nix flake check") == "complex"
-
-
-def test_complexity_unclassified_is_default() -> None:
-    assert classify_complexity("summarize the notes from yesterday") == "default"
-
-
-def test_router_disabled_falls_back_to_default_slot() -> None:
-    assert resolve_model_slot("fix the bug in src/main.c", {"enabled": False}) == "default"
-    assert resolve_model_slot("fix the bug in src/main.c", None) == "default"
-    assert resolve_model_slot("fix the bug in src/main.c", {"enabled": True}) == "complex"
 
 
 def test_agent_modes_are_the_four_documented_values() -> None:

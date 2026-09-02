@@ -1471,7 +1471,7 @@ class GatewaySlashCommandsMixin:
             self._session_mode_overrides.pop(session_key, None)
             return (
                 "Mode routing re-enabled (auto). "
-                "The router picks the mode per request."
+                "The router classifies the first message of a session."
             )
         self._session_mode_overrides[session_key] = new_mode
         return f"Agent mode set to {new_mode} for this session."
@@ -1557,10 +1557,7 @@ class GatewaySlashCommandsMixin:
                 logger.debug(
                     "Failed to clear persisted model override", exc_info=True
                 )
-            return (
-                "Model routing re-enabled (auto). "
-                "The router picks the model per request."
-            )
+            return "Model pin cleared. Back to the configured default."
         persist_global = resolve_persist_behavior(
             is_global_flag,
             is_session,

@@ -1,11 +1,16 @@
 """Request router for son-of-anton.
 
-Classifies a user request into an agent mode (standard / physics / research)
-and a model slot (simple / default / complex). The design mirrors the
-heuristic router from the archived temple harness: conservative, fast, no
-model call, with the final word left to explicit user overrides.
+Classifies a user request into an agent mode: standard / physics / research.
+The design mirrors the heuristic router from the archived temple harness:
+conservative, fast, no model call, with the final word left to explicit user
+overrides.
 
-All knobs live under the ``router`` section of config.yaml.
+Temple also classified a *model slot* (simple / default / complex) here. That
+half was ported, given a config surface and tests, and never wired to model
+resolution — nothing read its answer — so it is gone. Per-request model
+choice belongs to the normal resolution chain and ``/model``.
+
+The knobs that exist are ``router.enabled`` and ``router.modes``.
 """
 
 from __future__ import annotations
@@ -115,47 +120,6 @@ RESEARCH_KEYWORDS = (
     "scientific review",
 )
 
-COMPLEX_CODE_SIGNALS = (
-    " code",
-    " bug",
-    "fix ",
-    "implement ",
-    "refactor",
-    " rewrite",
-    "rewrite ",
-    " build",
-    "building ",
-    "compile",
-    " debug",
-    "debugging ",
-    "commit ",
-    "push ",
-    " test",
-    "testing ",
-)
-
-COMPLEX_SUBSTANCE_SIGNALS = (
-    ".",
-    "/",
-    "(",
-    "src",
-    "fn ",
-    "def ",
-    "class ",
-    "struct ",
-    "import ",
-    "cargo",
-    "nix ",
-    "flake",
-    ".rs",
-    ".py",
-    ".nix",
-    ".cpp",
-    ".cxx",
-    ".ts",
-    ".js",
-)
-
 
 def classify_mode(
     text: str,
@@ -174,39 +138,6 @@ def classify_mode(
     if "research" in allowed and any(k in low for k in RESEARCH_KEYWORDS):
         return "research"
     return "standard"
-
-
-def classify_complexity(text: str) -> str:
-    """Return ``simple``, ``complex``, or ``default`` for *text*.
-
-    Ported from temple's heuristic classifier: only classify the obvious
-    cases, leave everything else at the middle tier.
-    """
-    q = text.lower()
-    length = len(text.strip())
-
-    if length < 15 or q in {
-        "hi", "hey", "hello", "yo", "sup", "thanks", "thank you",
-        "thx", "ty", "ok", "okay", "k", "kk", "status", "help",
-        "ping", "lol", "nice", "cool",
-    }:
-        return "simple"
-
-    greeting_prefixes = ("hello ", "hi ", "hey ", "thanks ", "thank you ")
-    for prefix in greeting_prefixes:
-        if q.startswith(prefix):
-            rest = q[len(prefix):]
-            if len(rest) < 30:
-                return "simple"
-
-    has_code_signal = any(signal in q for signal in COMPLEX_CODE_SIGNALS)
-    has_substance = length > 40 or any(
-        signal in q for signal in COMPLEX_SUBSTANCE_SIGNALS
-    )
-    if has_code_signal and has_substance:
-        return "complex"
-
-    return "default"
 
 
 def resolve_mode(
@@ -243,15 +174,3 @@ def resolve_mode(
     if not is_first_turn:
         return "standard"
     return classify_mode(text, allowed)
-
-
-def resolve_model_slot(
-    text: str,
-    router_config: Optional[dict],
-) -> str:
-    """Return the router model slot for *text*: simple/default/complex."""
-    if not router_config:
-        return "default"
-    if not router_config.get("enabled", True):
-        return "default"
-    return classify_complexity(text)

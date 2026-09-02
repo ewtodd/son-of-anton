@@ -6,8 +6,8 @@ spacing collapses into drift the moment a table reaches a real terminal —
 header pipes line up, every body row drifts right by N cells per CJK
 char.
 
-This module rebuilds row padding using ``wcwidth.wcswidth`` (display
-columns), preserving the table's pipes and dashes so it still reads as a
+This module rebuilds row padding using ``rich.cells.cell_len`` (display
+cells), preserving the table's pipes and dashes so it still reads as a
 plain-text table in ``strip`` / unrendered display modes. Standard Rich
 markdown rendering already aligns CJK correctly inside a wide enough
 panel; this helper is for the paths that print the model's text more or
@@ -20,11 +20,11 @@ The helper is deliberately conservative:
 * Single-line / mid-stream fragments are left alone — callers buffer
   table rows and flush them once the block is complete.
 
-There is a small, intentional caveat: ``wcwidth`` returns ``-1`` for some
-emoji-with-variation-selector sequences (e.g. ``⚠️``); we clamp those to
-0 so they do not corrupt the column width math. The 1-cell drift on
-those specific glyphs is preferable to silently widening every table
-that contains one.
+``cell_len`` comes from ``rich`` (a core dependency), so this module
+never drags in an undeclared transitive — a hard ``wcwidth`` import here
+used to crash the whole turn on lean installs that lacked it.
+``cell_len`` already reports 0 for control/zero-width sequences (the old
+``wcswidth`` -1 clamps), so the column math is unchanged.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 from typing import List
 
-from wcwidth import wcswidth
+from rich.cells import cell_len
 
 __all__ = [
     "is_table_divider",
@@ -47,14 +47,15 @@ _MIN_COL_WIDTH = 3  # matches the divider's minimum dash run.
 
 
 def _disp_width(s: str) -> int:
-    """``wcswidth`` clamped to a non-negative integer.
+    """Display cell count for ``s``.
 
-    ``wcswidth`` returns ``-1`` when it encounters a control char or an
-    unknown sequence; treat those as zero-width rather than letting a
-    negative number flow into ``max`` and break the column-width math.
+    ``rich.cells.cell_len`` reports the terminal width in cells: 2 for CJK
+    and wide emoji, 0 for control/zero-width sequences, 1 for ordinary
+    characters. That matches (and improves on) the old ``wcswidth`` clamp,
+    so ``max`` / column-width math never sees a negative width.
     """
 
-    w = wcswidth(s)
+    w = cell_len(s)
     return w if w > 0 else 0
 
 
@@ -261,7 +262,7 @@ def _render_vertical(
 
 
 def realign_markdown_tables(text: str, available_width: int | None = None) -> str:
-    """Rewrite every ``| ... |`` + divider block with wcwidth-aware padding.
+    """Rewrite every ``| ... |`` + divider block with cell-width-aware padding.
 
     Lines that are not part of a recognised table are returned verbatim,
     so this is safe to apply to arbitrary assistant prose.

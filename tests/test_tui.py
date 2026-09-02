@@ -8,8 +8,9 @@ Two hard contracts hold whether or not Textual is installed:
 With Textual present the layout is exercised end-to-end through
 ``App.run_test``: the opencode-inspired frame (wide terminals get a 42-col
 right panel), a terminal-native ``ansi`` theme, the ASCII wordmark, the
-multi-line prompt, slash completion, the backend event stream (assistant
-markdown, reasoning, tool rows, ANSI lines), the modal screens, and ``:q``.
+multi-line prompt with its ↑/↓ history recall, slash completion, the backend
+event stream (assistant markdown, reasoning, tool rows, ANSI lines), the modal
+screens, and ``:q``.
 
 The backend half (``son_of_anton_tui.backend.TextualBackend``) is tested
 against the real ``cli.SonOfAntonCLI`` under the temp ``SON_OF_ANTON_HOME``
@@ -147,6 +148,166 @@ def test_prompt_completes_slash_commands_and_q_quits() -> None:
             await pilot.press("enter")
             await pilot.pause(0.3)
             assert not app.is_running, ":q did not quit the app"
+
+    asyncio.run(run())
+
+
+def test_text_we_did_not_author_is_never_parsed_as_markup() -> None:
+    """A stray ``[`` in model prose used to take the whole app down.
+
+    ``Static.update`` runs Textual's content-markup parser by default, so one
+    bracket in a reasoning stream (or in a tool-approval title) raised
+    ``MarkupError`` out of the render and killed the session mid-turn.  Every
+    Static that shows text from the model, the filesystem or the user is
+    ``markup=False``.
+    """
+    _textual()
+
+    hostile = "run `ls [-a]` — the [bold] flag is unclosed"
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            post("reasoning_start")
+            post("reasoning_delta", text=hostile)
+            post("reasoning_end")
+            await pilot.pause(0.4)
+            assert app.is_running, "a bracket in the reasoning stream crashed the app"
+            block = next(w for w in app.query_one("#feed").children if isinstance(w, _tui.ReasoningBlock))
+            assert hostile in block._buffer
+
+            app.push_screen(_tui.ChoiceModal(hostile, [("ok", "OK", "")], detail=hostile), lambda r: None)
+            await pilot.pause(0.3)
+            assert app.is_running, "a bracket in a modal title crashed the app"
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+
+            app.query_one("#context")  # the sidebar renders session titles verbatim
+            app.query_one("#ctx-title").update(hostile)
+            app.query_one("#ctx-cwd").update(hostile)
+            await pilot.pause(0.2)
+            assert app.is_running, "a bracket in the sidebar crashed the app"
+
+    asyncio.run(run())
+
+
+def test_prompt_history_round_trips_the_repl_file(tmp_path) -> None:
+    """Recall reads and writes prompt_toolkit's format, so old history survives."""
+    _textual()
+
+    path = tmp_path / ".son_of_anton_history"
+    path.write_text("\n# 2026-01-01 00:00:00.000000\n+older\n")
+
+    hist = _tui.PromptHistory(path)
+    assert hist._entries == ["older"]
+
+    hist.record("first")
+    hist.record("second\nline two")
+    hist.record("second\nline two")  # a repeat must not stack up
+
+    reloaded = _tui.PromptHistory(path)
+    assert reloaded._entries == ["older", "first", "second\nline two"]
+
+    # ↑ walks back, stopping at the oldest; ↓ walks forward and hands the
+    # in-progress draft back at the end.
+    assert reloaded.prev("draft") == "second\nline two"
+    assert reloaded.prev("") == "first"
+    assert reloaded.prev("") == "older"
+    assert reloaded.prev("") is None, "there is nothing older to reach"
+    assert reloaded.next("") == "first"
+    assert reloaded.next("") == "second\nline two"
+    assert reloaded.next("") == "draft", "past the newest entry the draft comes back"
+    assert reloaded.next("") is None
+
+    # No file (no backend attached) is fine: recall just stays in memory.
+    memory = _tui.PromptHistory(None)
+    memory.record("only here")
+    assert memory.prev("") == "only here"
+
+
+def test_up_arrow_recalls_previous_prompts() -> None:
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            prompt = app.query_one("#input")
+            prompt.focus()
+            for message in ("first message", "second message"):
+                prompt.text = message
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+            assert prompt.text == ""
+
+            await pilot.press("up")
+            await pilot.pause(0.1)
+            assert prompt.text == "second message"
+            await pilot.press("up")
+            await pilot.pause(0.1)
+            assert prompt.text == "first message"
+            await pilot.press("up")
+            await pilot.pause(0.1)
+            assert prompt.text == "first message", "the oldest entry is the floor"
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert prompt.text == "second message"
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert prompt.text == "", "past the newest entry the empty draft returns"
+
+            # A recalled slash command must not leave the completion list open,
+            # or the next ↑ would walk that list instead of the history.
+            prompt.text = "/model"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            prompt.text = ""
+            await pilot.press("up")
+            await pilot.pause(0.2)
+            assert prompt.text == "/model"
+            assert app.query_one("#completer").display is False
+
+            # Inside a multi-line draft the arrows still move the cursor.
+            prompt.text = "line one\nline two"
+            prompt.move_cursor(prompt.document.end)
+            await pilot.press("up")
+            await pilot.pause(0.1)
+            assert prompt.text == "line one\nline two", "↑ mid-draft must not recall"
+            assert prompt.cursor_location[0] == 0
+
+    asyncio.run(run())
+
+
+def test_selecting_in_the_feed_copies_and_keeps_the_prompt_focused() -> None:
+    """Drag-select copies like a terminal does, and never steals the caret."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            post("ansi", text="a line worth selecting")
+            await pilot.pause(0.3)
+            prompt = app.query_one("#input")
+            assert app.focused is prompt
+
+            note = next(w for w in app.query_one("#feed").children if isinstance(w, _tui.NoteLine))
+            await pilot.mouse_down(note, offset=(0, 0))
+            await pilot.hover(note, offset=(12, 0))
+            await pilot.mouse_up(note, offset=(12, 0))
+            await pilot.pause(0.3)
+
+            assert app.clipboard.strip(), "highlighting did not copy anything"
+            assert app.clipboard.strip() in "a line worth selecting"
+            assert app.focused is prompt, "selecting stole focus from the prompt"
+
+            # A plain click anywhere in the transcript keeps the caret too.
+            await pilot.click("#feed")
+            await pilot.pause(0.2)
+            assert app.focused is prompt, "clicking the feed stole focus from the prompt"
 
     asyncio.run(run())
 
@@ -462,6 +623,62 @@ def test_ctrl_c_interrupts_a_running_turn_and_quitting_unwinds_it(backend) -> No
                 await pilot.pause(0.05)
             app.exit()
         assert interrupted.is_set(), "quitting mid-turn did not interrupt the agent"
+
+    asyncio.run(run())
+
+
+def test_typing_mid_turn_steers_the_running_agent(backend) -> None:
+    """A message typed while a turn runs must reach the agent, not the void.
+
+    ``display.busy_input_mode`` picks where it lands: "interrupt" (the default)
+    hands it to chat()'s interrupt monitor so the agent turns on a dime, while
+    "queue" parks it for the next turn. Steering was dead for a while for an
+    unrelated reason — the interrupt fired, then rendering the interrupt notice
+    hit an undeclared ``wcwidth`` (see tests/test_markdown_tables.py).
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+    released = threading.Event()
+
+    def fake_chat(message, images=None):
+        released.wait(10)
+        return "done"
+
+    b.chat = fake_chat
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            prompt = app.query_one("#input")
+            prompt.focus()
+            prompt.text = "long task"
+            await pilot.press("enter")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app._busy != "turn":
+                await pilot.pause(0.05)
+            assert app._busy == "turn", "turn never started"
+
+            b.busy_input_mode = "interrupt"
+            prompt.text = "actually, do it the other way"
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            assert b._interrupt_queue.get_nowait() == "actually, do it the other way"
+            assert prompt.text == "", "steering must clear the prompt"
+
+            b.busy_input_mode = "queue"
+            prompt.text = "afterwards, run the tests"
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            assert b._pending_input.get_nowait() == "afterwards, run the tests"
+            assert app._queued == 1
+
+            released.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app._busy is not None:
+                await pilot.pause(0.05)
+            assert app._busy is None, "turn did not unwind"
 
     asyncio.run(run())
 

@@ -1851,6 +1851,11 @@ class CLICommandsMixin:
         Returns the composed prompt text, or an empty string if the editor
         could not be launched or the buffer was left empty. Factored out so
         the read-back/strip logic is unit-testable without spawning an editor.
+
+        ctrl+g in the TUI is the only way in: it seeds the buffer with the
+        draft already typed and sends whatever comes back. There used to be a
+        ``/prompt`` command doing the same thing one keystroke slower, which
+        is why this is a method rather than a closure.
         """
         import os
         import shlex
@@ -1887,35 +1892,6 @@ class CLICommandsMixin:
 
         lines = [ln for ln in raw.splitlines() if not ln.startswith("#!")]
         return "\n".join(lines).strip()
-
-    def _handle_prompt_compose_command(self, cmd_original: str) -> None:
-        """Handle /prompt — compose the next prompt in $EDITOR and send it.
-
-        Opens the user's editor on a temporary markdown file (optionally
-        seeded with text passed after the command), then queues the saved
-        buffer as the next agent turn via the one-shot ``_pending_agent_seed``
-        the interactive loop already consumes (same path as /blueprint).
-        """
-        from cli import _DIM, _RST, _cprint
-
-        initial = ""
-        parts = (cmd_original or "").strip().split(None, 1)
-        if len(parts) > 1:
-            initial = parts[1]
-
-        try:
-            composed = self._compose_in_editor(initial)
-        except Exception as exc:
-            _cprint(f"  {_DIM}(>_<) Could not open editor: {exc}{_RST}")
-            return
-
-        if not composed:
-            _cprint(f"  {_DIM}(._.) Empty prompt — nothing sent.{_RST}")
-            return
-
-        # One-shot seed: the interactive loop runs this as the next agent turn
-        # right after process_command() returns (see cli.py main loop).
-        self._pending_agent_seed = composed
 
     def _commit_identity(self) -> tuple[str, str]:
         """The ``git.author_name`` / ``git.author_email`` pair for ``/commit``.
@@ -1978,7 +1954,7 @@ class CLICommandsMixin:
         """Handle /commit — queue the review-and-commit task as the next turn.
 
         Uses the same one-shot ``_pending_agent_seed`` the interactive loop
-        already consumes for /prompt, so the agent runs it as a normal turn
+        already consumes for /blueprint, so the agent runs it as a normal turn
         with its normal tools and approvals.
         """
         parts = (cmd_original or "").strip().split(None, 1)

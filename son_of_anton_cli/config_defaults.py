@@ -372,25 +372,18 @@ DEFAULT_CONFIG = {
         "reasoning_echo": False,
     },
 
-    # Request router (temple-style): classifies each message into an agent
-    # mode (standard / physics / research) and a model slot (simple / default /
-    # complex). mode=auto classifies per message; a session /mode pin wins.
-    # Empty model slots fall back to the normal model resolution chain.
+    # Request router (temple-style): classifies the first message of a session
+    # into an agent mode (standard / physics / research). A session /mode pin
+    # wins on any turn. Model choice is NOT routed — it comes from the normal
+    # resolution chain and /model.
     "router": {
         "enabled": True,
-        "mode": "auto",
         # Selectable agent modes. "standard" is always available; drop
         # "physics"/"research" on a deployment that has no use for them (a
         # household or general-purpose gateway) and their keywords stop
         # routing, /mode stops offering them, and a stale session pin falls
         # back to standard.
         "modes": ["standard", "physics", "research"],
-        "simple_model": "",
-        "default_model": "",
-        "planner_model": "",
-        "executor_model": "",
-        "reviewer_model": "",
-        "researcher_model": "",
     },
 
     # Physics modes (physics_intern): the single-agent Autophysicist loop and

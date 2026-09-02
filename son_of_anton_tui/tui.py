@@ -32,7 +32,9 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 from functools import partial
+from pathlib import Path
 from typing import Any, Optional
 
 try:
@@ -213,6 +215,104 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+class PromptHistory:
+    """What ↑ / ↓ walk through at the prompt.
+
+    Recall used to come free from prompt_toolkit's ``FileHistory``; deleting
+    that REPL took it with it.  So this reads and appends the very same file
+    (``~/.son-of-anton/.son_of_anton_history``) in the very same shape — a
+    ``# <timestamp>`` header, then each line of the entry prefixed with ``+``
+    — and every prompt typed before the move is still there under the arrow.
+
+    ``path`` may be ``None`` (no backend attached, or an unwritable home):
+    recall still works, it just lives and dies with the session.
+    """
+
+    MAX_ENTRIES = 500
+
+    def __init__(self, path: Any = None) -> None:
+        self._path: Optional[Path] = Path(path) if path else None
+        self._entries: list[str] = []
+        self._index: Optional[int] = None  # None → showing the live draft
+        self._draft = ""
+        self._load()
+
+    # ---------------- persistence ----------------
+    def _load(self) -> None:
+        if self._path is None:
+            return
+        try:
+            raw = self._path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        entry: list[str] = []
+        for line in raw.splitlines():
+            if line.startswith("+"):
+                entry.append(line[1:])
+            elif entry:
+                self._entries.append("\n".join(entry))
+                entry = []
+        if entry:
+            self._entries.append("\n".join(entry))
+        self._trim()
+
+    def _trim(self) -> None:
+        del self._entries[: -self.MAX_ENTRIES]
+
+    def _append(self, text: str) -> None:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        body = "".join(f"+{line}\n" for line in text.split("\n"))
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n# {stamp}\n{body}")
+        except OSError:
+            self._path = None  # read-only home: keep recall in memory only
+
+    # ---------------- recall ----------------
+    def record(self, text: str) -> None:
+        """Remember a submitted prompt and drop back to the live draft."""
+        self.reset()
+        text = text.strip("\n")
+        if not text.strip():
+            return
+        # Consecutive duplicates collapse: pressing ↑ after sending the same
+        # thing twice should reach the entry *before* it, not itself again.
+        if not self._entries or self._entries[-1] != text:
+            self._entries.append(text)
+            self._trim()
+            if self._path is not None:
+                self._append(text)
+
+    def reset(self) -> None:
+        """Forget where in the history we are (called on submit)."""
+        self._index = None
+        self._draft = ""
+
+    def prev(self, current: str) -> Optional[str]:
+        """The entry before the one showing, or ``None`` at the oldest."""
+        if not self._entries:
+            return None
+        if self._index is None:
+            self._draft = current
+            self._index = len(self._entries) - 1
+        elif self._index == 0:
+            return None
+        else:
+            self._index -= 1
+        return self._entries[self._index]
+
+    def next(self, current: str) -> Optional[str]:
+        """The entry after the one showing — past the newest, the saved draft."""
+        if self._index is None:
+            return None
+        self._index += 1
+        if self._index >= len(self._entries):
+            self._index = None
+            return self._draft
+        return self._entries[self._index]
+
+
 def is_available() -> bool:
     """True when Textual is installed (the ``tui`` extra is present)."""
     return _TEXTUAL_AVAILABLE
@@ -271,7 +371,20 @@ if _TEXTUAL_AVAILABLE:
     # Prompt
     # ------------------------------------------------------------------
     class PromptArea(TextArea):
-        """Multi-line prompt: Enter submits, Shift+Enter newlines, Tab completes."""
+        """Multi-line prompt: Enter submits, Shift+Enter newlines, Tab completes.
+
+        ↑ / ↓ move the cursor through a multi-line draft and fall through to
+        history recall once they run off the top or the bottom of it — the
+        shell behaviour the prompt_toolkit REPL used to give for free.
+        """
+
+        BINDINGS = [
+            # Terminals normally swallow ctrl+shift+v themselves and hand the
+            # app a bracketed paste, which ``TextArea._on_paste`` already
+            # inserts.  This covers the ones that forward the chord instead,
+            # so the shortcut works either way.
+            Binding("ctrl+shift+v", "paste", "Paste", show=False),
+        ]
 
         class Submitted(Message):
             def __init__(self, prompt: "PromptArea", value: str) -> None:
@@ -287,6 +400,11 @@ if _TEXTUAL_AVAILABLE:
                 self.action = action
 
         completer_active: bool = False
+        prompt_history: Optional[PromptHistory] = None
+        # Set while ↑/↓ swap in a history entry: the ``Changed`` that follows
+        # must not pop the slash-completion list open, or the next ↑ would
+        # walk that list instead of the history.
+        recalled: bool = False
 
         async def _on_key(self, event: events.Key) -> None:
             key = event.key or ""
@@ -308,7 +426,36 @@ if _TEXTUAL_AVAILABLE:
                 event.prevent_default()
                 self.post_message(self.Complete({"tab": "accept", "up": "up", "down": "down", "escape": "close"}[key]))
                 return
+            if key in ("up", "down") and self._recall(key):
+                event.stop()
+                event.prevent_default()
+                return
             await super()._on_key(event)
+
+        def _recall(self, key: str) -> bool:
+            """Swap the draft for a history entry; False leaves the key alone.
+
+            Inside a multi-line draft the arrows still have to move the cursor,
+            so recall only fires from the top row (↑) or the bottom row (↓) —
+            and only while there is somewhere left to go.
+            """
+            if self.prompt_history is None:
+                return False
+            row, _col = self.cursor_location
+            if key == "up":
+                if row != 0:
+                    return False
+                entry = self.prompt_history.prev(self.text)
+            else:
+                if row != self.document.line_count - 1:
+                    return False
+                entry = self.prompt_history.next(self.text)
+            if entry is None:
+                return False
+            self.recalled = True
+            self.text = entry
+            self.move_cursor(self.document.end)
+            return True
 
     # ------------------------------------------------------------------
     # Feed widgets
@@ -413,7 +560,10 @@ if _TEXTUAL_AVAILABLE:
         """Model reasoning: expanded while it streams, folded once the answer starts."""
 
         def __init__(self, **kw: Any) -> None:
-            self._body = Static("", classes="reasoning-body")
+            # markup=False: reasoning is the model's prose, and Textual's
+            # content markup would try to parse any "[" in it — a stray
+            # bracket used to take the whole app down with a MarkupError.
+            self._body = Static("", classes="reasoning-body", markup=False)
             self._buffer = ""
             self._dirty = False
             super().__init__(self._body, title="reasoning", collapsed=False, **kw)
@@ -449,7 +599,7 @@ if _TEXTUAL_AVAILABLE:
             if isinstance(item, Static):
                 yield item
             else:
-                yield Static(item, classes="dialog-detail")
+                yield Static(item, classes="dialog-detail", markup=False)
 
     class ChoiceModal(ModalScreen[Optional[str]]):
         """Pick one of ``choices`` — ``(key, label, description)`` triples.
@@ -483,7 +633,7 @@ if _TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="dialog", classes=f"accent-{self._accent}"):
-                yield Static(self._title, classes="dialog-title")
+                yield Static(self._title, classes="dialog-title", markup=False)
                 yield from _detail_widgets(self._detail)
                 if self._filterable:
                     yield Input(placeholder="type to filter…", id="filter")
@@ -586,7 +736,7 @@ if _TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="dialog"):
-                yield Static(self._title, classes="dialog-title")
+                yield Static(self._title, classes="dialog-title", markup=False)
                 yield from _detail_widgets(self._detail)
                 yield SelectionList(*[(label, key) for key, label in self._choices], id="choices")
                 yield Static("space toggle · enter confirm · esc cancel", classes="dialog-hint")
@@ -615,7 +765,7 @@ if _TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="dialog"):
-                yield Static(self._title, classes="dialog-title")
+                yield Static(self._title, classes="dialog-title", markup=False)
                 yield from _detail_widgets(self._detail)
                 yield Input(value=self._prefill, placeholder=self._prompt, password=self._password, id="text")
                 yield Static("enter submit · esc " + ("skip" if self._password else "cancel"), classes="dialog-hint")
@@ -748,8 +898,13 @@ if _TEXTUAL_AVAILABLE:
         #prompt-meta-left { width: 1fr; color: $text-muted; }
         #prompt-meta-right { width: auto; color: $text-muted; }
 
-        #statusline { height: 1; margin-top: 1; }
-        #status-left { width: 1fr; color: $text-muted; }
+        /* The status row must grow, not clip: the live action (e.g. the
+           "waiting on <model> — 42s with no output yet …" heartbeat) is a
+           single long Static, and a fixed height:1 clipped it once the
+           window narrowed. Auto height lets it wrap to a second line
+           instead of losing the tail. */
+        #statusline { height: auto; margin-top: 1; }
+        #status-left { width: 1fr; color: $text-muted; text-wrap: wrap; text-overflow: fold; }
         #status-left.busy { color: $text; }
         #status-right { width: auto; color: $text-muted; }
 
@@ -894,11 +1049,13 @@ if _TEXTUAL_AVAILABLE:
             """opencode's sidebar: identity on top, detail below, product pinned low."""
             with Vertical(id="context"):
                 with VerticalScroll(id="context-scroll"):
-                    yield Static("", id="ctx-title")
+                    # Titles, paths and mode names are not ours to parse:
+                    # markup=False keeps a "[" in any of them from raising.
+                    yield Static("", id="ctx-title", markup=False)
                     yield Static("", id="ctx-session-id", classes="muted")
-                    yield Static("", id="ctx-cwd", classes="muted")
+                    yield Static("", id="ctx-cwd", classes="muted", markup=False)
                     yield Static("mode", classes="label")
-                    yield Static("", id="ctx-mode", classes="kv")
+                    yield Static("", id="ctx-mode", classes="kv", markup=False)
                     yield Static("context", classes="label")
                     yield Static("", id="ctx-bar", classes="kv")
                     yield Static("", id="ctx-tokens", classes="kv muted")
@@ -925,6 +1082,7 @@ if _TEXTUAL_AVAILABLE:
         def on_mount(self) -> None:
             self._feed = self.query_one("#feed", VerticalScroll)
             self._prompt = self.query_one("#input", PromptArea)
+            self._prompt.prompt_history = PromptHistory(getattr(self.backend, "_history_file", None))
             self._completer = self.query_one("#completer", OptionList)
             self._status_left = self.query_one("#status-left", Static)
             self._status_right = self.query_one("#status-right", Static)
@@ -1722,10 +1880,14 @@ if _TEXTUAL_AVAILABLE:
         async def _handle_submit(self, event: PromptArea.Submitted) -> None:
             value = (event.value or "").strip()
             self._hide_completer()
-            if not value:
-                self._prompt.text = ""
-                return
+            history = self._prompt.prompt_history
             self._prompt.text = ""
+            if not value:
+                if history is not None:
+                    history.reset()
+                return
+            if history is not None:
+                history.record(value)
             await self._submit_text(value)
 
         async def _submit_text(self, value: str) -> None:
@@ -1833,6 +1995,10 @@ if _TEXTUAL_AVAILABLE:
 
         @on(TextArea.Changed, "#input")
         def _prompt_changed(self, event: TextArea.Changed) -> None:
+            if self._prompt.recalled:
+                self._prompt.recalled = False
+                self._hide_completer()
+                return
             text = self._prompt.text
             if text.startswith("/") and "\n" not in text and " " not in text.strip():
                 self._show_completer(text.strip())
@@ -1897,6 +2063,43 @@ if _TEXTUAL_AVAILABLE:
             if 0 <= idx < len(self._completion_cmds):
                 self._prefill_prompt(self._completion_cmds[idx])
             self._hide_completer()
+
+        # ---------------- selection / clipboard ----------------
+        def on_mouse_up(self, event: events.MouseUp) -> None:
+            """A click in the transcript must never cost you the prompt.
+
+            Textual focuses whatever focusable widget you press on, so a click
+            — or a drag to select — anywhere in the feed left the caret
+            stranded and you had to click back into the prompt before you
+            could type again. The selection lives on the screen rather than on
+            the focus, so handing focus straight back keeps the highlight and
+            the caret both.
+            """
+            if self.screen is not self.screen_stack[0]:
+                return  # a modal owns the input while it is up
+            prompt = getattr(self, "_prompt", None)
+            if prompt is not None and self.focused is not prompt:
+                prompt.focus()
+
+        def on_text_selected(self, event: events.TextSelected) -> None:
+            """Click-and-highlight auto-copies, with a "copied" toast.
+
+            Textual's native mouse selection is already active (feed widgets
+            are selectable by default) and it posts ``TextSelected`` on
+            mouse-up — but it stops there and makes the user hit ctrl+c.
+            Mirroring what terminals do out of the box, we copy the
+            selection to the system clipboard (``copy_to_clipboard`` writes
+            OSC 52) and surface a short toast. A plain click yields no
+            selection, so this is a no-op.
+            """
+            try:
+                selected = self.screen.get_selected_text()
+            except Exception:
+                return
+            if not selected or not selected.strip():
+                return
+            self.copy_to_clipboard(selected)
+            self.notify(f"copied {len(selected.strip())} chars", timeout=1.5)
 
         # ---------------- actions ----------------
         def action_interrupt_or_quit(self) -> None:

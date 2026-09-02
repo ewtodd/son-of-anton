@@ -146,7 +146,7 @@ son-of-anton/
 ├── son_of_anton_logging.py     # setup_logging() — agent.log / errors.log / gateway.log
 ├── agent/                # Agent internals (providers, memory, caching, compression, ...)
 ├── son_of_anton_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
-│   └── router.py         # classify_mode() / classify_complexity() — the three-mode router
+│   └── router.py         # classify_mode() / resolve_mode() — the three-mode router
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, ssh)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
@@ -244,10 +244,14 @@ Reasoning content is stored in `assistant_msg["reasoning"]`.
 
 ## The Three-Mode Router (son_of_anton_cli/router.py)
 
-`classify_mode(text)` picks `physics` / `research` / `standard` from keyword heuristics;
-`classify_complexity(text)` picks `simple` / `default` / `complex` for the model slots.
-Config section `router:` holds per-slot model overrides. `/mode auto|standard|physics|research`
-pins the session mode; `/model auto` clears the session model pin and re-enables routing.
+`classify_mode(text)` picks `physics` / `research` / `standard` from keyword heuristics,
+and `resolve_mode()` applies it to the FIRST message of a session only — the one-shot
+physics/research loops get no conversation history, so re-routing a follow-up would
+discard the exchange. Config section `router:` holds `enabled` and `modes`.
+`/mode auto|standard|physics|research` pins the session mode on any turn.
+
+The router does not pick models. Temple's `classify_complexity()` / model-slot half was
+ported here and never wired to anything; it was deleted rather than left to mislead.
 
 Physics keywords ("fit the histogram", "half-life", "cross-section", ...) route to
 `physics`; research keywords ("derive the", "literature review", ...) route to `research`;
