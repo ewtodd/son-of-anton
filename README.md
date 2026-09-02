@@ -534,7 +534,9 @@ at runtime, not the install itself.)
 `/commit` hands the work to the agent as an ordinary turn, so it reads the diff
 with the tools it already has and commits under your normal approvals. By
 default it commits with whatever identity the repository or your global git
-config already sets. To commit under a dedicated account instead, set both:
+config already sets. To author commits under a dedicated account instead —
+while keeping *you* as the committer, so the log reads "authored by the
+account, committed by you" — set both:
 
 ```yaml
 git:

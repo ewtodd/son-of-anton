@@ -1920,9 +1920,11 @@ class CLICommandsMixin:
     def _commit_identity(self) -> tuple[str, str]:
         """The ``git.author_name`` / ``git.author_email`` pair for ``/commit``.
 
-        Either being blank means "don't override the identity" — git then uses
-        whatever the repository or the user's global config already says, which
-        is what someone who wants commits attributed to themselves should set.
+        This is the AUTHOR identity for ``git commit --author`` only — the
+        committer always stays whatever the repository or the user's global
+        config already says, so the log reads "authored by the configured
+        account, committed by you". Either key being blank means "don't
+        override anything" — git then uses its normal identity for both.
 
         Read through the canonical loader rather than ``self.config``: cli.py
         carries its own smaller defaults table, so a key that lives only in
@@ -1955,7 +1957,14 @@ class CLICommandsMixin:
             "matching the existing style, and then stage+commit them.",
         ]
         if name and email:
-            lines.append(f"Commit using this account: {name} <{email}>")
+            lines.append(
+                f"Author the commit as {name} <{email}>: commit with "
+                f"`git commit --author=\"{name} <{email}>\" -m \"<message>\"`. "
+                "Leave the committer untouched — it must stay whatever identity the "
+                "repository or your global git config already sets (do not override "
+                "the committer; no GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL, no "
+                "-c user.name / user.email)."
+            )
         else:
             lines.append(
                 "Commit with the repository's already-configured git identity; do not "

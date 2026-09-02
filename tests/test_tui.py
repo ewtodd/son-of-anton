@@ -1269,8 +1269,13 @@ def test_commit_command_is_registered() -> None:
     assert cmd.cli_only, "committing is an interactive action, not a chat-platform one"
 
 
-def test_commit_prompt_carries_the_configured_identity(backend, monkeypatch) -> None:
-    """The bot account is a default, not a hard-coding."""
+def test_commit_prompt_pins_the_configured_author(backend, monkeypatch) -> None:
+    """A configured identity pins the AUTHOR; the committer stays as-is.
+
+    The whole point: the log reads "authored by the configured account,
+    committed by you" — so the prompt must instruct `--author=` and must keep
+    the committer on the repository's already-configured identity.
+    """
     b, _rec = backend
 
     monkeypatch.setattr(
@@ -1280,10 +1285,16 @@ def test_commit_prompt_carries_the_configured_identity(backend, monkeypatch) -> 
     assert "review all uncommitted git changes" in prompt
     assert "matching the existing style" in prompt
     assert "son-of-anton-bot <bot@users.noreply.github.com>" in prompt
+    # The account is applied as the author, via --author, not as the committer.
+    assert 'git commit --author="son-of-anton-bot <bot@users.noreply.github.com>"' in prompt
+    assert "Author the commit as" in prompt
+    assert "committer" in prompt
+    assert "GIT_COMMITTER_NAME" in prompt
 
     # A different identity flows through unchanged.
     monkeypatch.setattr(b, "_commit_identity", lambda: ("Ada", "ada@example.com"))
-    assert "Ada <ada@example.com>" in b.build_commit_prompt()
+    prompt = b.build_commit_prompt()
+    assert 'git commit --author="Ada <ada@example.com>"' in prompt
 
 
 def test_no_identity_is_shipped_as_a_default(backend) -> None:

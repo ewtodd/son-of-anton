@@ -656,11 +656,12 @@ DEFAULT_CONFIG = {
     #   - auto_prune:   False -> True (orphans/stale pruned automatically)
     # Opt in via ``son-of-anton chat --checkpoints`` or set enabled=True here.
     "git": {
-        # Identity for commits the agent makes on your behalf (``/commit``).
-        # Empty by default: commits then carry whatever identity the repository
-        # or your global git config already sets, so nothing is attributed to a
-        # name you did not choose. Set both to commit under a dedicated
-        # account (a bot user, say).
+        # AUTHOR identity for commits the agent makes on your behalf (/commit),
+        # applied via `git commit --author=`. The committer is never touched —
+        # it stays whatever the repository or your global git config sets, so
+        # the log reads "authored by the account, committed by you". Empty by
+        # default: no override at all, nothing attributed to a name you did not
+        # choose. Set both to author under a dedicated account (a bot user, say).
         "author_name": "",
         "author_email": "",
     },
