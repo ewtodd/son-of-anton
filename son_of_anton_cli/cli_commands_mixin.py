@@ -1917,6 +1917,65 @@ class CLICommandsMixin:
         # right after process_command() returns (see cli.py main loop).
         self._pending_agent_seed = composed
 
+    def _commit_identity(self) -> tuple[str, str]:
+        """The ``git.author_name`` / ``git.author_email`` pair for ``/commit``.
+
+        Either being blank means "don't override the identity" — git then uses
+        whatever the repository or the user's global config already says, which
+        is what someone who wants commits attributed to themselves should set.
+
+        Read through the canonical loader rather than ``self.config``: cli.py
+        carries its own smaller defaults table, so a key that lives only in
+        ``DEFAULT_CONFIG`` is absent from the session copy.
+        """
+        try:
+            from son_of_anton_cli.config import load_config_readonly
+
+            git_cfg = (load_config_readonly() or {}).get("git") or {}
+        except Exception:
+            git_cfg = (self.config or {}).get("git") or {}
+        name = str(git_cfg.get("author_name") or "").strip()
+        email = str(git_cfg.get("author_email") or "").strip()
+        if not (name and email):
+            return "", ""
+        return name, email
+
+    def build_commit_prompt(self, extra: str = "") -> str:
+        """The turn ``/commit`` hands to the agent.
+
+        Written as a task for the agent rather than run as shell here on
+        purpose: reviewing a diff and matching a repository's commit style is
+        the model's job, and it already has the terminal tool. Keeping it a
+        prompt means zero new model-tool surface.
+        """
+        name, email = self._commit_identity()
+        lines = [
+            "You are a summarization agent. Your job is to review all uncommitted git "
+            "changes in the current repository, write an accurate commit message "
+            "matching the existing style, and then stage+commit them.",
+        ]
+        if name and email:
+            lines.append(f"Commit using this account: {name} <{email}>")
+        else:
+            lines.append(
+                "Commit with the repository's already-configured git identity; do not "
+                "override author or committer."
+            )
+        if extra.strip():
+            lines.append(f"Additional instructions from the user: {extra.strip()}")
+        return "\n\n".join(lines)
+
+    def _handle_commit_command(self, cmd_original: str) -> None:
+        """Handle /commit — queue the review-and-commit task as the next turn.
+
+        Uses the same one-shot ``_pending_agent_seed`` the interactive loop
+        already consumes for /prompt, so the agent runs it as a normal turn
+        with its normal tools and approvals.
+        """
+        parts = (cmd_original or "").strip().split(None, 1)
+        extra = parts[1] if len(parts) > 1 else ""
+        self._pending_agent_seed = self.build_commit_prompt(extra)
+
     def _handle_focus_command(self, cmd_original: str) -> None:
         """Toggle or inspect focus view — the reduced-output display mode.
 

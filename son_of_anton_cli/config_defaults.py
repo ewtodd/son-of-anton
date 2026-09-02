@@ -655,6 +655,15 @@ DEFAULT_CONFIG = {
     #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
     #   - auto_prune:   False -> True (orphans/stale pruned automatically)
     # Opt in via ``son-of-anton chat --checkpoints`` or set enabled=True here.
+    "git": {
+        # Identity for commits the agent makes on your behalf (``/commit``).
+        # Empty by default: commits then carry whatever identity the repository
+        # or your global git config already sets, so nothing is attributed to a
+        # name you did not choose. Set both to commit under a dedicated
+        # account (a bot user, say).
+        "author_name": "",
+        "author_email": "",
+    },
     "checkpoints": {
         "enabled": False,
         # Max checkpoints to keep per working directory.  Pre-v2 this only
@@ -1275,15 +1284,6 @@ DEFAULT_CONFIG = {
         # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
         # a newline, a trailing backslash followed by Enter continues the draft,
         # and supported terminals are asked to report Shift+Enter distinctly.
-        # Set false to restore the legacy c-j submit fallback on unusual POSIX
-        # PTYs whose plain Enter arrives as LF instead of CR.
-        "cli_multiline_shortcuts": True,
-        # Which interface bare `son-of-anton` (and `son-of-anton chat`) launches by default:
-        #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
-        #   "tui" — the modern Ink TUI (same as passing `--tui`)
-        # Explicit flags always win over this setting: `--cli` forces the classic
-        # REPL and `--tui` (or SON_OF_ANTON_TUI=1) forces the TUI regardless of config.
-        "interface": "cli",
         # When true, `son-of-anton --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
         # Mirrors `son-of-anton -c` muscle memory.  Default off so existing

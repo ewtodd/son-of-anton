@@ -1,205 +1,145 @@
-# Son of Anton TUI — Aesthetic Overhaul
+# Son of Anton TUI — the Textual interface
 
-Two-track plan. **Phase 1 (done, this change)** is a comprehensive polish of the
-existing `prompt_toolkit` TUI. **Phase 2 (scoped, not started)** is an optional
-rebuild of the interactive shell as a Textual app.
+Textual **is** the interface. `son-of-anton` with no subcommand launches it;
+there is no flag, no config switch, and no second front-end. The prompt_toolkit
+REPL that preceded it — `SonOfAntonCLI.run()`, its key bindings, layout,
+status-bar renderer, modal panels, terminal-mode repair and CPR/paste patches —
+was deleted in 0.3.0, along with the `prompt_toolkit` dependency itself.
 
-The one visual anchor that stays in both phases: the ASCII `SON OF ANTON`
-wordmark (its block-char art is never edited — only its applied style changes).
+The one visual anchor carried across from it: the ASCII `SON OF ANTON` wordmark
+(its block-char art is never edited — only its applied style and which variant
+fits).
+
+## How it fits together
+
+- **`son_of_anton_tui/backend.py` — `TextualBackend(SonOfAntonCLI)`.**
+  `SonOfAntonCLI` is no longer a front-end; it is the session/agent lifecycle
+  (credentials, routing, persistence, slash commands, interrupts, the modal
+  prompts) with the *rendering* seams left open. The backend overrides those
+  seams: streamed tokens, reasoning, tool lifecycle and `_cprint` /
+  `ChatConsole` / bare `print` become typed events; the queue-based prompts
+  (approval, clarify, sudo, secret, confirm, model picker) are answered by the
+  app through the same queues; `finish()` carries the whole shutdown sequence
+  the old `run()` did in its `finally`.
+- **`son_of_anton_tui/tui.py` — the app.** Layout, feed widgets, modals,
+  completion, key bindings.
+- **`son_of_anton_tui/palette.py` — terminal-derived surfaces.** See below.
+
+Two things the old input loop drove are now driven by the app: `idle_tick()`
+(config watch for `mcp_servers`, background-process notifications, due `/loop`
+wakeups) runs on the app's timer, and `_post_turn_hooks()` (turn footer,
+interrupt drain, standing-goal judge, `/loop` completion) runs at the end of
+every turn.
+
+**Anything that draws its own screen must suspend the app first.** An external
+editor cannot share the tty with a full-screen app: both write to it and both
+read stdin, so the child's output and its escape-sequence replies surface as
+stray characters. `TextualBackend.run_with_terminal()` hops to the app thread
+and wraps the call in `App.suspend()`; `_compose_in_editor` (used by `/prompt`
+and by ctrl+g) goes through it. The same reasoning is why
+`son_of_anton_constants.is_frontend_active()` exists: `tools/approval.py` and
+`tools/lazy_deps.py` must never fall back to a bare `input()` while the app
+holds stdin.
 
 ---
 
-## Phase 1 — polish the prompt_toolkit TUI (DONE)
+### Layout — mirroring opencode
 
-Direction (from the user): **terminal-native colors, styling/visual content up
-to the agent.** That means the chrome rides the user's terminal theme instead of
-imposing a palette, and the design energy went into hierarchy, glyphs, and
-structure.
+The frame is a deliberate port of opencode's session route
+(`packages/tui/src/routes/session/index.tsx`), read from source rather than from
+screenshots. What we mirror, and where it comes from:
 
-### What changed
+| opencode | ours |
+| --- | --- |
+| row of main column + 42-col sidebar; column holds `paddingLeft/Right 2, paddingBottom 1, gap 1` | `#split` → `#content` (padding `0 2 1 2`) + `#context` |
+| sidebar visible when `sidebarOpen || (auto && width > 120)`; **overlays** the content when narrow rather than disappearing | same threshold; `.overlay` class docks it to the right layer |
+| sidebar: bold title, muted session id, workspace, and the product + version pinned at the bottom | same, with our context/usage detail as a middle block |
+| `TextPart` indents markdown by 3 | `#feed PlainMarkdown { padding-left: 3 }` |
+| `UserMessage`: left rail in the agent colour, padding `1 0 1 2` | `UserTurn` with `border-left: wide $primary` |
+| `InlineTool`: 2-cell icon column then the label; spinner occupies that column while running | `ToolLine`, icons per tool (`$` shell, `→` read, `✱` search, `◈` web, `←` write) |
+| `Prompt`: left rail, textarea, then a meta row of `agent · model provider` | `#prompt-frame` + `#prompt-meta` |
+| status row under the prompt: working directory when idle / spinner + action when busy, with usage and shortcut hints right-aligned | `#statusline` (`#status-left` / `#status-right`) |
+| spinner frames `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | identical |
+| `setPreLayoutSiblingMargin` + `alwaysSeparate`: a row gets a blank line above it when the previous sibling was a block or was multi-line | the same rule, applied when a row is mounted |
+| `generateSystem` derives panel/element surfaces from the queried terminal background | `palette.py` → `$panel` / `$surface` |
 
-- **`son_of_anton_cli/skin_engine.py` — `default` skin redesign.**
-  - Palette is now terminal-native: every foreground is a `default`/`bold`/`dim`
-    + named-ANSI token (`yellow`, `green`, `red`, `cyan`) rather than a fixed hex,
-    so the terminal's own palette (kitty, etc.) decides the final hue. The
-    prompt_toolkit chrome already re-snaps named colors onto the ANSI palette via
-    `snap_pt_style_to_theme`, so this is native end to end.
-  - Dark-dock surfaces (status bar, completion menu, voice) keep a persistent
-    dark fill + light text so they read in BOTH terminal polarities with no
-    light-mode remap.
-  - Refined hierarchy: `banner_border` → `dim yellow`, `banner_title` → `bold`,
-    `banner_dim` → `dim`, `ui_label` → `bold`, `input_rule` → `default`, and a
-    new `ui_thinking` accent → `cyan`.
-  - New calm, modern `spinner` (soft breathing faces + refined verbs) instead of
-    noisy kawaii.
-  - Cleaner branding strings (welcome, `help_header` → `Commands`).
-  - The ASCII wordmark **constants are byte-identical** (guarded by
-    `tests/test_banner_logo.py`).
+**Surfaces follow the terminal too.** opencode's "system" theme does not settle
+for a single surface: it asks the terminal for its real default background
+(OSC 11) and *generates* a gray ramp from it — `backgroundPanel` and
+`backgroundElement` are the terminal's own colour nudged toward its opposite —
+while leaving the base background transparent so terminal transparency and
+background images survive (`generateSystem` / `generateGrayScale` in
+`packages/tui/src/theme/index.ts`).
 
-- **`son_of_anton_cli/banner.py` — tint the wordmark.** `console.print(_logo)`
-  now applies the skin's `banner_accent`, so the wordmark reads as brand (gold)
-  instead of flat default text. The art itself is untouched.
+`son_of_anton_tui/palette.py` is that, ported. We query OSC 11/10 once at
+startup, before Textual owns the tty, and generate `$panel`, `$surface`,
+`$border` and `$text-muted` from the answer; `$background` is never painted.
+So a user message, the prompt block and the sidebar each read as their own
+surface and still belong to whatever theme the terminal runs. Polarity now comes
+from the queried background's luminance rather than the `COLORFGBG` guess.
 
-- **`cli.py` — reasoning accent + centered boxes.**
-  - Added `_THINKING = _SkinAwareAnsi("ui_thinking", "default")` and used it for
-    reasoning-box content, so model thinking is now a distinct color (cyan on the
-    default skin) while skins that don't set `ui_thinking` keep native reasoning.
-  - The response box (`╭─ ⚛ Son of Anton ─╮`) and the reasoning box (`┌─ Reasoning ─┐`)
-    are now **center-aligned** — the run of dashes is symmetric instead of one
-    short dash + a long tail.
+Two things stay on the ANSI palette by choice. Accents (`$primary`, `$secondary`,
+…) remain `ansi_*` tokens so the skin's colours are the terminal's own. Text
+stays `ansi_default`, which already *is* the terminal foreground and keeps
+following it if the user retints mid-session; pinning it to the queried hex also
+breaks blends that read `$foreground` (Textual draws markdown table keylines as
+`$foreground 20%`).
 
-- **`son_of_anton_cli/cli_commands_mixin.py` — live skin switch.**
-  - `/skin` now also resets `_THINKING`, so a live switch re-resolves the
-    reasoning accent (matching the existing `_ACCENT.reset()`).
+When the terminal doesn't answer — not a TTY, a terminal that ignores the query,
+`SON_OF_ANTON_TUI_NO_COLOR_QUERY=1` — every generated variable is simply absent,
+surfaces stay transparent, and the rails carry the separation alone.
+
+Not ported: opencode's separate Home route (centred logo with a 75-column prompt
+before a session exists). Our wordmark opens the transcript and scrolls away
+instead, which is the form the wordmark work already settled on.
+
+### Keys beyond opencode's set
+
+`shift+tab` cycles this **session's** permission mode (default → ask → lockdown
+→ yolo). It is session-scoped on purpose: it never writes config, so it cannot
+outlive the session that chose it, and `/new` or a new process starts from the
+configured mode again. `/perm` remains the way to change the persistent profile
+setting.
+
+That required one change outside the front-end. `tools/approval.py` had
+session-scoped state for yolo only (`_session_yolo`); everything else read
+config. It now also carries `_session_permission`, a session-keyed override that
+`_get_approval_mode()` and `_is_lockdown_enabled()` consult before config, and
+that `clear_session()` drops with the rest of a session's approval state. The
+override resolves to the same mode values config already produces, so it widens
+nothing: the hardline block and the sudo-stdin guard run before any mode check
+and still fire under a session `yolo` (guarded by a test). The prompt's meta row
+shows any non-default mode, `yolo` in bold red, tagged `(session)`.
+
+### What the app renders
+
+Transcript in a bottom-anchored `VerticalScroll`; user turns with an accent rail;
+streamed `Markdown` (via `MarkdownStream`, fenced code left unhighlighted); a
+collapsible reasoning block that folds once the answer starts; one row per tool
+call that goes running → completed without reflowing; the status row; the 42-col
+context panel (`ctrl+b`); a multi-line prompt with inline slash completion
+(`tab`) and Textual's palette (`ctrl+p`) over the slash registry; and modal
+screens for approval, clarify (single / multi / batch / free-text), sudo,
+secret, destructive-command confirm, the two-stage model picker, and generic
+text + list prompts. `ctrl+c` interrupts a running turn (twice to force-quit);
+`ctrl+g` composes in `$EDITOR`; a message typed mid-turn follows the session's
+own interrupt/queue setting; `:q` quits.
 
 ### Verified
 
-- `scripts/run_tests.sh` — **45 files, 566 tests, 0 failed** (includes
-  `test_skin_engine.py` and `test_banner_logo.py`).
-- Import smoke-pass of `cli.py`, `banner.py`, `skin_engine.py`.
-- Rendered the welcome banner at width 120: wordmark tinted, dim-gold panel, all
-  chrome snapped terminal-native (`bg:ansiblack`, `default`/`dim` text).
+`tests/test_tui.py` covers the frame and its responsiveness, the feed event
+stream, the transcript column geometry, slash completion, every modal, the
+backend seams against the real `cli` module under a temp `SON_OF_ANTON_HOME`,
+an end-to-end pilot turn whose stubbed `chat()` raises approval / clarify /
+sudo prompts from a worker thread, interrupt and quit-mid-turn, the model
+picker's two stages, the OSC round-trip over a pty, the generated ramp's
+direction and readability, the editor handoff (including a driver that cannot
+suspend, and an empty save), and the idle / post-turn hooks. Plus live runs
+against the configured provider.
 
----
+### Still open
 
-## Phase 2 — Textual rebuild (SCOPED, optional follow-up)
-
-The idea: replace the prompt_toolkit interactive shell with a **Textual** app —
-a real application frame rather than an input line + scrollback. Textual is
-Python-native and Rich-based, so it fits this Nix-first / Python codebase without
-pulling in the Node/esbuild stack the removed hermes Ink TUI required.
-
-### Why Textual (not Ink)
-
-- **Python-native** — no Node, no esbuild, no JS bundle. Stays in the uv2nix
-  toolchain and keeps `nix build` self-contained.
-- **Rich-based** — shares a rendering lineage with the existing banner, diffs,
-  and tool previews, so the terminal-native palette transfers cleanly.
-- **Real widgets** — panels, data tables, tabbed views, spinners, modals, a
-  command palette, docked layouts, CSS-driven theming. This is what makes it
-  look like a genuine application rather than a REPL.
-- **Async/reactive** — fits streaming tokens and background tool calls.
-
-### Rendering capabilities (Markdown / LaTeX)
-
-Pin this early, because the physics mode produces a lot of mathematical
-derivations.
-
-**Markdown — native, and streaming-able.**
-- Textual ships a first-class `Markdown` widget (`from textual.widgets import
-  Markdown`): headings, bold/italic, lists, blockquotes, links, tables, and
-  fenced code blocks with syntax highlighting.
-- Since **Textual 4.0** (2025) it supports streaming markdown, which maps
-  directly onto the existing `_stream_delta` callback: tokens append into the
-  widget instead of re-rendering the whole transcript every token.
-- Rich (already a dependency here) also renders markdown, usable inline in a
-  `RichLog`.
-
-**LaTeX — no first-class support.**
-- Neither Textual nor Rich has a LaTeX/math renderer and there is no `Latex`
-  widget; nothing typesets real math (`∫₀^∞ e^{-x²} dx = √π/2`) in a terminal.
-- Workarounds, in order of practicality:
-  1. Show the LaTeX source in a fenced code block with syntax highlighting —
-     cheap, always works, and correct while streaming.
-  2. Plain-text/Unicode approximation via `pylatexenc.latex2text`
-     (`\frac{a}{b}` → `a/b`) — readable, no images, no heavy dep.
-  3. Render a discrete formula to a bitmap (matplotlib `mathtext`, or LaTeX→PNG)
-     and show it via Textual's `Image` widget. Opt-in only: lossy, terminal
-     scaling/contrast is fickle, and it breaks the streaming flow — wrong for a
-     live transcript.
-
-**Decision (reinforced):** markdown is a native win; math should be a deliberate
-"source-block + latex2text" default with an opt-in image path — never assume LaTeX
-renders natively.
-
-### Reuse, don't rewrite
-
-The entire agent stack stays as-is and is *not* touched:
-
-- `AIAgent` / `run_conversation()`, `model_tools`, `toolsets`, `run_agent.py`.
-- Skills, memory, delegation, cron, session store, `son_of_anton_constants`,
-  `son_of_anton_logging`, the three-mode router, config, providers.
-- `agent/display.py` — tool previews, friendly verb labels, inline diffs are pure
-  functions already; feed them into Textual widgets rather than re-deriving them.
-- `son_of_anton_cli/skin_engine.py` — expose the resolved palette to Textual
-  (the engine already has a `resolve_skin`-style surface for the desktop/TUI);
-  reuse `snap_pt_style_to_theme` semantics so colors stay terminal-native.
-- `stream_single_writer` / thread-scoped output — reuse for the transcript so
-  parallel tool output never interleaves.
-
-### Architecture
-
-- New module (e.g. `son_of_anton_tui/`) with a `TUIApp(App)` subclass, launched
-  by `cli.py` when `display.interface: tui`.
-- The synchronous `AIAgent` loop runs in a worker thread / `ThreadPoolExecutor`; a
-  `queue` + `call_from_thread`/`run_worker` pumps its existing stream callbacks
-  (`_stream_delta`, `_on_reasoning`, tool-progress) into Textual's reactive state.
-- Layout via Textual CSS: header, left session/context panel, central streaming
-  transcript (`RichLog`/`ScrollView`), right status/usage panel, bottom `Input`
-  dock + `Footer`.
-- Streaming: translate the callback deltas into transcript writes with the skin
-  palette, reasoning as a collapsible section, tool calls as an inline timeline.
-
-### UI surfaces to port from the current TUI
-
-- Streaming / non-streaming response rendering (centered response box).
-- Reasoning box (collapsible, `ui_thinking` accent).
-- Tool-call progress + progress spinner line.
-- Status bar → a footer/status dock (model, duration, goals, background
-  process/subagent counts, session badge, YOLO, battery).
-- Completion menu → command palette / fuzzy completer.
-- Approval / clarify / model-picker / secret-input modals.
-- Slash-command registry integration (autocomplete + dispatch).
-
-### Risks / open questions
-
-- **Threading + a single transcript writer.** The agent loop is synchronous and
-  blocking; Textual is async. Must use a single writer + queue (reuse
-  `stream_single_writer`) and `call_from_thread` to avoid interleaving tokens
-  from parallel tools.
-- **Streaming render throughput.** Textual `RichLog.write()` batches; verify the
-  refresh cadence stays smooth on long turns (measure against the current
-  prompt_toolkit path).
-- **Parity gate.** Keep `display.interface: prompt_toolkit` as the default;
-  Textual is opt-in until it reaches parity. Never delete the prompt_toolkit path
-  in the same change.
-- **Prompt caching is sacred.** Textual is purely a front-end; the system prompt,
-  toolsets, and past context must stay byte-stable — do not route any
-  model-facing mutation through the UI layer.
-- **What happens to the Ink-era "tui-widgets" / petdex?** They were removed with
-  the Ink TUI. Decide whether to port any (e.g. pet mascot) as Textual widgets or
-  drop them. Recommend: drop for now, revisit after core parity.
-- **Backward-compat / tests.** Textual supports `App.run_test()` + pilot; add
-  layout snapshot tests and a real `AIAgent` smoke test against a temp
-  `SON_OF_ANTON_HOME`.
-
-### Phased plan
-
-1. **Spike** — a standalone Textual app rendering a streaming transcript + input
-   dock, wired to the skin palette. Validate streaming render perf. *(done)*
-2. **Live turn** — worker-thread loop + queue → token streaming, tool-call
-   timeline, collapsible reasoning. Reuse `agent/display.py` builders.
-3. **Port interactive widgets** — approval / clarify / model-picker /
-   command-palette / session-switch as Textual screens/modals.
-4. **Supersede** — make Textual the one interface `son-of-anton` launches, then
-   retire the prompt_toolkit path. Textual is not a sibling interface; it is the
-   replacement. (The prompt_toolkit path stays until step 2/3 reach parity.)
-
-### Status
-
-The Textual spike is **done and proven** — `son_of_anton_tui/tui.py` renders a
-chat-app frame (left context panel, streaming markdown transcript, user/assistant
-turns, status line, input dock, footer) with a terminal-native palette mapped
-from the skin engine via `get_css_variables()`. It was run headlessly against
-Textual 8.2.8 and verified. It **ships via Nix**: `tui` is in `[all]`, so
-`nix build`/`nix run .# --` bundle the TUI (the `tui.textual` LAZY_DEPS entry
-is retained only for non-Nix installs that skip `[all]`). `tests/test_tui_spike.py`
-guards the import-never-crashes contract and exercises the layout when Textual is
-present.
-
-**Direction (confirmed):** Textual **supersedes** prompt_toolkit — it is the one
-interface, not a separate one. Once the agent loop is threaded in (step 2),
-`son-of-anton` launches Textual and the prompt_toolkit path is removed. Ink-era
-widgets (petdex, clocks) are dropped, not ported. On Nix there is **no** `uv venv`
-/ manual pip — `nix develop`, `nix build`, and `nix run .# --` are the only flows,
-and the package is fully self-contained.
+Image attachments (`/attach`, drag-and-drop) are not surfaced in the prompt, and
+the `/agents` spawn-tree viewer has no Textual equivalent yet. A few
+prompt_toolkit-era overlays were replaced by Textual equivalents rather than
+ported one-to-one (the command palette, the model picker's fuzzy filter).

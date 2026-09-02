@@ -2,7 +2,7 @@
 
 [project]
 name = "son-of-anton"
-version = "0.2.0"
+version = "0.3.0"
 description = "Always-on agent harness with physics research modes (hard fork of Nous Research's hermes-agent)"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -53,10 +53,12 @@ dependencies = [
   # Responses API resource is exercised from a non-main thread, which is the
   # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
   "pydantic==2.13.4",
-  # Interactive CLI (prompt_toolkit is used directly by cli.py)
-  "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # Textual is THE interactive interface (see TUI_AESTHETICS.md): `son-of-anton`
+  # with no subcommand launches it, so it is a core dependency rather than an
+  # extra. It replaced the prompt_toolkit REPL, which is gone.
+  "textual==8.2.8",
   # ``packaging`` is imported directly on three production paths but was never
   # declared, so it only reached users transitively (pip/uv pull it for other
   # tools). The slim official Docker image ships without it, where the
@@ -202,12 +204,10 @@ mcp = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
-# Textual — the go-forward interactive TUI (see TUI_AESTHETICS.md). It SUPERSEDES
-# the prompt_toolkit interface: once the agent loop is threaded into it, `son-of-anton`
-# launches Textual and the prompt_toolkit path is retired. Ships via [all] so the
-# Nix package bundles the TUI. Pin stays in lockstep with the `tui.textual`
-# LAZY_DEPS entry (kept so non-Nix installs without [all] can still use it).
-tui = ["textual==8.2.8"]
+# Kept as a no-op back-compat alias — `textual` is now in the main
+# `dependencies` list (it is the interactive interface, not an add-on), so
+# existing requests for the `tui` extra resolve cleanly.
+tui = []
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `son-of-anton tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk

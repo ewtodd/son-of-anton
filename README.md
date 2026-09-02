@@ -42,6 +42,18 @@ longer theirs. Both upstream projects are MIT licensed and so is this fork.
 It replaces the archived [temple](https://github.com/ewtodd/temple) harness.
 The daemon design, permission modes, and request router come from there.
 <!---->
+The terminal interface is modeled on
+[opencode](https://github.com/sst/opencode), whose TUI is the nicest-looking
+one in this category and, being open source, could be read rather than guessed
+at. The layout is a deliberate port of its session route: the transcript column
+beside a 42-column sidebar, the left rail on messages and the prompt, the
+two-column tool icons, the identity row under the prompt, and the "system"
+theme that asks the terminal for its own background and generates its surfaces
+from it, so the interface belongs to whatever theme you already run. The code
+is reproduced entirely (Python and Textual, against a different agent loop); the design is
+theirs. opencode is MIT licensed. See `TUI_AESTHETICS.md` for the mapping,
+file by file.
+<!---->
 <!---->
 ## AI Full Disclosure
 <!---->
@@ -115,7 +127,7 @@ One gateway process also runs cron.
 <!---->
 ```bash
 nix build      # sealed uv2nix venv, wrapper in result/bin/
-nix run .# --  # start the CLI
+nix run .# --  # start the agent (Textual interface)
 ```
 <!---->
 It reads `~/.son-of-anton/config.yaml` for settings and `~/.son-of-anton/.env`
@@ -514,9 +526,21 @@ at runtime, not the install itself.)
 |---|---|
 | `/mode auto\|standard\|physics\|research` | pin the session's agent mode |
 | `/model auto\|NAME` | turn routing back on, or pin a model |
-| `/perm default\|ask\|lockdown\|yolo` | set the permission mode |
+| `/perm default\|ask\|lockdown\|yolo` | set the permission mode (shift+tab cycles it for the session) |
+| `/commit` | review the uncommitted diff, write a message in the repo's style, commit |
 | `/sessions` | list sessions, including ones started on Signal |
 | `/q`, `:q`, `/exit` | quit the CLI |
+<!---->
+`/commit` hands the work to the agent as an ordinary turn, so it reads the diff
+with the tools it already has and commits under your normal approvals. By
+default it commits with whatever identity the repository or your global git
+config already sets. To commit under a dedicated account instead, set both:
+
+```yaml
+git:
+  author_name: some-bot
+  author_email: 12345+some-bot@users.noreply.github.com
+```
 <!---->
 On the command line, `son-of-anton problem create` builds a physics problem spec
 and `son-of-anton problem run` runs one; `son-of-anton completion <shell>` prints
@@ -544,3 +568,5 @@ CPython using the old `.pyc`, because invalidation is on mtime plus size. Clear
 MIT.
 Hermes Agent and PhysicsIntern are the work of Nous Research and
 HuggingFace; see the upstream repositories for their contributor lists.
+opencode, whose interface design the TUI follows, is the work of SST and is
+also MIT licensed.

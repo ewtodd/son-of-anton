@@ -85,11 +85,6 @@ def build_top_level_parser():
         "--version", "-V", action="store_true", help="Show version and exit"
     )
     parser.add_argument(
-        "--tui",
-        action="store_true",
-        help="Launch the Textual front-end instead of the prompt_toolkit CLI.",
-    )
-    parser.add_argument(
         "-z",
         "--oneshot",
         metavar="PROMPT",
@@ -255,14 +250,6 @@ def build_top_level_parser():
         default=False,
         help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)",
     )
-    _inherited_flag(
-        parser,
-        "--cli",
-        action="store_true",
-        default=False,
-        help="Force the classic prompt_toolkit REPL",
-    )
-
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # =========================================================================
@@ -487,12 +474,4 @@ def build_top_level_parser():
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
     )
-    _inherited_flag(
-        chat_parser,
-        "--cli",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Force the classic prompt_toolkit REPL",
-    )
-
     return parser, subparsers, chat_parser

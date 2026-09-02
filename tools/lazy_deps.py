@@ -211,13 +211,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (tests/test_project_metadata.py enforces both). When bumping: update
     # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
     "tool.trace_upload": ("huggingface-hub==1.24.0",),
-    # ─── Interactive TUI (Textual) ─────────────────────────────────────────
-    # Textual is the go-forward interface that SUPERSEDES prompt_toolkit (see
-    # TUI_AESTHETICS.md). It ships via the `tui` extra in [all], so the Nix
-    # package bundles it; this lazy entry lets non-Nix installs that didn't
-    # grab [all] still use it on first launch. Pin stays in lockstep with the
-    # `tui` extra in pyproject.toml.
-    "tui.textual": ("textual==8.2.8",),
 }
 
 
@@ -798,23 +791,20 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "lazy installs disabled (security.allow_lazy_installs=false)"
         )
 
-    # Only show the interactive confirmation when we own a TTY and
-    # prompt_toolkit isn't running.  A bare input() deadlocks when a
-    # prompt_toolkit app owns the terminal because keystrokes route to
-    # its event loop rather than stdin, so the prompt blocks forever.
-    # Under the TUI we skip the prompt and proceed — lazy installs are
-    # gated by security.allow_lazy_installs, so reaching here is
-    # already user opt-in.
-    _pt_active = False
-    if "prompt_toolkit.application.current" in sys.modules:
-        try:
-            from prompt_toolkit.application.current import get_app_or_none
-            _app = get_app_or_none()
-            _pt_active = _app is not None and getattr(_app, "is_running", False)
-        except Exception:
-            _pt_active = False
+    # Only show the interactive confirmation when we own a TTY and no
+    # front-end is running.  A bare input() deadlocks when a full-screen app
+    # owns the terminal, because keystrokes route to its event loop rather
+    # than stdin and the prompt blocks forever.  Under the front-end we skip
+    # the prompt and proceed — lazy installs are gated by
+    # security.allow_lazy_installs, so reaching here is already user opt-in.
+    try:
+        from son_of_anton_constants import is_frontend_active
 
-    if prompt and not _pt_active and sys.stdin.isatty() and sys.stdout.isatty():
+        _frontend_active = is_frontend_active()
+    except Exception:
+        _frontend_active = False
+
+    if prompt and not _frontend_active and sys.stdin.isatty() and sys.stdout.isatty():
         spec_list = ", ".join(missing)
         try:
             answer = input(

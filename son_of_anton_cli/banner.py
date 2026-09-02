@@ -37,17 +37,17 @@ _RST = "\033[0m"
 
 
 def cprint(text: str):
-    """Print ANSI-colored text through prompt_toolkit's renderer."""
-    from prompt_toolkit import print_formatted_text as _pt_print
-    from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+    """Print one ANSI-colored banner line.
+
+    Replaced by the interactive front-end (see ``son_of_anton_tui.backend``) so
+    banner output lands in the transcript; this plain form is what the
+    non-interactive paths use.
+    """
     try:
-        _pt_print(_PT_ANSI(text))
-    except Exception:
-        # prompt_toolkit needs a real console. On Windows, a redirected or
-        # absent stdout (pythonw.exe, CI, `son-of-anton ... > file`) raises
-        # NoConsoleScreenBufferError from its Win32Output — display helpers
-        # must never crash the caller over that, so degrade to plain print.
         print(text)
+    except Exception:
+        # A redirected or absent stdout must never crash a display helper.
+        pass
 
 
 # =========================================================================

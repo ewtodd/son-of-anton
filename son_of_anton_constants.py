@@ -12,6 +12,26 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 
 
+# Set while an interactive front-end owns the terminal (the Textual app; see
+# ``son_of_anton_tui.backend``). Anything tempted to call ``input()`` or draw
+# on the tty from a worker thread must check this first: a full-screen app
+# holds stdin, so a bare prompt would block forever with nothing on screen.
+# Lives here because the low-level callers (tools.approval, tools.lazy_deps)
+# must not import the CLI.
+_FRONTEND_ACTIVE: bool = False
+
+
+def set_frontend_active(active: bool) -> None:
+    """Record whether a full-screen front-end currently owns the terminal."""
+    global _FRONTEND_ACTIVE
+    _FRONTEND_ACTIVE = bool(active)
+
+
+def is_frontend_active() -> bool:
+    """True when a full-screen front-end owns the terminal and stdin."""
+    return _FRONTEND_ACTIVE
+
+
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _SON_OF_ANTON_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(

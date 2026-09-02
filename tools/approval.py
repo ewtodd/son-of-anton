@@ -2284,7 +2284,21 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Session-scoped permission mode, set by the TUI's shift+tab cycle. Config
+# (``approvals.mode`` + ``security.lockdown``, written by /perm) stays the
+# persistent default; an entry here overrides it for one session only, so a new
+# session — or a new process — starts from the configured mode again.
+_session_permission: dict[str, str] = {}
 _permanent_approved: set = set()
+
+# The permission modes a session can be switched to, and what each one means to
+# the guard: the approval mode it implies, and whether lockdown is forced.
+SESSION_PERMISSION_MODES: dict[str, tuple[str, bool]] = {
+    "default": ("smart", False),
+    "ask": ("manual", False),
+    "lockdown": ("manual", True),
+    "yolo": ("off", False),
+}
 
 
 # =========================================================================
@@ -2678,6 +2692,40 @@ def _release_permission_mode_dependents(session_key: str) -> None:
         )
 
 
+def set_session_permission_mode(session_key: str, mode: str | None) -> None:
+    """Override the permission mode for one session (``None`` clears it).
+
+    Session-scoped by design: this is what the interactive front-end's
+    permission cycle writes, so switching modes mid-conversation never edits the
+    user's profile config and never outlives the session that chose it.
+    """
+    if not session_key:
+        return
+    if mode is not None and mode not in SESSION_PERMISSION_MODES:
+        raise ValueError(f"unknown permission mode: {mode!r}")
+    with _lock:
+        if mode is None:
+            _session_permission.pop(session_key, None)
+        else:
+            _session_permission[session_key] = mode
+    # Same release the yolo toggles perform: a mode change must invalidate
+    # resources whose privileges were fixed under the previous mode.
+    _release_permission_mode_dependents(session_key)
+
+
+def get_session_permission_mode(session_key: str) -> str | None:
+    """The session's permission override, or ``None`` when it follows config."""
+    if not session_key:
+        return None
+    with _lock:
+        return _session_permission.get(session_key)
+
+
+def _current_session_permission_mode() -> str | None:
+    """The override for the session bound to this context, if any."""
+    return get_session_permission_mode(get_current_session_key(default=""))
+
+
 def enable_session_yolo(session_key: str) -> None:
     """Enable YOLO bypass for a single session key."""
     if not session_key:
@@ -2703,6 +2751,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _session_permission.pop(session_key, None)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -2975,12 +3024,13 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     # _execute_tool_calls_concurrent / _spawn_background_review for the
     # established pattern).
     try:
-        from prompt_toolkit.application.current import get_app_or_none
-        if get_app_or_none() is not None:
+        from son_of_anton_constants import is_frontend_active
+
+        if is_frontend_active():
             logger.warning(
                 "Dangerous-command approval requested on a thread with no "
-                "approval callback while prompt_toolkit is active; denying "
-                "to avoid stdin deadlock. command=%r description=%r",
+                "approval callback while the interactive front-end is active; "
+                "denying to avoid stdin deadlock. command=%r description=%r",
                 command, description,
             )
             return "deny"
@@ -3120,7 +3170,14 @@ def _get_approval_config() -> dict:
 
 
 def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    """The active approval mode: 'manual', 'smart', or 'off'.
+
+    A session-scoped override (the front-end's permission cycle) wins over
+    config; without one this is ``approvals.mode`` as written by /perm.
+    """
+    override = _current_session_permission_mode()
+    if override is not None:
+        return SESSION_PERMISSION_MODES[override][0]
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
 
@@ -3128,9 +3185,13 @@ def _get_approval_mode() -> str:
 def _is_lockdown_enabled() -> bool:
     """Return whether the lockdown permission mode is active.
 
-    ``security.lockdown`` in config.yaml (set via /perm lockdown) forces
-    every terminal command through the human approval flow.
+    A session-scoped override decides for its own session; otherwise
+    ``security.lockdown`` in config.yaml (set via /perm lockdown) forces every
+    terminal command through the human approval flow.
     """
+    override = _current_session_permission_mode()
+    if override is not None:
+        return SESSION_PERMISSION_MODES[override][1]
     try:
         from son_of_anton_cli.config import load_config_readonly as _load_cfg
         _sec = (_load_cfg() or {}).get("security", {}) or {}
