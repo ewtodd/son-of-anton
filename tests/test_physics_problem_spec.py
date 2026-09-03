@@ -129,8 +129,7 @@ def _call_kwargs(path: str, function: str, callee: str) -> list[set[str]]:
 @pytest.mark.parametrize(
     ("path", "function"),
     [
-        ("cli.py", "_run_problem_mode"),
-        ("gateway/run.py", "_run_physics_mode_sync"),
+        ("son_of_anton_cli/main.py", "cmd_problem"),
     ],
 )
 def test_every_entry_point_goes_through_one_runner(path: str, function: str) -> None:

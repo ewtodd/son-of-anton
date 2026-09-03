@@ -173,8 +173,7 @@ def test_the_runner_applies_the_workspace_guard() -> None:
 @pytest.mark.parametrize(
     "path, symbol",
     [
-        ("cli.py", "_run_problem_mode"),
-        ("gateway/run.py", "_run_physics_mode_sync"),
+        ("son_of_anton_cli/main.py", "cmd_problem"),
     ],
 )
 def test_entry_points_do_not_construct_their_own_runs(path, symbol) -> None:
