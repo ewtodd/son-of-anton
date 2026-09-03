@@ -1,8 +1,8 @@
 """Run one problem spec, in the physics mode.
 
-The chat turn (``cli._run_problem_mode``), the gateway
-(``gateway.run._run_physics_mode_sync``), and ``son-of-anton problem run`` all
-go through here, so a spec runs the same way from a shell as from a chat.
+``son-of-anton problem run`` goes through here (and an agent in a chat
+session drives a run by calling that subcommand through its terminal), so a
+spec runs the same way from a shell as from a chat.
 
 ``max_iterations`` is settable here for the first time. The Autophysicist
 took a hardcoded 50, and physics mode has no wall-clock or cost gate, so an

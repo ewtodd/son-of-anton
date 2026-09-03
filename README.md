@@ -44,7 +44,7 @@ architecture is no longer theirs. Both upstream projects are MIT licensed and
 so is this fork.
 <!---->
 It replaces the archived [temple](https://github.com/ewtodd/temple) harness.
-The daemon design, permission modes, and request router come from there.
+The daemon design and permission modes come from there.
 <!---->
 The terminal interface is modeled on
 [opencode](https://github.com/sst/opencode), whose TUI is the nicest-looking
@@ -68,51 +68,21 @@ If you are not happy with AI-developed code, this software is not for you.
 <!---->
 ## What it does
 <!---->
-Two agent modes.
-A router picks one from the first message of a session, and `/mode` overrides
-it on any turn:
+All chat runs one loop — the hermes loop: terminal, files, web, skills,
+memory, delegation, cron.
 <!---->
-- `standard`: the hermes loop, terminal, files, web, skills, memory,
-  delegation, cron.
-- `physics`: the Autophysicist — one research manager with append-only memory,
-  a windowed scratchpad, a token budget and a `submit_final_answer` tool,
-  dispatching ephemeral sub-agents that run code in a sandbox, with each
-  iteration reviewed by a critic. Works in a git-versioned scratch directory.
+Physics is a separate thing, and it is explicit. The Autophysicist — one
+research manager with append-only memory, a windowed scratchpad, a token
+budget and a `submit_final_answer` tool, dispatching ephemeral sub-agents that
+run code in a sandbox, with each iteration reviewed by a critic, in a
+git-versioned scratch directory — only runs when you ask for it.
 <!---->
-The router only classifies the **first** message of a session.
-Everything after
-that stays in the standard loop, which is the one that keeps history.
-Physics
-is one-shot: it only sees the message that started it, so
-letting a follow-up drop into it looked exactly like the agent forgetting the
-conversation.
-<!---->
-Physics runs get scored by numeric checks against the problem
-spec.
-The model writes real analysis code, runs it in a sandbox, and writes
-results to `RESULTS.txt`.
-There are self-contained toy problems in `problems/`,
-`son-of-anton problem create` writes a spec for a real dataset from a data
+A message never starts a run by itself: there is no keyword routing.
+`son-of-anton problem create` writes a spec for a dataset from a data
 directory and a one-line goal, and `son-of-anton problem run` runs one (see
-[Physics runs](#physics-runs)).
-<!---->
-You can switch the mode off per deployment with `router.modes`.
-A gateway for
-household chores has no use for the physics loop, and leaving it on is worse
-than clutter, because a stray "how long does that take to decay" can drop
-someone into a one-shot physics run:
-<!---->
-```yaml
-router:
-  modes: [standard]                          # household: nothing else offered
-  # modes: [standard, physics]               # the default, everything on
-```
-<!---->
-With the mode off, its keywords stop routing, `/mode` will not accept it and does
-not list it, and a session that was pinned to it before the change falls back
-to standard.
-Leave the key out entirely and you get both, so existing
-configs are unaffected.
+[Physics runs](#physics-runs)). In a chat session — the TUI or the gateway —
+just ask the agent to create a problem for a dataset and run it; it drives
+the same subcommand through its terminal.
 <!---->
 Other things worth knowing:
 <!---->
@@ -124,8 +94,7 @@ One gateway process also runs cron.
   commands.
   Some things stay blocked even under yolo.
 - `/model NAME` pins a model for the session; `/model auto` drops the pin and
-  falls back to the configured default. The router picks the *mode*, never the
-  model.
+  falls back to the configured default.
 <!---->
 ## Running it
 <!---->
@@ -433,7 +402,6 @@ services.son-of-anton.instances.house = {
   workingDirectory = "/srv/household";
   environmentFiles = [ config.age.secrets.son-of-anton-house-env.path ];
   extraPackages = [ pkgs.pandoc pkgs.typst ];
-  settings.router.modes = [ "standard" ];   # no physics here
 };
 ```
 <!---->

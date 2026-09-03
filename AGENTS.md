@@ -244,19 +244,20 @@ Reasoning content is stored in `assistant_msg["reasoning"]`.
 
 ---
 
-## The Two-Mode Router (son_of_anton_cli/router.py)
+## Physics is explicit
 
-`classify_mode(text)` picks `physics` / `standard` from keyword heuristics,
-and `resolve_mode()` applies it to the FIRST message of a session only — the
-one-shot physics loop gets no conversation history, so re-routing a follow-up
-would discard the exchange. Config section `router:` holds `enabled` and `modes`.
-`/mode auto|standard|physics` pins the session mode on any turn.
+There is no auto-routing. A keyword router once classified the first message
+of a session into the physics loop; a stray "fit the histogram" in an ordinary
+chat started a one-shot run that could see no conversation history, so it was
+removed (2026-09-03). The entry points are `son-of-anton problem create`
+(writes a spec for a dataset) and `son-of-anton problem run SPEC` (runs one);
+an agent in a chat session drives a run by calling that subcommand through its
+terminal. The TUI's mode readout shows the permission mode
+(`default` | `ask` | `lockdown` | `yolo`), not an agent mode.
 
-The router does not pick models. Temple's `classify_complexity()` / model-slot half was
-ported here and never wired to anything; it was deleted rather than left to mislead.
-
-Physics keywords ("fit the histogram", "half-life", "cross-section", ...) route to
-`physics`; everything else uses the standard loop.
+Temple's `classify_complexity()` / model-slot half was ported here and never
+wired to anything; it was deleted rather than left to mislead. Model choice is
+never routed — it comes from the normal resolution chain and `/model`.
 
 ---
 
@@ -354,15 +355,16 @@ alternation stays intact.
   provider defaults (openai → `api.openai.com`) →
   `custom_providers.<provider>.base_url` → `http://127.0.0.1:8080/v1`. Retry +
   context-length detection included.
-- Autophysicist is a callable `run_autophysicist(...)`; the CLI `chat()` and the
-  gateway both route through `physics_intern.run.run_problem(...)`, which the
-  `son-of-anton problem run` subcommand shares.
+- Autophysicist is a callable `run_autophysicist(...)`; runs are driven
+  explicitly by the `son-of-anton problem run` subcommand
+  (`son_of_anton_cli/subcommands/problem.py` → `physics_intern.run.run_problem`),
+  and chat agents (CLI or gateway) invoke it through their terminal.
 - **Experimental verification** (`physics_intern/verification/experimental.py`): numeric
   `checks` against a problem spec, workspace `RESULTS.txt` (`key = value`), optional
   checker script, `FORMAL_EVAL.md`. Toy problems live in `problems/` (data synthesized by
   the model — real UM-ANSG data is private).
-- The mode is wired into the CLI `chat()` and gateway turns (ack → worker-thread run →
-  ANSWER + eval delivered back). The wheel ships physics data files via package-data.
+- A message never starts a run by itself — there is no chat-side dispatch. The
+  wheel ships physics data files via package-data.
 
 Physics runs are **synchronous turns** — a session blocks until the run finishes. That is
 a known limitation, not a bug.
@@ -670,10 +672,11 @@ scripts/run_tests.sh tests/agent/                     # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test
 ```
 
-The suite is deliberately small — it covers the fork's load-bearing contracts (router
-classification, provider-catalog invariants, physics-mode imports/endpoint resolution/
-formal evaluation, config merge, profile isolation, slash-command registry invariants,
-core-tool registration, skin fallback). Tests for removed features were pruned with the
+The suite is deliberately small — it covers the fork's load-bearing contracts
+(provider-catalog invariants, physics-mode imports/endpoint resolution/formal
+evaluation, config merge, profile isolation, the auto-router guard,
+slash-command registry invariants, core-tool registration, skin fallback).
+Tests for removed features were pruned with the
 features. Add tests when fixing a bug or adding a feature, not as snapshots of current data.
 
 ### Pre-commit hooks

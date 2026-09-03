@@ -27,15 +27,18 @@ v0.20.5 (upstream commit `fcbd1076a9`), stripped to a lean always-on daemon
 surface, extended with the physics mode from
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
 (commit `5553bb6`). MIT. It is the successor to the archived
-[temple](https://github.com/ewtodd/temple) harness — the daemon design,
-permission modes, and request router carry over from it.
+[temple](https://github.com/ewtodd/temple) harness — the daemon design and
+permission modes carry over from it.
 
-Two agent modes. A keyword router classifies the FIRST message of a session
-(physics gets no conversation history, so re-routing a follow-up would
-discard the exchange); `/mode` pins one explicitly on any turn, and
-`router.modes` switches physics off per deployment:
-- `standard` — the hermes agent loop (terminal, files, web, skills, memory, delegation, cron)
-- `physics` — Autophysicist: single research manager, permanent memory + scratchpad, token budget, `submit_final_answer`, git workspace, per-iteration critic
+One agent loop for all chat — `standard`, the hermes agent loop (terminal,
+files, web, skills, memory, delegation, cron). Physics — Autophysicist: single
+research manager, permanent memory + scratchpad, token budget,
+`submit_final_answer`, git workspace, per-iteration critic — runs only on
+explicit invocation via `son-of-anton problem create/run`; a chat message
+never starts one by itself, and chat agents (CLI or gateway) drive runs by
+calling the subcommand through their terminal. A keyword router once
+auto-classified the first message of a session into physics; it was removed
+2026-09-03.
 
 The nine-agent research pipeline that physics-intern shipped was ported and
 then removed as redundant — see "Nine-agent research pipeline removed".
@@ -627,13 +630,27 @@ ported-then-removed rather than a live divergence from physics-intern.
 
 ## Current state / known loose ends
 
+- **Auto-router removed** (this round). A keyword router classified the FIRST
+  message of a session into the physics loop, and an ordinary first message in
+  `~/MUSIC` did exactly that — a one-shot stateless run started from a stray
+  keyword. The whole surface is gone: `son_of_anton_cli/router.py`, the
+  `router:` config section, the `/mode` command (CLI, gateway, registry), and
+  both chat dispatch sites (`cli.chat()`, the gateway's
+  `_resolve_session_agent_mode`). Physics is explicit only:
+  `son-of-anton problem create/run` (its one-element `run --mode` flag trimmed);
+  a chat agent drives a run by calling the subcommand through its terminal.
+  The TUI's mode slot now shows the permission mode (`default` | `ask` |
+  `lockdown` | `yolo`), always. `tests/test_no_auto_router.py` guards the
+  excision.
 - **Deployed live on e-desktop** (see `/etc/nixos/hosts/e-desktop/configuration.nix`):
   **five gateway instances**, one systemd service per account —
   `work` → `/home/e-work`, `play` → `/home/e-play`, `house` → `/srv/household`,
   `ricky` → `/srv/ricky`, `markets` → `/srv/markets`. All five run
-  `qwen3.8-27b-coding`. Only `work` gets both agent modes; the other
-  four pin `settings.router.modes = [ "standard" ]`, which is what that knob
-  exists for. Supporting infra: litellm on oracle (`10.0.0.6:4000`, pinned to
+  `qwen3.8-27b-coding`. All five now run the standard loop for every message
+  — physics runs only by explicit `son-of-anton problem run`, and the
+  per-instance `settings.router.modes` pins are inert leftovers that can be
+  dropped from the deployments' configuration.nix (the loader ignores unknown
+  top-level keys). Supporting infra: litellm on oracle (`10.0.0.6:4000`, pinned to
   nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
   `expression` dependency); SearXNG on oracle; signal-cli in HTTP mode on mu
   with `--send-read-receipts` (read receipts work; the 👀/✅ reaction set is

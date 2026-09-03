@@ -23,8 +23,9 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         description=(
             "Problem specs for the physics mode.\n\n"
             "A spec is the task text, the data paths to expose read-only, and "
-            "the numeric checks that score the run's RESULTS.txt. Run one by "
-            "handing its path to a physics turn."
+            "the numeric checks that score the run's RESULTS.txt. Run one "
+            "with `son-of-anton problem run SPEC` — or have an agent run it "
+            "for you."
         ),
     )
     problem_sub = problem_parser.add_subparsers(dest="problem_action")
