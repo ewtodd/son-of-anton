@@ -1,4 +1,4 @@
-"""Router classification contracts — the three-mode heuristic that routes
+"""Router classification contracts — the two-mode heuristic that routes
 every request. Assert classification behavior (invariants), not keyword
 snapshots: the keyword tuples may grow, but the routing rules must hold.
 """
@@ -22,14 +22,15 @@ def test_classify_mode_physics_keywords_route_physics() -> None:
         assert classify_mode(text) == "physics"
 
 
-def test_classify_mode_research_keywords_route_research() -> None:
-    research_requests = [
+def test_research_pipeline_keywords_are_standard_now() -> None:
+    """The nine-agent pipeline was removed; its former triggers stay standard."""
+    standard_requests = [
         "derive the effective action for this theory",
         "do a literature review on superconducting qubits",
         "prove that the sequence converges",
     ]
-    for text in research_requests:
-        assert classify_mode(text) == "research"
+    for text in standard_requests:
+        assert classify_mode(text) == "standard"
 
 
 def test_classify_mode_everything_else_is_standard() -> None:
@@ -45,26 +46,24 @@ def test_classify_mode_everything_else_is_standard() -> None:
 
 def test_classify_mode_is_case_insensitive() -> None:
     assert classify_mode("FIT THE HISTOGRAM") == "physics"
-    assert classify_mode("Derive The Equation") == "research"
 
 
 def test_mode_pins_override_classification() -> None:
     assert resolve_mode("physics", "hello") == "physics"
-    assert resolve_mode("research", "hello") == "research"
     assert resolve_mode("standard", "fit the histogram") == "standard"
     # auto / None mean "classify"
     assert resolve_mode(None, "fit the histogram") == "physics"
     assert resolve_mode("auto", "fit the histogram") == "physics"
 
 
-def test_agent_modes_are_the_four_documented_values() -> None:
-    assert set(AGENT_MODES) == {"auto", "standard", "physics", "research"}
+def test_agent_modes_are_the_documented_values() -> None:
+    assert set(AGENT_MODES) == {"auto", "standard", "physics"}
 
 
-def test_followups_do_not_reroute_into_stateless_modes() -> None:
+def test_followups_do_not_reroute_into_the_stateless_loop() -> None:
     """Auto-classification is first-turn only.
 
-    physics/research are one-shot loops fed ONLY the current message
+    physics is a one-shot loop fed ONLY the current message
     (gateway.run._run_physics_mode_sync takes ``problem_text``, no history),
     so re-classifying a mid-conversation turn silently discards the exchange
     and the run answers as if it had never spoken to the user. For anyone who
@@ -93,7 +92,6 @@ def test_explicit_mode_pin_wins_on_any_turn() -> None:
 
     for turn in (True, False):
         assert resolve_mode("physics", "hello there", is_first_turn=turn) == "physics"
-        assert resolve_mode("research", "hello there", is_first_turn=turn) == "research"
         assert resolve_mode("standard", "fit the histogram", is_first_turn=turn) == "standard"
 
 

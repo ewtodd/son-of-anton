@@ -315,7 +315,7 @@ son_of_anton_cli = ["observability/schemas/*.json", "data/*.json"]
 # list is not a build error — it is a FileNotFoundError in a sealed install
 # only, at the moment that agent first runs. That has now happened twice.
 # tests/test_physics_package_data.py enforces the match.
-physics_intern = ["config.default.yaml", "*.yaml", "agents/*/*.md", "autophysicist/*.md"]
+physics_intern = ["config.default.yaml", "*.yaml", "autophysicist/*.md"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

@@ -1,18 +1,13 @@
 """Which model each physics role runs under.
 
-Two roles to start with, not two modes. The reasoning role — the
-Autophysicist's Research Manager, the research pipeline's judging agents —
-reads state, decides strategy and judges results. The coding role — the
-Autophysicist's ``execute_code`` sub-agents, the pipeline's computer — writes
-one self-contained script. A deployment may have a model much better and faster
-at the second and weaker at the first, so ``physics.model`` and
-``physics.coder_model`` apply to those two roles in both modes.
+Two roles, not two agents. The reasoning role — the Autophysicist's Research
+Manager — reads state, decides strategy and judges results. The coding role —
+the Autophysicist's ``execute_code`` sub-agents — writes one self-contained
+script. A deployment may have a model much better and faster at the second and
+weaker at the first, so ``physics.model`` and ``physics.coder_model`` apply
+to those two roles.
 
-``physics.agent_models`` goes finer, per agent name, and beats both. The
-pipeline has nine roles and they are not all the same job: a formatter
-rendering an answer template and a critic hunting for a dropped factor of two
-want different things, and on a host serving one thinking model and one
-instruct profile of the same weights, that distinction is free.
+``physics.agent_models`` goes finer, per agent name, and beats both.
 """
 
 from __future__ import annotations

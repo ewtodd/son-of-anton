@@ -14,9 +14,8 @@
 ```
 <!---->
 An always-on agent you can talk to from a terminal or from Signal.
-It has three
-modes: the normal agent loop, a physics research loop, and a multi-agent
-research pipeline.
+It has two
+modes: the normal agent loop, and a physics research loop.
 <!---->
 ## Provenance
 <!---->
@@ -36,8 +35,13 @@ run under a separate scientific interpreter inside a bubblewrap sandbox with
 the lab's data mounted read-only; the Manager can read its own workspace and
 look up literature; sub-agents can pull documentation; the reasoning and coding
 roles can run on different models; and each iteration is reviewed from outside
-by a critic. The debt is real and gladly acknowledged — the architecture is no
-longer theirs. Both upstream projects are MIT licensed and so is this fork.
+by a critic. physics-intern also shipped a nine-agent research pipeline
+(surveyor, planner, orchestrator, researcher, computer, reviewer, critic,
+adjudicator, formatter); it was ported and then removed as redundant, once the
+Autophysicist carried its own critic, its own sub-agent dispatch, and its own
+verdict-free review. The debt is real and gladly acknowledged — the
+architecture is no longer theirs. Both upstream projects are MIT licensed and
+so is this fork.
 <!---->
 It replaces the archived [temple](https://github.com/ewtodd/temple) harness.
 The daemon design, permission modes, and request router come from there.
@@ -64,7 +68,7 @@ If you are not happy with AI-developed code, this software is not for you.
 <!---->
 ## What it does
 <!---->
-Three agent modes.
+Two agent modes.
 A router picks one from the first message of a session, and `/mode` overrides
 it on any turn:
 <!---->
@@ -74,19 +78,16 @@ it on any turn:
   a windowed scratchpad, a token budget and a `submit_final_answer` tool,
   dispatching ephemeral sub-agents that run code in a sandbox, with each
   iteration reviewed by a critic. Works in a git-versioned scratch directory.
-- `research`: a nine-agent pipeline (surveyor, planner, orchestrator,
-  researcher, computer, reviewer, critic, adjudicator, formatter) over a
-  shared `ResearchState`, also in a git-versioned directory.
 <!---->
 The router only classifies the **first** message of a session.
 Everything after
 that stays in the standard loop, which is the one that keeps history.
 Physics
-and research are one-shot: they only see the message that started them, so
-letting a follow-up drop into them looked exactly like the agent forgetting the
+is one-shot: it only sees the message that started it, so
+letting a follow-up drop into it looked exactly like the agent forgetting the
 conversation.
 <!---->
-Physics and research runs get scored by numeric checks against the problem
+Physics runs get scored by numeric checks against the problem
 spec.
 The model writes real analysis code, runs it in a sandbox, and writes
 results to `RESULTS.txt`.
@@ -95,22 +96,22 @@ There are self-contained toy problems in `problems/`,
 directory and a one-line goal, and `son-of-anton problem run` runs one (see
 [Physics runs](#physics-runs)).
 <!---->
-You can switch modes off per deployment with `router.modes`.
+You can switch the mode off per deployment with `router.modes`.
 A gateway for
 household chores has no use for the physics loop, and leaving it on is worse
 than clutter, because a stray "how long does that take to decay" can drop
-someone into a one-shot research run:
+someone into a one-shot physics run:
 <!---->
 ```yaml
 router:
   modes: [standard]                          # household: nothing else offered
-  # modes: [standard, physics, research]     # the default, everything on
+  # modes: [standard, physics]               # the default, everything on
 ```
 <!---->
-With a mode off, its keywords stop routing, `/mode` will not accept it and does
+With the mode off, its keywords stop routing, `/mode` will not accept it and does
 not list it, and a session that was pinned to it before the change falls back
 to standard.
-Leave the key out entirely and you get all three, so existing
+Leave the key out entirely and you get both, so existing
 configs are unaffected.
 <!---->
 Other things worth knowing:
@@ -154,7 +155,7 @@ physics:
 <!---->
 ## Physics runs
 <!---->
-The physics modes execute code the model wrote.
+The physics mode executes code the model wrote.
 Two things follow from that,
 and both are configured under `physics:`.
 <!---->
@@ -316,12 +317,11 @@ son-of-anton problem run problems/run42/problem.yaml --max-iterations 5
 ```
 <!---->
 It prints `ANSWER.md` and `FORMAL_EVAL.md` when it finishes.
-`--mode research`
-runs the nine-agent pipeline over the same spec instead; `--workspace DIR`
+`--workspace DIR`
 continues an existing run rather than starting a fresh one.
 <!---->
 **Set `--max-iterations` on a first run.** Physics mode has no wall-clock or
-cost gate — those exist only in the research pipeline — so it is the only
+cost gate, so it is the only
 ceiling, and the default is 50 iterations of up to fifteen tool calls each.
 
 **Raise `--script-timeout` for large data.** One model-authored script gets 60 s
@@ -433,7 +433,7 @@ services.son-of-anton.instances.house = {
   workingDirectory = "/srv/household";
   environmentFiles = [ config.age.secrets.son-of-anton-house-env.path ];
   extraPackages = [ pkgs.pandoc pkgs.typst ];
-  settings.router.modes = [ "standard" ];   # no physics/research here
+  settings.router.modes = [ "standard" ];   # no physics here
 };
 ```
 <!---->
@@ -527,7 +527,7 @@ at runtime, not the install itself.)
 <!---->
 | Command | What it does |
 |---|---|
-| `/mode auto\|standard\|physics\|research` | pin the session's agent mode |
+| `/mode auto\|standard\|physics` | pin the session's agent mode |
 | `/model auto\|NAME` | turn routing back on, or pin a model |
 | `/perm default\|ask\|lockdown\|yolo` | set the permission mode (shift+tab cycles it for the session) |
 | `/commit` | review the uncommitted diff, write a message in the repo's style, commit |

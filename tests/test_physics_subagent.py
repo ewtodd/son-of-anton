@@ -209,8 +209,10 @@ def test_subagent_output_is_saved_next_to_the_script(tmp_path) -> None:
 # --- per-role model assignment ---------------------------------------------
 #
 # `coder_model` answers "is this call writing code", which is not the same
-# question as "which agent is this". The pipeline has nine roles and they are
-# not the same job.
+# question as "which agent is this". The Manager, the sub-agents, and the
+# critic are different jobs; the critic in particular is the natural home for
+# a slower, more knowledgeable model that would be far too slow to run the
+# loop with.
 
 
 def _config(**kwargs):
@@ -224,7 +226,7 @@ def _config(**kwargs):
 
 
 def test_the_default_is_the_run_model() -> None:
-    assert _config().model_for_agent("deep_critic") == "reasoning-model"
+    assert _config().model_for_agent("critic") == "reasoning-model"
 
 
 def test_a_coding_call_takes_the_coder_model() -> None:
@@ -235,11 +237,11 @@ def test_a_coding_call_takes_the_coder_model() -> None:
 
 def test_an_explicit_role_beats_both() -> None:
     config = _config(
-        coder_model="coding-model", agent_models={"computer": "special-model"}
+        coder_model="coding-model", agent_models={"critic": "special-model"}
     )
-    assert config.model_for_agent("computer", coding=True) == "special-model"
+    assert config.model_for_agent("critic", coding=True) == "special-model"
     # ...and only that role: everything else still falls through.
-    assert config.model_for_agent("reviewer") == "reasoning-model"
+    assert config.model_for_agent("subagent") == "reasoning-model"
 
 
 def test_roles_match_by_longest_prefix() -> None:
@@ -249,43 +251,72 @@ def test_roles_match_by_longest_prefix() -> None:
     assert config.model_for_agent("subagent_iter9_1") == "b"
 
 
-def test_an_agent_runs_under_its_resolved_model(tmp_path) -> None:
-    from physics_intern.agents.critic.agent import CriticAgent
-    from physics_intern.core.metrics import MetricsTracker
-    from physics_intern.core.workspace import WorkspaceManager
+def test_the_critic_runs_under_its_resolved_model(monkeypatch, tmp_path) -> None:
+    """The critic answers to "critic" — an agent_models key has to match the
+    agent's own name. The run's config must not be mutated by the resolution."""
+    from physics_intern.autophysicist.critic import run_critique
+    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
 
-    # The critic answers to "deep_critic" — an agent_models key has to match
-    # the agent's own name, not the directory it lives in.
-    config = _config(agent_models={"deep_critic": "critic-model"})
-    config.workspace_dir = str(tmp_path)
-    agent = CriticAgent(config, WorkspaceManager(config), MetricsTracker())
-    assert agent.name == "deep_critic"
-    assert agent.agent_config.model == "critic-model"
-    assert agent.config.model == "reasoning-model", "the run's config was mutated"
+    seen: dict = {}
+
+    def fake_call_llm(*, system, user_content, config, agent_name, iteration):
+        seen["model"] = config.model
+        seen["agent_name"] = agent_name
+
+        class _R:
+            text = "the plan is confident; the memory is empty"
+            input_tokens = 1
+            output_tokens = 1
+
+        return _R()
+
+    monkeypatch.setattr("physics_intern.llm.call_llm", fake_call_llm)
+
+    config = _config(agent_models={"critic": "critic-model"})
+    critique = run_critique(
+        config=config,
+        problem_text="p",
+        permanent_memory=PermanentMemory(tmp_path),
+        scratchpad=Scratchpad(tmp_path),
+        workspace_root=tmp_path,
+        iteration=1,
+        result=None,
+    )
+    assert seen["model"] == "critic-model"
+    assert seen["agent_name"] == "critic"
+    assert config.model == "reasoning-model", "the run's config was mutated"
+    assert critique == "the plan is confident; the memory is empty"
 
 
-def test_an_agent_with_no_override_shares_the_run_config(tmp_path) -> None:
-    """No copy when nothing changes — nine agents share one object."""
-    from physics_intern.agents.critic.agent import CriticAgent
-    from physics_intern.core.metrics import MetricsTracker
-    from physics_intern.core.workspace import WorkspaceManager
+def test_a_critic_with_no_override_shares_the_run_config(monkeypatch, tmp_path) -> None:
+    """No copy-when-unchanged needed — the run's model is the critic's."""
+    from physics_intern.autophysicist.critic import run_critique
+    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
 
+    seen: dict = {}
+
+    def fake_call_llm(*, config, **kwargs):
+        seen["model"] = config.model
+
+        class _R:
+            text = ""
+            input_tokens = 1
+            output_tokens = 1
+
+        return _R()
+
+    monkeypatch.setattr("physics_intern.llm.call_llm", fake_call_llm)
     config = _config()
-    config.workspace_dir = str(tmp_path)
-    agent = CriticAgent(config, WorkspaceManager(config), MetricsTracker())
-    assert agent.agent_config is config
-
-
-def test_the_computer_is_the_coding_role(tmp_path) -> None:
-    from physics_intern.agents.computer.agent import ComputerAgent
-    from physics_intern.core.metrics import MetricsTracker
-    from physics_intern.core.workspace import WorkspaceManager
-
-    config = _config(coder_model="coding-model")
-    config.workspace_dir = str(tmp_path)
-    agent = ComputerAgent(config, WorkspaceManager(config), MetricsTracker())
-    assert agent.writes_code is True
-    assert agent.agent_config.model == "coding-model"
+    run_critique(
+        config=config,
+        problem_text="p",
+        permanent_memory=PermanentMemory(tmp_path),
+        scratchpad=Scratchpad(tmp_path),
+        workspace_root=tmp_path,
+        iteration=1,
+        result=None,
+    )
+    assert seen["model"] == "reasoning-model"
 
 
 def test_a_missing_module_retry_names_what_is_installed(monkeypatch, tmp_path) -> None:

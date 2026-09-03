@@ -1,17 +1,10 @@
-"""The two physics modes get the same capabilities.
+"""The Autophysicist's run has the capabilities the machinery promises.
 
-`physics` (one Research Manager) and `research` (nine agents over a claim
-ledger) are different reasoning architectures, and that is the point of having
-both. What they should NOT differ on is what the machinery underneath offers
-them: the sandbox, the data the problem spec declares, the lookup tools, and
-which model writes the code.
-
-They did differ. MCP lookups and the coder-model split were built for the
-Autophysicist and reached the pipeline not at all, and a problem spec's `data:`
-list was threaded through the Autophysicist runner alone — so the pipeline's
-computer agent could not see the data the run was given. These tests are the
-thing that keeps a capability from landing in one mode and quietly not the
-other.
+The runner wires a problem spec's ``data:`` list into the sandbox policy,
+offers the lookup tools to the roles that have them, and splits the coding
+model off from the reasoning model. These tests keep each of those contracts
+from silently breaking: they are the things a physics run needs to actually
+work against a real dataset.
 """
 
 from __future__ import annotations
@@ -56,153 +49,121 @@ class _FakeToolset(MCPToolset):
 
 
 @pytest.fixture
-def engine(tmp_path, monkeypatch):
-    """A research-mode engine with a spec, lookups, and a coder model."""
-    from physics_intern.engine import PhysicsIntern
-
+def runner_kwargs(tmp_path, monkeypatch):
+    """What a run of the spec hands to the Autophysicist runner."""
     data_dir = tmp_path / "lab-data"
     data_dir.mkdir()
     spec = dict(SPEC, data=[str(data_dir)])
 
     monkeypatch.setattr(
-        "physics_intern.engine.MCPToolset.from_config", lambda: _FakeToolset()
-    )
-    config = Config()
-    config.workspace_dir = str(tmp_path / "ws")
-    Path(config.workspace_dir).mkdir()
-    config.coder_model = "coding-model"
-    config.model = "reasoning-model"
-
-    built = PhysicsIntern(spec["problem"], config=config, problem_def=spec)
-    built._data_dir = data_dir
-    return built
-
-
-# --- the spec's data reaches the pipeline's sandbox -------------------------
-
-
-def test_the_specs_data_is_mounted_for_the_pipeline(engine) -> None:
-    assert engine._data_dir.resolve() in engine.policy.data_dirs, (
-        "the pipeline's computer agent could not see the data the run was "
-        "given — only the Autophysicist threaded a spec's data: through"
+        "physics_intern.autophysicist.runner.MCPToolset.from_config",
+        staticmethod(lambda: _FakeToolset()),
     )
 
+    seen: dict = {}
 
-def test_the_computer_agent_runs_under_that_policy(engine) -> None:
-    assert engine.computer.policy is engine.policy
-    assert engine.policy.workspace == engine.workspace.root
+    def fake_runner(**kwargs):
+        seen.update(kwargs)
+        return tmp_path
 
+    monkeypatch.setattr(
+        "physics_intern.autophysicist.runner.run_autophysicist", fake_runner
+    )
 
-# --- lookups reach the same roles in both modes -----------------------------
+    from physics_intern.run import run_problem
 
+    spec_path = tmp_path / "problem.yaml"
+    import yaml
 
-@pytest.mark.parametrize(
-    ("role", "expected"),
-    [
-        ("surveyor", "arxiv-get_abstract"),
-        ("researcher", "arxiv-get_abstract"),
-        ("computer", "context7-query-docs"),
-    ],
-)
-def test_each_role_gets_the_tools_its_job_needs(engine, role, expected) -> None:
-    """Not the same set: the literature roles get arXiv, the coder gets docs."""
-    agent = getattr(engine, role)
-    names = [t["function"]["name"] for t in agent.lookup_tools()]
-    assert expected in names
-    assert agent.uses_tools is True
+    spec_path.write_text(yaml.dump(spec), encoding="utf-8")
+    run_problem(str(spec_path), mode="physics")
+    return seen, data_dir
 
 
-def test_the_coder_does_not_get_the_literature(engine) -> None:
-    names = [t["function"]["name"] for t in engine.computer.lookup_tools()]
+# --- the spec's data reaches the sandbox ------------------------------------
+
+
+def test_the_specs_data_is_mounted_in_the_sandbox_policy(runner_kwargs) -> None:
+    seen, data_dir = runner_kwargs
+    assert seen["problem_def"]["data"] == [str(data_dir)], (
+        "the spec's data: list did not reach the runner — the run would not "
+        "see the dataset it was given"
+    )
+
+
+def test_declared_data_is_passed_to_the_sandbox(monkeypatch, tmp_path) -> None:
+    """SandboxPolicy.from_config must actually mount the declared data."""
+    from physics_intern.utils.sandbox import SandboxPolicy
+
+    data_dir = tmp_path / "lab-data"
+    data_dir.mkdir()
+
+    policy = SandboxPolicy.from_config(extra_data_dirs=[str(data_dir)])
+    assert data_dir.resolve() in policy.data_dirs
+
+
+# --- lookups reach the roles that have them ----------------------------------
+
+
+def test_the_manager_gets_literature_but_not_docs() -> None:
+    """The Manager writes briefs, not code — it gets arXiv reading, not context7."""
+    toolset = _FakeToolset()
+    names = [t["function"]["name"] for t in toolset.tools_for("manager")]
+    assert "arxiv-get_abstract" in names
+    assert "context7-query-docs" not in names
+
+
+def test_a_subagent_gets_documentation_but_not_literature() -> None:
+    toolset = _FakeToolset()
+    names = [t["function"]["name"] for t in toolset.tools_for("subagent")]
+    assert "context7-query-docs" in names
     assert "arxiv-get_abstract" not in names
 
 
-def test_the_orchestrator_is_left_out_by_default(engine) -> None:
-    """It dispatches over a state machine on a ten-round budget; lookups there
-    risk it never dispatching."""
-    assert engine.orchestrator.lookup_tools() == []
-
-
-def test_the_computers_tool_set_includes_the_lookups(engine) -> None:
-    from physics_intern.agents.computer.tools import ToolExecutor
-
-    executor = ToolExecutor(
-        workspace_root=engine.workspace.root,
-        policy=engine.policy,
-        mcp=engine.mcp,
-    )
-    names = [t["function"]["name"] for t in executor.computer_tools()]
-    assert "execute_python" in names
-    assert "context7-query-docs" in names
-
-
-def test_a_lookup_only_agent_can_call_one(engine) -> None:
-    from physics_intern.utils.mcp import LookupExecutor
-
-    executor = LookupExecutor(engine.mcp, "researcher")
-    assert executor.exit_tool_names == frozenset()
-    call = executor.execute("nope", {})
-    assert call.is_error and "arxiv-get_abstract" in call.output
-
-
-def test_a_role_cannot_call_a_tool_outside_its_allowlist(engine) -> None:
+def test_a_role_cannot_call_a_tool_outside_its_allowlist() -> None:
     """Role-scoped, not global: a sub-agent asking for a paper is refused."""
     from physics_intern.utils.mcp import LookupExecutor
 
-    assert engine.mcp.handles("arxiv-get_abstract", "manager") is True
-    assert engine.mcp.handles("arxiv-get_abstract", "subagent") is False
-    call = LookupExecutor(engine.mcp, "subagent").execute("arxiv-get_abstract", {})
+    toolset = _FakeToolset()
+    assert toolset.handles("arxiv-get_abstract", "manager") is True
+    assert toolset.handles("arxiv-get_abstract", "subagent") is False
+    call = LookupExecutor(toolset, "subagent").execute("arxiv-get_abstract", {})
     assert call.is_error is True
 
 
-def test_no_mcp_leaves_every_agent_one_shot(tmp_path, monkeypatch) -> None:
-    from physics_intern.engine import PhysicsIntern
+def test_no_mcp_leaves_the_run_lookups_empty(monkeypatch, tmp_path) -> None:
+    seen: dict = {}
+
+    def fake_runner(**kwargs):
+        seen.update(kwargs)
+        return tmp_path
 
     monkeypatch.setattr(
-        "physics_intern.engine.MCPToolset.from_config", lambda: None
+        "physics_intern.autophysicist.runner.MCPToolset.from_config",
+        staticmethod(lambda: None),
     )
+    monkeypatch.setattr(
+        "physics_intern.autophysicist.runner.run_autophysicist", fake_runner
+    )
+    from physics_intern.run import run_problem
+
+    run_problem("a plain question", mode="physics")
+    assert seen["problem_def"] is None
+
+
+# --- the coder model applies to whoever writes code --------------------------
+
+
+def test_a_coding_dispatch_resolves_to_the_coder_model() -> None:
     config = Config()
-    config.workspace_dir = str(tmp_path / "ws")
-    Path(config.workspace_dir).mkdir()
-    built = PhysicsIntern("plain question", config=config)
-    for role in ("surveyor", "researcher", "critic", "reviewer"):
-        assert getattr(built, role).lookup_tools() == []
-        assert getattr(built, role).uses_tools is False
+    config.model = "reasoning-model"
+    config.coder_model = "coding-model"
+    assert config.model_for_agent("subagent", coding=True) == "coding-model"
+    assert config.model_for_agent("subagent", coding=False) == "reasoning-model"
+    # ...and the run's config is untouched.
+    assert config.model == "reasoning-model"
 
 
-# --- the coder model applies to whoever writes code, in either mode ---------
-
-
-def test_the_pipelines_computer_uses_the_coder_model(engine, monkeypatch) -> None:
-    from physics_intern.state.task import Task, TaskType
-
-    seen: list[str] = []
-
-    def fake_loop(*, config, **kwargs):
-        seen.append(config.model)
-        from physics_intern.llm import AgentResult
-
-        return AgentResult(text="{}")
-
-    monkeypatch.setattr(
-        "physics_intern.agents.computer.agent.run_agent_loop", fake_loop
-    )
-    task = Task(
-        task_id="C-1", task_type=TaskType.COMPUTE, assigned_to="computer", iteration=1
-    )
-    engine.computer._call_with_tools("ctx", task, 1)
-    assert seen == ["coding-model"]
-    assert engine.config.model == "reasoning-model", "the run's config must not be mutated"
-
-
-def test_a_non_coding_agent_keeps_the_reasoning_model(engine) -> None:
-    assert engine.researcher.config.model == "reasoning-model"
-
-
-def test_both_modes_share_one_role_table() -> None:
-    """Parity is the point: the same names mean the same thing in both loops.
-
-    The exact contents are asserted in test_physics_mcp.py.
-    """
-    assert {"manager", "subagent"} <= set(DEFAULT_ROLES)
-    assert {"surveyor", "researcher", "computer"} <= set(DEFAULT_ROLES)
+def test_the_role_table_is_the_autophysicists() -> None:
+    """The same names mean the same thing wherever they are consulted."""
+    assert set(DEFAULT_ROLES) == {"manager", "subagent"}

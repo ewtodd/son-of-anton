@@ -296,7 +296,7 @@ import agent.prompt_builder
 import plugins.platforms.discord.adapter
 import plugins.platforms.slack.adapter
 import gateway.platforms.signal
-import physics_intern.engine
+import physics_intern.run
 import physics_intern.autophysicist.runner
 print('imports ok')
 " || (echo "FAIL: core modules do not import from the sealed venv"; exit 1)

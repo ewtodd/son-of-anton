@@ -23,10 +23,10 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         "problem",
         help="Create and inspect physics problem specs",
         description=(
-            "Problem specs for the physics and research modes.\n\n"
+            "Problem specs for the physics mode.\n\n"
             "A spec is the task text, the data paths to expose read-only, and "
             "the numeric checks that score the run's RESULTS.txt. Run one by "
-            "handing its path to a physics or research turn."
+            "handing its path to a physics turn."
         ),
     )
     problem_sub = problem_parser.add_subparsers(dest="problem_action")
@@ -53,8 +53,8 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         help="Run a problem spec and print its answer and score",
         description=(
             "Run a spec to completion and print ANSWER.md and FORMAL_EVAL.md.\n\n"
-            "The same run a physics or research chat turn performs, without the "
-            "chat: a spec is a batch job, and driving one by starting a session, "
+            "The same run a physics chat turn performs, without the chat: a "
+            "spec is a batch job, and driving one by starting a session, "
             "pinning a mode and pasting a path is a worse way to say so."
         ),
     )
@@ -64,8 +64,8 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         choices=list(MODES),
         default="physics",
         help=(
-            "physics: one Research Manager with append-only memory (default). "
-            "research: nine agents over a claim ledger with adversarial review."
+            "physics: one Research Manager with append-only memory (the only "
+            "mode)."
         ),
     )
     run.add_argument(

@@ -1,19 +1,12 @@
-"""Loading the problem spec that a physics or research run is scored against.
+"""Loading the problem spec a physics run is scored against.
 
-Both modes are scored the same way: the run writes ``RESULTS.txt`` into its
-workspace, and ``verification/experimental.py`` compares it against the numeric
-``checks`` in a ``problem.yaml``. The evaluator reads that spec *from the
-workspace*, so a run that never puts one there is silently never scored — it
-finishes, prints an answer, and reports "Formal verification skipped".
+The run writes ``RESULTS.txt`` into its workspace, and
+``verification/experimental.py`` compares it against the numeric ``checks`` in
+a ``problem.yaml``. The evaluator reads that spec *from the workspace*, so a
+run that never puts one there is silently never scored — it finishes, prints
+an answer, and reports "Formal verification skipped".
 
-That is exactly what research mode did. Its entry points passed the raw message
-text and nothing else, nothing on the fresh-run path wrote a spec, and so the
-checks never ran on a single research run. (``PhysicsIntern.resume`` also reads
-that file, so those runs could not be resumed either.) The Autophysicist had
-its own copy of the loading logic and did write the file, which is why the gap
-showed up in one mode and not the other.
-
-This module is that logic, once, for both.
+This module is the one place that logic lives.
 """
 
 from __future__ import annotations

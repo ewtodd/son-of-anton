@@ -1,11 +1,11 @@
-"""``router.modes`` — switching physics/research off per deployment.
+"""``router.modes`` — switching physics off per deployment.
 
-A household or general-purpose gateway has no use for the physics and research
-loops. Leaving them on is not just clutter: the router can drop a message into
-a one-shot loop that answers with no conversation history, and ``/mode`` offers
-them as though they were on hand.
+A household or general-purpose gateway has no use for the physics loop.
+Leaving it on is not just clutter: the router can drop a message into a
+one-shot loop that answers with no conversation history, and ``/mode`` offers
+it as though it were on hand.
 
-Turning a mode off means three things together — its keywords stop routing,
+Turning the mode off means three things together — its keywords stop routing,
 ``/mode`` stops accepting it, and a session pinned to it before the change
 falls back to standard.
 """
@@ -35,7 +35,7 @@ def test_absent_key_enables_everything() -> None:
 
 def test_standard_is_always_present() -> None:
     """It is where classification and every rejected override land."""
-    for raw in ([], ["physics"], ["research"], ["physics", "research"]):
+    for raw in ([], ["physics"], ["phsyics"]):
         assert "standard" in resolve_enabled_modes(raw)
 
 
@@ -44,13 +44,10 @@ def test_standard_is_always_present() -> None:
     [
         pytest.param(["standard"], ("standard",), id="household"),
         pytest.param(["physics"], ("standard", "physics"), id="physics-only"),
-        pytest.param(
-            ["standard", "physics", "research"],
-            ("standard", "physics", "research"),
-            id="everything",
-        ),
+        pytest.param(["physics", "research"], ("standard", "physics"),
+                     id="research-is-gone"),
         pytest.param("physics", ("standard", "physics"), id="bare-string"),
-        pytest.param(["PHYSICS", " research "], ("standard", "physics", "research"),
+        pytest.param(["PHYSICS", " physics "], ("standard", "physics"),
                      id="case-and-whitespace"),
         pytest.param(["physics", "physics"], ("standard", "physics"), id="duplicates"),
     ],
@@ -61,9 +58,7 @@ def test_parsing(raw, expected) -> None:
 
 def test_order_is_stable() -> None:
     """Callers interpolate this into user-facing messages."""
-    assert resolve_enabled_modes(["research", "physics"]) == (
-        "standard", "physics", "research",
-    )
+    assert resolve_enabled_modes(["physics"]) == ("standard", "physics")
 
 
 @pytest.mark.parametrize(
@@ -97,7 +92,6 @@ def test_a_typo_fails_closed_not_open() -> None:
 def test_disabled_keywords_stop_routing() -> None:
     """The keywords go inert, rather than routing to something switched off."""
     assert classify_mode("fit the histogram", HOUSEHOLD) == "standard"
-    assert classify_mode("derive the equation", HOUSEHOLD) == "standard"
     assert resolve_mode(None, "fit the histogram", enabled=HOUSEHOLD) == "standard"
 
 
@@ -106,18 +100,20 @@ def test_enabled_keywords_still_route() -> None:
     assert resolve_mode(None, "fit the histogram") == "physics"
 
 
-def test_one_mode_on_does_not_enable_the_other() -> None:
-    physics_only = resolve_enabled_modes(["physics"])
-    assert classify_mode("fit the histogram", physics_only) == "physics"
-    assert classify_mode("derive the equation", physics_only) == "standard"
+def test_research_keywords_no_longer_route() -> None:
+    """The nine-agent pipeline is gone; its former triggers stay standard."""
+    assert classify_mode("derive the equation") == "standard"
+    assert classify_mode("write a literature review on X") == "standard"
+    assert resolve_mode(None, "derive the equation") == "standard"
 
 
-def test_a_stale_pin_falls_back(  ) -> None:
+def test_a_stale_pin_falls_back() -> None:
     """Sessions outlive config edits.
 
     The mode is stored per session, so a session pinned to physics before the
     operator removed it would otherwise keep entering a loop the deployment no
-    longer offers.
+    longer offers. A stale research pin from before the mode was removed
+    lands in standard as well.
     """
     assert resolve_mode("physics", "hello", enabled=HOUSEHOLD) == "standard"
     assert resolve_mode("research", "hello", enabled=HOUSEHOLD) == "standard"

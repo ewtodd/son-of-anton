@@ -1,4 +1,4 @@
-"""The physics modes' execution layer: it runs, and it is actually confined.
+"""The physics mode's execution layer: it runs, and it is actually confined.
 
 The bug these cover: ``execute_python`` shelled out to ``["python", script]``.
 The sealed Nix install has no ``python`` on ``PATH`` — the gateway unit's PATH
@@ -208,9 +208,8 @@ def test_missing_bwrap_fails_closed(tmp_path: Path, monkeypatch) -> None:
 # the library: it has seen a million numpy/matplotlib scripts and none using
 # this one, so it reimplements the waveform features, the TTree loop and the
 # plot style by hand — slower, uncached, and not the published figures. The
-# guidance block is what closes that gap, so it has to actually reach the two
-# places an agent reads: the execute_python schema and the sub-agent's
-# code-execution instructions.
+# guidance block is what closes that gap, so it has to actually reach the
+# sub-agent's code-execution instructions.
 
 
 def test_notes_only_appear_for_libraries_that_are_present() -> None:
@@ -228,24 +227,6 @@ def test_extra_notes_are_appended() -> None:
     assert "analysis_utilities" in combined and "house rule" in combined
 
 
-def test_guidance_reaches_the_execute_python_schema(monkeypatch) -> None:
-    from physics_intern.agents.computer.tools import ToolExecutor
-
-    monkeypatch.setattr(
-        "physics_intern.utils.sandbox.runtime_summary",
-        lambda _i=None: {
-            "interpreter": "x",
-            "python_version": "3.12",
-            "packages": {"analysis_utilities": "26.8.27"},
-            "bwrap": "",
-        },
-    )
-    schema = ToolExecutor._execute_python_def(None)
-    description = schema["function"]["description"]
-    assert "analysis_utilities" in description
-    assert "PlottingUtils" in description
-
-
 def test_guidance_reaches_the_subagent_instructions(monkeypatch) -> None:
     from physics_intern.autophysicist.subagent import code_execution_suffix
 
@@ -258,11 +239,14 @@ def test_guidance_reaches_the_subagent_instructions(monkeypatch) -> None:
             "bwrap": "",
         },
     )
-    assert "load_tree_data" in code_execution_suffix(None, 60)
+    suffix = code_execution_suffix(None, 60)
+    assert "analysis_utilities" in suffix
+    assert "load_tree_data" in suffix
+    assert "PlottingUtils" in suffix
 
 
 def test_no_guidance_when_the_library_is_absent(monkeypatch) -> None:
-    from physics_intern.agents.computer.tools import ToolExecutor
+    from physics_intern.autophysicist.subagent import code_execution_suffix
 
     monkeypatch.setattr(
         "physics_intern.utils.sandbox.runtime_summary",
@@ -273,9 +257,9 @@ def test_no_guidance_when_the_library_is_absent(monkeypatch) -> None:
             "bwrap": "",
         },
     )
-    description = ToolExecutor._execute_python_def(None)["function"]["description"]
-    assert "analysis_utilities" not in description
-    assert "numpy 2.0" in description
+    suffix = code_execution_suffix(None, 60)
+    assert "analysis_utilities" not in suffix
+    assert "numpy 2.0" in suffix
 
 
 @needs_bwrap
@@ -326,13 +310,21 @@ def test_the_guidance_states_the_real_timeout(monkeypatch) -> None:
     assert "does NOT mean your approach was wrong" in flat
 
 
-def test_the_execute_python_schema_states_the_real_timeout() -> None:
-    from physics_intern.agents.computer.tools import ToolExecutor
+def test_the_code_execution_rules_state_the_real_timeout(monkeypatch) -> None:
+    """The sub-agent's rule 7 carries the real number, not a placeholder."""
+    from physics_intern.autophysicist.subagent import code_execution_suffix
 
-    description = ToolExecutor._execute_python_def(None, 900)["function"][
-        "description"
-    ]
-    assert "killed after 900s" in description
+    monkeypatch.setattr(
+        "physics_intern.utils.sandbox.runtime_summary",
+        lambda _i=None: {
+            "interpreter": "x",
+            "python_version": "3.12",
+            "packages": {"numpy": "2.0"},
+            "bwrap": "",
+        },
+    )
+    suffix = code_execution_suffix(None, 900)
+    assert "Timeout: 900 seconds" in suffix
 
 
 def test_the_notes_warn_about_raw_waveforms() -> None:

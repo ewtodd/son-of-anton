@@ -30,9 +30,8 @@ from openai import (
     OpenAI,
 )
 
-from .agents.computer.tools import ToolExecutor
+from .core.tool_call import ToolCall
 from .core.workspace import log_llm_call
-from .state.tool_call import ToolCall
 
 
 class ParseFailureError(Exception):

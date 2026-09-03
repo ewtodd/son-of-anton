@@ -8,19 +8,21 @@ Instructions for AI coding assistants and developers working on the son-of-anton
 
 Son of Anton is a hard fork of [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
 v0.20.5 (upstream commit `fcbd1076a9`), stripped to a lean always-on daemon
-surface, and extended with the physics modes from
+surface, and extended with the physics mode from
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
 (commit `5553bb6`). MIT licensed. It is the successor to the archived
 [temple](https://github.com/ewtodd/temple) harness — the daemon design,
 permission modes, and request router carry over from it.
 
-Three agent modes, selected per request by a heuristic router with a `/mode` override:
+Two agent modes, selected per request by a heuristic router with a `/mode` override:
 
 - `standard` — the hermes agent loop (terminal, files, web, skills, memory, delegation, cron)
 - `physics` — Autophysicist: a single research manager with permanent memory + scratchpad,
-  token budget, `submit_final_answer`, git workspace
-- `research` — a nine-agent critical self-research pipeline (surveyor → planner →
-  orchestrator → researcher/computer → reviewer → critic → adjudicator → formatter)
+  token budget, `submit_final_answer`, git workspace, per-iteration critic
+
+physics-intern also shipped a nine-agent research pipeline; it was ported and
+then removed as redundant, once the Autophysicist carried its own critic and
+sub-agent dispatch.
 
 Two properties shape almost every design decision and are the lens for reviewing any change:
 
@@ -156,9 +158,9 @@ son-of-anton/
 │   ├── model-providers/  # Inference backend plugins (custom)
 │   ├── platforms/        # discord, slack adapters
 │   └── web/              # Web-search provider plugins (exa, tavily, firecrawl, ...)
-├── physics_intern/       # Vendored physics modes (Autophysicist + research pipeline)
+├── physics_intern/       # Vendored physics mode (Autophysicist)
 │   ├── llm.py            # OpenAI-compatible layer resolving endpoints from config.yaml
-│   └── verification/     # Experimental verification (RESULTS.txt, checker scripts)
+│   └── verification/     # Experimental verification (RESULTS.txt, formal eval)
 ├── problems/             # Toy physics problems (cobalt_calibration, bromine_halflife, ...)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
 ├── skills/               # Bundled skills (skills/<category>/<skill>/SKILL.md)
@@ -242,34 +244,46 @@ Reasoning content is stored in `assistant_msg["reasoning"]`.
 
 ---
 
-## The Three-Mode Router (son_of_anton_cli/router.py)
+## The Two-Mode Router (son_of_anton_cli/router.py)
 
-`classify_mode(text)` picks `physics` / `research` / `standard` from keyword heuristics,
-and `resolve_mode()` applies it to the FIRST message of a session only — the one-shot
-physics/research loops get no conversation history, so re-routing a follow-up would
-discard the exchange. Config section `router:` holds `enabled` and `modes`.
-`/mode auto|standard|physics|research` pins the session mode on any turn.
+`classify_mode(text)` picks `physics` / `standard` from keyword heuristics,
+and `resolve_mode()` applies it to the FIRST message of a session only — the
+one-shot physics loop gets no conversation history, so re-routing a follow-up
+would discard the exchange. Config section `router:` holds `enabled` and `modes`.
+`/mode auto|standard|physics` pins the session mode on any turn.
 
 The router does not pick models. Temple's `classify_complexity()` / model-slot half was
 ported here and never wired to anything; it was deleted rather than left to mislead.
 
 Physics keywords ("fit the histogram", "half-life", "cross-section", ...) route to
-`physics`; research keywords ("derive the", "literature review", ...) route to `research`;
-everything else uses the standard loop.
+`physics`; everything else uses the standard loop.
 
 ---
 
 ## CLI Architecture (cli.py)
 
-- **Rich** for banner/panels, **prompt_toolkit** for input with autocomplete.
-- **KawaiiSpinner** (`agent/display.py`) — animated faces during API calls,
-  `┊` activity feed for tool results.
+`cli.py` is the `SonOfAntonCLI` class (the agent-orchestration half) plus the
+`main()` entry point. The interactive front-end is Textual (see
+[Interface](#interface)); `main()` builds a `TextualBackend` (which
+subclasses `SonOfAntonCLI`), so every CLI option applies to it unchanged.
+
+- `main()` (bottom of `cli.py`) parses flags, builds the `TextualBackend`,
+  then either runs a single query (no front-end) or hands the backend to
+  `son_of_anton_tui.tui.run_app()`.
+- **Rich** is still used for the single-query path: `ChatConsole`,
+  `_build_compact_banner()`, and `show_banner()` print through it. The
+  interactive TUI renders through Textual widgets, not Rich.
+- **KawaiiSpinner** (`agent/display.py`) — animated thinking/waiting faces
+  used by the agent loop (`agent/conversation_loop.py`,
+  `agent/tool_executor.py`) while streaming; the TUI shows the same
+  activity in its transcript.
 - `load_cli_config()` in cli.py merges hardcoded defaults + user config YAML.
-- **Skin engine** (`son_of_anton_cli/skin_engine.py`) — data-driven CLI theming;
-  initialized from `display.skin` at startup. Skins are pure data (colors, spinner
-  faces/verbs, tool prefix, branding) — built-ins: `default`, `ares`, `mono`, `slate`,
-  `daylight`, `warm-lightmode`, `poseidon`, `sisyphus`, `charizard`, plus user skins
-  in `~/.son-of-anton/skins/*.yaml`. `/skin <name>` switches live.
+- **Skin engine** (`son_of_anton_cli/skin_engine.py`) — data-driven theming;
+  initialized from `display.skin` at startup. Skins are pure data (colors,
+  spinner faces/verbs, tool prefix, branding) — built-ins: `default`,
+  `ares`, `mono`, `slate`, `daylight`, `warm-lightmode`, `poseidon`,
+  `sisyphus`, `charizard`, plus user skins in `~/.son-of-anton/skins/*.yaml`.
+  `/skin <name>` switches live.
 - `process_command()` dispatches on the canonical command name resolved via
   `resolve_command()` from the central registry (`son_of_anton_cli/commands.py`).
 - Skill slash commands: `agent/skill_commands.py` scans `~/.son-of-anton/skills/` and
@@ -294,10 +308,25 @@ menus, and autocomplete automatically.
 
 ## Interface
 
-The classic prompt_toolkit CLI (`son-of-anton`) is the only interface —
-the Ink TUI (`ui-tui/`, `tui_gateway/`) was removed on 2026-08-25. The
-Nix package never shipped the esbuild bundle, so `--tui` could only fail
-with a bogus "workspace missing" error; the CLI covers everything.
+Textual is the only interactive interface. The prompt_toolkit REPL was deleted on
+2026-09-02 (`9906a30b`); before that, the Ink/TypeScript TUI (`ui-tui/`,
+`tui_gateway/`) was removed on 2026-08-25. There is no `--tui`/`--cli` flag and no
+fallback: if Textual will not start, nothing interactive starts. Single-query mode
+(`son-of-anton "..."`, `-q`) bypasses the front-end entirely.
+
+- `son_of_anton_tui/tui.py` — the `SonOfAntonTUIApp` (Textual `App`) and its
+  widgets: transcript column, 42-column sidebar, `PromptArea` (with `PromptHistory`
+  for ↑ recall), `Wordmark`, `UserTurn`, `ToolLine`, `ReasoningBlock`
+  (collapsible), `ChoiceModal`/`MultiChoiceModal`/`TextModal`, and
+  `SlashProvider` (autocomplete). `run_app(backend)` starts it.
+- `son_of_anton_tui/backend.py` — `TextualBackend(SonOfAntonCLI)`: owns the
+  session state, routes slash commands to `process_command()`, and bridges the
+  agent loop into the TUI. `_apply_tui_skin_style()` re-resolves the palette
+  after `/skin`.
+- The layout is a deliberate port of [opencode](https://github.com/sst/opencode)'s
+  session route (its TUI is the nicest in the category, and open source). The
+  design is theirs; the code is a from-scratch Textual port. See
+  `TUI_AESTHETICS.md` for the file-by-file mapping.
 
 ---
 
@@ -319,19 +348,20 @@ alternation stays intact.
 
 ---
 
-## Physics Modes (physics_intern/)
+## Physics Mode (physics_intern/)
 
 - `physics_intern/llm.py` resolves endpoints in order: `physics.base_url` (config.yaml) →
   provider defaults (openai → `api.openai.com`) →
   `custom_providers.<provider>.base_url` → `http://127.0.0.1:8080/v1`. Retry +
   context-length detection included.
-- Autophysicist is a callable `run_autophysicist(...)`; the research pipeline runs nine
-  agents over a structured `ResearchState`.
+- Autophysicist is a callable `run_autophysicist(...)`; the CLI `chat()` and the
+  gateway both route through `physics_intern.run.run_problem(...)`, which the
+  `son-of-anton problem run` subcommand shares.
 - **Experimental verification** (`physics_intern/verification/experimental.py`): numeric
   `checks` against a problem spec, workspace `RESULTS.txt` (`key = value`), optional
   checker script, `FORMAL_EVAL.md`. Toy problems live in `problems/` (data synthesized by
   the model — real UM-ANSG data is private).
-- Both modes are wired into the CLI `chat()` and gateway turns (ack → worker-thread run →
+- The mode is wired into the CLI `chat()` and gateway turns (ack → worker-thread run →
   ANSWER + eval delivered back). The wheel ships physics data files via package-data.
 
 Physics runs are **synchronous turns** — a session blocks until the run finishes. That is
@@ -678,8 +708,8 @@ platform as data can stay unmarked.
 ## Operational Notes
 
 - **Verification:** `nix flake check` (package + modules + venv import sweep). The venv
-  import sweep imports the full surface (98 modules incl. both physics modes) — it catches
-  import breakage `compileall` can't.
+  import sweep imports the full surface — it catches import breakage
+  `compileall` can't.
 - **Upstream refs:** hermes-agent v0.20.5 (`fcbd1076a9`), physics-intern (`5553bb6`).
   The fork's history is a rewrite; when hunting upstream behavior, reference the upstream
   repos directly.

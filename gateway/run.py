@@ -6396,11 +6396,11 @@ _SESSION_DB_UNPINNED = object()
 
 
 def _run_physics_mode_sync(mode: str, problem_text: str) -> str:
-    """Run one physics/research mode run synchronously (worker-thread body).
+    """Run one physics mode run synchronously (worker-thread body).
 
     Same path the CLI takes — see cli._run_problem_mode. A message naming a
-    problem.yaml runs that spec; both modes need it in the workspace, since it
-    is what the formal evaluation scores against and what resume reads.
+    problem.yaml runs that spec; the spec is what the formal evaluation
+    scores against.
     """
     from physics_intern.run import render_report, run_problem
 
@@ -16918,8 +16918,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not router_cfg.get("enabled", True):
             return "standard"
         override = getattr(self, "_session_mode_overrides", {}).get(session_key)
-        # Keyword classification is first-turn only. physics/research run as
-        # one-shot loops fed ONLY the current message (see
+        # Keyword classification is first-turn only. physics runs as a
+        # one-shot loop fed ONLY the current message (see
         # _run_physics_mode_sync), so re-classifying a follow-up drops the
         # conversation and the run answers with no idea what was said. In a
         # chat about detector work, "and the cross-section?" is enough to
@@ -16940,7 +16940,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
 
     async def _run_physics_mode_turn(self, event, source, session_key, mode: str):
-        """Run a physics/research mode turn and deliver the result to the chat.
+        """Run a physics mode turn and deliver the result to the chat.
 
         The loops are synchronous and long-running; they execute in a worker
         thread while the turn waits, then the answer and formal evaluation
@@ -17084,9 +17084,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Build session context
         context = build_session_context(source, self.config, session_entry)
 
-        # Resolve the agent mode for this turn. physics/research dispatch to
-        # their own loops (the ported physics-intern modes); standard falls
-        # through to the normal agent machinery below.
+        # Resolve the agent mode for this turn. physics dispatches to its own
+        # loop (the ported physics-intern mode); standard falls through to
+        # the normal agent machinery below.
         _agent_mode = self._resolve_session_agent_mode(
             session_key, event.text or ""
         )

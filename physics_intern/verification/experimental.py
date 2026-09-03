@@ -182,20 +182,3 @@ def write_formal_eval_report(result: FormalEvalResult, workspace_path: str) -> N
     (Path(workspace_path) / "FORMAL_EVAL.md").write_text(
         "\n".join(lines) + "\n"
     )
-
-
-def load_or_run_formal_eval(
-    workspace_path: str,
-    problem_def: dict,
-    problem_path: str | None = None,
-) -> FormalEvalResult | None:
-    """Return a cached evaluation if FORMAL_EVAL.md exists, else None."""
-    report = Path(workspace_path) / "FORMAL_EVAL.md"
-    if not report.exists():
-        return None
-    text = report.read_text()
-    if "Status: PASSED" in text:
-        return FormalEvalResult(passed=True, checks=[], message="cached: PASSED")
-    if "Status: FAILED" in text:
-        return FormalEvalResult(passed=False, checks=[], message="cached: FAILED")
-    return None

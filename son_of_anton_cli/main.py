@@ -4569,7 +4569,7 @@ def cmd_problem(args, parser=None):
 
     print(
         "usage: son-of-anton problem create --data PATH --goal TEXT -o FILE\n"
-        "       son-of-anton problem run SPEC [--mode physics|research]\n"
+        "       son-of-anton problem run SPEC\n"
         "Run 'son-of-anton problem <action> --help' for the full options."
     )
     return 2

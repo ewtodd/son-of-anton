@@ -1,4 +1,4 @@
-"""Physics-mode contracts: both modes import cleanly, the OpenAI-compatible
+"""Physics-mode contracts: the modules import cleanly, the OpenAI-compatible
 endpoint layer resolves config.yaml in the documented order, and the formal
 evaluation scores numeric checks against workspace RESULTS.txt.
 """
@@ -18,8 +18,8 @@ def _base_url(client) -> str:
 
 def test_physics_modules_import() -> None:
     importlib.import_module("physics_intern")
+    importlib.import_module("physics_intern.run")
     importlib.import_module("physics_intern.autophysicist")
-    importlib.import_module("physics_intern.engine")
     importlib.import_module("physics_intern.llm")
     importlib.import_module("physics_intern.verification.experimental")
 

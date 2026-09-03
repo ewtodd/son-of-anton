@@ -9082,18 +9082,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Run the Autophysicist loop on *message* and return its answer."""
         return self._run_problem_mode(message, "physics")
 
-    def _run_research_mode(self, message: str) -> Optional[str]:
-        """Run the nine-agent critical self-research pipeline on *message*."""
-        return self._run_problem_mode(message, "research")
-
     def _run_problem_mode(self, message: str, mode: str) -> Optional[str]:
-        """Run one physics/research turn. Shared with `son-of-anton problem run`.
+        """Run one physics turn. Shared with `son-of-anton problem run`.
 
         A message naming a problem.yaml runs that spec, so the formal
-        evaluation has numeric checks to score against. Both modes go through
-        physics_intern.run so a spec behaves identically from a chat turn, the
-        gateway, and the shell — these were four near-copies, and they had
-        already drifted once badly enough that research runs were never scored.
+        evaluation has numeric checks to score against. The chat turn, the
+        gateway, and the shell all go through physics_intern.run so a spec
+        behaves identically from all of them.
         """
         from physics_intern.run import render_report, run_problem
 
@@ -12473,16 +12468,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not self._ensure_runtime_credentials():
             return None
 
-        # Resolve the agent mode for this turn. physics/research dispatch to
-        # their own loops (the ported physics-intern modes); standard uses the
-        # normal agent loop below.
+        # Resolve the agent mode for this turn. physics dispatches to its own
+        # loop (the ported physics-intern mode); standard uses the normal
+        # agent loop below.
         try:
             from son_of_anton_cli.router import resolve_enabled_modes, resolve_mode
             _router_cfg = (self.config or {}).get("router") or {}
             if _router_cfg.get("enabled", True):
-                # Keyword classification is first-turn only: physics/research
-                # receive no conversation history, so re-routing a follow-up
-                # into one silently discards the exchange so far.
+                # Keyword classification is first-turn only: physics receives
+                # no conversation history, so re-routing a follow-up into it
+                # silently discards the exchange so far.
                 _resolved_mode = resolve_mode(
                     getattr(self, "_agent_mode", None),
                     message,
@@ -12491,8 +12486,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
                 if _resolved_mode == "physics":
                     return self._run_physics_mode(message)
-                if _resolved_mode == "research":
-                    return self._run_research_mode(message)
         except Exception as _mode_exc:
             print(f"(._.) Mode dispatch failed, falling back to the standard loop: {_mode_exc}")
 

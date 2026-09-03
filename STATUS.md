@@ -1,8 +1,9 @@
 # Son of Anton — Status & Handoff
 
-Written 2026-08-22 after the fork/build-out session. Last updated **2026-09-02**.
+Written 2026-08-22 after the fork/build-out session. Last updated **2026-09-03**.
 State as of commit `c4635dac` on `main` (`github.com:ewtodd/son-of-anton`),
-plus one uncommitted round (see "Textual front-end — bug round").
+plus two uncommitted rounds (see "Textual front-end — bug round" and
+"Nine-agent research pipeline removed").
 
 Two things below reverse earlier entries; the dated sections are kept as
 history, but read the later one:
@@ -23,19 +24,21 @@ history, but read the later one:
 `son-of-anton` is a hard fork of
 [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
 v0.20.5 (upstream commit `fcbd1076a9`), stripped to a lean always-on daemon
-surface, extended with the physics modes from
+surface, extended with the physics mode from
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
 (commit `5553bb6`). MIT. It is the successor to the archived
 [temple](https://github.com/ewtodd/temple) harness — the daemon design,
 permission modes, and request router carry over from it.
 
-Three agent modes. A keyword router classifies the FIRST message of a session
-(physics/research get no conversation history, so re-routing a follow-up would
+Two agent modes. A keyword router classifies the FIRST message of a session
+(physics gets no conversation history, so re-routing a follow-up would
 discard the exchange); `/mode` pins one explicitly on any turn, and
-`router.modes` switches the optional two off per deployment:
+`router.modes` switches physics off per deployment:
 - `standard` — the hermes agent loop (terminal, files, web, skills, memory, delegation, cron)
-- `physics` — Autophysicist: single research manager, permanent memory + scratchpad, token budget, `submit_final_answer`, git workspace
-- `research` — nine-agent critical self-research pipeline (surveyor → planner → orchestrator → researcher/computer → reviewer → critic → adjudicator → formatter)
+- `physics` — Autophysicist: single research manager, permanent memory + scratchpad, token budget, `submit_final_answer`, git workspace, per-iteration critic
+
+The nine-agent research pipeline that physics-intern shipped was ported and
+then removed as redundant — see "Nine-agent research pipeline removed".
 
 ---
 
@@ -590,13 +593,45 @@ resolution. 80 of 257 lines in `router.py`. The mode half is live and
 load-bearing: four production call sites, and four of the five deployed
 gateway instances set `router.modes = [ "standard" ]`.
 
+### Nine-agent research pipeline removed (2026-09-03, UNCOMMITTED)
+
+The `research` mode — physics-intern's nine-agent critical self-research
+pipeline (surveyor → planner → orchestrator → researcher/computer →
+reviewer → critic → adjudicator → formatter over a shared
+`ResearchState`) — was removed as redundant with the Autophysicist, which
+already carries its own critic, sub-agent dispatch, and verdict-free
+review. Only `standard` and `physics` remain.
+
+Deleted: `physics_intern/engine.py`, `physics_intern/agents/`,
+`physics_intern/state/`, `physics_intern/control/`,
+`physics_intern/rendering/`, `physics_intern/utils/categories.py`,
+`physics_intern/verification/workspace.py`,
+`physics_intern/verification/event_summary.py`. The `WorkspaceManager`
+class (engine-only) went with it; its safety guard was extracted to
+`physics_intern.core.workspace.assert_safe_workspace_root()` and the
+physics runner now calls it before `git init`.
+
+`son_of_anton_cli/router.py` lost its `research` keywords and the
+`AGENT_MODES` / `classify_mode` research arms; the router is now
+`standard` / `physics`. `physics_intern/run.py` dropped the
+`--mode research` branch; the CLI, gateway, `config_defaults.py`,
+`config.default.yaml`, `mcp.py` roles, and `subagent.py` were all
+re-anchored on the two-mode model. Tests were rewritten against the
+surviving surface (router, physics_parity, workspace, problem_spec,
+sandbox) rather than deleted. Full suite green: 47 files, 600 tests.
+
+Docs updated: README (mode list, provenance, physics runs, `/mode` table,
+`router.modes` example), AGENTS.md (router, physics mode, CLI/Interface),
+STATUS.md (this entry). The provenance prose now names the pipeline as
+ported-then-removed rather than a live divergence from physics-intern.
+
 ## Current state / known loose ends
 
 - **Deployed live on e-desktop** (see `/etc/nixos/hosts/e-desktop/configuration.nix`):
   **five gateway instances**, one systemd service per account —
   `work` → `/home/e-work`, `play` → `/home/e-play`, `house` → `/srv/household`,
   `ricky` → `/srv/ricky`, `markets` → `/srv/markets`. All five run
-  `qwen3.8-27b-coding`. Only `work` gets all three agent modes; the other
+  `qwen3.8-27b-coding`. Only `work` gets both agent modes; the other
   four pin `settings.router.modes = [ "standard" ]`, which is what that knob
   exists for. Supporting infra: litellm on oracle (`10.0.0.6:4000`, pinned to
   nixpkgs `ced43465` — nixpkgs' litellm 1.97 is broken, missing the
@@ -660,13 +695,12 @@ gateway instances set `router.modes = [ "standard" ]`.
   the autophysicist's old relative `workspaces/...` default is absolute too;
   and `WorkspaceManager._assert_safe_workspace_root()` refuses a relative
   path, an existing git repo, or `$HOME`/`/` as defense in depth.
-  Covered by `tests/test_physics_workspace.py`.
-  The pipeline still has **not** been driven against a real endpoint — the
-  destructive-path fix is verified, end-to-end model behaviour is not.
+  Covered by `tests/test_physics_workspace.py`. The destructive-path fix is
+  verified; end-to-end model behaviour never was. **Superseded:** the
+  research mode has since been removed entirely (see below) — only the
+  workspace-safety invariants survive, now exercised by the physics runner.
 - **Physics runs are synchronous turns** — a session blocks until the run
   finishes; the priority queue is the eventual fix.
-- **Research pipeline prompts are theory-era text** — experimental-language
-  prompt tuning is a follow-up.
 - **Textual is the only interface** — `cli.main()` builds a `TextualBackend`
   unconditionally and hands it to `son_of_anton_tui.tui.run_app()`. There is
   no `--tui`/`--cli` flag and no fallback REPL: if Textual will not start,

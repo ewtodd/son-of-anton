@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from ..core.config import Config
-from ..state.tool_call import ToolCall
+from ..core.tool_call import ToolCall
 from ..utils.mcp import MCPToolset
 from ..utils.sandbox import SandboxPolicy
 from .memory import PermanentMemory, Scratchpad

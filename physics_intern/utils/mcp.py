@@ -57,10 +57,6 @@ _ARXIV_READING = (
 DEFAULT_ROLES: dict[str, tuple[str, ...]] = {
     "manager": _ARXIV_READING,
     "subagent": ("context7",),
-    # The research pipeline's equivalents, for as long as it exists.
-    "surveyor": _ARXIV_READING,
-    "researcher": _ARXIV_READING,
-    "computer": ("context7",),
 }
 
 #: Keys from the flat pre-``roles`` shape. Present-but-ignored config is the
@@ -313,7 +309,7 @@ class LookupExecutor:
         return frozenset()
 
     def execute(self, tool_name: str, tool_input: dict):
-        from ..state.tool_call import ToolCall
+        from ..core.tool_call import ToolCall
 
         start = time.time()
         if self.toolset is not None and self.toolset.handles(tool_name, self.agent_name):

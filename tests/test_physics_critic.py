@@ -21,7 +21,7 @@ import pytest
 from physics_intern.autophysicist import critic as critic_module
 from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
 from physics_intern.core.config import Config
-from physics_intern.state.tool_call import ToolCall
+from physics_intern.core.tool_call import ToolCall
 
 
 class _Result:

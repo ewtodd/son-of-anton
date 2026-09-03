@@ -37,7 +37,7 @@ def load_problem(path: Path) -> tuple[dict, str, str]:
     return problem_def, problem_text, answer_template
 
 
-from ..core.config import Config, DEFAULTS, build_config  # noqa: E402
+from ..core.config import Config, build_config  # noqa: E402
 from ..core.console import console  # noqa: E402
 from ..core.models import resolve_models  # noqa: E402
 from ..core.problem_spec import ProblemSpec, write_spec  # noqa: E402
@@ -244,15 +244,8 @@ def _read_iteration_counter(workspace_root: Path) -> int:
     return 0
 
 
-# TODO(slice-7): this block mirrors engine.py._run_formal_verification() and
-# the simpler run/render/write sequence used by one_shot and rsa runners.
-# Slice 7 should decide whether to extract a shared helper (into verification/
-# or a new runner-utils module) rather than keep four near-duplicates.
 def _run_formal_verification(workspace_root: Path, problem_path: Path) -> None:
-    """Run formal (symbolic/numerical) answer evaluation at end of run.
-
-    Mirrors engine.py._run_formal_verification().
-    """
+    """Score the run's RESULTS.txt against the spec at the end of a run."""
     problem_yaml = workspace_root / "problem.yaml"
     if not problem_yaml.exists():
         console.print(
@@ -332,8 +325,20 @@ def run_autophysicist(
     resolve_models(config, model)
 
     # --- Workspace ---
+    from physics_intern.core.workspace import (
+        assert_safe_workspace_root,
+        resolve_workspace_root,
+    )
+
     if workspace_root is not None:
         workspace_root = Path(workspace_root).expanduser().resolve()
+        # An explicit root that does not exist yet is a fresh workspace:
+        # refuse to git-init it inside an existing repository or over a
+        # home directory. One that does exist is a resume, where the .git
+        # directory IS the workspace.
+        assert_safe_workspace_root(
+            workspace_root, must_be_fresh=not workspace_root.exists()
+        )
         workspace_root.mkdir(parents=True, exist_ok=True)
         start_iteration = _read_iteration_counter(workspace_root) + 1
         fresh = False
@@ -341,8 +346,6 @@ def run_autophysicist(
         # Absolute, under ~/.son-of-anton/workspaces (or physics.workspace_root).
         # The old relative "workspaces/..." resolved against the process cwd —
         # the profile HOME under the gateway, the user's project under the CLI.
-        from physics_intern.core.workspace import resolve_workspace_root
-
         workspace_root = resolve_workspace_root(
             problem_name, config.model, "autophysicist"
         )

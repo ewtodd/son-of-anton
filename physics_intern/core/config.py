@@ -1,8 +1,6 @@
-"""Configuration for PhysicsIntern."""
+"""Configuration for the physics mode."""
 
 import json
-import warnings
-from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
@@ -30,7 +28,7 @@ DEFAULTS = _load_package_defaults()
 
 @dataclass
 class Config:
-    """PhysicsIntern configuration.
+    """Physics mode configuration.
 
     ``max_tokens`` is the maximum output-token budget per LLM call. When the
     model is registered in ``models.yaml`` its ``max_output_tokens`` field is
@@ -40,45 +38,20 @@ class Config:
     """
 
     model: str = DEFAULTS["model"]
-    verify_model: str = DEFAULTS["verify_model"]
     max_tokens: int = 0  # resolved in __post_init__ (models.yaml or default)
     max_iterations: int = DEFAULTS["max_iterations"]
-    critic_every_n: int = DEFAULTS["critic_every_n"]
-    sympy_timeout_seconds: int = DEFAULTS["sympy_timeout_seconds"]
-    max_tool_rounds: int = DEFAULTS["max_tool_rounds"]
-    progress_check_interval: int = DEFAULTS["progress_check_interval"]
-    computation_token_alert: int = DEFAULTS["computation_token_alert"]
-    tool_output_limit: int = DEFAULTS["tool_output_limit"]
-    stall_threshold: int = DEFAULTS["stall_threshold"]
-    stall_recompute_limit: int = DEFAULTS["stall_recompute_limit"]
-    max_termination_retries: int = DEFAULTS["max_termination_retries"]
-    min_er_for_completion: int = DEFAULTS["min_er_for_completion"]
     api_retry_max: int = DEFAULTS["api_retry_max"]
     api_retry_initial_delay: float = DEFAULTS["api_retry_initial_delay"]
     api_retry_max_delay: float = DEFAULTS["api_retry_max_delay"]
     api_timeout: float = DEFAULTS["api_timeout"]
-    budget_synthesis_margin: int = DEFAULTS["budget_synthesis_margin"]
-    orchestrator_comp_log_tail: int = DEFAULTS["orchestrator_comp_log_tail"]
-    prior_failure_excerpt_chars: int = DEFAULTS["prior_failure_excerpt_chars"]
-    max_open_rqs: int = DEFAULTS["max_open_rqs"]
-    rq_evidence_cap: int = DEFAULTS["rq_evidence_cap"]
-    max_refuted_retries: int = DEFAULTS["max_refuted_retries"]
-    auto_expire_iterations: int = DEFAULTS["auto_expire_iterations"]
     parse_retries: int = DEFAULTS["parse_retries"]
     max_tokens_retries: int = DEFAULTS["max_tokens_retries"]
-    max_compaction_retries: int = DEFAULTS["max_compaction_retries"]
     agent_max_tokens: dict = field(
         default_factory=lambda: dict(DEFAULTS["agent_max_tokens"])
     )
-    pipeline_retry_max: int = DEFAULTS["pipeline_retry_max"]
-    max_wall_seconds: float = DEFAULTS["max_wall_seconds"]
-    max_total_output_tokens: int = DEFAULTS["max_total_output_tokens"]
-    max_cost_usd: float = DEFAULTS["max_cost_usd"]
-    best_guess_every_n: int = DEFAULTS["best_guess_every_n"]
     provider: str = ""
-    # Model for whichever agent is writing code — the Autophysicist's
-    # execute_code sub-agents and the research pipeline's computer. Empty means
-    # `model` does everything. Resolved from physics.coder_model in config.yaml.
+    # Model for whichever sub-agent is WRITING CODE. Empty means `model` does
+    # everything. Resolved from physics.coder_model in config.yaml.
     coder_model: str = ""
     # Per-role overrides, from physics.agent_models. Beats coder_model and
     # model. Matched by exact agent name, then by longest prefix.
@@ -86,8 +59,8 @@ class Config:
     # Sent as `reasoning_effort` when set. Vocabulary is the endpoint's:
     # low/medium/xhigh for Qwen3.8 on vLLM, low/medium/high for OpenAI.
     reasoning_effort: str = ""
-    # Autophysicist only: run the critic after every Nth iteration. 0 disables.
-    critique_every_n: int = 1
+    # Run the critic after every Nth iteration. 0 disables.
+    critique_every_n: int = DEFAULTS["critique_every_n"]
     workspace_dir: str = ""
     logs_dir: str = ""
     api_key: str = ""
@@ -100,7 +73,7 @@ class Config:
         """Return the max output tokens for a specific agent.
 
         Matches ``agent_max_tokens`` by exact name first, then by longest
-        prefix — the Autophysicist's sub-agents are named per dispatch
+        prefix — the sub-agents are named per dispatch
         ("subagent_iter3_2"), so an exact-match-only lookup could never give
         them anything but the model-level default.
         """
@@ -122,9 +95,8 @@ class Config:
 
         The middle tier exists because "is this call writing code" is not the
         same question as "which agent is this". A sub-agent dispatched with
-        execute_code is doing the coding job whatever it is called, and the
-        pipeline's computer agent is doing it under a fixed name — while the
-        same computer agent's non-coding turns are not.
+        execute_code is doing the coding job whatever it is called, while the
+        same sub-agent's non-coding turns are not.
         """
         if agent_name in self.agent_models:
             return str(self.agent_models[agent_name])
@@ -163,6 +135,9 @@ class Config:
             for k, v in overrides.items():
                 if v is not None:
                     data[k] = v
+        # config.json files from before the research mode existed carry
+        # pipeline-only fields; drop anything the dataclass no longer has.
+        data = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         return cls(**data)
 
     def __post_init__(self):
@@ -172,14 +147,10 @@ class Config:
         key all come from the son-of-anton ``config.yaml`` at call time (see
         ``physics_intern.llm._resolve_endpoint``). What survives here is the
         optional registry: when a ``models.yaml`` is present it still supplies
-        the token budget and the per-million costs the budget gates and the
-        cost report read.
+        the token budget and the per-million costs the cost report reads.
         """
         resolved = _resolve_model(self.model)
-        # Resolve provider from models.yaml if not explicitly set. No fallback
-        # provider: upstream defaulted to "anthropic", which in this fork named
-        # a provider nothing talks to and put a misleading value in every
-        # workspace's config.json.
+        # Resolve provider from models.yaml if not explicitly set.
         if not self.provider and resolved:
             self.provider = resolved["provider"]
             self.model_id = resolved["model_id"]
@@ -208,9 +179,6 @@ class Config:
         if not self.model_id:
             self.model_id = self.model
         # Resolve the API key only from the model registry, when there is one.
-        # There is deliberately no ANTHROPIC_API_KEY fallback: the physics
-        # endpoint reads physics.api_key_env from config.yaml, and a stray
-        # Anthropic key here was never the credential any request used.
         if not self.api_key and resolved:
             self.api_key = os.environ.get(resolved["env_key"], "")
 
@@ -220,37 +188,14 @@ class Config:
 _YAML_CONFIG_FIELDS = frozenset(
     {
         "model",
-        "verify_model",
         "max_iterations",
-        "critic_every_n",
-        "sympy_timeout_seconds",
-        "max_tool_rounds",
-        "progress_check_interval",
-        "computation_token_alert",
-        "tool_output_limit",
-        "stall_threshold",
-        "stall_recompute_limit",
-        "min_er_for_completion",
         "api_retry_max",
         "api_retry_initial_delay",
         "api_retry_max_delay",
         "api_timeout",
-        "budget_synthesis_margin",
-        "orchestrator_comp_log_tail",
-        "prior_failure_excerpt_chars",
-        "max_open_rqs",
-        "rq_evidence_cap",
-        "max_refuted_retries",
-        "auto_expire_iterations",
         "parse_retries",
         "max_tokens_retries",
-        "max_compaction_retries",
         "agent_max_tokens",
-        "pipeline_retry_max",
-        "max_wall_seconds",
-        "max_total_output_tokens",
-        "max_cost_usd",
-        "best_guess_every_n",
         "provider",
         "coder_model",
         "agent_models",
@@ -259,13 +204,12 @@ _YAML_CONFIG_FIELDS = frozenset(
     }
 )
 
-# Fields persisted to config.json for resume (superset of _YAML_CONFIG_FIELDS)
+# Fields persisted to config.json (superset of _YAML_CONFIG_FIELDS)
 _PERSIST_FIELDS = _YAML_CONFIG_FIELDS | {
     "model_id",
     "input_cost",
     "output_cost",
     "reasoning",
-    "max_termination_retries",
 }
 
 
@@ -312,22 +256,7 @@ def _resolve_model(model_key: str) -> dict | None:
         return None
 
 
-def load_config_yaml(path: Path) -> dict:
-    """Load config from a YAML file, filtering to allowed fields."""
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not data or not isinstance(data, dict):
-        return {}
-    result = {}
-    for key, value in data.items():
-        if key in _YAML_CONFIG_FIELDS:
-            result[key] = value
-        else:
-            warnings.warn(f"Unknown config key ignored: {key}")
-    return result
-
-
-def build_config(args: Namespace, overrides: dict | None = None) -> Config:
+def build_config(args: "object", overrides: dict | None = None) -> Config:
     """Build Config with 3-tier precedence: overrides > CLI args > config.yaml > defaults.
 
     *overrides* is a plain dict applied first (callers such as the
@@ -339,24 +268,16 @@ def build_config(args: Namespace, overrides: dict | None = None) -> Config:
     if overrides:
         kwargs.update(overrides)
 
-    # Layer 1: YAML config (if provided)
-    if getattr(args, "config", None) is not None:
-        kwargs.update(load_config_yaml(Path(args.config)))
-
-    # Layer 2: CLI args override (only non-None values).
+    # Layer 1: CLI args override (only non-None values).
     # max_tokens is intentionally absent — derived from models.yaml.
     cli_fields = {
         "model",
         "max_iterations",
-        "max_wall_seconds",
-        "max_total_output_tokens",
-        "max_cost_usd",
-        "best_guess_every_n",
         "workspace_dir",
     }
     for field_name in cli_fields:
         cli_name = field_name.replace("-", "_")
-        value = getattr(args, cli_name, None)
+        value = getattr(args, cli_name, None) if args is not None else None
         if value is not None:
             kwargs[field_name] = value
 

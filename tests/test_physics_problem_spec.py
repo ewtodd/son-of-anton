@@ -1,13 +1,10 @@
 """A run has to carry its problem spec into its workspace, or it is not scored.
 
-The bug this covers: both modes are scored by comparing the workspace's
-RESULTS.txt against the numeric `checks` in a `problem.yaml` that the evaluator
-reads *out of the workspace*. Research mode never put one there — its entry
-points passed the raw message text and nothing else — so
-`_run_formal_verification` printed "skipped: no problem.yaml" on every run and
-the checks never executed once. `PhysicsIntern.resume` reads the same file, so
-those runs could not be resumed either. Physics mode had its own copy of the
-loading logic and did write the file, which is why only one mode was affected.
+The bug this covers: the run is scored by comparing the workspace's RESULTS.txt
+against the numeric `checks` in a `problem.yaml` that the evaluator reads
+*out of the workspace*. A run that never puts one there is silently never
+scored — it finishes, prints an answer, and reports "Formal verification
+skipped".
 """
 
 from __future__ import annotations
@@ -106,36 +103,6 @@ def test_write_spec_is_a_no_op_without_a_spec(tmp_path: Path) -> None:
     assert not (tmp_path / "problem.yaml").exists()
 
 
-def test_the_workspace_writes_the_spec_into_the_initial_commit(tmp_path) -> None:
-    from physics_intern.core.config import Config
-    from physics_intern.core.workspace import WorkspaceManager
-
-    root = tmp_path / "ws"
-    root.mkdir()
-    config = Config()
-    config.workspace_dir = str(root)
-    WorkspaceManager(config).init("Measure the half-life.", problem_def=SPEC)
-
-    assert (root / "problem.yaml").exists(), (
-        "the evaluator reads problem.yaml out of the workspace — a run that "
-        "does not write it is silently never scored"
-    )
-    assert yaml.safe_load((root / "problem.yaml").read_text())["name"] == "decay_curve"
-
-
-def test_a_run_without_a_spec_still_initializes(tmp_path) -> None:
-    from physics_intern.core.config import Config
-    from physics_intern.core.workspace import WorkspaceManager
-
-    root = tmp_path / "ws"
-    root.mkdir()
-    config = Config()
-    config.workspace_dir = str(root)
-    WorkspaceManager(config).init("Why is the sky blue?")
-    assert (root / "RESEARCH_STATE.md").exists()
-    assert not (root / "problem.yaml").exists()
-
-
 # --- the entry points must actually pass it -------------------------------
 
 
@@ -167,7 +134,7 @@ def _call_kwargs(path: str, function: str, callee: str) -> list[set[str]]:
     ],
 )
 def test_every_entry_point_goes_through_one_runner(path: str, function: str) -> None:
-    """Four near-copies is how research mode lost the spec in the first place."""
+    """Near-copies of the run logic is how the modes drifted apart before."""
     calls = _call_kwargs(path, function, "run_problem")
     assert calls, (
         f"{path}:{function} does not call physics_intern.run.run_problem — a "
@@ -177,8 +144,7 @@ def test_every_entry_point_goes_through_one_runner(path: str, function: str) -> 
         assert "mode" in kwargs
 
 
-@pytest.mark.parametrize("mode", ["physics", "research"])
-def test_the_runner_passes_the_spec_in_both_modes(mode, monkeypatch, tmp_path) -> None:
+def test_the_runner_passes_the_spec(monkeypatch, tmp_path) -> None:
     """The one place that has to get it right, now that it is the only place."""
     import physics_intern.run as run_module
 
@@ -188,31 +154,17 @@ def test_the_runner_passes_the_spec_in_both_modes(mode, monkeypatch, tmp_path) -
         seen.update(kwargs)
         return tmp_path
 
-    class FakeEngine:
-        def __init__(self, text, **kwargs):
-            seen.update(kwargs)
-            seen["text"] = text
-            self.workspace = type("W", (), {"root": tmp_path})()
-
-        def run(self):
-            pass
-
     monkeypatch.setattr(
         "physics_intern.autophysicist.runner.run_autophysicist", fake_autophysicist
     )
-    monkeypatch.setattr("physics_intern.engine.PhysicsIntern", FakeEngine)
 
     spec_path = tmp_path / "problem.yaml"
     spec_path.write_text(yaml.dump(SPEC), encoding="utf-8")
-    run_module.run_problem(str(spec_path), mode=mode)
+    run_module.run_problem(str(spec_path), mode="physics")
 
-    if mode == "physics":
-        assert seen["problem_def"] == SPEC
-        assert seen["problem_name"] == "decay_curve"
-        assert seen["answer_template"].startswith("def answer")
-    else:
-        assert seen["problem_def"] == SPEC
-        assert seen["answer_template"].startswith("def answer")
+    assert seen["problem_def"] == SPEC
+    assert seen["problem_name"] == "decay_curve"
+    assert seen["answer_template"].startswith("def answer")
 
 
 def test_max_iterations_is_settable(monkeypatch) -> None:
@@ -235,6 +187,8 @@ def test_an_unknown_mode_is_refused() -> None:
 
     with pytest.raises(ValueError, match="unknown mode"):
         run_problem("x", mode="nonsense")
+    with pytest.raises(ValueError, match="unknown mode"):
+        run_problem("x", mode="research")
 
 
 def test_script_timeout_is_settable(monkeypatch) -> None:

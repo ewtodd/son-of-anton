@@ -1,1 +1,1 @@
-"""PhysicsIntern: Multi-agent scientific research system."""
+"""Physics mode: the Autophysicist loop."""

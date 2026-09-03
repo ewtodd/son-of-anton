@@ -8,11 +8,11 @@ nothing enforcing them, and the observed failure matches: iterations end with a
 confident plan, an empty permanent memory, and the same environment facts
 rediscovered next time.
 
-This is the one part of the nine-agent pipeline worth keeping: a reviewer that
-is not the thing being reviewed. Deliberately the cheapest possible version of
-it — one prompt, one answer, no tools, no state machine, no verdict that gates
-anything. The critique goes into the next iteration's context and the Manager
-does what it likes with it.
+This is the part of the original physics-intern design worth keeping: a
+reviewer that is not the thing being reviewed. Deliberately the cheapest
+possible version of it — one prompt, one answer, no tools, no state machine,
+no verdict that gates anything. The critique goes into the next iteration's
+context and the Manager does what it likes with it.
 
 It is also the natural place for a slower, more knowledgeable model. One call
 per iteration against a Manager that spends five rounds and several sub-agent

@@ -1,6 +1,6 @@
 """Request router for son-of-anton.
 
-Classifies a user request into an agent mode: standard / physics / research.
+Classifies a user request into an agent mode: standard / physics.
 The design mirrors the heuristic router from the archived temple harness:
 conservative, fast, no model call, with the final word left to explicit user
 overrides.
@@ -20,11 +20,11 @@ from typing import Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-AGENT_MODES = ("auto", "standard", "physics", "research")
+AGENT_MODES = ("auto", "standard", "physics")
 
 # Modes a deployment may switch off. "standard" is not among them: it is the
 # fallback every other path lands on, so it is always available.
-OPTIONAL_MODES = ("physics", "research")
+OPTIONAL_MODES = ("physics",)
 
 # Everything on, which is what an existing config.yaml with no `router.modes`
 # key means.
@@ -34,10 +34,10 @@ DEFAULT_ENABLED_MODES = ("standard",) + OPTIONAL_MODES
 def resolve_enabled_modes(raw: object) -> tuple[str, ...]:
     """Normalize ``router.modes`` into the set of selectable modes.
 
-    A gateway serving a household group has no use for the physics or research
-    loops, and listing them costs more than clutter: the router can route a
-    message into a one-shot loop nobody there wants, and the modes show up in
-    ``/mode`` as if they were on offer.
+    A gateway serving a household group has no use for the physics loop, and
+    listing it costs more than clutter: the router can route a message into a
+    one-shot loop nobody there wants, and the mode shows up in ``/mode`` as if
+    it were on offer.
 
     ``None`` (the key absent) means every mode, so an existing config.yaml is
     unaffected. "standard" is always included even if omitted, because it is
@@ -101,31 +101,12 @@ PHYSICS_KEYWORDS = (
     "nuclear data",
 )
 
-# Keyword signal for the critical self-research pipeline. Also specific:
-# exploratory investigation, derivation, and literature-scale questions.
-RESEARCH_KEYWORDS = (
-    "from first principles",
-    "open research question",
-    "literature review",
-    "derive the",
-    "prove that",
-    "prove the",
-    "formal derivation",
-    "theoretical framework",
-    "survey the literature",
-    "state of the art",
-    "write a research",
-    "research this",
-    "investigate deeply",
-    "scientific review",
-)
-
 
 def classify_mode(
     text: str,
     enabled: Optional[Sequence[str]] = None,
 ) -> str:
-    """Return ``physics``, ``research``, or ``standard`` for *text*.
+    """Return ``physics`` or ``standard`` for *text*.
 
     *enabled* limits what may be returned; a disabled mode is simply not
     classified into, so its keywords stop meaning anything. ``None`` means
@@ -135,8 +116,6 @@ def classify_mode(
     low = text.lower()
     if "physics" in allowed and any(k in low for k in PHYSICS_KEYWORDS):
         return "physics"
-    if "research" in allowed and any(k in low for k in RESEARCH_KEYWORDS):
-        return "research"
     return "standard"
 
 
@@ -150,11 +129,11 @@ def resolve_mode(
     """Resolve the agent mode for one request.
 
     *override* is the session's ``/mode`` pin (``None`` or ``"auto"`` means
-    classify); the result is always one of the three concrete modes.
+    classify); the result is always one of the two concrete modes.
 
-    *is_first_turn* gates keyword classification. physics/research are
-    one-shot loops that receive ONLY the current message — no conversation
-    history — so routing a mid-conversation turn into one silently drops
+    *is_first_turn* gates keyword classification. physics is a
+    one-shot loop that receives ONLY the current message — no conversation
+    history — so routing a mid-conversation turn into it silently drops
     everything said so far and the run answers as if it had never spoken to
     the user. A follow-up like "and the cross-section?" is enough to trigger
     it, and for anyone who talks about this subject matter routinely that is

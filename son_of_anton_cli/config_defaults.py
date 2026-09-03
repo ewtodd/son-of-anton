@@ -373,27 +373,25 @@ DEFAULT_CONFIG = {
     },
 
     # Request router (temple-style): classifies the first message of a session
-    # into an agent mode (standard / physics / research). A session /mode pin
-    # wins on any turn. Model choice is NOT routed — it comes from the normal
-    # resolution chain and /model.
+    # into an agent mode (standard / physics). A session /mode pin wins on any
+    # turn. Model choice is NOT routed — it comes from the normal resolution
+    # chain and /model.
     "router": {
         "enabled": True,
         # Selectable agent modes. "standard" is always available; drop
-        # "physics"/"research" on a deployment that has no use for them (a
-        # household or general-purpose gateway) and their keywords stop
-        # routing, /mode stops offering them, and a stale session pin falls
-        # back to standard.
-        "modes": ["standard", "physics", "research"],
+        # "physics" on a deployment that has no use for it (a household or
+        # general-purpose gateway) and its keywords stop routing, /mode stops
+        # offering it, and a stale session pin falls back to standard.
+        "modes": ["standard", "physics"],
     },
 
-    # Physics modes (physics_intern): the single-agent Autophysicist loop and
-    # the nine-agent research pipeline. They share the main agent's model
-    # configuration; override the endpoint here for a dedicated server.
+    # Physics mode (physics_intern): the single-agent Autophysicist loop.
+    # It shares the main agent's model configuration; override the endpoint
+    # here for a dedicated server.
     "physics": {
         "model": "",
-        # Model for whichever agent is WRITING CODE, in either mode: the
-        # Autophysicist's execute_code sub-agents, and the research pipeline's
-        # computer agent. Empty means `model` does everything.
+        # Model for sub-agents that are WRITING CODE (execute_code
+        # dispatches). Empty means `model` does everything.
         #
         # Roles that are not writing code keep `model` — the Manager, and a
         # sub-agent dispatched WITHOUT execute_code (derive this, find the
@@ -402,27 +400,20 @@ DEFAULT_CONFIG = {
         # away what they were dispatched for.
         #
         # Code is where the volume is — one call per script, plus up to three
-        # more each time a script fails — so a faster, stronger coding model is
-        # worth the most there and costs the least.
+        # more each time a script fails — so a faster, stronger coding model
+        # is worth the most there and costs the least.
         "coder_model": "",
         # Per-agent-role model overrides. Beats coder_model and model, matched
         # by exact agent name then longest prefix.
         #
-        # The pipeline's nine roles are not the same job — a formatter
-        # rendering an answer template and a critic hunting a dropped factor of
-        # two want different things — and on a host serving one thinking model
-        # and one instruct profile of the same weights, that distinction costs
-        # nothing.
-        #
-        # Keys are the agent's own name. Autophysicist: manager, subagent.
-        # Pipeline: surveyor, planner, orchestrator, researcher, computer,
-        # reviewer, deep_critic, adjudicator, formatter. Note deep_critic, not
-        # critic.
+        # Keys are the agent's own name: manager, subagent, critic,
+        # spec_writer. A "subagent" entry matches every "subagent_iter<N>_<M>"
+        # dispatch by prefix.
         #
         #   agent_models:
         #     manager: qwen3.8-27b-coding           # thinking profile
         #     subagent: qwen3.8-27b-instruct        # no thinking, much faster
-        #     deep_critic: deepseek-v4-flash-local  # knowledge where it pays
+        #     critic: deepseek-v4-flash-local       # knowledge where it pays
         "agent_models": {},
         # Sent as `reasoning_effort` on every physics call. The vocabulary is
         # the endpoint's: Qwen3.8 on vLLM takes low / medium / xhigh, and
@@ -454,20 +445,17 @@ DEFAULT_CONFIG = {
         "critique_every_n": 1,
         "base_url": "",
         "api_key_env": "",
-        # Base directory for physics/research run workspaces. Each run gets its
-        # own timestamped subdirectory, git-initialized in place. MUST be a
+        # Base directory for physics run workspaces. Each run gets its own
+        # timestamped subdirectory, git-initialized in place. MUST be a
         # directory the agent owns: the run commits its whole contents.
         # Empty = ~/.son-of-anton/workspaces.
         "workspace_root": "",
-        # Ceiling on the outer loop, for both modes. 0 uses the mode's own
-        # default (50 for the Autophysicist, max_iterations from
-        # config.default.yaml for the pipeline). `problem run --max-iterations`
-        # overrides it.
+        # Ceiling on the outer loop. 0 uses the mode's own default (50).
+        # `problem run --max-iterations` overrides it.
         #
-        # Worth setting. Physics mode has no wall-clock or cost gate — those
-        # exist only in the research pipeline — so this is the only ceiling on
-        # an unattended run, and at ~10s a call with up to fifteen tool calls
-        # an iteration the default is an afternoon.
+        # Worth setting. Physics mode has no wall-clock or cost gate, so this
+        # is the only ceiling on an unattended run, and at ~10s a call with up
+        # to fifteen tool calls an iteration the default is an afternoon.
         "max_iterations": 0,
         # Seconds one model-authored script may run for. 0 uses the built-in
         # default of 60, which came from a scaffold built for symbolic work.

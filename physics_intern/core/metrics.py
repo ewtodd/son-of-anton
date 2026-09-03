@@ -1,4 +1,4 @@
-"""Metrics tracking for PhysicsIntern iterations."""
+"""Metrics tracking for Autophysicist iterations."""
 
 from __future__ import annotations
 

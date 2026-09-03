@@ -1,13 +1,12 @@
-"""Guards for physics/research workspace isolation.
+"""Guards for physics workspace isolation.
 
-``WorkspaceManager.init()`` runs ``git init`` + ``git add -A`` + ``git commit``
-inside ``Config.workspace_dir``. That field defaults to ``""`` -> ``Path(".")``
--> **the process working directory**, and the research-mode entry points used
-to construct ``PhysicsIntern(message)`` with no config at all.
-
-Under the gateway the cwd is the profile's HOME, so a routed message ("derive
-the ...") committed the user's whole home directory — SSH keys included — into
-a brand-new git repository. Under the CLI it committed the user's project.
+``run_autophysicist`` runs ``git init`` + ``git add -A`` + ``git commit`` in
+its workspace root. Pointed at a directory it does not own, that commits the
+user's whole home (SSH keys included) into a brand-new repository. The runner
+used to build a relative ``workspaces/...`` path resolved against the process
+cwd — the profile home under the gateway, the user's project under the CLI —
+so the guard below refuses relative roots, existing repositories, and home
+directories for fresh runs, and the resolver below is the only default path.
 
 These tests pin the isolation and the defense-in-depth guard.
 """
@@ -18,18 +17,15 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _physics_intern_call_args(body: str) -> list[str]:
-    """Return the argument text of each ``PhysicsIntern(...)`` call in *body*.
-
-    Scans with balanced parentheses — a naive ``[^)]*`` regex stops at the
-    inner ``)`` of arguments like ``message.strip()``.
-    """
+def _run_autophysicist_calls(body: str) -> list[str]:
+    """Return the argument text of each ``run_autophysicist(...)`` call."""
     calls = []
-    for match in re.finditer(r"PhysicsIntern\(", body):
+    for match in re.finditer(r"run_autophysicist\(", body):
         depth, i = 0, match.end() - 1
         while i < len(body):
             if body[i] == "(":
@@ -43,57 +39,56 @@ def _physics_intern_call_args(body: str) -> list[str]:
     return calls
 
 
-def _config(workspace_dir):
-    from physics_intern.core.config import build_config
-
-    cfg = build_config(None)
-    cfg.workspace_dir = str(workspace_dir)
-    return cfg
+# --- the guard itself --------------------------------------------------------
 
 
 def test_relative_workspace_is_refused(tmp_path, monkeypatch) -> None:
     """A relative workspace root (the old default) must be refused."""
-    from physics_intern.core.workspace import WorkspaceManager
+    from physics_intern.core.workspace import assert_safe_workspace_root
 
     monkeypatch.chdir(tmp_path)
-    ws = WorkspaceManager(_config(""))  # Path("") -> Path(".")
     with pytest.raises(ValueError, match="relative path"):
-        ws.init("derive the decay constant")
+        assert_safe_workspace_root(Path("workspaces/abc"))
 
+    # And a git repo must not have been initialised in the process cwd.
     assert not (tmp_path / ".git").exists()
-    assert not (tmp_path / "RESEARCH_STATE.md").exists()
 
 
 def test_existing_git_repo_is_refused(tmp_path) -> None:
-    """A workspace must never be initialized inside an existing repository."""
-    from physics_intern.core.workspace import WorkspaceManager
+    """A fresh workspace must never be initialised inside an existing repo."""
+    from physics_intern.core.workspace import assert_safe_workspace_root
 
     repo = tmp_path / "someproject"
     (repo / ".git").mkdir(parents=True)
     with pytest.raises(ValueError, match="existing git repository"):
-        WorkspaceManager(_config(repo)).init("derive the thing")
+        assert_safe_workspace_root(repo)
+    # A resume into the same directory is legitimate — the .git IS the run.
+    assert_safe_workspace_root(repo, must_be_fresh=False)
 
 
 def test_home_directory_is_refused(tmp_path, monkeypatch) -> None:
-    """A workspace must never be initialized directly in $HOME."""
-    from physics_intern.core.workspace import WorkspaceManager
+    """A workspace must never be initialised directly in $HOME."""
+    from physics_intern.core.workspace import assert_safe_workspace_root
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
     with pytest.raises(ValueError, match="directly in"):
-        WorkspaceManager(_config(fake_home)).init("derive the thing")
+        assert_safe_workspace_root(fake_home)
+
+
+# --- the resolver -------------------------------------------------------------
 
 
 def test_resolver_returns_fresh_absolute_root(tmp_path, monkeypatch) -> None:
     """``resolve_workspace_root`` yields a new absolute dir under the home."""
-    from physics_intern.core.workspace import resolve_workspace_root
+    from physics_intern.core.workspace import assert_safe_workspace_root, resolve_workspace_root
 
     monkeypatch.setenv("SON_OF_ANTON_HOME", str(tmp_path / "soa"))
     monkeypatch.chdir(tmp_path)
 
-    first = resolve_workspace_root("session", "some-model", "research")
-    second = resolve_workspace_root("session", "some-model", "research")
+    first = resolve_workspace_root("session", "some-model", "autophysicist")
+    second = resolve_workspace_root("session", "some-model", "autophysicist")
 
     assert first.is_absolute() and second.is_absolute()
     assert first != second, "two runs must not share a workspace root"
@@ -102,9 +97,7 @@ def test_resolver_returns_fresh_absolute_root(tmp_path, monkeypatch) -> None:
         assert str(root).startswith(str((tmp_path / "soa").resolve()))
 
     # A workspace from the resolver is accepted by the guard.
-    from physics_intern.core.workspace import WorkspaceManager
-
-    WorkspaceManager(_config(first))._assert_safe_workspace_root()
+    assert_safe_workspace_root(first)
 
 
 def test_resolver_honours_configured_workspace_root(tmp_path, monkeypatch) -> None:
@@ -120,29 +113,61 @@ def test_resolver_honours_configured_workspace_root(tmp_path, monkeypatch) -> No
     assert str(root).startswith(str(custom.resolve()))
 
 
-def test_the_research_runner_pins_a_workspace() -> None:
-    """PhysicsIntern may never be constructed without a config.
+# --- a fresh run actually writes its spec, and the guard applies -------------
 
-    ``PhysicsIntern(text)`` with no ``config=`` inherits workspace_dir="" and
-    lands in the process cwd — where ``init()`` runs ``git init && git add -A``.
-    Under the gateway that cwd is the profile's home directory.
 
-    This used to be asserted at each of the entry points; they now all go
-    through ``physics_intern.run.run_problem``, so this is the one construction
-    left to guard.
+def test_a_fresh_run_writes_the_spec_into_the_workspace(monkeypatch, tmp_path) -> None:
+    """The evaluator reads problem.yaml out of the workspace.
+
+    A run that never puts one there is silently never scored — it finishes,
+    prints an answer, and reports "Formal verification skipped".
     """
-    source = (REPO_ROOT / "physics_intern" / "run.py").read_text(encoding="utf-8")
+    import physics_intern.run as run_module
 
-    assert "resolve_workspace_root(" in source, (
-        "physics_intern/run.py does not pin an explicit workspace root"
+    seen: dict = {}
+
+    def fake_autophysicist(**kwargs):
+        seen.update(kwargs)
+        return tmp_path
+
+    monkeypatch.setattr(
+        "physics_intern.autophysicist.runner.run_autophysicist", fake_autophysicist
     )
-    constructions = _physics_intern_call_args(source)
-    assert constructions, "no PhysicsIntern construction found in physics_intern/run.py"
-    for args in constructions:
-        assert "config=" in args, (
-            f"run.py constructs PhysicsIntern({args}) without config= "
-            f"— workspace_dir would default to the process cwd"
-        )
+    monkeypatch.setattr("physics_intern.run._physics_config", dict)
+
+    spec = {
+        "name": "decay_curve",
+        "problem": "Measure the half-life.",
+        "checks": [
+            {"id": "halflife", "key": "halflife_s", "expected": 119.2, "tolerance": 4.0}
+        ],
+    }
+    spec_path = tmp_path / "problem.yaml"
+    spec_path.write_text(yaml.dump(spec), encoding="utf-8")
+
+    run_module.run_problem(str(spec_path), mode="physics", workspace_root=tmp_path / "ws")
+
+    assert seen["problem_def"] == spec
+    assert seen["problem_name"] == "decay_curve"
+    assert seen["workspace_root"] == (tmp_path / "ws").resolve()
+
+
+def test_the_runner_applies_the_workspace_guard() -> None:
+    """An explicit workspace_root goes through assert_safe_workspace_root.
+
+    The guard is the thing that keeps ``--workspace ~`` from committing the
+    user's home; the runner used to ``mkdir`` and ``git init`` unconditionally.
+    """
+    source = (REPO_ROOT / "physics_intern" / "autophysicist" / "runner.py").read_text(
+        encoding="utf-8"
+    )
+    assert "assert_safe_workspace_root(" in source, (
+        "the runner must check an explicit workspace root against the guard"
+    )
+    assert "resolve_workspace_root(" in source
+
+
+# --- entry points must not build their own runs ------------------------------
 
 
 @pytest.mark.parametrize(
@@ -155,18 +180,17 @@ def test_the_research_runner_pins_a_workspace() -> None:
 def test_entry_points_do_not_construct_their_own_runs(path, symbol) -> None:
     """An entry point that builds its own run is a copy that can drift.
 
-    Research mode already lost the problem spec that way, so its runs were
-    never scored.
+    The modes drifted apart that way before — once badly enough that a mode's
+    runs were never scored at all.
     """
     source = (REPO_ROOT / path).read_text(encoding="utf-8")
     start = source.index(f"def {symbol}")
     body = source[start : start + 2500]
 
-    assert not _physics_intern_call_args(body), (
-        f"{path}:{symbol} constructs PhysicsIntern directly instead of calling "
-        f"physics_intern.run.run_problem"
+    assert "run_problem(" in body, (
+        f"{path}:{symbol} must go through physics_intern.run.run_problem"
     )
-    assert "run_autophysicist(" not in body, (
+    assert not _run_autophysicist_calls(body), (
         f"{path}:{symbol} calls run_autophysicist directly instead of calling "
         f"physics_intern.run.run_problem"
     )

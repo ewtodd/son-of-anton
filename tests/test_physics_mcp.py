@@ -111,7 +111,7 @@ def test_api_key_env_builds_the_header_when_none_is_declared(monkeypatch) -> Non
 
 
 def test_an_unreachable_endpoint_degrades_to_no_tools() -> None:
-    """A documentation server being down must not abort a research run."""
+    """A documentation server being down must not abort a physics run."""
     toolset = MCPToolset(
         {
             "url": "http://127.0.0.1:1/mcp/",

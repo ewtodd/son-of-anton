@@ -1,4 +1,4 @@
-"""ToolCall dataclass — shared across agents, LLM layer, and tool executors."""
+"""ToolCall dataclass — shared across the LLM layer and tool executors."""
 
 from dataclasses import dataclass
 

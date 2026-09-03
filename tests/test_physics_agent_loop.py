@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from physics_intern.llm import run_agent_loop
-from physics_intern.state.tool_call import ToolCall
+from physics_intern.core.tool_call import ToolCall
 
 
 class _Config:
