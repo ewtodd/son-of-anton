@@ -6395,19 +6395,6 @@ class TurnRunner:
 _SESSION_DB_UNPINNED = object()
 
 
-def _run_physics_mode_sync(mode: str, problem_text: str) -> str:
-    """Run one physics mode run synchronously (worker-thread body).
-
-    Same path the CLI takes — see cli._run_problem_mode. A message naming a
-    problem.yaml runs that spec; the spec is what the formal evaluation
-    scores against.
-    """
-    from physics_intern.run import render_report, run_problem
-
-    workspace = run_problem(problem_text, mode=mode)
-    return render_report(workspace, mode)
-
-
 def _active_hours_open(config) -> bool:
     """Is *config*'s active-hours window open right now? No window = always."""
     from gateway.active_hours import is_active
@@ -15740,9 +15727,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "model":
             return await self._handle_model_command(event)
 
-        if canonical == "mode":
-            return await self._handle_mode_command(event)
-
         if canonical == "perm":
             return await self._handle_perm_command(event)
 
@@ -16896,86 +16880,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 pass
         return source
 
-    def _resolve_session_agent_mode(self, session_key: str, text: str) -> str:
-        """Resolve the agent mode for one turn.
-
-        A session ``/mode`` pin wins; otherwise (and when the pin is
-        ``auto``) the router classifies the message. Falls back to
-        ``standard`` when routing is disabled in config.
-        """
-        from son_of_anton_cli.router import resolve_enabled_modes, resolve_mode
-
-        router_cfg: dict = {}
-        try:
-            from son_of_anton_cli.config import load_config
-
-            _cfg = load_config() or {}
-            _router = _cfg.get("router")
-            if isinstance(_router, dict):
-                router_cfg = _router
-        except Exception:
-            router_cfg = {}
-        if not router_cfg.get("enabled", True):
-            return "standard"
-        override = getattr(self, "_session_mode_overrides", {}).get(session_key)
-        # Keyword classification is first-turn only. physics runs as a
-        # one-shot loop fed ONLY the current message (see
-        # _run_physics_mode_sync), so re-classifying a follow-up drops the
-        # conversation and the run answers with no idea what was said. In a
-        # chat about detector work, "and the cross-section?" is enough to
-        # trigger it. An explicit /mode still wins on any turn.
-        _is_first_turn = True
-        try:
-            store = getattr(self, "session_store", None)
-            entry = store._entries.get(session_key) if store is not None else None  # noqa: SLF001
-            if entry is not None and int(getattr(entry, "total_tokens", 0) or 0) > 0:
-                _is_first_turn = False
-        except Exception:
-            logger.debug("mode routing: session-activity probe failed", exc_info=True)
-        return resolve_mode(
-            override,
-            text,
-            is_first_turn=_is_first_turn,
-            enabled=resolve_enabled_modes(router_cfg.get("modes")),
-        )
-
-    async def _run_physics_mode_turn(self, event, source, session_key, mode: str):
-        """Run a physics mode turn and deliver the result to the chat.
-
-        The loops are synchronous and long-running; they execute in a worker
-        thread while the turn waits, then the answer and formal evaluation
-        are sent back to the source chat.
-        """
-        problem_text = (event.text or "").strip()
-        if not problem_text:
-            return None
-
-        adapter = self._adapter_for_source(source)
-        if adapter is not None:
-            try:
-                await adapter.send(
-                    str(source.chat_id),
-                    f"Starting {mode} mode run — I'll report back when it finishes.",
-                )
-            except Exception:
-                logger.debug("physics ack send failed", exc_info=True)
-
-        logger.info("physics mode=%s session=%s start", mode, session_key)
-        try:
-            result_text = await asyncio.to_thread(
-                _run_physics_mode_sync, mode, problem_text
-            )
-        except Exception as exc:  # noqa: BLE001 — deliver failure to the chat
-            logger.exception("physics mode run failed")
-            result_text = f"{mode} mode run failed: {exc}"
-
-        if adapter is not None:
-            try:
-                await adapter.send(str(source.chat_id), result_text)
-            except Exception:
-                logger.debug("physics result send failed", exc_info=True)
-        return result_text
-
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -17084,17 +16988,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Build session context
         context = build_session_context(source, self.config, session_entry)
 
-        # Resolve the agent mode for this turn. physics dispatches to its own
-        # loop (the ported physics-intern mode); standard falls through to
-        # the normal agent machinery below.
-        _agent_mode = self._resolve_session_agent_mode(
-            session_key, event.text or ""
-        )
-        if _agent_mode != "standard":
-            return await self._run_physics_mode_turn(
-                event, source, session_key, _agent_mode
-            )
-        
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
