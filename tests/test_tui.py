@@ -484,8 +484,6 @@ def test_backend_cancel_pending_prompts_unblocks_everything(backend) -> None:
 
 def test_backend_slash_commands_and_status(backend) -> None:
     b, rec = backend
-    assert b.run_slash("/mode physics") is True
-    assert b._agent_mode == "physics"
     assert b.run_slash("/exit") is False
     snap = b.status_snapshot()
     assert snap["model_short"] == "test-model"
@@ -870,7 +868,7 @@ def test_status_row_and_prompt_meta(backend) -> None:
         async with app.run_test(size=(150, 40)) as pilot:
             await pilot.pause(0.3)
             meta = str(app.query_one("#prompt-meta-left").render())
-            assert "auto" in meta, meta          # agent mode
+            assert "default" in meta, meta    # permission mode, always shown
             assert "test-model" in meta, meta    # model, as opencode shows it here
 
             left = str(app.query_one("#status-left").render())
