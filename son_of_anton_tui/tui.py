@@ -1515,17 +1515,11 @@ if _TEXTUAL_AVAILABLE:
             meta = Text()
             if backend is not None:
                 snap = backend.status_snapshot()
-                mode = getattr(backend, "_agent_mode", None) or "auto"
-                meta.append(mode)
+                # The mode readout: the session permission mode, always shown
+                # (default | ask | lockdown | yolo), with the warning styling
+                # for the modes that change what the agent may do unasked.
                 perm = backend.permission_mode()
-                if perm != "default":
-                    # yolo skips dangerous-command approvals and persists, so it
-                    # is never allowed to look like an incidental label.
-                    meta.append(
-                        f"  {perm}",
-                        style={"yolo": "bold red", "lockdown": "yellow"}.get(perm, ""),
-                    )
-                    meta.append(" (session)", style="dim")
+                meta.append(perm, style={"yolo": "bold red", "lockdown": "yellow"}.get(perm, ""))
                 model = snap.get("model_short") or ""
                 if model:
                     meta.append("  ·  ", style="dim")
@@ -1561,7 +1555,7 @@ if _TEXTUAL_AVAILABLE:
             self.query_one("#ctx-title", Static).update(snap.get("session_title") or "untitled")
             self.query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
             self.query_one("#ctx-cwd", Static).update(cwd)
-            self.query_one("#ctx-mode", Static).update(getattr(backend, "_agent_mode", None) or "auto")
+            self.query_one("#ctx-mode", Static).update(backend.permission_mode())
             pct = snap.get("context_percent")
             if pct is None:
                 self.query_one("#ctx-bar", Static).update(Text("▱▱▱▱▱▱▱▱▱▱  —", style="dim"))
