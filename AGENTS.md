@@ -11,14 +11,18 @@ v0.20.5 (upstream commit `fcbd1076a9`), stripped to a lean always-on daemon
 surface, and extended with the physics mode from
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
 (commit `5553bb6`). MIT licensed. It is the successor to the archived
-[temple](https://github.com/ewtodd/temple) harness — the daemon design,
-permission modes, and request router carry over from it.
+[temple](https://github.com/ewtodd/temple) harness — the daemon design and
+permission modes carry over from it.
 
-Two agent modes, selected per request by a heuristic router with a `/mode` override:
-
-- `standard` — the hermes agent loop (terminal, files, web, skills, memory, delegation, cron)
-- `physics` — Autophysicist: a single research manager with permanent memory + scratchpad,
-  token budget, `submit_final_answer`, git workspace, per-iteration critic
+One agent loop for all chat — `standard`, the hermes loop (terminal, files,
+web, skills, memory, delegation, cron). Physics — the Autophysicist: a single
+research manager with permanent memory + scratchpad, token budget,
+`submit_final_answer`, git workspace, per-iteration critic — runs only on
+**explicit** invocation via `son-of-anton problem create/run`; a chat message
+never starts one by itself, and chat agents (CLI or gateway) drive a run by
+calling the subcommand through their terminal. A keyword router once
+auto-classified the first message of a session into physics; it was removed
+2026-09-03 for exactly that reason.
 
 physics-intern also shipped a nine-agent research pipeline; it was ported and
 then removed as redundant, once the Autophysicist carried its own critic and
@@ -148,7 +152,6 @@ son-of-anton/
 ├── son_of_anton_logging.py     # setup_logging() — agent.log / errors.log / gateway.log
 ├── agent/                # Agent internals (providers, memory, caching, compression, ...)
 ├── son_of_anton_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
-│   └── router.py         # classify_mode() / resolve_mode() — the three-mode router
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, ssh)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
