@@ -495,8 +495,7 @@ at runtime, not the install itself.)
 <!---->
 | Command | What it does |
 |---|---|
-| `/mode auto\|standard\|physics` | pin the session's agent mode |
-| `/model auto\|NAME` | turn routing back on, or pin a model |
+| `/model auto\|NAME` | pin a model for the session, or drop the pin |
 | `/perm default\|ask\|lockdown\|yolo` | set the permission mode (shift+tab cycles it for the session) |
 | `/commit` | review the uncommitted diff, write a message in the repo's style, commit |
 | `/sessions` | list sessions, including ones started on Signal |
