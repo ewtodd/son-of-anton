@@ -14,7 +14,6 @@ from son_of_anton_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
 def test_default_config_has_expected_sections() -> None:
     for section in (
         "model",
-        "router",
         "physics",
         "terminal",
         "agent",

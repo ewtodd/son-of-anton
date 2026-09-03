@@ -372,19 +372,6 @@ DEFAULT_CONFIG = {
         "reasoning_echo": False,
     },
 
-    # Request router (temple-style): classifies the first message of a session
-    # into an agent mode (standard / physics). A session /mode pin wins on any
-    # turn. Model choice is NOT routed — it comes from the normal resolution
-    # chain and /model.
-    "router": {
-        "enabled": True,
-        # Selectable agent modes. "standard" is always available; drop
-        # "physics" on a deployment that has no use for it (a household or
-        # general-purpose gateway) and its keywords stop routing, /mode stops
-        # offering it, and a stale session pin falls back to standard.
-        "modes": ["standard", "physics"],
-    },
-
     # Physics mode (physics_intern): the single-agent Autophysicist loop.
     # It shares the main agent's model configuration; override the endpoint
     # here for a dedicated server.
