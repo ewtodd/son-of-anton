@@ -195,11 +195,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
-    # Deliberately does not enumerate the modes: router.modes can switch
-    # physics/research off, and this registry is built at import with no
-    # config in hand. Bare /mode lists what the deployment actually has.
-    CommandDef("mode", "Set the agent mode (bare /mode lists what is available)", "Configuration",
-               args_hint="[MODE]", busy_policy="reject", busy_handler="mode"),
     CommandDef("perm", "Set the permission mode: default, ask, lockdown, or yolo", "Configuration",
                args_hint="[default|ask|lockdown|yolo]", busy_policy="reject", busy_handler="perm"),
 
@@ -560,8 +555,8 @@ def gateway_help_lines(only: Optional[frozenset[str]] = None) -> list[str]:
 GATEWAY_HELP_CORE: frozenset[str] = frozenset({
     # Session lifecycle
     "new", "undo", "retry", "stop", "title", "sessions",
-    # Model + routing + permissions
-    "model", "mode", "perm", "yolo",
+    # Model + permissions
+    "model", "perm", "yolo",
     # Context
     "status", "context", "compress",
     # Turn control while the agent is busy
