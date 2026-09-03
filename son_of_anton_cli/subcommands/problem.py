@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from physics_intern.run import MODES
-
 
 def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
     """Attach the ``problem`` subcommand to *subparsers*."""
@@ -59,15 +57,6 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         ),
     )
     run.add_argument("spec", help="Path to a problem.yaml (or a problem statement)")
-    run.add_argument(
-        "--mode",
-        choices=list(MODES),
-        default="physics",
-        help=(
-            "physics: one Research Manager with append-only memory (the only "
-            "mode)."
-        ),
-    )
     run.add_argument(
         "--max-iterations",
         type=int,

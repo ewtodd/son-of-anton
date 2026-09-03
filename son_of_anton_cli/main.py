@@ -4556,15 +4556,14 @@ def cmd_problem(args, parser=None):
     if action == "run":
         from physics_intern.run import render_report, run_problem
 
-        mode = getattr(args, "mode", "physics")
         workspace = run_problem(
             args.spec,
-            mode=mode,
+            mode="physics",
             max_iterations=getattr(args, "max_iterations", None),
             script_timeout=getattr(args, "script_timeout", None),
             workspace_root=getattr(args, "workspace", None),
         )
-        print(render_report(workspace, mode))
+        print(render_report(workspace, "physics"))
         return 0
 
     print(
