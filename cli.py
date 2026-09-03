@@ -4672,7 +4672,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
         self._agent_running = False
-        self._agent_mode: Optional[str] = None  # /mode pin; None or "auto" = classify
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
@@ -9078,47 +9077,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return
             self._close_model_picker()
 
-    def _run_physics_mode(self, message: str) -> Optional[str]:
-        """Run the Autophysicist loop on *message* and return its answer."""
-        return self._run_problem_mode(message, "physics")
-
-    def _run_problem_mode(self, message: str, mode: str) -> Optional[str]:
-        """Run one physics turn. Shared with `son-of-anton problem run`.
-
-        A message naming a problem.yaml runs that spec, so the formal
-        evaluation has numeric checks to score against. The chat turn, the
-        gateway, and the shell all go through physics_intern.run so a spec
-        behaves identically from all of them.
-        """
-        from physics_intern.run import render_report, run_problem
-
-        workspace = run_problem(message, mode=mode)
-        return render_report(workspace, mode)
-
-    def _handle_mode_command(self, cmd_original: str) -> None:
-        """Handle /mode — pin the session agent mode.
-
-        ``auto`` re-enables router classification (first turn of a session
-        only); the other modes pin it for every turn. A pin runs the real
-        loop — ``_run_problem_mode`` through ``physics_intern.run``.
-        """
-        from son_of_anton_cli.router import resolve_enabled_modes
-
-        _router = (self.config or {}).get("router") or {}
-        allowed = ("auto",) + resolve_enabled_modes(_router.get("modes"))
-
-        parts = cmd_original.split(None, 1)
-        raw = parts[1].strip().lower() if len(parts) > 1 else ""
-        if raw and raw not in allowed:
-            # Only what this deployment has: see the gateway handler.
-            print(f"(._.) Unknown mode {raw!r} - use /mode {'|'.join(allowed)}.")
-            return
-        self._agent_mode = raw or "auto"
-        if self._agent_mode == "auto":
-            print("(._.) Mode routing re-enabled (auto).")
-        else:
-            print(f"(._.) Agent mode set to {self._agent_mode} for this session.")
-
     def _handle_perm_command(self, cmd_original: str) -> None:
         """Handle /perm — set the session permission mode.
 
@@ -9866,8 +9824,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
-        elif canonical == "mode":
-            self._handle_mode_command(cmd_original)
         elif canonical == "perm":
             self._handle_perm_command(cmd_original)
 
@@ -12467,27 +12423,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
-
-        # Resolve the agent mode for this turn. physics dispatches to its own
-        # loop (the ported physics-intern mode); standard uses the normal
-        # agent loop below.
-        try:
-            from son_of_anton_cli.router import resolve_enabled_modes, resolve_mode
-            _router_cfg = (self.config or {}).get("router") or {}
-            if _router_cfg.get("enabled", True):
-                # Keyword classification is first-turn only: physics receives
-                # no conversation history, so re-routing a follow-up into it
-                # silently discards the exchange so far.
-                _resolved_mode = resolve_mode(
-                    getattr(self, "_agent_mode", None),
-                    message,
-                    is_first_turn=not getattr(self, "conversation_history", None),
-                    enabled=resolve_enabled_modes(_router_cfg.get("modes")),
-                )
-                if _resolved_mode == "physics":
-                    return self._run_physics_mode(message)
-        except Exception as _mode_exc:
-            print(f"(._.) Mode dispatch failed, falling back to the standard loop: {_mode_exc}")
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
