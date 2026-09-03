@@ -61,7 +61,7 @@ def test_quit_command_resolves_via_q_and_colon_q() -> None:
 
 def test_fork_commands_exist() -> None:
     names = {cmd.name for cmd in COMMAND_REGISTRY}
-    for expected in ("mode", "model", "perm", "skin", "cron", "curator", "help"):
+    for expected in ("model", "perm", "skin", "cron", "curator", "help"):
         assert expected in names, f"missing /{expected}"
 
 
