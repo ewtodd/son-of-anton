@@ -30,7 +30,7 @@ import asyncio
 import os
 import time
 import warnings
-from typing import Any
+from typing import Any, Protocol
 
 DEFAULT_TIMEOUT = 120.0
 
@@ -332,3 +332,88 @@ class LookupExecutor:
             is_error=is_error,
             duration=time.time() - start,
         )
+
+
+class LookupToolset(Protocol):
+    """What the lookup loop needs from a source of tools.
+
+    :class:`MCPToolset`, :class:`~physics_intern.utils.api_docs.ApiDocsToolset`
+    and :class:`CompositeToolset` all satisfy it, so the Manager and the
+    sub-agent take any of them without caring which.
+    """
+
+    def enabled_for(self, role: str) -> bool: ...
+
+    def tools_for(self, role: str) -> list[dict]: ...
+
+    def handles(self, tool_name: str, role: str) -> bool: ...
+
+    def call(self, tool_name: str, arguments: dict) -> tuple[str, bool]: ...
+
+
+class CompositeToolset:
+    """Several lookup sources behind one toolset.
+
+    Order is priority: the first member that claims a tool answers it, so a
+    local source cannot be shadowed by a remote one that happens to expose the
+    same name.
+    """
+
+    def __init__(self, members: list):
+        self.members = [m for m in members if m is not None]
+
+    def enabled_for(self, role: str) -> bool:
+        return any(m.enabled_for(role) for m in self.members)
+
+    def tools_for(self, role: str) -> list[dict]:
+        tools: list[dict] = []
+        seen: set[str] = set()
+        for member in self.members:
+            for tool in member.tools_for(role):
+                name = tool.get("function", {}).get("name", "")
+                if name and name not in seen:
+                    seen.add(name)
+                    tools.append(tool)
+        return tools
+
+    def handles(self, tool_name: str, role: str) -> bool:
+        return any(m.handles(tool_name, role) for m in self.members)
+
+    @staticmethod
+    def _roles_of(member) -> tuple[str, ...]:
+        """The roles a member serves, for routing a call back to its owner.
+
+        The executor has already checked ``handles`` for the calling role, so
+        this only has to find which member owns the name — but it must not
+        assume the deployment named its roles "manager" and "subagent".
+        """
+        roles = getattr(member, "roles", None)
+        if isinstance(roles, dict):
+            return tuple(roles)
+        if isinstance(roles, (list, tuple)):
+            return tuple(roles)
+        return ("manager", "subagent")
+
+    def call(self, tool_name: str, arguments: dict) -> tuple[str, bool]:
+        for member in self.members:
+            if any(
+                member.handles(tool_name, role) for role in self._roles_of(member)
+            ):
+                return member.call(tool_name, arguments)
+        return f"MCP error: no toolset handles {tool_name}", True
+
+
+def build_lookups(config: dict | None = None) -> "LookupToolset | None":
+    """The lookup toolset for a run, or None when nothing is available.
+
+    The house API docs come first: they are local, always present, and answer
+    the question a sub-agent is most likely to get wrong. The remote endpoint
+    is optional and may be unreachable, which is not a reason to lose the docs.
+    """
+    from .api_docs import ApiDocsToolset
+
+    members = [ApiDocsToolset.from_config(), MCPToolset.from_config(config)]
+    members = [m for m in members if m is not None]
+    if not members:
+        return None
+    return members[0] if len(members) == 1 else CompositeToolset(members)

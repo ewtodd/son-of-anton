@@ -56,8 +56,8 @@ def runner_kwargs(tmp_path, monkeypatch):
     spec = dict(SPEC, data=[str(data_dir)])
 
     monkeypatch.setattr(
-        "physics_intern.autophysicist.runner.MCPToolset.from_config",
-        staticmethod(lambda: _FakeToolset()),
+        "physics_intern.autophysicist.runner.build_lookups",
+        lambda: _FakeToolset(),
     )
 
     seen: dict = {}
@@ -139,8 +139,8 @@ def test_no_mcp_leaves_the_run_lookups_empty(monkeypatch, tmp_path) -> None:
         return tmp_path
 
     monkeypatch.setattr(
-        "physics_intern.autophysicist.runner.MCPToolset.from_config",
-        staticmethod(lambda: None),
+        "physics_intern.autophysicist.runner.build_lookups",
+        lambda: None,
     )
     monkeypatch.setattr(
         "physics_intern.autophysicist.runner.run_autophysicist", fake_runner

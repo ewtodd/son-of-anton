@@ -51,7 +51,7 @@ from ..verification import (  # noqa: E402
 )
 from ..core.workspace import log_scaffold_event  # noqa: E402
 
-from ..utils.mcp import MCPToolset  # noqa: E402
+from ..utils.mcp import LookupToolset, build_lookups  # noqa: E402
 from ..utils.sandbox import SandboxPolicy  # noqa: E402
 
 from .critic import run_critique  # noqa: E402
@@ -137,7 +137,7 @@ def _run_iteration(
     metrics: MetricsTracker,
     critique: str = "",
     policy: SandboxPolicy | None = None,
-    mcp: MCPToolset | None = None,
+    mcp: LookupToolset | None = None,
 ) -> tuple[AgentResult, ManagerToolExecutor]:
     """Run one iteration of the Research Manager."""
     user_content = _build_user_content(
@@ -378,7 +378,7 @@ def run_autophysicist(
     # --- Lookup tools (arXiv, library docs, ...) ---
     # Discovered once per run; an unreachable endpoint degrades to no lookups
     # rather than failing the run.
-    mcp = MCPToolset.from_config()
+    mcp = build_lookups()
 
     # --- Console log ---
     console.setup_log(workspace_root / "console.log")

@@ -6,7 +6,7 @@ from typing import ClassVar
 
 from ..core.config import Config
 from ..core.tool_call import ToolCall
-from ..utils.mcp import MCPToolset
+from ..utils.mcp import LookupToolset
 from ..utils.sandbox import SandboxPolicy
 from .memory import PermanentMemory, Scratchpad
 from .subagent import dispatch_subagent
@@ -282,7 +282,7 @@ class ManagerToolExecutor:
         tool_call_cap: int = 15,
         sandbox_timeout: int = 60,
         policy: SandboxPolicy | None = None,
-        mcp: MCPToolset | None = None,
+        mcp: LookupToolset | None = None,
     ):
         self.config = config
         self.permanent_memory = permanent_memory

@@ -108,16 +108,25 @@ and it is what the lab's published numbers were produced with:
     cfg.max_events = 50000
     proc = ROOT.WaveformProcessingUtils(cfg)
 
-    proc.ProcessWaveform(samples)      # one TArrayS -> features
     proc.ProcessFile(in_path, out_name)  # whole file -> a features TTree
 
-Each processed waveform yields a `WaveformFeatures`: raw_pulse_height,
-pulse_height, peak_position, trigger_position, short_integral, long_integral,
-negative_fraction, passes_cuts, timestamp. short_integral / long_integral is
-the charge-comparison PSD ratio, computed off the baseline-subtracted,
-polarity-corrected trace. `ProcessingStats` reports why events were rejected
-(no trigger, clipped, negative integral, bad baseline) — read it, because a
-cut that silently removes most of your data will otherwise look like a clean
+`ProcessFile` is the entry point. It reads TTree `Data_R`, branch `Samples`,
+from *in_path*, and writes `<root_files_dir>/<out_name>.root` holding TTree
+`features` with branches pulse_height, trigger_position, short_integral,
+long_integral, timestamp — plus `Samples`, the baseline-subtracted and
+polarity-corrected trace, when cfg.store_waveforms. Read it straight back with
+`load_tree_data(..., tree_name="features")`.
+
+DO NOT call `proc.ProcessWaveform(samples)`. Despite the name it is an internal
+step of ProcessFile, not a one-waveform helper: it ends by filling the output
+TTree, which only ProcessFile creates, so the first waveform that passes cuts
+segfaults and takes the whole script down with it.
+
+short_integral / long_integral is the charge-comparison PSD ratio, computed off
+the baseline-subtracted, polarity-corrected trace. `proc.GetStats()` returns a
+`ProcessingStats` recording why events were rejected (no trigger, insufficient
+samples, clipped, negative integral, bad baseline) — read it, because a cut
+that silently removes most of your data will otherwise look like a clean
 result.
 
 FittingUtils / RooFitUtils do RooFit photopeak fits, for the same reason: they

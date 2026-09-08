@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..core.config import Config
 from ..llm import call_llm, run_agent_loop
-from ..utils.mcp import LookupExecutor, MCPToolset
+from ..utils.mcp import LookupExecutor, LookupToolset
 from ..utils.sandbox import (
     SandboxPolicy,
     describe_runtime,
@@ -136,7 +136,7 @@ def dispatch_subagent(
     max_retries: int = 3,
     policy: SandboxPolicy | None = None,
     model: str = "",
-    mcp: MCPToolset | None = None,
+    mcp: LookupToolset | None = None,
 ) -> SubAgentResult:
     """Dispatch an ephemeral sub-agent LLM call.
 
