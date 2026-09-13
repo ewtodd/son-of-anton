@@ -186,6 +186,41 @@
                   '';
                 };
 
+                git = mkOption {
+                  type = types.submodule {
+                    options = {
+                      github = mkOption {
+                        type = types.nullOr types.str;
+                        default = null;
+                        description = ''
+                          Runtime path to the public SSH key of a GitHub
+                          account that can pull and push the repositories
+                          this instance works on (for example a bot account
+                          the human added to the repository, or a
+                          fine-grained key added to the machine).
+
+                          Activation installs the key and a matching
+                          ~/.ssh/config for github.com into the instance's
+                          HOME (stateDir, or workingDirectory for a
+                          managedAccount) and chowns both to the instance
+                          user. Plain `git clone`/`git push` over ssh — the
+                          agent's terminal tool included — then uses that
+                          identity without an ssh-agent.
+
+                          A `str` on purpose: pass a runtime path such as an
+                          agenix secret. A Nix path literal would copy the
+                          key into the store, where every user can read it.
+                        '';
+                        example = literalExpression ''config.age.secrets."soa-ricky-github-key".path'';
+                      };
+                    };
+                  };
+                  default = { };
+                  description = ''
+                    Git credentials for this instance. See `git.github`.
+                  '';
+                };
+
                 # Assertions are built inside the submodule because
                 # workspaceFilesAssertions inspects option METADATA
                 # (options.workingDirectory.highestPrio), which has no
@@ -272,6 +307,36 @@
       };
 
       unitHomeFor = inst: if inst.managedAccount then inst.workingDirectory else inst.stateDir;
+
+      # ── Git over SSH ────────────────────────────────────────────────────
+      # Activation installs the key into the instance's ~/.ssh and a small
+      # ssh config that routes github.com to it; the unit starts git with
+      # GIT_SSH_COMMAND pinned to that config and key, so no ssh-agent is
+      # needed and the agent's terminal tool (which inherits the unit's
+      # environment) can clone and push. The unit's HOME is writable
+      # (unitHomeFor is in ReadWritePaths), and activation chowns the
+      # files to the instance user.
+      #
+      # Both files get DEDICATED names (id_github / config-github) rather
+      # than the defaults, so that, for a managedAccount instance that
+      # shares a human's interactive HOME, the instance key is never
+      # mistaken for the account's default ssh identity and the human's
+      # own ~/.ssh/config is never overwritten — GIT_SSH_COMMAND reads
+      # config-github instead of ~/.ssh/config.
+      gitSshDirFor = inst: "${unitHomeFor inst}/.ssh";
+
+      gitKeyFor = inst: "${gitSshDirFor inst}/id_github";
+
+      gitSshConfigFor = inst: "${gitSshDirFor inst}/config-github";
+
+      gitSshConfigTextFor = inst:
+        ''
+          Host github.com
+            IdentityFile ${gitKeyFor inst}
+            IdentitiesOnly yes
+            User git
+            StrictHostKeyChecking accept-new
+        '';
 
       unitEnvironmentFor = inst: {
         HOME = unitHomeFor inst;
@@ -442,6 +507,24 @@
                     ''}
                   done
 
+                  ${lib.optionalString (inst.git.github != null) ''
+                    # git over SSH: install the key and the ssh config it
+                    # belongs to. The unit's HOME is unitHomeFor (stateDir,
+                    # or workingDirectory for a managedAccount) and is in
+                    # ReadWritePaths. mkdir -p so a fresh managedAccount
+                    # instance gets the directory; for a login account the
+                    # directory already exists and only the two dedicated
+                    # files are added.
+                    mkdir -p ${gitSshDirFor inst}
+                    chmod 0700 ${gitSshDirFor inst}
+                    chown ${inst.user}:${inst.group} ${gitSshDirFor inst}
+                    install -m 0600 ${inst.git.github} ${gitKeyFor inst}
+                    chown ${inst.user}:${inst.group} ${gitKeyFor inst}
+                    echo '${lib.replaceStrings [ "'" ] [ "\\'" ] (gitSshConfigTextFor inst)}' > ${gitSshConfigFor inst}
+                    chown ${inst.user}:${inst.group} ${gitSshConfigFor inst}
+                    chmod 0600 ${gitSshConfigFor inst}
+                  ''}
+
                   ${common.mkStateScript {
                     inherit pkgs;
                     cfg = inst;
@@ -473,6 +556,15 @@
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
+
+              # git over SSH for the agent's terminal tool: GIT_SSH_COMMAND
+              # pins the key installed by activation, so git never prompts
+              # for an agent or tries the account's default identity.
+              unitConfig = lib.optionalAttrs (inst.git.github != null) {
+                Environment = [
+                  "GIT_SSH_COMMAND=ssh -F ${gitSshConfigFor inst} -i ${gitKeyFor inst} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+                ];
+              };
 
               # inst.environment and inst.environmentFiles are written to
               # $SON_OF_ANTON_HOME/.env by the activation script.

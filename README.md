@@ -436,6 +436,31 @@ the only thing it can reach.
 `extraPackages` is per-instance and lands on that service's `PATH`, which is
 how you give one instance tools the others don't have.
 <!---->
+### Giving an instance git access
+<!---->
+An instance that should clone or push to GitHub (a non-public repo the human
+added the bot account to, for example) gets a key instead of a login shell:
+<!---->
+```nix
+services.son-of-anton.instances.ricky = {
+  # ...
+  git.github = config.age.secrets.soa-ricky-github-key.path;
+};
+```
+<!---->
+`git.github` is a runtime path to a *public* SSH key. On activation the module
+installs it (and a small `~/.ssh/config` that routes `github.com` to it) into
+the instance's `HOME` and chowns both to the instance user; the service runs
+git with `GIT_SSH_COMMAND` pinned to that key. The agent's terminal tool
+inherits the same environment, so a plain `git clone`/`git push` works with no
+ssh-agent.
+<!---->
+Pass a runtime path, not a Nix path literal — a literal would copy the key into
+the store, where every user can read it. The key files are named
+`id_github` / `config-github` (not the defaults) so a `managedAccount`
+instance that shares a human's interactive `HOME` never clobbers their own
+identity or ssh config.
+<!---->
 A note on pandoc and PDFs: a plain `pandoc in.md -o out.pdf` fails under a
 systemd service. pandoc's typst template writes `font: <mainfont>` and typst
 rejects an empty font list, and the service has no fontconfig so typst finds no
