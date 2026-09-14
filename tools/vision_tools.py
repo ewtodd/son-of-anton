@@ -632,7 +632,7 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # subsequent turn and permanently wedges the session with a 400 that retries
 # can't clear (the bad bytes are immutable history).  Capping at embed time —
 # with headroom under 5 MB — is the only durable fix.  Matches the post-failure
-# shrink target in agent.conversation_compression so behaviour is consistent
+# shrink target in agent.conversation_compaction so behaviour is consistent
 # whether we resize proactively or reactively.
 _EMBED_TARGET_BYTES = 4 * 1024 * 1024
 

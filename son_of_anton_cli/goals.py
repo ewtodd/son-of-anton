@@ -874,7 +874,7 @@ def clear_goal(session_id: str) -> None:
 def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
     """Carry a persistent /goal from a parent session to its continuation.
 
-    Context compression rotates ``session_id`` to a fresh child session,
+    Context compaction rotates ``session_id`` to a fresh child session,
     but ``load_goal`` does a flat ``goal:<session_id>`` lookup with no
     parent-lineage walk — so an active goal silently dies at the
     compaction boundary (#33618). Copy the goal onto the new session and
@@ -884,7 +884,7 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
 
     Returns True when a goal was migrated, False when there was nothing
     to migrate or the DB was unavailable. Best-effort and never raises —
-    a failure here must not block compression.
+    a failure here must not block compaction.
     """
     if not old_session_id or not new_session_id or old_session_id == new_session_id:
         return False

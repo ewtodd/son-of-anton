@@ -289,7 +289,7 @@ let
           {
             model.default = "anthropic/claude-sonnet-4";
             terminal.backend = "local";
-            compression = { enabled = true; threshold = 0.85; };
+            compaction = { enabled = true; threshold = 0.85; };
           }
         '';
       };

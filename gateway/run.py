@@ -46,19 +46,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
-from agent.conversation_compression import (
+from agent.conversation_compaction import (
     COMPACTION_STATUS,
-    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+    COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+    COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
+    COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     IDLE_COMPACTION_STATUS_TEMPLATE,
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import (
-    compression_made_progress,
+    compaction_made_progress,
 )
 from son_of_anton_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from son_of_anton_cli.fallback_config import get_fallback_chain
@@ -102,27 +102,27 @@ _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
 _NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
-    r"|compression\s+summary\s+failed"
+    r"|compaction\s+summary\s+failed"
     r"|fallback\s+context\s+marker"
-    r"|configured\s+compression\s+model\s+.+\s+failed"
+    r"|configured\s+compaction\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
-    r"|auto-lowered\s+compression\s+threshold"
+    r"|auto-lowered\s+compaction\s+threshold"
     # #69332 reworded the auto-lower notice to "Auto-lowered this session's
     # threshold to N tokens" — keep both generations covered.
     r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
-    r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
-    r"|skipping\s+concurrent\s+compression"
+    r"|configured\s+auxiliary\s+compaction\s+provider\s+.+\s+unavailable"
+    r"|skipping\s+concurrent\s+compaction"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     # Buffered attempt/overflow retry chatter replayed through _emit_status
-    # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
-    # keep manual /compact feedback ("Compressed: 30 → 12 messages") and
+    # when a turn exhausts retries. The ", retrying"/"— compacting" anchors
+    # keep manual /compact feedback ("Compacted: 30 → 12 messages") and
     # failure notices out of the match.
-    r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
-    r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
-    r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
+    r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compacting"
+    r"|compacted\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
+    r"|compacted\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
-    r"|session\s+compressed\s+\d+\s+times"
+    r"|session\s+compacted\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
@@ -154,7 +154,7 @@ def _hygiene_cooldown_for_failure(
     ``_HYGIENE_COOLDOWN_MAX_SECONDS``, so a tuned base is preserved as rung 1.
 
     It exists because the in-agent equivalent is unreachable from here:
-    ``ContextCompressor.record_timeout_failure`` escalates on an absolute
+    ``ContextCompactor.record_timeout_failure`` escalates on an absolute
     60 -> 300 -> 900s ladder driven by the in-memory
     ``_consecutive_timeout_failures`` counter, which ``bind_session_state``
     zeroes.  Session hygiene constructs a FRESH ``AIAgent`` per run and re-binds
@@ -194,7 +194,7 @@ def _hygiene_cooldown_for_failure(
 
 
 def _reset_hygiene_failure_streak(gateway, session_key: str) -> None:
-    """Clear the hygiene failure streak after a compression that reduced context.
+    """Clear the hygiene failure streak after a compaction that reduced context.
 
     Peeks rather than get-or-creates: writing a 0 that is already 0 must not
     materialise a ``_sessions`` entry (those are never evicted).
@@ -234,13 +234,13 @@ def hygiene_compaction_recovered(
 
     "Recovered" requires all three:
 
-    * the compressor did not abort (no summary produced at all);
+    * the compactor did not abort (no summary produced at all);
     * the transcript was actually rewritten — either rotated into a new session
       or compacted in place.  The degenerate "did not rotate or compact in
-      place" path (#21301) reuses the pre-compression counts, so relying on the
+      place" path (#21301) reuses the pre-compaction counts, so relying on the
       numbers alone would read a no-op as success;
     * the request materially shrank, per the canonical
-      :func:`compression_made_progress` (#39548) — a row-count drop counts even
+      :func:`compaction_made_progress` (#39548) — a row-count drop counts even
       when the summary keeps the token estimate flat, and a sub-5% token wobble
       does not count at all.
 
@@ -254,7 +254,7 @@ def hygiene_compaction_recovered(
         return False
     if not (rotated or in_place):
         return False
-    return compression_made_progress(
+    return compaction_made_progress(
         msg_count, new_count, approx_tokens, new_tokens
     )
 
@@ -265,11 +265,11 @@ def _record_hygiene_cooldown(
     cooldown_seconds: float,
     error: Optional[str] = None,
 ) -> None:
-    """Persist a session-hygiene compression-failure cooldown to the state DB.
+    """Persist a session-hygiene compaction-failure cooldown to the state DB.
 
     Uses the same ``compression_failure_cooldown_until`` column and
-    ``record_compression_failure_cooldown`` method that the in-conversation
-    compression path (``agent/context_compressor.py``) already uses, so the
+    ``record_compaction_failure_cooldown`` method that the in-conversation
+    compaction path (``agent/context_compactor.py``) already uses, so the
     cooldown survives gateway restarts (#74136).
 
     ``error`` is forwarded because the recorder writes
@@ -283,7 +283,7 @@ def _record_hygiene_cooldown(
     if session_db is None:
         return
     session_db = getattr(session_db, "_db", session_db)
-    recorder = getattr(session_db, "record_compression_failure_cooldown", None)
+    recorder = getattr(session_db, "record_compaction_failure_cooldown", None)
     if recorder is None:
         return
     try:
@@ -293,10 +293,10 @@ def _record_hygiene_cooldown(
 
 
 def _status_template_to_regex(template: str) -> str:
-    """Compile a compression status template constant into a regex source.
+    """Compile a compaction status template constant into a regex source.
 
     Literal text is escaped verbatim (so wording drift in
-    agent/conversation_compression.py cannot silently diverge from this
+    agent/conversation_compaction.py cannot silently diverge from this
     matcher — the constants ARE the wording) and each ``{field}`` format
     placeholder is replaced with a numeric-ish pattern covering every value
     the emit sites format in (ints, ``{:,}`` thousands separators).
@@ -305,45 +305,45 @@ def _status_template_to_regex(template: str) -> str:
     return r"[\d,]+".join(re.escape(part) for part in parts)
 
 
-# ROUTINE compression progress statuses, derived from the SAME template
-# constants the emit sites format (agent/conversation_compression.py, #69550)
+# ROUTINE compaction progress statuses, derived from the SAME template
+# constants the emit sites format (agent/conversation_compaction.py, #69550)
 # — never re-inlined wording. Used ONLY by the opt-in
-# ``compression.progress_notices`` gate below (#52995) to decide which of the
-# noisy statuses matched by _NOISY_STATUS_RE are compression
+# ``compaction.progress_notices`` gate below (#52995) to decide which of the
+# noisy statuses matched by _NOISY_STATUS_RE are compaction
 # progress (deliverable when the user opted in) versus unrelated aux/retry
 # chatter (always suppressed on chat surfaces). Failure notices and manual
 # /compact feedback never match _NOISY_STATUS_RE in the first
 # place, so they are unaffected by this gate.
-_COMPRESSION_PROGRESS_STATUS_RE = re.compile(
+_COMPACTION_PROGRESS_STATUS_RE = re.compile(
     "|".join(
         _status_template_to_regex(_template)
         for _template in (
             COMPACTION_STATUS,
             IDLE_COMPACTION_STATUS_TEMPLATE,
-            COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
-            COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
-            COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
-            COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+            COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+            COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
+            COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
+            COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
         )
     ),
     re.IGNORECASE,
 )
 
 
-def _gateway_compression_progress_notices_enabled() -> bool:
-    """True when the user opted into routine compression progress notices.
+def _gateway_compaction_progress_notices_enabled() -> bool:
+    """True when the user opted into routine compaction progress notices.
 
-    Reads ``compression.progress_notices`` from the gateway's raw YAML config
-    (#52995). Default False — routine compression stays silent-by-design on
+    Reads ``compaction.progress_notices`` from the gateway's raw YAML config
+    (#52995). Default False — routine compaction stays silent-by-design on
     chat platforms unless explicitly enabled. Read live (mtime-cached) so a
     config edit on a running gateway takes effect on the next status.
     Fail-closed: any config read error keeps the silent default.
     """
     try:
         config = _load_gateway_config()
-        compression_cfg = config.get("compression") if isinstance(config, dict) else None
-        if isinstance(compression_cfg, dict):
-            return str(compression_cfg.get("progress_notices", False)).strip().lower() in {
+        compaction_cfg = config.get("compaction") if isinstance(config, dict) else None
+        if isinstance(compaction_cfg, dict):
+            return str(compaction_cfg.get("progress_notices", False)).strip().lower() in {
                 "true",
                 "1",
                 "yes",
@@ -484,10 +484,10 @@ def _seed_hygiene_system_prompt(
     """Keep gateway hygiene from rebuilding a live session's system prompt.
 
     The hygiene helper intentionally skips memory-provider initialization.
-    Compression is allowed to persist a system prompt, so letting that helper
+    Compaction is allowed to persist a system prompt, so letting that helper
     rebuild one would strip external provider blocks from the live session.
     Seed the exact persisted prompt instead.  When no usable prompt can be
-    restored, seed an empty cache entry.  Compression either preserves that
+    restored, seed an empty cache entry.  Compaction either preserves that
     unusable value or rebuilds with the hygiene-only platform marker; the real
     turn will rebuild either form with its fully initialized providers.
     """
@@ -767,7 +767,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
-    surfaces should not receive transient auxiliary/compression chatter.
+    surfaces should not receive transient auxiliary/compaction chatter.
     """
     text = str(message or "").strip()
     if not text:
@@ -777,15 +777,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     text = _redact_gateway_user_facing_secrets(text)
     if _NOISY_STATUS_RE.search(text):
-        # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
-        # compression progress statuses through to chat platforms. The
+        # Opt-in #52995: `compaction.progress_notices: true` lets ROUTINE
+        # compaction progress statuses through to chat platforms. The
         # membership check is derived from the #69550 template constants, so
-        # non-compression noise (aux failures, provider retry chatter, ...)
+        # non-compaction noise (aux failures, provider retry chatter, ...)
         # stays suppressed even when the gate is open. Default False keeps
         # the silent-by-design behavior byte-identical.
         if not (
-            _gateway_compression_progress_notices_enabled()
-            and _COMPRESSION_PROGRESS_STATUS_RE.search(text)
+            _gateway_compaction_progress_notices_enabled()
+            and _COMPACTION_PROGRESS_STATUS_RE.search(text)
         ):
             return None
     if _looks_like_gateway_provider_error(text):
@@ -1131,13 +1131,13 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
-def _stamp_hygiene_compression_provenance(
+def _stamp_hygiene_compaction_provenance(
     agent: Any,
     desc: str,
     provenance: "ActivityProvenance",
     debug_label: str,
 ) -> None:
-    """Best-effort activity provenance stamp for hygiene compression transitions."""
+    """Best-effort activity provenance stamp for hygiene compaction transitions."""
     try:
         agent._touch_activity(desc, provenance=provenance)
     except Exception:
@@ -1687,15 +1687,15 @@ def _collect_auto_append_media_tags(
        tool result from an earlier turn (still present in the full message list)
        cannot leak onto a later text-only reply (#34608).
 
-    Mid-run context compression can rewrite/shrink the message list below the
+    Mid-run context compaction can rewrite/shrink the message list below the
     original history length. When that happens the slice boundary is no longer
     trustworthy, so fall back to scanning every message and rely on
-    ``history_media_paths`` for dedup, preserving the compression-safe behaviour
+    ``history_media_paths`` for dedup, preserving the compaction-safe behaviour
     of #160. The producer-tool allowlist still applies on the fallback path.
     """
     history_media_paths = history_media_paths or set()
     # Only trust the slice boundary when the message list still contains the
-    # full history prefix. Otherwise scan everything (compression-safe fallback).
+    # full history prefix. Otherwise scan everything (compaction-safe fallback).
     if history_offset and len(messages) >= history_offset:
         new_messages = messages[history_offset:]
     else:
@@ -2159,7 +2159,7 @@ def _bridge_gateway_config_to_env() -> None:
                             os.environ[_env_var] = json.dumps(_val)
                         else:
                             os.environ[_env_var] = str(_val)
-            # Compression config is read directly from config.yaml by run_agent.py
+            # Compaction config is read directly from config.yaml by run_agent.py
             # and auxiliary_client.py — no env var bridging needed.
             # Auxiliary model/direct-endpoint overrides (vision, web_extract,
             # approval, plus any plugin-registered auxiliary tasks).
@@ -3811,7 +3811,7 @@ def _normalize_empty_agent_response(
         if is_context_failure:
             return (
                 "Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
+                "Use /compact to compact the conversation, or "
                 "/reset to start fresh."
             )
         return (
@@ -5813,7 +5813,7 @@ class TurnRunner:
                 )
         
         # Collect MEDIA paths already in history so we can exclude them
-        # from the current turn's extraction. This is compression-safe:
+        # from the current turn's extraction. This is compaction-safe:
         # even if the message list shrinks, we know which paths are old.
         _history_media_paths: set = _collect_history_media_paths(agent_history)
         
@@ -6188,21 +6188,21 @@ class TurnRunner:
         _output_toks = 0
         _context_length = 0
         _agent = ctx.agent_holder[0]
-        if _agent and hasattr(_agent, "context_compressor"):
-            _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
+        if _agent and hasattr(_agent, "context_compactor"):
+            _last_prompt_toks = getattr(_agent.context_compactor, "last_prompt_tokens", 0)
             _input_toks = getattr(_agent, "session_prompt_tokens", 0)
             _output_toks = getattr(_agent, "session_completion_tokens", 0)
-            _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
+            _context_length = getattr(_agent.context_compactor, "context_length", 0) or 0
         _resolved_model = getattr(_agent, "model", None) if _agent else None
 
-        # Sync session_id immediately after run_conversation(). Compression
+        # Sync session_id immediately after run_conversation(). Compaction
         # can rotate before a follow-up model call fails; the failure return
-        # below must still point the gateway at the compressed child.
+        # below must still point the gateway at the compacted child.
         agent = ctx.agent_holder[0]
         _session_was_split = False
-        # In-place compaction (compression.in_place / #38763) compacts the
+        # In-place compaction (compaction.in_place / #38763) compacts the
         # transcript WITHOUT rotating the id, so the id-change diff below
-        # can't detect it. compress_context() sets this rotation-independent
+        # can't detect it. compact_context() sets this rotation-independent
         # flag on the agent; the gateway uses it to re-baseline transcript
         # handling (history_offset=0 + rewrite the JSONL transcript) the
         # same way a split would, even though the session_id is unchanged.
@@ -6211,7 +6211,7 @@ class TurnRunner:
         if agent and ctx.session_key and agent_session_id != ctx.session_id:
             _session_was_split = True
             logger.info(
-                "Session split detected: %s → %s (compression)",
+                "Session split detected: %s → %s (compaction)",
                 ctx.session_id, agent_session_id,
             )
             entry = self._runner.session_store._entries.get(ctx.session_key)
@@ -6228,7 +6228,7 @@ class TurnRunner:
                     logger.info(
                         "Skipping session split sync for %s because the "
                         "session binding moved from %s to %s before "
-                        "compression finished",
+                        "compaction finished",
                         ctx.session_key or "?",
                         ctx.session_id,
                         entry_session_id,
@@ -6277,8 +6277,8 @@ class TurnRunner:
                 "interrupted": result.get("interrupted", False),
                 "interrupt_message": result.get("interrupt_message"),
                 "error": result.get("error"),
-                "compression_exhausted": result.get("compression_exhausted", False),
-                "compression_deferred": result.get("compression_deferred", False),
+                "compaction_exhausted": result.get("compaction_exhausted", False),
+                "compaction_deferred": result.get("compaction_deferred", False),
                 "tools": ctx.tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "compacted_in_place": _compacted_in_place,
@@ -6308,8 +6308,8 @@ class TurnRunner:
         # Path-based deduplication against _history_media_paths (collected
         # before run_conversation) is retained as a secondary guard. It is
         # also the sole guard on the fallback branch taken when mid-run
-        # context compression shrinks the message list below the original
-        # history length, preserving the compression-safe behaviour of #160.
+        # context compaction shrinks the message list below the original
+        # history length, preserving the compaction-safe behaviour of #160.
         if "MEDIA:" not in final_response:
             media_tags, has_voice_directive = _collect_auto_append_media_tags(
                 result.get("messages", []),
@@ -6350,15 +6350,15 @@ class TurnRunner:
             "partial": ctx.result_holder[0].get("partial", False) if ctx.result_holder[0] else False,
             "error": ctx.result_holder[0].get("error") if ctx.result_holder[0] else None,
             "interrupt_message": ctx.result_holder[0].get("interrupt_message") if ctx.result_holder[0] else None,
-            "compression_exhausted": (
-                ctx.result_holder[0].get("compression_exhausted", False)
+            "compaction_exhausted": (
+                ctx.result_holder[0].get("compaction_exhausted", False)
                 if ctx.result_holder[0] else False
             ),
             # Soft lock-contention defer (#69870 consumer): distinct from
-            # compression_exhausted so the gateway never auto-resets a
-            # session that a concurrent compressor is about to shrink.
-            "compression_deferred": (
-                ctx.result_holder[0].get("compression_deferred", False)
+            # compaction_exhausted so the gateway never auto-resets a
+            # session that a concurrent compactor is about to shrink.
+            "compaction_deferred": (
+                ctx.result_holder[0].get("compaction_deferred", False)
                 if ctx.result_holder[0] else False
             ),
             "tools": ctx.tools_holder[0] or [],
@@ -9115,17 +9115,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             return False
 
-    async def _session_has_compression_in_flight(self, session_key: str) -> bool:
-        """Return True when a compression lock is held for this session's id.
+    async def _session_has_compaction_in_flight(self, session_key: str) -> bool:
+        """Return True when a compaction lock is held for this session's id.
 
-        Context compression is interrupt-protected (#23975) but gateway
+        Context compaction is interrupt-protected (#23975) but gateway
         ``interrupt`` busy-input mode can still start a follow-up turn against
-        the pre-rotation parent while compression is mid-flight, producing
-        orphaned compression siblings (#56391). Callers demote interrupt to
+        the pre-rotation parent while compaction is mid-flight, producing
+        orphaned compaction siblings (#56391). Callers demote interrupt to
         queue when this returns True.
 
         Both blocking sources — the ``session_store`` lock + JSON load, and the
-        SQLite ``get_compression_lock_holder`` SELECT — are offloaded to a
+        SQLite ``get_compaction_lock_holder`` SELECT — are offloaded to a
         worker thread so a large state.db never freezes the event loop (#5).
         """
         session_store = getattr(self, "session_store", None)
@@ -9139,8 +9139,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return False
         except Exception:
             logger.warning(
-                "Compression in-flight check failed while reading session %s; "
-                "treating compression as active to avoid interrupting a possible "
+                "Compaction in-flight check failed while reading session %s; "
+                "treating compaction as active to avoid interrupting a possible "
                 "parent-session rotation",
                 session_key,
                 exc_info=True,
@@ -9154,15 +9154,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         raw_db = getattr(session_db, "_db", session_db)
         try:
             holder = await asyncio.to_thread(
-                raw_db.get_compression_lock_holder, str(session_id)
+                raw_db.get_compaction_lock_holder, str(session_id)
             )
             return bool(holder)
         except (AttributeError, TypeError):
             return False
         except Exception:
             logger.warning(
-                "Compression in-flight check failed while reading lock holder "
-                "for session %s; treating compression as active to avoid "
+                "Compaction in-flight check failed while reading lock holder "
+                "for session %s; treating compaction as active to avoid "
                 "interrupting a possible parent-session rotation",
                 session_id,
                 exc_info=True,
@@ -9455,14 +9455,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 session_key,
             )
             effective_mode = "queue"
-        demoted_for_compression = (
+        demoted_for_compaction = (
             effective_mode == "interrupt"
-            and await self._session_has_compression_in_flight(session_key)
+            and await self._session_has_compaction_in_flight(session_key)
         )
-        if demoted_for_compression:
+        if demoted_for_compaction:
             logger.info(
                 "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
-                "because context compression is in flight (#56391)",
+                "because context compaction is in flight (#56391)",
                 session_key,
             )
             effective_mode = "queue"
@@ -9658,9 +9658,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 f"Subagent working{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
             )
-        elif is_queue_mode and demoted_for_compression:
+        elif is_queue_mode and demoted_for_compaction:
             message = (
-                f"Compressing context{status_detail} — your message is queued for "
+                f"Compacting context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
@@ -14255,7 +14255,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     ) -> Optional[SessionEntry]:
         """Resolve an async completion to its verified owning gateway session.
 
-        A compression rotation ends the physical parent row while continuing
+        A compaction rotation ends the physical parent row while continuing
         the same logical conversation in a child.  Follow that lineage, but
         never let a late completion override an unrelated /new or restored
         route.  Unknown ownership remains fail-closed; the result is still
@@ -14288,7 +14288,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return None
 
         target_session_id = pinned_session_id
-        follows_compression = False
+        follows_compaction = False
         if pinned_row.get("ended_at"):
             _end_reason = str(pinned_row.get("end_reason") or "")
             if _end_reason in _USER_BOUNDARY_END_REASONS:
@@ -14300,7 +14300,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     _end_reason,
                 )
                 return None
-            if _end_reason != "compression":
+            if _end_reason != "compaction":
                 # Idle/timeout/lifecycle end (scale-to-zero norm): the chat
                 # route remains valid and ``session_entry`` IS the routing
                 # key's current session for this same chat, so deliver the
@@ -14320,14 +14320,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
                 return session_entry
 
-            follows_compression = True
+            follows_compaction = True
             try:
-                target_session_id = await session_db.get_compression_tip(
+                target_session_id = await session_db.get_compaction_tip(
                     pinned_session_id
                 )
             except Exception:
                 logger.debug(
-                    "Async-delegation compression-tip lookup failed for %s",
+                    "Async-delegation compaction-tip lookup failed for %s",
                     pinned_session_id,
                     exc_info=True,
                 )
@@ -14335,7 +14335,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             if not target_session_id or target_session_id == pinned_session_id:
                 logger.warning(
-                    "Async-delegation completion pinned to compressed session %s "
+                    "Async-delegation completion pinned to compacted session %s "
                     "without a continuation; dropping injection.",
                     pinned_session_id,
                 )
@@ -14347,7 +14347,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 tip_row = None
             if tip_row is None or tip_row.get("ended_at"):
                 logger.warning(
-                    "Async-delegation compression continuation %s is %s; "
+                    "Async-delegation compaction continuation %s is %s; "
                     "dropping injection.",
                     target_session_id,
                     "unknown" if tip_row is None else "ended",
@@ -14359,16 +14359,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 target_session_id,
             }
             if not route_owns_lineage:
-                # A long-running delegation may survive multiple compression
+                # A long-running delegation may survive multiple compaction
                 # rotations.  Accept an intermediate stale route only when its
-                # own verified compression tip is the same live target.
+                # own verified compaction tip is the same live target.
                 try:
                     route_row = await session_db.get_session(session_entry.session_id)
                     route_tip = (
-                        await session_db.get_compression_tip(session_entry.session_id)
+                        await session_db.get_compaction_tip(session_entry.session_id)
                         if route_row is not None
                         and route_row.get("ended_at")
-                        and route_row.get("end_reason") == "compression"
+                        and route_row.get("end_reason") == "compaction"
                         else None
                     )
                 except Exception:
@@ -14377,7 +14377,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             if not route_owns_lineage:
                 logger.warning(
-                    "Async-delegation completion for compression lineage %s -> %s "
+                    "Async-delegation completion for compaction lineage %s -> %s "
                     "does not own current route %s; dropping injection.",
                     pinned_session_id,
                     target_session_id,
@@ -14389,8 +14389,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return session_entry
 
         prior_session_id = session_entry.session_id
-        if follows_compression:
-            switched = await self.async_session_store.advance_compression_session(
+        if follows_compaction:
+            switched = await self.async_session_store.advance_compaction_session(
                 session_entry.session_key,
                 prior_session_id,
                 target_session_id,
@@ -15410,18 +15410,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            # #56391 — Compression protection (PRIORITY path). Same
+            # #56391 — Compaction protection (PRIORITY path). Same
             # rationale as ``_handle_active_session_busy_message``: context
-            # compression is interrupt-protected (#23975), but an interrupt
+            # compaction is interrupt-protected (#23975), but an interrupt
             # here starts a new turn against the pre-rotation parent
-            # session while the still-running compression later rotates
-            # the id out from under it, forking orphaned compression
+            # session while the still-running compaction later rotates
+            # the id out from under it, forking orphaned compaction
             # siblings. Demote to queue semantics so the follow-up waits
-            # for the in-flight compression + rotation to land.
-            if await self._session_has_compression_in_flight(_quick_key):
+            # for the in-flight compaction + rotation to land.
+            if await self._session_has_compaction_in_flight(_quick_key):
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "
-                    "because context compression is in flight (#56391)",
+                    "because context compaction is in flight (#56391)",
                     _quick_key,
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -16098,7 +16098,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
-        # session hygiene compression).  Without this sentinel a second
+        # session hygiene compaction).  Without this sentinel a second
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
@@ -16513,7 +16513,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 except Exception:
                     pass
                 # Resolve the session's actual model/provider/base_url the
-                # same way the hygiene compression block does (~11080).
+                # same way the hygiene compaction block does (~11080).
                 # GatewayRunner has no self._model/self._base_url attrs
                 # (that was copy-pasted from SonOfAntonCLI, which does carry
                 # self.model/self.base_url), so using them here always raised
@@ -16954,10 +16954,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # _CONVERSATION_SCOPED_STATE.
             self._clear_conversation_scope(session_key, reason="auto_reset")
             # Evict the cached agent so the fresh session does not inherit the
-            # previous conversation's context_compressor._previous_summary —
+            # previous conversation's context_compactor._previous_summary —
             # the cache is keyed on the stable session_key, so an auto-reset
             # otherwise reuses the old agent and leaks prior history into new
-            # compaction summaries. Mirrors /reset and the compression-exhausted
+            # compaction summaries. Mirrors /reset and the compaction-exhausted
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
@@ -17193,12 +17193,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         history = await self.async_session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
-        # Session hygiene: auto-compress pathologically large transcripts
+        # Session hygiene: auto-compact pathologically large transcripts
         #
         # Long-lived gateway sessions can accumulate enough history that
         # every new message rehydrates an oversized transcript, causing
         # repeated truncation/context failures.  Detect this early and
-        # compress proactively — before the agent even starts.  (#628)
+        # compact proactively — before the agent even starts.  (#628)
         #
         # Token source priority:
         # 1. Actual API-reported prompt_tokens from the last turn
@@ -17213,17 +17213,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 get_model_context_length_async,
             )
 
-            # Read model + compression config from config.yaml.
+            # Read model + compaction config from config.yaml.
             # NOTE: hygiene threshold is intentionally HIGHER than the agent's
-            # own compressor (0.85 vs 0.50).  Hygiene is a safety net for
+            # own compactor (0.85 vs 0.50).  Hygiene is a safety net for
             # sessions that grew too large between turns — it fires pre-agent
-            # to prevent API failures.  The agent's own compressor handles
+            # to prevent API failures.  The agent's own compactor handles
             # normal context management during its tool loop with accurate
             # real token counts.  Having hygiene at 0.50 caused premature
-            # compression on every turn in long gateway sessions.
+            # compaction on every turn in long gateway sessions.
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
-            _hyg_compression_enabled = True
+            _hyg_compaction_enabled = True
             _hyg_hard_msg_limit = 5000
             _hyg_timeout_seconds = 30.0
             _hyg_total_ceiling_seconds = 600.0
@@ -17257,12 +17257,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
 
-                    # Read compression settings — only use enabled flag.
+                    # Read compaction settings — only use enabled flag.
                     # The threshold is intentionally separate from the agent's
-                    # compression.threshold (hygiene runs higher).
-                    _comp_cfg = _hyg_data.get("compression", {})
+                    # compaction.threshold (hygiene runs higher).
+                    _comp_cfg = _hyg_data.get("compaction", {})
                     if isinstance(_comp_cfg, dict):
-                        _hyg_compression_enabled = str(
+                        _hyg_compaction_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in {"true", "1", "yes"}
                         _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
@@ -17362,7 +17362,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception:
                 pass
 
-            if _hyg_compression_enabled:
+            if _hyg_compaction_enabled:
                 _hyg_context_length = await get_model_context_length_async(
                     _hyg_model,
                     base_url=_hyg_base_url or "",
@@ -17370,7 +17370,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     config_context_length=_hyg_config_context_length,
                     provider=_hyg_provider or "",
                 )
-                _compress_token_threshold = int(
+                _compact_token_threshold = int(
                     _hyg_context_length * _hyg_threshold_pct
                 )
                 _warn_token_threshold = int(_hyg_context_length * 0.95)
@@ -17389,39 +17389,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     # Note: rough estimates overestimate by 30-50% for code/JSON-heavy
                     # sessions, but that just means hygiene fires a bit early — which
                     # is safe and harmless.  The 85% threshold already provides ample
-                    # headroom (agent's own compressor runs at 50%).  A previous 1.4x
+                    # headroom (agent's own compactor runs at 50%).  A previous 1.4x
                     # multiplier tried to compensate by inflating the threshold, but
                     # 85% * 1.4 = 119% of context — which exceeds the model's limit
                     # and prevented hygiene from ever firing for ~200K models (GLM-5).
 
-                # Hard safety valve: force compression if message count is
+                # Hard safety valve: force compaction if message count is
                 # extreme, regardless of token estimates.  This breaks the
                 # death spiral where API disconnects prevent token data
-                # collection, which prevents compression, which causes more
+                # collection, which prevents compaction, which causes more
                 # disconnects.  5000 messages is far above any normal session
                 # but catches truly runaway growth before it becomes
                 # unrecoverable.  Set well clear of legitimate large-context
                 # (1M+) sessions doing thousands of short turns — those
-                # compress on the token threshold, not this count-based floor.
+                # compact on the token threshold, not this count-based floor.
                 # Threshold is configurable via
-                # compression.hygiene_hard_message_limit.
+                # compaction.hygiene_hard_message_limit.
                 # (#2153)
                 _HARD_MSG_LIMIT = _hyg_hard_msg_limit
-                _needs_compress = (
-                    _approx_tokens >= _compress_token_threshold
+                _needs_compact = (
+                    _approx_tokens >= _compact_token_threshold
                     or _msg_count >= _HARD_MSG_LIMIT
                 )
 
-                if _needs_compress:
+                if _needs_compact:
                     # Use the persistent DB-backed cooldown (same as the
-                    # in-conversation compression path in context_compressor.py)
+                    # in-conversation compaction path in context_compactor.py)
                     # so the cooldown survives gateway restarts. The in-memory
                     # dict was reset on every restart, re-triggering the same
-                    # failing compression and wedging session storage (#74136).
+                    # failing compaction and wedging session storage (#74136).
                     _session_db = getattr(self, "_session_db", None)
                     if _session_db is not None:
                         _session_db = getattr(_session_db, "_db", _session_db)
-                        _getter = getattr(_session_db, "get_compression_failure_cooldown", None)
+                        _getter = getattr(_session_db, "get_compaction_failure_cooldown", None)
                         if _getter is not None:
                             try:
                                 _cooldown_state = _getter(session_entry.session_id)
@@ -17429,27 +17429,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                 _cooldown_state = None
                             if _cooldown_state and _cooldown_state.get("remaining_seconds", 0) > 0:
                                 logger.info(
-                                    "Session hygiene: skipping compression for %s; "
+                                    "Session hygiene: skipping compaction for %s; "
                                     "previous failure cooldown active for %.1fs",
                                     session_entry.session_id,
                                     _cooldown_state["remaining_seconds"],
                                 )
-                                _needs_compress = False
+                                _needs_compact = False
 
-                if _needs_compress:
+                if _needs_compact:
                     logger.info(
-                        "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
+                        "Session hygiene: %s messages, ~%s tokens (%s) — auto-compacting "
                         "(threshold: %s%% of %s = %s tokens)",
                         _msg_count, f"{_approx_tokens:,}", _token_source,
                         int(_hyg_threshold_pct * 100),
                         f"{_hyg_context_length:,}",
-                        f"{_compress_token_threshold:,}",
+                        f"{_compact_token_threshold:,}",
                     )
 
                     _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
                     try:
-                        from agent.conversation_compression import CompressionCommitFence
+                        from agent.conversation_compaction import CompactionCommitFence
                         from run_agent import AIAgent
 
                         _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -17460,12 +17460,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         if _hyg_runtime.get("api_key"):
                             # Pass the FULL transcript (tool results included).
                             # Filtering to user/assistant-only starved the
-                            # compressor: tool results are usually the bulk of
+                            # compactor: tool results are usually the bulk of
                             # the context, _prune_old_tool_results never saw
                             # them, and short filtered histories tripped the
                             # protect-first/last early-return so nothing was
-                            # compressed at all (#3854). The agent loop passes
-                            # its full message list to _compress_context — the
+                            # compacted at all (#3854). The agent loop passes
+                            # its full message list to _compact_context — the
                             # gateway now matches.
                             _hyg_msgs = [
                                 m for m in history
@@ -17503,7 +17503,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     _hyg_agent,
                                     _hyg_session_row,
                                 )
-                                # If compression must rebuild instead of retaining
+                                # If compaction must rebuild instead of retaining
                                 # the cached prompt, make the persisted result
                                 # deliberately stale for every real gateway surface.
                                 _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
@@ -17516,11 +17516,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # minting a continuation child that then has to
                                     # be published back to SessionStore/topic
                                     # bindings.  If no SessionDB is available,
-                                    # compress_context leaves this flag false and
+                                    # compact_context leaves this flag false and
                                     # the guard below preserves the transcript.
-                                    _hyg_agent.compression_in_place = True
+                                    _hyg_agent.compaction_in_place = True
                                     _bind_hyg_state = getattr(
-                                        getattr(_hyg_agent, "context_compressor", None),
+                                        getattr(_hyg_agent, "context_compactor", None),
                                         "bind_session_state",
                                         None,
                                     )
@@ -17535,10 +17535,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
-                                    _hyg_commit_fence = CompressionCommitFence()
+                                    _hyg_commit_fence = CompactionCommitFence()
                                     _hyg_future = loop.run_in_executor(
                                         None,
-                                        lambda: _hyg_agent._compress_context(
+                                        lambda: _hyg_agent._compact_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
                                             commit_fence=_hyg_commit_fence,
@@ -17547,9 +17547,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     try:
                                         # Progress-aware wait: the timeout is an
                                         # INACTIVITY budget, not a total one. The
-                                        # compression worker streams its summary
+                                        # compaction worker streams its summary
                                         # call and ticks the fence per token
-                                        # (CompressionCommitFence.touch_progress),
+                                        # (CompactionCommitFence.touch_progress),
                                         # so a slow reasoning model that is still
                                         # generating keeps extending the deadline;
                                         # only a genuinely silent worker times out.
@@ -17569,7 +17569,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                 0.005,
                                             )
                                             try:
-                                                _compressed, _ = await asyncio.wait_for(
+                                                _compacted, _ = await asyncio.wait_for(
                                                     asyncio.shield(_hyg_future),
                                                     timeout=_slice,
                                                 )
@@ -17582,7 +17582,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                     and _hyg_waited < _hyg_total_ceiling_seconds
                                                 ):
                                                     logger.info(
-                                                        "Session hygiene compression for "
+                                                        "Session hygiene compaction for "
                                                         "session %s still streaming after "
                                                         "%.0fs (last progress %.1fs ago) — "
                                                         "extending wait (ceiling %.0fs)",
@@ -17618,15 +17618,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                             # that boundary to finish, so consume the
                                             # completed result instead of treating a
                                             # successful compaction as a timeout.
-                                            _compressed, _ = await _hyg_future
+                                            _compacted, _ = await _hyg_future
                                         else:
                                             # #76354 F4: release the timed-out
                                             # worker's durable lease via the
                                             # holder-qualified hook so the next
-                                            # compressor can acquire the lock
+                                            # compactor can acquire the lock
                                             # immediately (no ABA against a new
                                             # holder — release is holder-scoped).
-                                            _hyg_commit_fence.release_cancelled_compression_lock()
+                                            _hyg_commit_fence.release_cancelled_compaction_lock()
                                             self._defer_agent_cleanup_until_future_done(
                                                 _hyg_future,
                                                 _hyg_agent,
@@ -17643,38 +17643,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                 _record_hygiene_cooldown(
                                                     self, session_entry.session_id,
                                                     _hyg_cooldown,
-                                                    "session hygiene compression "
+                                                    "session hygiene compaction "
                                                     "timed out with no output from "
                                                     "the summary model",
                                                 )
                                             from agent.session_activity import (
                                                 ActivityProvenance,
                                             )
-                                            _stamp_hygiene_compression_provenance(
+                                            _stamp_hygiene_compaction_provenance(
                                                 _hyg_agent,
-                                                "session hygiene compression timed out",
-                                                ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
-                                                "hygiene compression timeout "
+                                                "session hygiene compaction timed out",
+                                                ActivityProvenance.AGENT_COMPACTION_TIMEOUT,
+                                                "hygiene compaction timeout "
                                                 "activity stamp failed",
                                             )
                                             logger.warning(
-                                                "Session hygiene compression for session %s "
+                                                "Session hygiene compaction for session %s "
                                                 "made no progress for %.1fs "
                                                 "(total wait %.1fs, ceiling %.1fs); "
-                                                "continuing without compression",
+                                                "continuing without compaction",
                                                 session_entry.session_id,
                                                 _hyg_commit_fence.seconds_since_progress(),
                                                 time.monotonic() - _hyg_wait_started,
                                                 _hyg_total_ceiling_seconds,
                                             )
                                             _timeout_msg = (
-                                                "Context compression timed out "
+                                                "Context compaction timed out "
                                                 f"after {_hyg_timeout_seconds:.1f}s "
                                                 "with no output from the summary model. "
                                                 "No messages were dropped — continuing without "
-                                                "compression. Run /compact to retry, /reset for "
+                                                "compaction. Run /compact to retry, /reset for "
                                                 "a clean session, or check your "
-                                                "auxiliary.compression model configuration."
+                                                "auxiliary.compaction model configuration."
                                             )
                                             try:
                                                 _adapter = self._adapter_for_source(source)
@@ -17686,7 +17686,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                     )
                                             except Exception as _werr:
                                                 logger.warning(
-                                                    "Failed to deliver compression-timeout "
+                                                    "Failed to deliver compaction-timeout "
                                                     "warning to user: %s",
                                                     _werr,
                                                 )
@@ -17710,8 +17710,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                             _hyg_cleanup_deferred = True
                                         raise
 
-                                    # _compress_context ends the old session and creates
-                                    # a new session_id.  Write compressed messages into
+                                    # _compact_context ends the old session and creates
+                                    # a new session_id.  Write compacted messages into
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
@@ -17719,15 +17719,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     _hyg_in_place = bool(
                                         getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
-                                    # Anti-growth guard: refuse a compression
+                                    # Anti-growth guard: refuse a compaction
                                     # that did not shrink the transcript
                                     # (observed: 427K -> 598K). Compare
                                     # like-for-like rough estimates.
                                     _hyg_in_toks = estimate_messages_tokens_rough(history)
-                                    _hyg_out_toks = estimate_messages_tokens_rough(_compressed)
+                                    _hyg_out_toks = estimate_messages_tokens_rough(_compacted)
                                     if _hyg_rotated and _hyg_out_toks > _hyg_in_toks:
                                         logger.warning(
-                                            "Gateway hygiene compression for session %s "
+                                            "Gateway hygiene compaction for session %s "
                                             "would grow transcript (~%s -> ~%s tokens); "
                                             "keeping the original transcript unchanged",
                                             session_entry.session_id,
@@ -17735,13 +17735,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                             f"{_hyg_out_toks:,}",
                                         )
                                         _hyg_rotated = False
-                                        _compressed = history
+                                        _compacted = history
                                     # Only rewrite the transcript when rotation produced
                                     # a NEW session id.  In-place compaction does NOT
                                     # need a rewrite: archive_and_compact() has already
                                     # soft-archived the previous active rows and inserted
                                     # the compacted messages as the new active set inside
-                                    # _compress_context().  Calling rewrite_transcript()
+                                    # _compact_context().  Calling rewrite_transcript()
                                     # after in-place compaction would invoke
                                     # replace_messages(active_only=False) which DELETEs
                                     # ALL rows — including the archived turns that
@@ -17749,12 +17749,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # (silent data loss, #61145).
                                     #
                                     # The danger this guards against (mirrors the
-                                    # /compact fix #44794/#39704): if _compress_context
+                                    # /compact fix #44794/#39704): if _compact_context
                                     # returns a summary but neither rotates nor completes
                                     # archive_and_compact(), the session_id is unchanged
                                     # for a FAILURE reason, and an unconditional
                                     # rewrite_transcript() would DELETE the original
-                                    # messages and replace them with only the compressed
+                                    # messages and replace them with only the compacted
                                     # summary (permanent data loss, #21301).
                                     #
                                     # Write-before-repoint (mirrors manual /compact):
@@ -17766,11 +17766,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # transcript first; only then rebind the live entry.
                                     if _hyg_rotated:
                                         if not await self.async_session_store.rewrite_transcript(
-                                            _hyg_new_sid, _compressed
+                                            _hyg_new_sid, _compacted
                                         ):
                                             logger.error(
                                                 "Session hygiene: failed to persist "
-                                                "compressed transcript for rotated "
+                                                "compacted transcript for rotated "
                                                 "session %s → %s; keeping the live "
                                                 "entry on the original session so the "
                                                 "conversation is not dropped",
@@ -17794,29 +17794,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
                                         session_entry.last_prompt_tokens = 0
-                                        history = _compressed
-                                        _new_count = len(_compressed)
+                                        history = _compacted
+                                        _new_count = len(_compacted)
                                         _new_tokens = estimate_messages_tokens_rough(
-                                            _compressed
+                                            _compacted
                                         )
                                     elif _hyg_in_place:
                                         # archive_and_compact() already persisted the
-                                        # compacted transcript inside _compress_context.
+                                        # compacted transcript inside _compact_context.
                                         # Reset counts to match the new active set.
                                         session_entry.last_prompt_tokens = 0
-                                        history = _compressed
-                                        _new_count = len(_compressed)
+                                        history = _compacted
+                                        _new_count = len(_compacted)
                                         _new_tokens = estimate_messages_tokens_rough(
-                                            _compressed
+                                            _compacted
                                         )
                                     else:
                                         # No rewrite happened — transcript preserved
-                                        # unchanged, so the post-compression counts equal
-                                        # the pre-compression ones.
+                                        # unchanged, so the post-compaction counts equal
+                                        # the pre-compaction ones.
                                         _new_count = _msg_count
                                         _new_tokens = _approx_tokens
                                         logger.warning(
-                                            "Gateway hygiene compression for session %s "
+                                            "Gateway hygiene compaction for session %s "
                                             "did not rotate or compact in place "
                                             "(no session_db on the hygiene agent) — "
                                             "preserving the original transcript instead "
@@ -17825,7 +17825,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                         )
 
                                     logger.info(
-                                        "Session hygiene: compressed %s → %s msgs, "
+                                        "Session hygiene: compacted %s → %s msgs, "
                                         "~%s → ~%s tokens",
                                         _msg_count, _new_count,
                                         f"{_approx_tokens:,}", f"{_new_tokens:,}",
@@ -17834,12 +17834,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     if _new_tokens >= _warn_token_threshold:
                                         logger.warning(
                                             "Session hygiene: still ~%s tokens after "
-                                            "compression",
+                                            "compaction",
                                             f"{_new_tokens:,}",
                                         )
 
                                     # If summary generation failed, the
-                                    # compressor aborts entirely and returns
+                                    # compactor aborts entirely and returns
                                     # messages unchanged — nothing is dropped.
                                     # Surface a visible warning to the gateway
                                     # user — agent.log alone is invisible on
@@ -17847,16 +17847,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # is "frozen" at the current size and can
                                     # /compact to retry or /reset to start
                                     # fresh.
-                                    _comp = getattr(_hyg_agent, "context_compressor", None)
+                                    _comp = getattr(_hyg_agent, "context_compactor", None)
                                     _hyg_aborted = _comp is not None and getattr(
-                                        _comp, "_last_compress_aborted", False
+                                        _comp, "_last_compact_aborted", False
                                     )
                                     if not _hyg_aborted:
                                         # Recovery decision lives in the
                                         # extracted, unit-tested predicate — the
                                         # degenerate "did not rotate or compact
                                         # in place" path (#21301) sets both flags
-                                        # False and reuses the pre-compression
+                                        # False and reuses the pre-compaction
                                         # counts, so a numbers-only check would
                                         # read a no-op as success and clear the
                                         # streak on every wedged run (#79624).
@@ -17892,11 +17892,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                         from agent.session_activity import (
                                             ActivityProvenance,
                                         )
-                                        _stamp_hygiene_compression_provenance(
+                                        _stamp_hygiene_compaction_provenance(
                                             _hyg_agent,
-                                            "session hygiene compression aborted",
-                                            ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
-                                            "hygiene compression abort "
+                                            "session hygiene compaction aborted",
+                                            ActivityProvenance.AGENT_COMPACTION_COOLDOWN,
+                                            "hygiene compaction abort "
                                             "activity stamp failed",
                                         )
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
@@ -17906,11 +17906,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                         from agent.redact import redact_sensitive_text
                                         _err = redact_sensitive_text(_err, force=True)
                                         _warn_msg = (
-                                            "Context compression aborted "
+                                            "Context compaction aborted "
                                             f"({_err}). No messages were dropped — "
                                             "conversation is unchanged. Run /compact "
                                             "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
+                                            "check your auxiliary.compaction model "
                                             "configuration."
                                         )
                                         try:
@@ -17919,23 +17919,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                 await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
                                         except Exception as _werr:
                                             logger.warning(
-                                                "Failed to deliver compression-failure warning to user: %s",
+                                                "Failed to deliver compaction-failure warning to user: %s",
                                                 _werr,
                                             )
                                     # Separately: if the user's CONFIGURED aux
                                     # model failed and we recovered by falling
                                     # back to the main model, tell them — a
-                                    # misconfigured auxiliary.compression.model
+                                    # misconfigured auxiliary.compaction.model
                                     # is something only they can fix, and
                                     # silent recovery would hide it.
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
                                         _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
                                         _aux_msg = (
-                                            f"Configured compression model `{_aux_model}` "
+                                            f"Configured compaction model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
                                             "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
+                                            "check `auxiliary.compaction.model` in config.yaml."
                                         )
                                         try:
                                             _adapter = self._adapter_for_source(source)
@@ -17958,7 +17958,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
                     except Exception as e:
                         logger.warning(
-                            "Session hygiene auto-compress failed: %s", e
+                            "Session hygiene auto-compact failed: %s", e
                         )
 
         # First-message onboarding -- only on the very first interaction ever.
@@ -18142,7 +18142,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Run the agent. Capture the session id that this run was launched
-            # against so post-run compression publication can be identity-guarded
+            # against so post-run compaction publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
@@ -18243,7 +18243,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # (_refresh_agent_cache_message_count) is intentionally deferred
             # until AFTER this turn's transcript persistence block below — it
             # must include the first-turn `session_meta` marker row and the
-            # compression session_id swap, both of which happen later.  See
+            # compaction session_id swap, both of which happen later.  See
             # the call site after the `update_session(...)` write.
 
             # Successful turn — clear any stuck-loop counter for this session.
@@ -18273,8 +18273,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
-            # in conversation_compression.py; propagate to SessionEntry + _save().
-            # If the agent's session_id changed during compression, update
+            # in conversation_compaction.py; propagate to SessionEntry + _save().
+            # If the agent's session_id changed during compaction, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 if session_entry.session_id == _run_start_session_id:
@@ -18296,7 +18296,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     logger.info(
                         "Skipping agent-result session split sync for %s because "
                         "the session binding moved from %s to %s before "
-                        "compression finished",
+                        "compaction finished",
                         session_key or "?",
                         _run_start_session_id,
                         session_entry.session_id,
@@ -18425,7 +18425,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # intermediate reasoning) so sessions can be resumed with full context
             # and transcripts are useful for debugging and training data.
             #
-            # IMPORTANT: For context-overflow failures (compression exhausted,
+            # IMPORTANT: For context-overflow failures (compaction exhausted,
             # generic 400 on large sessions) we must NOT persist the user's
             # message — doing so would grow the session further and cause the
             # same failure on the next attempt, an infinite loop. (#1630, #9893)
@@ -18445,7 +18445,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # exceeded" or "invalid auth token". Matches run_agent.py's
             # own context-length classifier.
             is_context_overflow_failure = agent_failed_early and (
-                bool(agent_result.get("compression_exhausted"))
+                bool(agent_result.get("compaction_exhausted"))
                 or any(p in _err_str_for_classify for p in (
                     "context length", "context size", "context window",
                     "maximum context", "token limit", "too many tokens",
@@ -18475,26 +18475,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     agent_result.get("error", "processing incomplete"),
                 )
 
-            # When compression is exhausted, the session is permanently too
+            # When compaction is exhausted, the session is permanently too
             # large to process.  Auto-reset it so the next message starts
             # fresh instead of replaying the same oversized context in an
             # infinite fail loop.  (#9893)
             #
             # A lock-contended defer is the OPPOSITE case: the session is
-            # temporarily uncompressible only because a concurrent path holds
-            # the compression lock and is actively shrinking it. Never wipe
+            # temporarily uncompactable only because a concurrent path holds
+            # the compaction lock and is actively shrinking it. Never wipe
             # the session for that — retry-next-message semantics apply
             # (#69870 lock-skip consumer; salvaged from #49874).
-            if agent_result.get("compression_deferred"):
+            if agent_result.get("compaction_deferred"):
                 logger.info(
-                    "Compression deferred for session %s — the compression "
-                    "lock is held by a concurrent compressor. Keeping the "
+                    "Compaction deferred for session %s — the compaction "
+                    "lock is held by a concurrent compactor. Keeping the "
                     "session intact; the next message retries normally.",
                     session_entry.session_id if session_entry else "?",
                 )
-            elif agent_result.get("compression_exhausted") and session_entry and session_key:
+            elif agent_result.get("compaction_exhausted") and session_entry and session_key:
                 logger.info(
-                    "Auto-resetting session %s after compression exhaustion.",
+                    "Auto-resetting session %s after compaction exhaustion.",
                     session_entry.session_id,
                 )
                 new_entry = await self.async_session_store.reset_session(session_key)
@@ -18503,13 +18503,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # conversation-scoped per-session dict (#58403 and siblings).
                 # See _CONVERSATION_SCOPED_STATE.
                 self._clear_conversation_scope(
-                    session_key, reason="compression_exhausted_reset"
+                    session_key, reason="compaction_exhausted_reset"
                 )
                 if new_entry is not None:
                     session_entry = new_entry
                 response = (response or "") + (
                     "\n\nSession auto-reset — the conversation exceeded the "
-                    "maximum context size and could not be compressed further. "
+                    "maximum context size and could not be compacted further. "
                     "Your next message will start a fresh session."
                 )
 
@@ -18657,7 +18657,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
-            # compression decisions.
+            # compaction decisions.
             await self.async_session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
@@ -18849,7 +18849,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if _hist_len > 50:
                     return (
                         "Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
+                        "Use /compact to compact the conversation, or "
                         "/reset to start fresh."
                     )
                 elif status_code == 400:
@@ -19299,7 +19299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # profile secret scope and auxiliary runtime context are contextvars,
         # and a default-executor hop would drop them — aux-client provider
         # resolution would then read credentials unscoped and fail under
-        # multiplexing (same pattern as compression in slash_commands.py).
+        # multiplexing (same pattern as compaction in slash_commands.py).
         decision = await self._run_in_executor_with_context(
             lambda: mgr.evaluate_after_turn(
                 final_response or "",
@@ -22050,7 +22050,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         Returns one of:
 
         - ``"deliver"`` — the spawning session is live, or ended by a
-          compression rotation with a verified live continuation. The inner
+          compaction rotation with a verified live continuation. The inner
           #55578 resolver (:meth:`_resolve_async_delegation_session`) still
           owns the actual route retarget; this pre-flight only proves the
           completion is deliverable so the durable ack stays honest.
@@ -22059,7 +22059,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
           succeed; the durable row should be terminally dropped rather than
           falsely acknowledged as delivered or replayed forever as pending.
         - ``"retry"`` — transient uncertainty (session DB unavailable, lookup
-          error, or a compression rotation caught mid-flight before its
+          error, or a compaction rotation caught mid-flight before its
           continuation exists). The claim should be released so a later
           consumer can retry; the attempt cap bounds the churn.
         """
@@ -22079,7 +22079,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
-        if end_reason != "compression":
+        if end_reason != "compaction":
             # An ended parent is only unreachable when the USER closed the
             # thread of work (explicit boundary: /new -> session_reset /
             # new_session, user_exit, session_switch). Idle/timeout ends are
@@ -22095,9 +22095,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return "terminal"
             return "deliver"
         try:
-            tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            tip_session_id = await session_db.get_compaction_tip(parent_session_id)
             if not tip_session_id or tip_session_id == parent_session_id:
-                # Rotation caught mid-flight: parent is compression-ended but
+                # Rotation caught mid-flight: parent is compaction-ended but
                 # its continuation isn't visible yet. Retry, don't drop.
                 return "retry"
             tip = await session_db.get_session(tip_session_id)
@@ -22207,7 +22207,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     return None
                 if verdict == "retry":
                     # Transient uncertainty (session DB unavailable or a
-                    # compression rotation mid-flight): signal the watcher to
+                    # compaction rotation mid-flight): signal the watcher to
                     # re-poll and try again rather than dropping or
                     # misrouting the result.
                     return False
@@ -22905,7 +22905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
 
     # Config keys whose values MUST invalidate the gateway's cached agent
-    # when they change.  The agent bakes these into its compressor / context
+    # when they change.  The agent bakes these into its compactor / context
     # handling at construction time, so a mid-running-gateway config edit
     # would otherwise be silently ignored until the user triggers a
     # different cache eviction (model switch, /reset, etc.).
@@ -22915,18 +22915,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
         ("model", "max_tokens"),
-        ("compression", "enabled"),
-        ("compression", "progress_notices"),
-        ("compression", "threshold"),
-        ("compression", "model_thresholds"),
-        ("compression", "threshold_tokens"),
-        ("compression", "codex_gpt55_autoraise"),
-        ("compression", "target_ratio"),
-        ("compression", "protect_last_n"),
-        ("compression", "proactive_prune_tokens"),
-        ("compression", "proactive_prune_min_result_chars"),
-        ("compression", "proactive_prune_min_reclaim_tokens"),
-        ("compression", "min_tail_user_messages"),
+        ("compaction", "enabled"),
+        ("compaction", "progress_notices"),
+        ("compaction", "threshold"),
+        ("compaction", "model_thresholds"),
+        ("compaction", "threshold_tokens"),
+        ("compaction", "codex_gpt55_autoraise"),
+        ("compaction", "target_ratio"),
+        ("compaction", "protect_last_n"),
+        ("compaction", "proactive_prune_tokens"),
+        ("compaction", "proactive_prune_min_result_chars"),
+        ("compaction", "proactive_prune_min_reclaim_tokens"),
+        ("compaction", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
         ("checkpoints", "enabled"),
@@ -23042,7 +23042,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ``cache_keys`` is an optional flat dict of additional config values
         that should invalidate the cache when they change.  Callers pass
         the output of ``_extract_cache_busting_config(user_config)`` so
-        edits to model.context_length / compression.* in config.yaml are
+        edits to model.context_length / compaction.* in config.yaml are
         picked up on the next gateway message without a manual restart.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
@@ -23307,8 +23307,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     ) -> bool:
         """Follow a mid-turn session_id rotation with the held turn lease.
 
-        Compression (session-hygiene pre-compression or the agent's own
-        compressor) can rotate ``session_entry.session_id`` while this turn
+        Compaction (session-hygiene pre-compaction or the agent's own
+        compactor) can rotate ``session_entry.session_id`` while this turn
         is in flight. The turn's flush targets the NEW id, so the
         serialization boundary must follow it — otherwise an alias routing
         key resolving the new id (topic tip-walk onto the fresh child) could
@@ -23337,7 +23337,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         THE single conversation-boundary funnel. Call this — and nothing
         else — whenever a session_key crosses a conversation boundary:
         /new, /resume, auto-reset (idle/daily/suspended), expiry
-        finalization, and the compression-exhausted auto-reset.
+        finalization, and the compaction-exhausted auto-reset.
 
         Why a funnel: these boundaries used to each carry a hand-copied
         pop-list of the per-session dicts, and the lists drifted every time
@@ -25182,7 +25182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         turn_ctx._step_callback_sync = turn_runner._step_callback_sync
 
         # Bridge sync event_callback → async hooks.emit for lifecycle events
-        # (e.g. session:compress fires after context compression splits a session)
+        # (e.g. session:compact fires after context compaction splits a session)
         # Bridge extracted to TurnRunner._event_callback_sync.
         turn_ctx._event_callback_sync = turn_runner._event_callback_sync
 
@@ -26240,7 +26240,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # the user: the stream consumer streamed it (final_response_sent /
             # final_content_delivered), or the interim preview delivered that
             # *exact* final text. Unrelated commentary/progress shown during a
-            # compression/session split must not be mistaken for the final
+            # compaction/session split must not be mistaken for the final
             # response (#14238).
             _streamed = _stream_confirmed_final_delivery(
                 _sc,

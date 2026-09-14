@@ -1,6 +1,6 @@
 """Ambient session-accounting context for auxiliary LLM calls.
 
-Auxiliary calls (vision, compression, title generation, web_extract,
+Auxiliary calls (vision, compaction, title generation, web_extract,
 session_search, ...) funnel through ``agent.auxiliary_client`` which has no
 session handle — so their token usage was historically discarded, leaving
 dashboard analytics blind to aux model spend (issue #23270).

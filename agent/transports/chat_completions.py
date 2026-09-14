@@ -62,9 +62,9 @@ def _add_prompt_cache_key(
     """Add a content-addressed key only for an explicitly capable endpoint.
 
     ``cache_scope_id``, when provided, is the rotation-stable logical scope
-    (compression-lineage root — agent/prompt_cache_scope.py) and takes
+    (compaction-lineage root — agent/prompt_cache_scope.py) and takes
     precedence over the physical ``session_id`` so the key survives
-    context-compression session rotation (#79017).
+    context-compaction session rotation (#79017).
     """
     if not supports_prompt_cache_key:
         return

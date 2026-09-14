@@ -299,7 +299,7 @@ class HeartbeatManager:
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:
-    """Carry a heartbeat across a compression session rotation.
+    """Carry a heartbeat across a compaction session rotation.
 
     Same shape as ``goals.migrate_goal_to_session`` — copy to the child,
     archive the parent row, never raise.

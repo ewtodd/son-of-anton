@@ -2,10 +2,10 @@
 
 `custom_providers.<p>.models.<m>.context_length` was honoured only when the
 caller threaded the provider list through as an argument. One of the three call
-sites did. The others — the CLI's @-reference sizing and the context compressor
+sites did. The others — the CLI's @-reference sizing and the context compactor
 — skipped the override and fell through to the catalog's generic 128K.
 
-The compressor is the worst place for it to land: it sizes compaction against a
+The compactor is the worst place for it to land: it sizes compaction against a
 window eight times smaller than the real one, so it compacts a conversation
 with most of its context still free, and nothing about that looks like an
 error.

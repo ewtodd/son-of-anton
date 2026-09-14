@@ -5884,18 +5884,18 @@ def run_job(
             # The agent turn has already returned. Bound every subsequent DB
             # operation so storage failure cannot hold the dispatch guard.
             _session_db = _BoundedCronSessionDB(_session_db, job_id)
-            # Compression can rotate the live agent onto a continuation while
+            # Compaction can rotate the live agent onto a continuation while
             # this run is in flight. Finalize that continuation, not the stale
             # cron id captured before AIAgent started. SessionDB is the source
             # of truth for the lineage; agent.session_id is only a fail-safe
             # when the lookup itself is unavailable.
             _final_cron_session_id = _cron_session_id
             try:
-                _compression_tip = _session_db.get_compression_tip(
+                _compaction_tip = _session_db.get_compaction_tip(
                     _cron_session_id
                 )
-                if _compression_tip:
-                    _final_cron_session_id = _compression_tip
+                if _compaction_tip:
+                    _final_cron_session_id = _compaction_tip
             except (Exception, KeyboardInterrupt) as e:
                 try:
                     _agent_session_id = getattr(agent, "session_id", None)
@@ -5904,7 +5904,7 @@ def run_job(
                 except (Exception, KeyboardInterrupt):
                     pass
                 logger.debug(
-                    "Job '%s': failed to resolve cron compression tip: %s",
+                    "Job '%s': failed to resolve cron compaction tip: %s",
                     job_id,
                     e,
                 )

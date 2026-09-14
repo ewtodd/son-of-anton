@@ -1030,7 +1030,7 @@ _file_ops_cache: dict = {}
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 #   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
 #                   Used to skip re-reads of unchanged files.  Reset on
-#                   context compression (the original content is summarised
+#                   context compaction (the original content is summarised
 #                   away so the model needs the full content again).
 #   "read_timestamps": dict mapping resolved_path → modification-time float
 #                      recorded when the file was last read (or written) by
@@ -1847,9 +1847,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 def reset_file_dedup(task_id: str = None):
     """Clear the deduplication cache for file reads.
 
-    Called after context compression — the original read content has been
+    Called after context compaction — the original read content has been
     summarised away, so the model needs the full content if it reads the
-    same file again.  Without this, reads after compression would return
+    same file again.  Without this, reads after compaction would return
     a "file unchanged" stub pointing at content that no longer exists in
     context.
 

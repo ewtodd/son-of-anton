@@ -397,7 +397,7 @@ class CLIAgentSetupMixin:
                     _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
                     _cprint(f"{_DIM}Use a session ID from a previous CLI run (son-of-anton sessions list).{_RST}")
                 return False
-            # If the requested session is the (empty) head of a compression
+            # If the requested session is the (empty) head of a compaction
             # chain, walk to the descendant that actually holds the messages.
             # See #15000 and SessionDB.resolve_resume_session_id.
             try:
@@ -406,7 +406,7 @@ class CLIAgentSetupMixin:
                 resolved_id = self.session_id
             if resolved_id and resolved_id != self.session_id:
                 ChatConsole().print(
-                    f"[dim]Session {_escape(self.session_id)} was compressed into "
+                    f"[dim]Session {_escape(self.session_id)} was compacted into "
                     f"{_escape(resolved_id)}; resuming the descendant with your "
                     f"transcript.[/dim]"
                 )
@@ -419,7 +419,7 @@ class CLIAgentSetupMixin:
                 return False
             # This path loads only the TIP session's rows (no ancestors),
             # so guard with a tip-only count — the full-lineage count would
-            # over-reject heavily-compressed sessions with a small tip.
+            # over-reject heavily-compacted sessions with a small tip.
             resume_limit_error = self._resume_history_limit_error(tip_only=True)
             if resume_limit_error:
                 self._resume_history_error = resume_limit_error
@@ -594,7 +594,7 @@ class CLIAgentSetupMixin:
 
         ``tip_only`` matches call sites that load only the tip session's rows
         (``get_messages_as_conversation`` without ancestors) — counting the
-        full lineage there would over-reject heavily-compressed sessions
+        full lineage there would over-reject heavily-compacted sessions
         whose tip is small. Generic guard failures fail OPEN (resume
         proceeds) — only a genuine over-limit result blocks.
         """
@@ -661,7 +661,7 @@ class CLIAgentSetupMixin:
             )
             return False
 
-        # If the requested session is the (empty) head of a compression chain,
+        # If the requested session is the (empty) head of a compaction chain,
         # walk to the descendant that actually holds the messages. See #15000.
         try:
             resolved_id = self._session_db.resolve_resume_session_id(self.session_id)
@@ -669,7 +669,7 @@ class CLIAgentSetupMixin:
             resolved_id = self.session_id
         if resolved_id and resolved_id != self.session_id:
             self._console_print(
-                f"[dim]Session {self.session_id} was compressed into "
+                f"[dim]Session {self.session_id} was compacted into "
                 f"{resolved_id}; resuming the descendant with your transcript.[/]"
             )
             self.session_id = resolved_id
@@ -693,7 +693,7 @@ class CLIAgentSetupMixin:
             self._resume_display_history = [
                 m for m in display_history if m.get("role") != "session_meta"
             ]
-            from agent.context_compressor import is_user_originated_turn
+            from agent.context_compactor import is_user_originated_turn
 
             # Count only user-originated turns (#80622): legacy compaction
             # handoffs are durable role=user rows without display_kind.

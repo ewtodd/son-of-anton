@@ -11,7 +11,7 @@ TIPS = [
     # --- Slash Commands ---
     "/background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
-    "/compact manually compresses conversation context when things get long.",
+    "/compact manually compacts conversation context when things get long.",
     "/rollback lists filesystem checkpoints — restore files the agent modified to any prior state.",
     "/rollback diff 2 previews what changed since checkpoint 2 without restoring anything.",
     "/rollback 2 src/file.py restores a single file from a specific checkpoint.",
@@ -99,7 +99,7 @@ TIPS = [
 
     "Save money: son-of-anton tools disables unused tools, son-of-anton skills config trims skills down.",
     "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
-    "son-of-anton models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
+    "son-of-anton models routes vision, compaction, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---
     "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
@@ -108,7 +108,7 @@ TIPS = [
     "Set display.compact: true to reduce whitespace in output for denser information.",
     "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
-    "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
+    "Set compaction.threshold: 0.50 to control when auto-compaction fires (default: 50% of context).",
     "Set agent.max_turns: 1000 to let the agent take more tool-calling steps per turn.",
     "Set file_read_max_chars: 200000 to increase the max content per read_file call.",
     "Set approvals.mode: smart to let an LLM auto-approve safe commands and auto-deny dangerous ones.",
@@ -192,8 +192,8 @@ TIPS = [
     "Context files (.son-of-anton.md, AGENTS.md) are security-scanned for prompt injection before loading.",
     "command_allowlist in config.yaml permanently approves specific shell command patterns.",
 
-    # --- Context & Compression ---
-    "Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.",
+    # --- Context & Compaction ---
+    "Context auto-compacts when it reaches the threshold — memories are flushed and history summarized.",
     "The status bar turns yellow, then orange, then red as context fills up.",
     "SOUL.md is the agent's primary identity file — customize it to shape behavior.",
     "Son of Anton loads project context from .son-of-anton.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match).",
@@ -247,7 +247,7 @@ TIPS = [
     "SOUL.md completely replaces the agent's default identity — rewrite it to make Son of Anton your own.",
     "SOUL.md is auto-seeded with a default personality on first run. Edit it to customize.",
     "/compact <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.",
-    "On second+ compression, the compressor updates the previous summary instead of starting from scratch.",
+    "On second+ compaction, the compactor updates the previous summary instead of starting from scratch.",
     "Before a gateway session reset, Son of Anton auto-flushes important facts to memory in the background.",
     "network.force_ipv4: true in config.yaml fixes hangs on servers with broken IPv6 — monkey-patches socket.",
     "The terminal tool annotates common exit codes: grep returning 1 = 'No matches found (not an error)'.",
@@ -285,15 +285,15 @@ TIPS = [
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
     "Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.",
     "context.engine in config.yaml can be set to a plugin name for alternative context management strategies.",
-    "The compressor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM runs.",
-    "When compression fails, further attempts are paused for 10 minutes to avoid API hammering.",
+    "The compactor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM runs.",
+    "When compaction fails, further attempts are paused for 10 minutes to avoid API hammering.",
     "Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.",
     "Profile names cannot collide with existing PATH binaries — 'son-of-anton profile create ls' would be rejected.",
     "son-of-anton profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).",
     ".cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.",
     "Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.",
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
-    "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.",
+    "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compaction.model, etc. in config.yaml.",
     "The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.",
     "son-of-anton claw migrate --dry-run previews OpenClaw migration without writing anything.",
     "File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed.",

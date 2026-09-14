@@ -747,7 +747,7 @@ class SessionEntry:
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
     
-    # Last API-reported prompt tokens (for accurate compression pre-check)
+    # Last API-reported prompt tokens (for accurate compaction pre-check)
     last_prompt_tokens: int = 0
     
     # Set when a session was created because the previous one expired;
@@ -1476,10 +1476,10 @@ class SessionStore:
                     if recovery_lookup_failed:
                         continue
 
-                    # If the stale entry points at a compression-ended parent but
+                    # If the stale entry points at a compaction-ended parent but
                     # a newer live child session exists for the exact same gateway
                     # peer, repoint the routing index instead of dropping it. A
-                    # hard restart between compression rotation and the next clean
+                    # hard restart between compaction rotation and the next clean
                     # save otherwise leaves the platform with no resumable mapping, so
                     # queued/resume-pending work disappears until the user sends a
                     # fresh message.
@@ -1663,7 +1663,7 @@ class SessionStore:
 
         - The key -> session_id mapping never changes here.  Structural
           transitions (create/recover/reset/switch/prune, and
-          compression-tip heals — see get_or_create_session) still use
+          compaction-tip heals — see get_or_create_session) still use
           the full-rewrite path, which also refreshes the legacy
           sessions.json mirror.  Between structural saves the mirror may
           lag in metadata only; every remaining sessions.json reader is
@@ -2046,7 +2046,7 @@ class SessionStore:
         session_key: str,
         source: Optional[SessionSource],
         display_name: Optional[str] = None,
-        include_compression_ancestors: bool = False,
+        include_compaction_ancestors: bool = False,
     ) -> None:
         """Persist the routing peer for an existing gateway session row."""
         if not self._db or not source:
@@ -2070,7 +2070,7 @@ class SessionStore:
                 thread_id=source.thread_id,
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
-                include_compression_ancestors=include_compression_ancestors,
+                include_compaction_ancestors=include_compaction_ancestors,
             )
         except TypeError:
             # Older SessionDB without display_name/origin_json kwargs.
@@ -2127,7 +2127,7 @@ class SessionStore:
                 #
                 # promote_to_session_reset is conditional: it only promotes
                 # live rows or rows ended with ``agent_close``.  Explicit
-                # boundaries (compression, session_reset, new_command, etc.)
+                # boundaries (compaction, session_reset, new_command, etc.)
                 # are preserved — the first writer wins.
                 self._db.promote_to_session_reset(entry.session_id)
             except Exception as exc:
@@ -2281,33 +2281,33 @@ class SessionStore:
         
         return None
     
-    def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
-        """Return the latest compression continuation for *session_id*.
+    def _compaction_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Return the latest compaction continuation for *session_id*.
 
-        When an agent compresses context mid-turn the transcript moves to a
+        When an agent compacts context mid-turn the transcript moves to a
         child session, but a restart or failed send can leave the SessionStore
-        mapping pointing at the compressed parent.  Heal that on read so the
+        mapping pointing at the compacted parent.  Heal that on read so the
         next inbound message resumes the child instead of reloading the parent.
         """
         if not session_id or self._db is None:
             return session_id
         try:
-            return self._db.get_compression_tip(session_id) or session_id
+            return self._db.get_compaction_tip(session_id) or session_id
         except Exception:
             logger.debug(
-                "Compression-tip lookup failed for session %s",
+                "Compaction-tip lookup failed for session %s",
                 session_id,
                 exc_info=True,
             )
             return session_id
 
-    def _heal_compression_tip_locked(
+    def _heal_compaction_tip_locked(
         self,
         entry: "SessionEntry",
         original_session_id: Optional[str],
         canonical_session_id: Optional[str],
     ) -> bool:
-        """Rewrite *entry* to the compression continuation if stale. Lock held."""
+        """Rewrite *entry* to the compaction continuation if stale. Lock held."""
         if (
             not original_session_id
             or not canonical_session_id
@@ -2316,7 +2316,7 @@ class SessionStore:
         ):
             return False
         logger.info(
-            "SessionStore healed compressed session mapping: %s -> %s",
+            "SessionStore healed compacted session mapping: %s -> %s",
             entry.session_id,
             canonical_session_id,
         )
@@ -2466,7 +2466,7 @@ class SessionStore:
         existing_session_id = None
         force_new_observed_entry = None
 
-        # ---- Phase 0: lock read -- existing session_id for compression tip ----
+        # ---- Phase 0: lock read -- existing session_id for compaction tip ----
         if not force_new:
             with self._lock:
                 self._ensure_loaded_locked()
@@ -2474,9 +2474,9 @@ class SessionStore:
                 if entry is not None:
                     existing_session_id = entry.session_id
 
-        # Compression tip lookup outside the lock (DB I/O).
+        # Compaction tip lookup outside the lock (DB I/O).
         canonical_existing_session_id = (
-            self._compression_tip_for_session_id(existing_session_id)
+            self._compaction_tip_for_session_id(existing_session_id)
             if existing_session_id
             else None
         )
@@ -2545,7 +2545,7 @@ class SessionStore:
                 # A heal rewrites entry.session_id, so it must reach the
                 # sessions.json mirror too: force the full-rewrite save
                 # below (the fast path persists state.db only).
-                _healed = self._heal_compression_tip_locked(
+                _healed = self._heal_compaction_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
 
@@ -3242,16 +3242,16 @@ class SessionStore:
 
         return new_entry
 
-    def advance_compression_session(
+    def advance_compaction_session(
         self,
         session_key: str,
         expected_session_id: str,
         target_session_id: str,
     ) -> Optional[SessionEntry]:
-        """CAS-advance one route along an already-verified compression lineage.
+        """CAS-advance one route along an already-verified compaction lineage.
 
         Unlike ``switch_session``, this does not end or reopen SQLite rows. The
-        compression transaction already owns that lifecycle; this method only
+        compaction transaction already owns that lifecycle; this method only
         repairs the persisted gateway key→session mapping. Returning ``None``
         means the route moved after the caller's snapshot (for example /new),
         so the caller must fail closed instead of overwriting the newer route.
@@ -3268,14 +3268,14 @@ class SessionStore:
                 return entry
             if entry.session_id != expected_session_id:
                 return None
-            if not self._heal_compression_tip_locked(
+            if not self._heal_compaction_tip_locked(
                 entry,
                 expected_session_id,
                 target_session_id,
             ):
                 return None
-            # Compression repoint is store bookkeeping, not user activity —
-            # leave ``updated_at`` alone so a background compression on an
+            # Compaction repoint is store bookkeeping, not user activity —
+            # leave ``updated_at`` alone so a background compaction on an
             # idle session cannot make it look fresh to reset policy or the
             # restart-resume freshness gate (#85709).
             self._save()
@@ -3346,7 +3346,7 @@ class SessionStore:
                 session_key,
                 new_entry.origin if new_entry else None,
                 display_name=new_entry.display_name if new_entry else None,
-                include_compression_ancestors=True,
+                include_compaction_ancestors=True,
             )
 
         return new_entry
@@ -3484,17 +3484,17 @@ class SessionStore:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from son_of_anton_state import CompressionSessionClosedError
+                from son_of_anton_state import CompactionSessionClosedError
 
-                if isinstance(exc, CompressionSessionClosedError):
+                if isinstance(exc, CompactionSessionClosedError):
                     # Resolve the full continuation chain via the canonical
                     # transitive API — a depth-1 live-child lookup misses
-                    # lineages with >=2 compression hops (root -> mid -> tip).
-                    # ``get_compression_tip`` returns the input id when no
+                    # lineages with >=2 compaction hops (root -> mid -> tip).
+                    # ``get_compaction_tip`` returns the input id when no
                     # continuation exists; adopt only a different, still-live
                     # tip, otherwise fail closed as before.
                     child_id = ""
-                    tip = self._db.get_compression_tip(session_id)
+                    tip = self._db.get_compaction_tip(session_id)
                     if tip and tip != session_id:
                         tip_row = self._db.get_session(tip)
                         if tip_row is not None and tip_row.get("ended_at") is None:
@@ -3552,7 +3552,7 @@ class SessionStore:
                                 self._dirty_transcripts.pop(queue_session_id, None)
                                 self._transcript_append_failures.pop(session_id, None)
                         logger.error(
-                            "Session DB transcript append rejected for compression-ended "
+                            "Session DB transcript append rejected for compaction-ended "
                             "%s with no unique live child; not retrying",
                             session_id,
                         )
@@ -3775,8 +3775,8 @@ class SessionStore:
         migrated (their DB row holds the full message history).
 
         Reads follow the same routing writes use (#82616): the in-memory
-        reroute map installed after a compression rotation, then the durable
-        compression tip in state.db. Before this, writes followed the reroute
+        reroute map installed after a compaction rotation, then the durable
+        compaction tip in state.db. Before this, writes followed the reroute
         chain while reads queried the stale id directly — the transcript
         "vanished" (disk=0) even though every message sat healthy under the
         child session.
@@ -3791,9 +3791,9 @@ class SessionStore:
             seen.add(session_id)
             session_id = reroutes[session_id]
         try:
-            # Durable successor: a compression child published to state.db
+            # Durable successor: a compaction child published to state.db
             # survives restart even though the in-memory reroute map doesn't.
-            tip = self._db.get_compression_tip(session_id)
+            tip = self._db.get_compaction_tip(session_id)
             if tip:
                 session_id = tip
         except Exception:

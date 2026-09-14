@@ -93,7 +93,7 @@ Supermemory app, so you can filter, browse, and bulk-manage them per source agen
 When enabled, Son of Anton can:
 
 - prefetch relevant memory context before each turn
-- buffer the full conversation and ingest it as **one session** at session end (or on `/reset`, branch, compression, or shutdown)
+- buffer the full conversation and ingest it as **one session** at session end (or on `/reset`, branch, compaction, or shutdown)
 - ingest the full session to the conversations endpoint for richer profile/graph updates
 - route every SDK, probe, and conversation-ingest request through the configured hosted or self-hosted endpoint
 - expose explicit tools for search, store, forget, and profile access

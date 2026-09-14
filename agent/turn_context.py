@@ -3,7 +3,7 @@
 ``run_conversation`` opened with ~470 lines of straight-line setup before the
 tool-calling loop ever started: stdio guarding, runtime-main wiring, retry-counter
 resets, user-message sanitization, todo/nudge-counter hydration, system-prompt
-restore-or-build, session-row creation (before compression, whose DB writes
+restore-or-build, session-row creation (before compaction, whose DB writes
 reference the row), turn-start context compaction, the ``pre_llm_call`` plugin
 hook, external-memory prefetch, and crash-resilience persistence (last, so the
 user row is written once with its final ``api_content`` sidecar).
@@ -31,11 +31,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
-from agent.conversation_compression import (
+from agent.conversation_compaction import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
-    compression_skipped_due_to_lock,
-    conversation_history_after_compression,
-    recover_rotated_compression_session,
+    compaction_skipped_due_to_lock,
+    conversation_history_after_compaction,
+    recover_rotated_compaction_session,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
@@ -257,9 +257,9 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
-    Compression replaces list entries with fresh copies (and may append a
+    Compaction replaces list entries with fresh copies (and may append a
     todo-snapshot user message or a restored user turn AFTER the surviving
-    copy of the current turn's message), so a pre-compression index is
+    copy of the current turn's message), so a pre-compaction index is
     meaningless. Prefer the LAST user message whose content exactly matches
     this turn's text — the surviving copy in the common case — so the
     injection stamp and the #48677 persist override can't land on a
@@ -270,7 +270,7 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     scaffolding, not the active ask. Returns -1 when the list has no
     user-originated message at all.
     """
-    from agent.context_compressor import is_user_originated_turn
+    from agent.context_compactor import is_user_originated_turn
 
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
@@ -286,16 +286,16 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     return fallback
 
 
-def compression_made_progress(
+def compaction_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
-    """Return ``True`` if a compression pass materially reduced the request.
+    """Return ``True`` if a compaction pass materially reduced the request.
 
-    Compression can succeed by summarising message contents — reducing the
+    Compaction can succeed by summarising message contents — reducing the
     estimated request token count — without reducing the message row
     count.  Treating row count as the sole progress signal false-positives
-    on size-only wins and surfaces a misleading "Cannot compress further"
-    failure even when post-compression tokens are well below the model
+    on size-only wins and surfaces a misleading "Cannot compact further"
+    failure even when post-compaction tokens are well below the model
     context window.  See issue #39548 for an observed case: 220 → 220
     messages, ~288k → ~183k tokens on a 1M-context model still triggered
     auto-reset.
@@ -312,12 +312,12 @@ def compression_made_progress(
 # Back-compat alias: this predicate was module-private until the gateway's
 # session-hygiene recovery gate needed the same semantics (#79624).  Keeping the
 # old name bound means existing callers and any test that patches
-# ``_compression_made_progress`` continue to work unchanged.
-_compression_made_progress = compression_made_progress
+# ``_compaction_made_progress`` continue to work unchanged.
+_compaction_made_progress = compaction_made_progress
 
 
 def resolve_turn_start_compaction_tokens(
-    compressor: Any,
+    compactor: Any,
     messages: List[Dict[str, Any]],
     *,
     system_prompt: str = "",
@@ -342,7 +342,7 @@ def resolve_turn_start_compaction_tokens(
     tool-loop gate already uses (#2153).
     """
     try:
-        last = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+        last = int(getattr(compactor, "last_prompt_tokens", 0) or 0)
     except (TypeError, ValueError):
         last = 0
     if last > 0:
@@ -354,22 +354,22 @@ def resolve_turn_start_compaction_tokens(
     )
 
 
-def _compaction_decision(compressor: Any, tokens: int) -> "tuple[bool, str | None]":
+def _compaction_decision(compactor: Any, tokens: int) -> "tuple[bool, str | None]":
     """``(compact_now, block_reason)`` for *tokens* against the engine's gate.
 
-    ``should_compress_info`` is the built-in compressor's richer form (it
+    ``should_compact_info`` is the built-in compactor's richer form (it
     names why an over-threshold context is NOT being compacted: summary-LLM
     cooldown or the anti-thrash breaker). Plugin engines and minimal test
-    doubles may only implement ``should_compress``.
+    doubles may only implement ``should_compact``.
     """
-    info = getattr(compressor, "should_compress_info", None)
+    info = getattr(compactor, "should_compact_info", None)
     if callable(info):
         try:
             decision, reason = info(tokens)
             return bool(decision), reason
         except Exception:
             pass
-    return bool(compressor.should_compress(tokens)), None
+    return bool(compactor.should_compact(tokens)), None
 
 
 def _should_idle_compact(
@@ -393,7 +393,7 @@ def _should_idle_compact(
     context to exceed ``threshold_tokens``. It still skips work when the
     context is at or below ``floor_tokens`` (the size compaction would reduce
     *to*), so a small idle thread never pays for a summarisation that saves
-    nothing, and it defers to an active compression-failure cooldown.
+    nothing, and it defers to an active compaction-failure cooldown.
 
     Pure predicate so the policy is unit-testable without a live agent.
     """
@@ -418,7 +418,7 @@ class TurnContext:
     messages: List[Dict[str, Any]]
     # May be reset to None by turn-start compaction (new session created).
     conversation_history: Optional[List[Dict[str, Any]]]
-    # Cached system prompt active for this turn (may be rebuilt by compression).
+    # Cached system prompt active for this turn (may be rebuilt by compaction).
     active_system_prompt: Optional[str]
     # Task / turn identifiers.
     effective_task_id: str
@@ -466,7 +466,7 @@ def build_turn_context(
     # Recover a session rotated by another path before binding log/turn ids or
     # copying client-supplied history. Everything in this turn must consistently
     # belong to the canonical child, including observability metadata.
-    recovered_history = recover_rotated_compression_session(agent)
+    recovered_history = recover_rotated_compaction_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
 
@@ -497,7 +497,7 @@ def build_turn_context(
         # brand-new session whose row lands later in turn setup
         # (_ensure_db_session); that first turn falls back to the physical
         # id here and the first build_api_kwargs re-resolves. Stays valid
-        # through a mid-turn compression rotation because the lineage root
+        # through a mid-turn compaction rotation because the lineage root
         # is by definition rotation-invariant (#79017). Resolved with the
         # never-raising variant OUTSIDE the argument list, so a resolution
         # failure can only lose the scope — never the whole runtime binding.
@@ -601,10 +601,10 @@ def build_turn_context(
             )
     except Exception:
         pass
-    # Replay compression warning through status_callback for gateway platforms.
-    if agent._compression_warning:
-        agent._replay_compression_warning()
-        agent._compression_warning = None  # send once
+    # Replay compaction warning through status_callback for gateway platforms.
+    if agent._compaction_warning:
+        agent._replay_compaction_warning()
+        agent._compaction_warning = None  # send once
 
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
@@ -792,26 +792,26 @@ def build_turn_context(
     # work; nothing has touched it yet this turn, so it measures the gap since
     # the previous turn finished. The cheap gap pre-check gates the (more
     # expensive) token estimate.
-    _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
-    if agent.compression_enabled and _idle_after > 0 and messages:
+    _idle_after = getattr(agent, "compaction_idle_compact_after_seconds", 0)
+    if agent.compaction_enabled and _idle_after > 0 and messages:
         _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
         if _idle_gap >= _idle_after:
-            _compressor = agent.context_compressor
+            _compactor = agent.context_compactor
             _idle_tokens = estimate_request_tokens_rough(
                 messages,
                 system_prompt=active_system_prompt or "",
                 tools=agent.tools or None,
             )
-            # Post-compression target size: don't summarise a thread already
+            # Post-compaction target size: don't summarise a thread already
             # below what compaction would reduce it to.
             _idle_floor = int(
-                _compressor.threshold_tokens * _compressor.summary_target_ratio
+                _compactor.threshold_tokens * _compactor.summary_target_ratio
             )
             _idle_cooldown = getattr(
-                _compressor, "get_active_compression_failure_cooldown", lambda: None
+                _compactor, "get_active_compaction_failure_cooldown", lambda: None
             )()
             if _should_idle_compact(
-                enabled=agent.compression_enabled,
+                enabled=agent.compaction_enabled,
                 idle_after_seconds=_idle_after,
                 idle_gap_seconds=_idle_gap,
                 tokens=_idle_tokens,
@@ -828,7 +828,7 @@ def build_turn_context(
                     agent.session_id or "none",
                 )
                 _idle_status = automatic_compaction_status_message(
-                    _compressor,
+                    _compactor,
                     phase="idle",
                     default_message=IDLE_COMPACTION_STATUS_TEMPLATE.format(
                         idle_seconds=int(_idle_gap), tokens=_idle_tokens
@@ -840,18 +840,18 @@ def build_turn_context(
                 if _idle_status:
                     agent._emit_status(_idle_status)
                 _idle_input = messages
-                messages, active_system_prompt = agent._compress_context(
+                messages, active_system_prompt = agent._compact_context(
                     messages, system_message, approx_tokens=_idle_tokens,
                     task_id=effective_task_id,
                 )
-                # ``_compress_context`` returns the INPUT list object when it
+                # ``_compact_context`` returns the INPUT list object when it
                 # skips (per-session lock held by another path, failure
                 # cooldown, anti-thrash breaker, codex-native routing). Only
                 # re-baseline + re-anchor after a real compaction — a skip
                 # must leave the turn's flush baseline and user-message index
                 # untouched.
                 if messages is not _idle_input:
-                    conversation_history = conversation_history_after_compression(
+                    conversation_history = conversation_history_after_compaction(
                         agent, messages, conversation_history
                     )
                     # Compaction rebuilt the list, so the index of this turn's
@@ -877,45 +877,45 @@ def build_turn_context(
     # not fit, the provider's overflow handler in the loop compacts again with
     # that authoritative signal.
     _turn_start_compacted = False
-    if agent.compression_enabled:
-        _compressor = agent.context_compressor
+    if agent.compaction_enabled:
+        _compactor = agent.context_compactor
         _usage_tokens = resolve_turn_start_compaction_tokens(
-            _compressor,
+            _compactor,
             messages,
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
-        _compression_cooldown = getattr(
-            _compressor,
-            "get_active_compression_failure_cooldown",
+        _compaction_cooldown = getattr(
+            _compactor,
+            "get_active_compaction_failure_cooldown",
             lambda: None,
         )()
-        _should_compress_now = False
-        _compress_block_reason = None
+        _should_compact_now = False
+        _compact_block_reason = None
         if _usage_tokens is None:
             logger.debug(
                 "Turn-start compaction: awaiting real provider usage after "
                 "the previous compaction (session %s)",
                 agent.session_id or "none",
             )
-        elif _compression_cooldown:
+        elif _compaction_cooldown:
             logger.info(
                 "Skipping turn-start compaction: same-session cooldown active "
                 "(~%s seconds remaining, session %s)",
-                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                int(_compaction_cooldown.get("remaining_seconds", 0.0)),
                 agent.session_id or "none",
             )
-            if _usage_tokens >= _compressor.threshold_tokens:
+            if _usage_tokens >= _compactor.threshold_tokens:
                 # Over threshold but blocked by the summary-LLM cooldown —
                 # surface a warning (see block below).
-                _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
-                _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
+                _cooldown_secs = _compaction_cooldown.get("remaining_seconds", 0.0)
+                _compact_block_reason = f"cooldown:{_cooldown_secs:.0f}"
         else:
-            _should_compress_now, _compress_block_reason = _compaction_decision(
-                _compressor, _usage_tokens
+            _should_compact_now, _compact_block_reason = _compaction_decision(
+                _compactor, _usage_tokens
             )
-        if _should_compress_now:
-            # Compression is actually running (block cleared / was never
+        if _should_compact_now:
+            # Compaction is actually running (block cleared / was never
             # blocked) — reset the dedup so a future blocked-over-threshold
             # turn can warn again. Real session boundary.
             # getattr guard: test doubles built via object.__new__ lack the
@@ -927,31 +927,31 @@ def build_turn_context(
                 "Turn-start compaction: %s tokens >= %s threshold "
                 "(model %s, ctx %s, source=%s)",
                 f"{_usage_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
+                f"{_compactor.threshold_tokens:,}",
                 agent.model,
-                f"{_compressor.context_length:,}",
-                "provider" if getattr(_compressor, "last_prompt_tokens", 0) > 0
+                f"{_compactor.context_length:,}",
+                "provider" if getattr(_compactor, "last_prompt_tokens", 0) > 0
                 else "estimate",
             )
             _turn_start_input = messages
-            messages, active_system_prompt = agent._compress_context(
+            messages, active_system_prompt = agent._compact_context(
                 messages, system_message, approx_tokens=_usage_tokens,
                 task_id=effective_task_id,
             )
             if messages is _turn_start_input:
-                # ``_compress_context`` returns the INPUT list object on every
+                # ``_compact_context`` returns the INPUT list object on every
                 # skip path (per-session lock held elsewhere, cooldown,
                 # anti-thrash breaker, codex-native routing) — leave the
                 # turn's bookkeeping untouched.
-                if compression_skipped_due_to_lock(agent):
+                if compaction_skipped_due_to_lock(agent):
                     logger.info(
-                        "Turn-start compaction deferred: compression lock "
+                        "Turn-start compaction deferred: compaction lock "
                         "held by another path (session %s)",
                         agent.session_id or "none",
                     )
             else:
                 _turn_start_compacted = True
-                conversation_history = conversation_history_after_compression(
+                conversation_history = conversation_history_after_compaction(
                     agent, messages, conversation_history
                 )
                 agent._empty_content_retries = 0
@@ -959,17 +959,17 @@ def build_turn_context(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-        elif _compress_block_reason:
-            # Context is already over the compression threshold, but compression
+        elif _compact_block_reason:
+            # Context is already over the compaction threshold, but compaction
             # is blocked (summary LLM cooldown or anti-thrashing). Without a
             # signal the session keeps growing until the model silently stops
             # answering — the conversation hits the hard provider token limit
             # with no explanation. Surface a deduped warning so the user can
             # take action (/new or /compact) instead of hitting a silent hang.
             agent._warn_context_overflow_blocked(
-                _compress_block_reason,
+                _compact_block_reason,
                 _usage_tokens,
-                _compressor.threshold_tokens,
+                _compactor.threshold_tokens,
             )
         else:
             # Sub-threshold and unblocked — allow the overflow warning to fire
@@ -980,18 +980,18 @@ def build_turn_context(
             if callable(_clear_warn):
                 _clear_warn()
             # ── Engine-driven sub-threshold maintenance (#20316) ──
-            # Context engines that override ``should_compress_preflight()``
+            # Context engines that override ``should_compact_preflight()``
             # (e.g. LCM-style incremental leaf-chunk compaction) can request
             # deferred maintenance below the token threshold. The default
-            # ``ContextEngine.should_compress_preflight()`` returns False, so
-            # the built-in ``ContextCompressor`` path never enters here. The
+            # ``ContextEngine.should_compact_preflight()`` returns False, so
+            # the built-in ``ContextCompactor`` path never enters here. The
             # hook stays un-consulted while a failure cooldown is active or
             # no reading exists yet — the cooldown exists precisely because
-            # compression recently failed.
+            # compaction recently failed.
             _engine_preflight = None
-            if not _compression_cooldown and _usage_tokens is not None:
+            if not _compaction_cooldown and _usage_tokens is not None:
                 _engine_preflight = getattr(
-                    _compressor, "should_compress_preflight", None
+                    _compactor, "should_compact_preflight", None
                 )
             _wants_engine_preflight = False
             if callable(_engine_preflight):
@@ -1001,7 +1001,7 @@ def build_turn_context(
                     # A buggy engine must never break an otherwise-healthy
                     # turn: swallow at debug level and skip maintenance.
                     logger.debug(
-                        "should_compress_preflight raised %s; skipping "
+                        "should_compact_preflight raised %s; skipping "
                         "engine-driven maintenance",
                         _preflight_exc,
                     )
@@ -1009,13 +1009,13 @@ def build_turn_context(
             if _wants_engine_preflight:
                 logger.info(
                     "Engine-driven turn-start maintenance: %s requested "
-                    "compress() at ~%s tokens (below %s threshold)",
-                    getattr(_compressor, "name", type(_compressor).__name__),
+                    "compact() at ~%s tokens (below %s threshold)",
+                    getattr(_compactor, "name", type(_compactor).__name__),
                     f"{_usage_tokens:,}",
-                    f"{getattr(_compressor, 'threshold_tokens', 0):,}",
+                    f"{getattr(_compactor, 'threshold_tokens', 0):,}",
                 )
                 _engine_input = messages
-                messages, active_system_prompt = agent._compress_context(
+                messages, active_system_prompt = agent._compact_context(
                     messages, system_message, approx_tokens=_usage_tokens,
                     task_id=effective_task_id,
                 )
@@ -1024,7 +1024,7 @@ def build_turn_context(
                 # no-op and return the input list.
                 if messages is not _engine_input:
                     _turn_start_compacted = True
-                    conversation_history = conversation_history_after_compression(
+                    conversation_history = conversation_history_after_compaction(
                         agent, messages
                     )
                     agent._empty_content_retries = 0
@@ -1032,8 +1032,8 @@ def build_turn_context(
                     agent._last_content_with_tools = None
                     agent._last_content_tools_all_housekeeping = False
                     agent._mute_post_response = False
-    elif not agent.compression_enabled:
-        # Uncompressed session guard (#89297): when compression is explicitly
+    elif not agent.compaction_enabled:
+        # Uncompacted session guard (#89297): when compaction is explicitly
         # disabled, sessions can grow past the model's context window across
         # hundreds of messages with nothing to shrink them. The warning itself
         # fires from the conversation loop's pre-API site, which reuses the
@@ -1041,10 +1041,10 @@ def build_turn_context(
         # covers both turn-start and mid-turn growth (every provider request
         # passes through it). Here we only RE-ARM the dedup once the session
         # is back under the window, so the guard can warn again after the
-        # user compacts (/compact with force=True works with compression
+        # user compacts (/compact with force=True works with compaction
         # disabled) and the context later regrows past the limit.
         _ctx_len = getattr(
-            getattr(agent, "context_compressor", None), "context_length", None
+            getattr(agent, "context_compactor", None), "context_length", None
         )
         if isinstance(_ctx_len, int) and _ctx_len > 0:
             _raw_chars = 0
@@ -1072,12 +1072,12 @@ def build_turn_context(
                 if callable(_clear_warn):
                     _clear_warn()
             else:
-                _uncompressed_tokens = estimate_request_tokens_rough(
+                _uncompacted_tokens = estimate_request_tokens_rough(
                     messages,
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if _uncompressed_tokens <= _ctx_len:
+                if _uncompacted_tokens <= _ctx_len:
                     _clear_warn = getattr(
                         agent, "_clear_context_overflow_warn", None
                     )
@@ -1085,8 +1085,8 @@ def build_turn_context(
                         _clear_warn()
 
     if _turn_start_compacted:
-        # Compression rebuilt the list (tail messages are fresh compaction
-        # copies), so the pre-compression index of this turn's user message
+        # Compaction rebuilt the list (tail messages are fresh compaction
+        # copies), so the pre-compaction index of this turn's user message
         # is stale. Re-anchor both index trackers: the api_content stamp
         # below, the loop's injection site, and the flush's persist-override
         # row (#48677) must all target the surviving dict, not a stale
@@ -1286,7 +1286,7 @@ def build_turn_context(
     # its final api_content instead of being re-written mid-turn.
     # Keep row creation and the marker-based append in the same per-agent
     # critical section as CLI close persistence, and retry the row create if
-    # the pre-compression attempt above failed transiently.
+    # the pre-compaction attempt above failed transiently.
     def _ensure_and_persist() -> None:
         agent._ensure_db_session()
         agent._persist_session(messages, conversation_history)

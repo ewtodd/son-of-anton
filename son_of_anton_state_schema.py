@@ -1038,7 +1038,7 @@ class SessionSchemaMixin:
             if current_version < 22:
                 # v22: task-dimension usage attribution (issue #23270).
                 # session_model_usage gains a ``task`` column ('' = main agent
-                # loop; 'vision'/'compression'/'title_generation'/... =
+                # loop; 'vision'/'compaction'/'title_generation'/... =
                 # auxiliary calls) so aux model spend is visible in analytics.
                 # The column participates in the PRIMARY KEY and SQLite cannot
                 # ALTER a PK, so rebuild the table. The reconciler will have
@@ -1172,6 +1172,24 @@ class SessionSchemaMixin:
             # migration for a user who never optimizes. FTS5 being unavailable
             # is the one case we skip (we can't have created the current FTS
             # objects, so claiming the current schema would be a lie).
+            if current_version < 27:
+                # v27: the compress family was renamed to compact. Two
+                # persisted VALUES follow the code: the boundary marker a
+                # compaction leaves on the parent session, and the activity
+                # provenance stamps its writers record. Column and table
+                # names (compression_locks, compression_failure_*) keep
+                # their historical spelling — renaming schema identifiers
+                # buys nothing. Idempotent, so a re-run on a DB whose
+                # version bump was deferred (FTS not settled) is harmless.
+                cursor.execute(
+                    "UPDATE sessions SET end_reason = 'compaction' "
+                    "WHERE end_reason = 'compression'"
+                )
+                cursor.execute(
+                    "UPDATE sessions SET last_activity_provenance = "
+                    "REPLACE(last_activity_provenance, 'agent.compression', 'agent.compaction') "
+                    "WHERE last_activity_provenance LIKE 'agent.compression%'"
+                )
             if (
                 current_version < SCHEMA_VERSION
                 and fts_migrations_complete

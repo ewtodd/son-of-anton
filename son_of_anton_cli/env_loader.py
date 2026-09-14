@@ -77,7 +77,7 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # SON_OF_ANTON_HOME paths we've already pulled external secrets for during this
 # process.  ``load_son_of_anton_dotenv()`` is called at module-import time from
 # several hot modules (cli.py, son_of_anton_cli/main.py, run_agent.py,
-# trajectory_compressor.py, gateway/run.py, ...), so without this guard the
+# trajectory_compactor.py, gateway/run.py, ...), so without this guard the
 # Bitwarden status line gets printed 3-5x per startup.  Bitwarden's own
 # in-process cache prevents redundant network calls, but the print, the
 # config re-parse, and the ASCII sanitization sweep still ran every time.
@@ -614,7 +614,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     Idempotent within a process: subsequent calls for the same
     ``home_path`` are no-ops.  ``load_son_of_anton_dotenv()`` runs at import
     time from several hot modules (cli.py, son_of_anton_cli/main.py,
-    run_agent.py, trajectory_compressor.py, ...), so without this guard
+    run_agent.py, trajectory_compactor.py, ...), so without this guard
     the status lines would print 3-5x per CLI startup.  Use
     ``reset_secret_source_cache()`` if you need to force a re-pull
     (tests, long-running processes after a config change).

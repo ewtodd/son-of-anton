@@ -346,7 +346,7 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 
 # --- Wedged-gateway detection + bounded escalation (#81642) -----------------
 #
-# A gateway whose asyncio loop is stalled (e.g. an in-loop compression pass,
+# A gateway whose asyncio loop is stalled (e.g. an in-loop compaction pass,
 # #72707) cannot process SIGTERM/SIGUSR1 shutdown: the drain wait then burns
 # the full drain budget (180s by default), warns "still running after 180.0s
 # — restart may fail", and `son-of-anton update` can deadlock behind it.  The loop

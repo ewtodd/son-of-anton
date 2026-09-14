@@ -1946,9 +1946,9 @@ registry.register(
 # Per-task cache of (skill name, file_path) -> (skill file mtime+size).
 # On a repeat view of an UNCHANGED skill file, return a short stub instead
 # of re-sending the full content — the earlier tool result in this
-# conversation already carries it verbatim. Cleared on context compression
+# conversation already carries it verbatim. Cleared on context compaction
 # via reset_skill_view_dedup() (wired next to read_file's reset_file_dedup)
-# because after compression the original content is summarized away.
+# because after compaction the original content is summarized away.
 _skill_view_tracker: Dict[str, Dict[tuple, tuple]] = {}
 _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
@@ -1956,7 +1956,7 @@ _SKILL_VIEW_DEDUP_CAP = 200
 _SKILL_VIEW_DEDUP_MESSAGE = (
     "Skill content unchanged since it was loaded earlier in this "
     "conversation — refer to the earlier skill_view result; it is still "
-    "current and complete. (Re-issued after context compression, this "
+    "current and complete. (Re-issued after context compaction, this "
     "returns the full content again.)"
 )
 
@@ -2041,7 +2041,7 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
 def reset_skill_view_dedup(task_id: str | None = None) -> None:
     """Clear the skill_view dedup cache (all tasks when task_id is None).
 
-    Called on context compression: the original skill content is
+    Called on context compaction: the original skill content is
     summarized away, so a re-view must return full content again.
     """
     with _skill_view_tracker_lock:
@@ -2064,8 +2064,8 @@ def _skill_view_with_bump(args, **kw):
     # 400k-message window). The stub only ever replaces content that is
     # already fully present earlier in this conversation, so the
     # "skills must be loaded fully" rule is preserved — and the cache is
-    # cleared on context compression (same hook as read_file's dedup)
-    # so a post-compression re-view returns full content again.
+    # cleared on context compaction (same hook as read_file's dedup)
+    # so a post-compaction re-view returns full content again.
     stub = _check_skill_view_dedup(task_id, name, args.get("file_path"))
     if stub is not None:
         return stub

@@ -2255,7 +2255,7 @@ class HindsightMemoryProvider(MemoryProvider):
     ) -> None:
         """Refresh cached per-session state when the agent rotates session_id.
 
-        Fires on /resume, /branch, /reset, /new, and context compression.
+        Fires on /resume, /branch, /reset, /new, and context compaction.
         Without this hook, initialize()-cached state (``_session_id``,
         ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
         pointing at the previous session and writes would land in the wrong

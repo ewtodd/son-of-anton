@@ -276,7 +276,7 @@ def _is_son_of_anton_internal_secret(key: str) -> bool:
     - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
       side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
       ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
-      compression, and any plugin-registered auxiliary task). These are
+      compaction, and any plugin-registered auxiliary task). These are
       separate, often higher-spend API keys plus base URLs that may point at
       private endpoints; a model-authored shell command must never see them.
     - ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` /

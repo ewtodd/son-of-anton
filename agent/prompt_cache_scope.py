@@ -1,6 +1,6 @@
 """Rotation-stable logical cache scope for prompt_cache_key derivation.
 
-Context-compression rotation (legacy ``compression.in_place: false`` mode)
+Context-compaction rotation (legacy ``compaction.in_place: false`` mode)
 mints a new physical ``session_id`` mid-conversation to segment the
 transcript. The prompt-cache scope introduced by #79161 was derived from that
 physical id, so every rotation moved the conversation into a fresh cache
@@ -8,8 +8,8 @@ bucket even though it is logically the same conversation continuing
 (issue #79017).
 
 ``resolve_prompt_cache_scope()`` maps the physical session id to the ROOT of
-its *compression lineage* — the pre-rotation session id — using
-``SessionDB.get_compression_lineage()``, whose fork-aware semantics
+its *compaction lineage* — the pre-rotation session id — using
+``SessionDB.get_compaction_lineage()``, whose fork-aware semantics
 (hardened in #79193) give exactly the scope boundaries the cache key needs.
 NOT ``SessionDB.get_conversation_root`` / ``run_agent._conversation_root_id``
 (the Portal-attribution walk): that one follows ``parent_session_id`` blindly,
@@ -17,7 +17,7 @@ collapsing /branch children and whole delegate trees into one id, which would
 violate the #79161 isolation this scope must preserve. The two resolvers are
 intentionally different — do not "deduplicate" them.
 
-- compression-rotation children walk back to the original segment
+- compaction-rotation children walk back to the original segment
   (rotation-stable scope — the fix);
 - ``/new`` starts a lineage-less session (fresh scope);
 - ``/branch`` children (``_branched_from``), delegate subagents
@@ -44,7 +44,7 @@ _MEMO_ATTR = "_prompt_cache_scope_memo"
 
 
 def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
-    """Return the compression-lineage root of *session_id*, or None.
+    """Return the compaction-lineage root of *session_id*, or None.
 
     Defensive about the DB handle: test doubles and partially constructed
     agents can hand back non-list results — anything that is not a non-empty
@@ -53,7 +53,7 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     if session_db is None:
         return None
     try:
-        lineage = session_db.get_compression_lineage(session_id)
+        lineage = session_db.get_compaction_lineage(session_id)
     except Exception:
         logger.debug("prompt-cache scope lineage walk failed", exc_info=True)
         return None
@@ -67,8 +67,8 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
 def resolve_prompt_cache_scope(agent: Any) -> str:
     """Resolve the rotation-stable cache-scope id for *agent*'s conversation.
 
-    Returns the compression-lineage ROOT of ``agent.session_id`` (the
-    physical id itself when the session has no compression ancestry, no DB
+    Returns the compaction-lineage ROOT of ``agent.session_id`` (the
+    physical id itself when the session has no compaction ancestry, no DB
     is attached, or the walk fails). The result is memoized on the agent
     keyed by the current session id, so the DB walk happens once per
     transcript segment rather than once per API call.

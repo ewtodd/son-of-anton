@@ -23,7 +23,7 @@ domain reads the same resolved object instead of probing git/config itself:
     enabled image-gen or Spotify shouldn't lose it for being in a git repo).
   * **Delegation** — subagents inherit the parent's toolset and run through the
     same prompt builder, so the coding posture propagates to children for free.
-  * **Model / memory / compression** — declared on the profile
+  * **Model / memory / compaction** — declared on the profile
     (``model_hint``, ``memory_policy``) as the extension seam; consumers read
     ``mode.profile`` rather than re-deciding.
 

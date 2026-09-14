@@ -3,7 +3,7 @@
 Addresses part of #23767 ("user-facing guardrail when switching from a
 high-context provider to a substantially lower-context provider"). The other
 proposed fixes from that issue (hard preflight token guard, metadata cache
-invalidation on switch, compression safety invariant, oversized tool-output
+invalidation on switch, compaction safety invariant, oversized tool-output
 handling) are tracked separately.
 
 Mirrors the expensive-model guard pattern: merge into ``ModelSwitchResult.warning_message``
@@ -37,7 +37,7 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
     prefer it; the character-count estimate is the fallback for sessions
     that have no reading yet.
     """
-    cc = getattr(agent, "context_compressor", None)
+    cc = getattr(agent, "context_compactor", None)
     if cc is None:
         return None
 
@@ -84,10 +84,10 @@ def merge_compaction_switch_warning(
     """If the next user message will compact the conversation, append a warning."""
     if not result.success or agent is None:
         return
-    if not getattr(agent, "compression_enabled", True):
+    if not getattr(agent, "compaction_enabled", True):
         return
 
-    cc = getattr(agent, "context_compressor", None)
+    cc = getattr(agent, "context_compactor", None)
     if cc is None:
         return
 
@@ -135,7 +135,7 @@ def merge_compaction_switch_warning(
     if estimate < new_threshold:
         return
 
-    if int(getattr(cc, "_ineffective_compression_count", 0) or 0) >= 2:
+    if int(getattr(cc, "_ineffective_compaction_count", 0) or 0) >= 2:
         return
 
     parts: list[str] = []
@@ -146,7 +146,7 @@ def merge_compaction_switch_warning(
     parts.append(
         f"Session is ~{estimate:,} tokens; "
         f"{result.new_model} allows {new_ctx:,} "
-        f"(auto-compress at ~{new_threshold:,}). "
+        f"(auto-compact at ~{new_threshold:,}). "
         f"Your next message will compact the conversation before the model replies."
     )
     _append_warning(result, "".join(parts))

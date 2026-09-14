@@ -428,7 +428,7 @@ class SessionResetPolicy:
     - "daily": Reset at a specific hour each day
     - "idle": Reset after N minutes of inactivity
     - "both": Whichever triggers first (daily boundary OR idle timeout)
-    - "none": Never auto-reset (context managed only by compression)
+    - "none": Never auto-reset (context managed only by compaction)
 
     Default is "none" — sessions never auto-reset unless the user opts in
     via the `session_reset` section in config.yaml (or gateway.json

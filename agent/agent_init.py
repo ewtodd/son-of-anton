@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compactor import ContextCompactor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
@@ -244,7 +244,7 @@ def _build_codex_gpt5_autoraise_notice(
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
     ``autoraise`` is ``{"model": <slug>, "from": <old_ratio>, "to": <new_ratio>}``.
-    ``context_length`` is the live-resolved window from the context compressor
+    ``context_length`` is the live-resolved window from the context compactor
     (Codex's /models catalog is authoritative and can change server-side, e.g.
     the gpt-5.6 family's 272K → 372K → 272K shifts in July 2026), so the banner
     reports what this session actually got rather than a hardcoded cap. The
@@ -266,11 +266,11 @@ def _build_codex_gpt5_autoraise_notice(
         f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
         f"summarizing.\n"
-        f"  Opt back out: son-of-anton config set compression.codex_gpt55_autoraise false"
+        f"  Opt back out: son-of-anton config set compaction.codex_gpt55_autoraise false"
     )
 
 
-def _resolve_compression_threshold(
+def _resolve_compaction_threshold(
     global_threshold: float,
     model_cthresh: Optional[float],
     *,
@@ -285,7 +285,7 @@ def _resolve_compression_threshold(
     the threshold, otherwise ``None``.
 
     The Codex overrides are *autoraises*: they must never LOWER a higher
-    user-configured threshold. A user who already set ``compression.threshold``
+    user-configured threshold. A user who already set ``compaction.threshold``
     above the raised value deliberately keeps more raw context, and silently
     dropping them would both waste usable window and contradict the feature's
     purpose (use more of the window). Other overrides (e.g. Arcee Trinity)
@@ -954,7 +954,7 @@ def init_agent(
     agent._last_activity_ts: float = time.time()
     agent._last_activity_desc: str = "initializing"
     # Default / unmigrated paths and _touch_activity stamp unknown; named
-    # provenances are stamped by compression writers (heartbeat / timeout / cooldown).
+    # provenances are stamped by compaction writers (heartbeat / timeout / cooldown).
     agent._last_activity_provenance = ActivityProvenance.UNKNOWN
     # Rate-limit durable SessionDB activity stamps from _touch_activity (#72016).
     agent._session_activity_last_persist_mono: float = 0.0
@@ -1444,7 +1444,7 @@ def init_agent(
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
     
-    # Cached system prompt -- built once per session, only rebuilt on compression
+    # Cached system prompt -- built once per session, only rebuilt on compaction
     agent._cached_system_prompt: Optional[str] = None
     # Cross-session-stable prefix of the cached prompt. It remains separate
     # from the persisted string and is used only to place an early cache marker.
@@ -1482,7 +1482,7 @@ def init_agent(
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().
-    # Some temporary helper agents (manual compression / session-hygiene /
+    # Some temporary helper agents (manual compaction / session-hygiene /
     # background-review forks) rotate or share the session forward to a
     # continuation row that must remain open after the helper is torn down;
     # those callers explicitly set this flag to False.
@@ -1513,7 +1513,7 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
     
-    # Load config once for memory, skills, and compression sections
+    # Load config once for memory, skills, and compaction sections
     try:
         from son_of_anton_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
@@ -1561,10 +1561,10 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
-    # Cache only the derived auxiliary compression context override that is
+    # Cache only the derived auxiliary compaction context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
-    agent._aux_compression_context_length_config = None
+    agent._aux_compaction_context_length_config = None
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None
@@ -1806,13 +1806,13 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
-    # Initialize context compressor for automatic context management
-    # Compresses conversation when approaching model's context limit
-    # Configuration via config.yaml (compression section)
-    _compression_cfg = _agent_cfg.get("compression", {})
-    if not isinstance(_compression_cfg, dict):
-        _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    # Initialize context compactor for automatic context management
+    # Compacts conversation when approaching model's context limit
+    # Configuration via config.yaml (compaction section)
+    _compaction_cfg = _agent_cfg.get("compaction", {})
+    if not isinstance(_compaction_cfg, dict):
+        _compaction_cfg = {}
+    compaction_threshold = float(_compaction_cfg.get("threshold", 0.50))
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
     # raise to 85% (the Codex backend caps both families at 272K, so the
     # default 50% would compact at ~136K — half the usable context). Gated by
@@ -1822,15 +1822,15 @@ def init_agent(
     # notice has its own display gate so users can keep the threshold
     # autoraise without getting the banner on gateway turns.
     _codex_gpt55_autoraise = str(
-        _compression_cfg.get("codex_gpt55_autoraise", True)
+        _compaction_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
     _codex_gpt55_autoraise_notice = str(
-        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
+        _compaction_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
-    agent._compression_threshold_autoraised = None
+    agent._compaction_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
-            _compression_threshold_for_model as _cthresh_fn,
+            _compaction_threshold_for_model as _cthresh_fn,
             _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
             _is_codex_spark as _is_codex_spark_fn,
         )
@@ -1844,9 +1844,9 @@ def init_agent(
         # threshold). The notice is populated only when it actually fires, and
         # carries the model slug so the banner names the right family. Arcee
         # Trinity keeps its long-standing unconditional behaviour.
-        compression_threshold, agent._compression_threshold_autoraised = (
-            _resolve_compression_threshold(
-                compression_threshold,
+        compaction_threshold, agent._compaction_threshold_autoraised = (
+            _resolve_compaction_threshold(
+                compaction_threshold,
                 _model_cthresh,
                 model=agent.model,
                 is_codex_autoraise=(
@@ -1857,67 +1857,67 @@ def init_agent(
         )
     except Exception:
         pass
-    compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
-    compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
-    compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
-    # Tail retention mode (compression.tail_mode). "legacy" (default) keeps
+    compaction_enabled = str(_compaction_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    compaction_target_ratio = float(_compaction_cfg.get("target_ratio", 0.20))
+    compaction_protect_last = int(_compaction_cfg.get("protect_last_n", 20))
+    # Tail retention mode (compaction.tail_mode). "legacy" (default) keeps
     # the 0.20*window verbatim tail; "lean" switches to the clamped
     # 2.5%/10K-25K tail with recovery-pointer machinery (#87326). Unknown
-    # values fall back to legacy inside the compressor.
-    compression_tail_mode = str(_compression_cfg.get("tail_mode", "legacy")).strip().lower()
+    # values fall back to legacy inside the compactor.
+    compaction_tail_mode = str(_compaction_cfg.get("tail_mode", "legacy")).strip().lower()
     # Minimum REAL (actionable) user messages guaranteed to survive in the
-    # uncompressed tail (compression.min_tail_user_messages).  Default 1
+    # uncompacted tail (compaction.min_tail_user_messages).  Default 1
     # preserves current behavior exactly — the existing single-user tail
     # anchor.  Values > 1 extend the guarantee to the last N actionable
     # user turns.  Booleans rejected (bool subclasses int), non-int-like
     # values fall back to 1, floor at 1.
-    _raw_min_tail_users = _compression_cfg.get("min_tail_user_messages", 1)
+    _raw_min_tail_users = _compaction_cfg.get("min_tail_user_messages", 1)
     if isinstance(_raw_min_tail_users, bool):
-        compression_min_tail_users = 1
+        compaction_min_tail_users = 1
     elif isinstance(_raw_min_tail_users, int):
-        compression_min_tail_users = _raw_min_tail_users
+        compaction_min_tail_users = _raw_min_tail_users
     elif isinstance(_raw_min_tail_users, float):
-        compression_min_tail_users = (
+        compaction_min_tail_users = (
             int(_raw_min_tail_users) if _raw_min_tail_users.is_integer() else 1
         )
     else:
         try:
-            compression_min_tail_users = int(str(_raw_min_tail_users).strip())
+            compaction_min_tail_users = int(str(_raw_min_tail_users).strip())
         except (TypeError, ValueError):
-            compression_min_tail_users = 1
-    if compression_min_tail_users < 1:
-        compression_min_tail_users = 1
-    # Cap on compression retry rounds before a turn gives up with "max
-    # compression attempts reached" (compression.max_attempts).  Hardcoding 3
+            compaction_min_tail_users = 1
+    if compaction_min_tail_users < 1:
+        compaction_min_tail_users = 1
+    # Cap on compaction retry rounds before a turn gives up with "max
+    # compaction attempts reached" (compaction.max_attempts).  Hardcoding 3
     # strands sessions that legitimately need more rounds — e.g. a restart
-    # history reload whose incompressible tool schemas keep the request
-    # estimate above the threshold even though the messages compress fine
+    # history reload whose irreducible tool schemas keep the request
+    # estimate above the threshold even though the messages compact fine
     # (the #62605 failure class).  Default 3 preserves current behavior, so
     # an unset key is behavior-neutral; validated >= 1, hard-capped at 10,
     # and any non-int-like value falls back to 3.  Booleans are rejected
     # (bool subclasses int, so int(True) would silently become 1) and
     # fractional floats are rejected rather than truncated — "4.7 attempts"
     # is a config mistake, not a request for 4.
-    _raw_max_attempts = _compression_cfg.get("max_attempts", 3)
+    _raw_max_attempts = _compaction_cfg.get("max_attempts", 3)
     if isinstance(_raw_max_attempts, bool):
-        compression_max_attempts = 3
+        compaction_max_attempts = 3
     elif isinstance(_raw_max_attempts, int):
-        compression_max_attempts = _raw_max_attempts
+        compaction_max_attempts = _raw_max_attempts
     elif isinstance(_raw_max_attempts, float):
-        compression_max_attempts = (
+        compaction_max_attempts = (
             int(_raw_max_attempts) if _raw_max_attempts.is_integer() else 3
         )
     else:
         try:
-            compression_max_attempts = int(str(_raw_max_attempts).strip())
+            compaction_max_attempts = int(str(_raw_max_attempts).strip())
         except (TypeError, ValueError):
-            compression_max_attempts = 3
-    if compression_max_attempts < 1:
-        compression_max_attempts = 3
-    compression_max_attempts = min(compression_max_attempts, 10)
+            compaction_max_attempts = 3
+    if compaction_max_attempts < 1:
+        compaction_max_attempts = 3
+    compaction_max_attempts = min(compaction_max_attempts, 10)
 
     def _parse_prune_int(raw, default):
-        # Same parser semantics as compression.max_attempts above: reject
+        # Same parser semantics as compaction.max_attempts above: reject
         # booleans (bool subclasses int — YAML `true` would coerce to 1),
         # reject fractional floats rather than truncating them, accept
         # integral floats and numeric strings, fall back to the default on
@@ -1934,30 +1934,30 @@ def init_agent(
             return default
 
     # Deterministic tool-result prune (on by default, opencode-style; see
-    # PRUNE_* in agent.context_compressor). 0 disables; negative values are
+    # PRUNE_* in agent.context_compactor). 0 disables; negative values are
     # treated as disabled rather than erroring.
-    from agent.context_compressor import (
+    from agent.context_compactor import (
         PRUNE_MIN_RECLAIM_TOKENS,
         PRUNE_TOOL_OUTPUT_MAX_CHARS,
         PRUNE_TRIGGER_TOKENS,
     )
-    compression_proactive_prune_tokens = max(
+    compaction_proactive_prune_tokens = max(
         0,
         _parse_prune_int(
-            _compression_cfg.get("proactive_prune_tokens", PRUNE_TRIGGER_TOKENS),
+            _compaction_cfg.get("proactive_prune_tokens", PRUNE_TRIGGER_TOKENS),
             PRUNE_TRIGGER_TOKENS,
         ),
     )
-    compression_proactive_prune_min_chars = _parse_prune_int(
-        _compression_cfg.get(
+    compaction_proactive_prune_min_chars = _parse_prune_int(
+        _compaction_cfg.get(
             "proactive_prune_min_result_chars", PRUNE_TOOL_OUTPUT_MAX_CHARS
         ),
         PRUNE_TOOL_OUTPUT_MAX_CHARS,
     )
-    compression_proactive_prune_min_reclaim = max(
+    compaction_proactive_prune_min_reclaim = max(
         0,
         _parse_prune_int(
-            _compression_cfg.get(
+            _compaction_cfg.get(
                 "proactive_prune_min_reclaim_tokens", PRUNE_MIN_RECLAIM_TOKENS
             ),
             PRUNE_MIN_RECLAIM_TOKENS,
@@ -1965,73 +1965,73 @@ def init_agent(
     )
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
-    # implicitly protected by the compressor).  Floor at 0 — a value of
+    # implicitly protected by the compactor).  Floor at 0 — a value of
     # 0 means "preserve only the system prompt + summary + tail", which
     # is a legitimate (and common) configuration for long-running
     # rolling-compaction sessions.
-    compression_protect_first = max(
-        0, int(_compression_cfg.get("protect_first_n", 3))
+    compaction_protect_first = max(
+        0, int(_compaction_cfg.get("protect_first_n", 3))
     )
-    compression_abort_on_summary_failure = str(
-        _compression_cfg.get("abort_on_summary_failure", False)
+    compaction_abort_on_summary_failure = str(
+        _compaction_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
     # Per-model threshold overrides: keys are substring-matched against the
     # model name (longest match wins). Empty dict = use the global threshold
     # for all models (backward compatible).
-    _raw_model_thresholds = _compression_cfg.get("model_thresholds", {})
+    _raw_model_thresholds = _compaction_cfg.get("model_thresholds", {})
     if isinstance(_raw_model_thresholds, dict):
-        compression_model_thresholds = {
+        compaction_model_thresholds = {
             str(k): float(v) for k, v in _raw_model_thresholds.items()
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         }
     else:
-        compression_model_thresholds = {}
-    # Absolute token cap: when set, compression triggers at the lower of
+        compaction_model_thresholds = {}
+    # Absolute token cap: when set, compaction triggers at the lower of
     # the ratio-based threshold and this absolute count. Clamped to the
     # model's context length at apply-time so a cap above the window is
     # a no-op (ratio-based threshold wins).
-    compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
-    if compression_threshold_tokens is not None:
+    compaction_threshold_tokens = _compaction_cfg.get("threshold_tokens")
+    if compaction_threshold_tokens is not None:
         try:
-            compression_threshold_tokens = int(compression_threshold_tokens)
-            if compression_threshold_tokens <= 0:
-                compression_threshold_tokens = None
+            compaction_threshold_tokens = int(compaction_threshold_tokens)
+            if compaction_threshold_tokens <= 0:
+                compaction_threshold_tokens = None
         except (TypeError, ValueError):
-            compression_threshold_tokens = None
-    # In-place compaction: when True, compress_context() rewrites the message
+            compaction_threshold_tokens = None
+    # In-place compaction: when True, compact_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
-    # agent/conversation_compression.py. Consumed by compress_context(), not the
-    # compressor, so it rides on the agent.
-    # Default True must match DEFAULT_CONFIG["compression"]["in_place"]
+    # agent/conversation_compaction.py. Consumed by compact_context(), not the
+    # compactor, so it rides on the agent.
+    # Default True must match DEFAULT_CONFIG["compaction"]["in_place"]
     # (#38763). default=False here previously flipped agents into rotation
     # mode whenever the merged config omitted the key (partial configs,
     # load_config failure → {}), re-arming the pre-lease drift abort.
-    compression_in_place = is_truthy_value(
-        _compression_cfg.get("in_place"), default=True
+    compaction_in_place = is_truthy_value(
+        _compaction_cfg.get("in_place"), default=True
     )
     # Opt-in (default False): a micro-compaction pass rewrites already-sent
     # history every turn, which breaks the provider prompt-cache prefix on a
     # per-turn cadence rather than at an episodic boundary. That is the cost
     # `proactive_prune_min_reclaim_tokens` exists to amortize, so the feature
     # stays off until an operator opts in and accepts the tradeoff.
-    compression_micro_compact = is_truthy_value(
-        _compression_cfg.get("micro_compact"), default=False
+    compaction_micro_compact = is_truthy_value(
+        _compaction_cfg.get("micro_compact"), default=False
     )
     # How often a pass runs, in completed turns. Each pass rewrites
     # already-sent history and costs one prompt-cache break, so this is the
     # dial for how often that cost is paid: 1 = every turn (most aggressive
     # reclaim), 5 = one break per five turns. Clamped to >= 1.
-    compression_micro_compact_every_n_turns = max(
+    compaction_micro_compact_every_n_turns = max(
         1,
-        _parse_prune_int(_compression_cfg.get("micro_compact_every_n_turns", 1), 1),
+        _parse_prune_int(_compaction_cfg.get("micro_compact_every_n_turns", 1), 1),
     )
-    # Rolling-summary defrag threshold, in tokens. Lived on the compressor as
+    # Rolling-summary defrag threshold, in tokens. Lived on the compactor as
     # a hardcoded attribute with no path from config until now.
-    compression_micro_compact_defrag_tokens = max(
+    compaction_micro_compact_defrag_tokens = max(
         1,
         _parse_prune_int(
-            _compression_cfg.get("micro_compact_defrag_threshold_tokens", 2000),
+            _compaction_cfg.get("micro_compact_defrag_threshold_tokens", 2000),
             2000,
         ),
     )
@@ -2043,9 +2043,9 @@ def init_agent(
     from utils import is_truthy_value as _is_truthy
 
     codex_responses_native_compaction = _is_truthy(
-        _compression_cfg.get("codex_responses_native", False)
+        _compaction_cfg.get("codex_responses_native", False)
     )
-    _native_threshold_raw = _compression_cfg.get(
+    _native_threshold_raw = _compaction_cfg.get(
         "codex_responses_compact_threshold", 200_000
     )
     try:
@@ -2056,22 +2056,22 @@ def init_agent(
             raise ValueError
     except (TypeError, ValueError):
         _ra().logger.warning(
-            "Invalid compression.codex_responses_compact_threshold=%r; using 200000.",
+            "Invalid compaction.codex_responses_compact_threshold=%r; using 200000.",
             _native_threshold_raw,
         )
         codex_responses_compact_threshold = 200_000
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().
-    compression_idle_compact_after_seconds = max(
-        0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
+    compaction_idle_compact_after_seconds = max(
+        0, int(_compaction_cfg.get("idle_compact_after_seconds", 0))
     )
 
     # Read optional explicit context_length override for the auxiliary
-    # compression model. Custom endpoints often cannot report this via
+    # compaction model. Custom endpoints often cannot report this via
     # /models, so the startup feasibility check needs the config hint.
     try:
-        _aux_cfg = cfg_get(_agent_cfg, "auxiliary", "compression", default={})
+        _aux_cfg = cfg_get(_agent_cfg, "auxiliary", "compaction", default={})
     except Exception:
         _aux_cfg = {}
     if isinstance(_aux_cfg, dict):
@@ -2083,7 +2083,7 @@ def init_agent(
             _aux_context_config = int(_aux_context_config)
         except (TypeError, ValueError):
             _aux_context_config = None
-    agent._aux_compression_context_length_config = _aux_context_config
+    agent._aux_compaction_context_length_config = _aux_context_config
 
     # Read explicit model output-token override from config when the
     # caller did not pass one directly.
@@ -2300,8 +2300,8 @@ def init_agent(
             )
             _config_context_length = None
 
-    # Store for reuse by _check_compression_model_feasibility (auxiliary
-    # compression model context-length detection needs the same list).
+    # Store for reuse by _check_compaction_model_feasibility (auxiliary
+    # compaction model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
@@ -2377,17 +2377,17 @@ def init_agent(
     # 1. Check config.yaml context.engine setting
     # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
     # 3. Check general plugin system (user-installed plugins)
-    # 4. Fall back to built-in ContextCompressor
+    # 4. Fall back to built-in ContextCompactor
     _selected_engine = None
     _copy_failed = False
-    _engine_name = "compressor"  # default
+    _engine_name = "compactor"  # default
     try:
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
-        _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
+        _engine_name = _ctx_cfg.get("engine", "compactor") or "compactor"
     except Exception:
         pass
 
-    if _engine_name != "compressor":
+    if _engine_name != "compactor":
         # Try loading from plugins/context_engine/<name>/
         try:
             from plugins.context_engine import load_context_engine
@@ -2405,10 +2405,10 @@ def init_agent(
                 _candidate = None
             if _candidate is not None and _candidate.name == _engine_name:
                 # Deep-copy the shared plugin singleton so a child agent's
-                # update_model() can't mutate the parent's compressor (#42449).
+                # update_model() can't mutate the parent's compactor (#42449).
                 # Copy can fail for engines holding uncopyable state (locks, DB
                 # connections, clients); in that case fall back to the built-in
-                # compressor with an ACCURATE message rather than silently
+                # compactor with an ACCURATE message rather than silently
                 # mislabelling it "not found".
                 import copy
                 try:
@@ -2417,7 +2417,7 @@ def init_agent(
                     _copy_failed = True
                     _ra().logger.warning(
                         "Context engine '%s' could not be safely copied for this "
-                        "agent (%s) — falling back to built-in compressor. Plugin "
+                        "agent (%s) — falling back to built-in compactor. Plugin "
                         "engines that hold uncopyable state (locks, DB connections) "
                         "should implement __deepcopy__ to copy only mutable budget "
                         "state.",
@@ -2427,19 +2427,19 @@ def init_agent(
 
         if _selected_engine is None and not _copy_failed:
             _ra().logger.warning(
-                "Context engine '%s' not found — falling back to built-in compressor",
+                "Context engine '%s' not found — falling back to built-in compactor",
                 _engine_name,
             )
-    # else: config says "compressor" — use built-in, don't auto-activate plugins
+    # else: config says "compactor" — use built-in, don't auto-activate plugins
 
     if _selected_engine is not None:
-        agent.context_compressor = _selected_engine
-        # External engines own compaction policy: the host compression
+        agent.context_compactor = _selected_engine
+        # External engines own compaction policy: the host compaction
         # threshold (including the Codex gpt-5.5 autoraise above) only
-        # configures the built-in ContextCompressor and never reaches the
+        # configures the built-in ContextCompactor and never reaches the
         # plugin, so the autoraise notice would announce a change that does
         # not apply. Drop it. (#44439)
-        agent._compression_threshold_autoraised = None
+        agent._compaction_threshold_autoraised = None
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
@@ -2458,9 +2458,9 @@ def init_agent(
         # model on the engine's global threshold until the first /model
         # switch. Engines that override update_model() own their own policy
         # and may ignore the attribute.
-        if compression_model_thresholds:
-            agent.context_compressor.model_thresholds = compression_model_thresholds
-        agent.context_compressor.update_model(
+        if compaction_model_thresholds:
+            agent.context_compactor.model_thresholds = compaction_model_thresholds
+        agent.context_compactor.update_model(
             model=agent.model,
             context_length=_plugin_ctx_len,
             base_url=agent.base_url,
@@ -2471,12 +2471,12 @@ def init_agent(
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
-        agent.context_compressor = ContextCompressor(
+        agent.context_compactor = ContextCompactor(
             model=agent.model,
-            threshold_percent=compression_threshold,
-            protect_first_n=compression_protect_first,
-            protect_last_n=compression_protect_last,
-            summary_target_ratio=compression_target_ratio,
+            threshold_percent=compaction_threshold,
+            protect_first_n=compaction_protect_first,
+            protect_last_n=compaction_protect_last,
+            summary_target_ratio=compaction_target_ratio,
             summary_model_override=None,
             quiet_mode=agent.quiet_mode,
             base_url=agent.base_url,
@@ -2484,44 +2484,44 @@ def init_agent(
             config_context_length=_effective_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
-            abort_on_summary_failure=compression_abort_on_summary_failure,
+            abort_on_summary_failure=compaction_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
-            model_thresholds=compression_model_thresholds,
-            threshold_tokens_cap=compression_threshold_tokens,
-            proactive_prune_tokens=compression_proactive_prune_tokens,
-            proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
-            proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
-            min_tail_user_messages=compression_min_tail_users,
-            tail_mode=compression_tail_mode,
+            model_thresholds=compaction_model_thresholds,
+            threshold_tokens_cap=compaction_threshold_tokens,
+            proactive_prune_tokens=compaction_proactive_prune_tokens,
+            proactive_prune_min_result_chars=compaction_proactive_prune_min_chars,
+            proactive_prune_min_reclaim_tokens=compaction_proactive_prune_min_reclaim,
+            min_tail_user_messages=compaction_min_tail_users,
+            tail_mode=compaction_tail_mode,
         )
-    _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
+    _bind_session_state = getattr(agent.context_compactor, "bind_session_state", None)
     if callable(_bind_session_state):
         try:
             _bind_session_state(session_db=session_db, session_id=agent.session_id)
         except Exception:
             pass
-    agent.compression_enabled = compression_enabled
-    agent.compression_in_place = compression_in_place
-    # Apply micro-compaction settings to the compressor (feature is opt-in)
-    _cc = getattr(agent, "context_compressor", None)
+    agent.compaction_enabled = compaction_enabled
+    agent.compaction_in_place = compaction_in_place
+    # Apply micro-compaction settings to the compactor (feature is opt-in)
+    _cc = getattr(agent, "context_compactor", None)
     if _cc is not None and hasattr(_cc, "_micro_compact_enabled"):
-        _cc._micro_compact_enabled = compression_micro_compact
+        _cc._micro_compact_enabled = compaction_micro_compact
     if _cc is not None and hasattr(_cc, "_micro_compact_every_n_turns"):
-        _cc._micro_compact_every_n_turns = compression_micro_compact_every_n_turns
+        _cc._micro_compact_every_n_turns = compaction_micro_compact_every_n_turns
     if _cc is not None and hasattr(_cc, "_micro_compact_defrag_threshold_tokens"):
         _cc._micro_compact_defrag_threshold_tokens = (
-            compression_micro_compact_defrag_tokens
+            compaction_micro_compact_defrag_tokens
         )
     agent.codex_responses_native_compaction = codex_responses_native_compaction
     agent.codex_responses_compact_threshold = codex_responses_compact_threshold
-    agent.max_compression_attempts = compression_max_attempts
-    agent.compression_idle_compact_after_seconds = (
-        compression_idle_compact_after_seconds
+    agent.max_compaction_attempts = compaction_max_attempts
+    agent.compaction_idle_compact_after_seconds = (
+        compaction_idle_compact_after_seconds
     )
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
-    _ctx = getattr(agent.context_compressor, "context_length", 0)
+    _ctx = getattr(agent.context_compactor, "context_length", 0)
     _allow_lmstudio_explicit_below_floor = (
         str(getattr(agent, "provider", "") or "").strip().lower() == "lmstudio"
         and isinstance(agent._config_context_length, int)
@@ -2555,8 +2555,8 @@ def init_agent(
     # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
     if (
-        hasattr(agent, "context_compressor")
-        and agent.context_compressor
+        hasattr(agent, "context_compactor")
+        and agent.context_compactor
         and agent.tools is not None
         and (
             agent.enabled_toolsets is None
@@ -2569,7 +2569,7 @@ def init_agent(
             if isinstance(t, dict)
         }
         from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
-        for _raw_schema in agent.context_compressor.get_tool_schemas():
+        for _raw_schema in agent.context_compactor.get_tool_schemas():
             _schema = _normalize_tool_schema(_raw_schema)
             if _schema is None:
                 # A schema with no resolvable name (e.g. an already-wrapped
@@ -2591,14 +2591,14 @@ def init_agent(
             _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
+    if hasattr(agent, "context_compactor") and agent.context_compactor:
         try:
-            agent.context_compressor.on_session_start(
+            agent.context_compactor.on_session_start(
                 agent.session_id,
                 son_of_anton_home=str(get_son_of_anton_home()),
                 platform=agent.platform or "cli",
                 model=agent.model,
-                context_length=getattr(agent.context_compressor, "context_length", 0),
+                context_length=getattr(agent.context_compactor, "context_length", 0),
                 conversation_id=getattr(agent, "_gateway_session_key", None),
             )
         except Exception as _ce_err:
@@ -2679,51 +2679,51 @@ def init_agent(
     # init — and the gateway rebuilds the agent per inbound message, so Discord
     # etc. saw it repeatedly (#54432). A change in the raised threshold (or the
     # autoraised model) updates the marker state and re-notifies once. The
-    # config display gate (compression.codex_gpt55_autoraise_notice) still
+    # config display gate (compaction.codex_gpt55_autoraise_notice) still
     # suppresses the banner entirely without disabling the threshold autoraise.
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None) or {}
+    _autoraise = getattr(agent, "_compaction_threshold_autoraised", None) or {}
     _show_autoraise_notice = (
         bool(_autoraise)
-        and compression_enabled
+        and compaction_enabled
         and _codex_gpt55_autoraise_notice
         and not _codex_gpt55_autoraise_notice_seen(_autoraise)
     )
 
     if not agent.quiet_mode:
-        if compression_enabled:
+        if compaction_enabled:
             # Report the active engine's own threshold — for a plugin engine
-            # the host compression_threshold is not in effect, and mixing the
+            # the host compaction_threshold is not in effect, and mixing the
             # two printed a percent that contradicted the token count. (#44439)
             _active_threshold_pct = getattr(
-                agent.context_compressor, "threshold_percent", compression_threshold
+                agent.context_compactor, "threshold_percent", compaction_threshold
             )
             _cap_note = ""
-            _cap = getattr(agent.context_compressor, "threshold_tokens_cap", None)
+            _cap = getattr(agent.context_compactor, "threshold_tokens_cap", None)
             if _cap and _cap > 0:
                 _cap_note = f" (capped at {_cap:,} tokens)"
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,}{_cap_note})")
+            print(f"📊 Context limit: {agent.context_compactor.context_length:,} tokens (compact at {int(_active_threshold_pct*100)}% = {agent.context_compactor.threshold_tokens:,}{_cap_note})")
         else:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
+            print(f"📊 Context limit: {agent.context_compactor.context_length:,} tokens (auto-compaction disabled)")
         # Notice with the exact opt-back-out command. Printed inline at startup
         # for CLI users; gateway users get the same text replayed via
-        # _compression_warning on turn 1 (set below).
+        # _compaction_warning on turn 1 (set below).
         if _show_autoraise_notice:
             print(_build_codex_gpt5_autoraise_notice(
                 _autoraise,
-                context_length=getattr(agent.context_compressor, "context_length", None),
+                context_length=getattr(agent.context_compactor, "context_length", None),
             ))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
-    # in _compression_warning and replayed in the first run_conversation().
-    agent._compression_warning = None
+    # in _compaction_warning and replayed in the first run_conversation().
+    agent._compaction_warning = None
     # Gateway parity for the Codex gpt-5.x autoraise notice: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     if _show_autoraise_notice:
-        agent._compression_warning = _build_codex_gpt5_autoraise_notice(
+        agent._compaction_warning = _build_codex_gpt5_autoraise_notice(
             _autoraise,
-            context_length=getattr(agent.context_compressor, "context_length", None),
+            context_length=getattr(agent.context_compactor, "context_length", None),
         )
 
     # Mark shown so repeated inits in this profile (e.g. every gateway message)
@@ -2732,18 +2732,18 @@ def init_agent(
     if _show_autoraise_notice:
         _record_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
-    # compression threshold. Running it eagerly here costs ~400ms cold (network
+    # compaction threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent
     # init, including short ``chat -q`` runs that never reach the threshold.
-    # ``ensure_compression_feasibility_checked`` (called from
+    # ``ensure_compaction_feasibility_checked`` (called from
     # ``run_conversation``'s preflight) runs it at most once per agent.
-    agent._compression_feasibility_checked = False
+    agent._compaction_feasibility_checked = False
 
     # Snapshot primary runtime for per-turn restoration.  When fallback
     # activates during a turn, the next turn restores these values so the
     # preferred model gets a fresh attempt each time.  Uses a single dict
     # so new state fields are easy to add without N individual attributes.
-    _cc = agent.context_compressor
+    _cc = agent.context_compactor
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
@@ -2757,12 +2757,12 @@ def init_agent(
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
         # Context engine state that _try_activate_fallback() overwrites.
         # Use getattr for model/base_url/api_key/provider since plugin
-        # engines may not have these (they're ContextCompressor-specific).
-        "compressor_model": getattr(_cc, "model", agent.model),
-        "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
-        "compressor_api_key": getattr(_cc, "api_key", ""),
-        "compressor_provider": getattr(_cc, "provider", agent.provider),
-        "compressor_context_length": _cc.context_length,
-        "compressor_threshold_tokens": _cc.threshold_tokens,
+        # engines may not have these (they're ContextCompactor-specific).
+        "compactor_model": getattr(_cc, "model", agent.model),
+        "compactor_base_url": getattr(_cc, "base_url", agent.base_url),
+        "compactor_api_key": getattr(_cc, "api_key", ""),
+        "compactor_provider": getattr(_cc, "provider", agent.provider),
+        "compactor_context_length": _cc.context_length,
+        "compactor_threshold_tokens": _cc.threshold_tokens,
     }
 __all__ = ["init_agent"]

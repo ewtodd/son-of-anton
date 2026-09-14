@@ -337,7 +337,7 @@ def _snapshot_and_inspect(
                 "Stop every Son of Anton process using this profile and retry. "
                 "This includes the interactive `son-of-anton` CLI session this "
                 "command may have been launched from: a running parent CLI "
-                "writes session bookkeeping (compression ticks, context "
+                "writes session bookkeeping (compaction ticks, context "
                 "tracking) to state.db in the background and counts as a "
                 "Son of Anton process even after the gateway is stopped. Run the "
                 "recovery from a fresh shell with no `son-of-anton` session open, "
@@ -1049,7 +1049,7 @@ def _cleanup_partial_orphans(
         "messages_retained": 0,
         "messages_removed": 0,
         "session_model_usage_removed": 0,
-        "compression_locks_removed": 0,
+        "compaction_locks_removed": 0,
         "telegram_dm_topic_bindings_removed": 0,
     }
     destination.execute("BEGIN IMMEDIATE")
@@ -1118,7 +1118,7 @@ def _cleanup_partial_orphans(
         dependent_tables = (
             ("messages", "messages_removed"),
             ("session_model_usage", "session_model_usage_removed"),
-            ("compression_locks", "compression_locks_removed"),
+            ("compression_locks", "compaction_locks_removed"),
             (
                 "telegram_dm_topic_bindings",
                 "telegram_dm_topic_bindings_removed",
@@ -1155,7 +1155,7 @@ def _cleanup_partial_orphans(
         + int(result["sessions_parent_cleared"])
         + int(result["messages_removed"])
         + int(result["session_model_usage_removed"])
-        + int(result["compression_locks_removed"])
+        + int(result["compaction_locks_removed"])
         + int(result["telegram_dm_topic_bindings_removed"])
     )
     return result

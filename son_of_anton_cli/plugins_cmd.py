@@ -2077,9 +2077,9 @@ def _get_current_context_engine() -> str:
     try:
         from son_of_anton_cli.config import load_config
         config = load_config()
-        return cfg_get(config, "context", "engine", default="compressor") or "compressor"
+        return cfg_get(config, "context", "engine", default="compactor") or "compactor"
     except Exception:
-        return "compressor"
+        return "compactor"
 
 
 def _save_memory_provider(name: str) -> None:
@@ -2147,9 +2147,9 @@ def _configure_context_engine() -> bool:
     current = _get_current_context_engine()
     engines = _discover_context_engines()
 
-    # Build items: "compressor" first (built-in), then discovered engines
-    items = ["compressor (default)"]
-    names = ["compressor"]
+    # Build items: "compactor" first (built-in), then discovered engines
+    items = ["compactor (default)"]
+    names = ["compactor"]
     selected = 0
 
     for name, desc in engines:
@@ -2159,8 +2159,8 @@ def _configure_context_engine() -> bool:
         if name == current:
             selected = len(items) - 1
 
-    # If current engine isn't in discovered list and isn't compressor, add it
-    if current != "compressor" and current not in names:
+    # If current engine isn't in discovered list and isn't compactor, add it
+    if current != "compactor" and current not in names:
         names.append(current)
         items.append(f"{current} (not found)")
         selected = len(items) - 1

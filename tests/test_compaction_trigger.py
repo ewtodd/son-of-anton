@@ -18,12 +18,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from agent import turn_context as tc
-from agent.context_compressor import (
-    COMPRESSED_SUMMARY_METADATA_KEY,
-    ContextCompressor,
+from agent.context_compactor import (
+    COMPACTED_SUMMARY_METADATA_KEY,
+    ContextCompactor,
     _SUMMARY_END_MARKER,
 )
-from agent.conversation_compression import (
+from agent.conversation_compaction import (
     _display_compaction_summary,
     extract_compaction_summary_text,
 )
@@ -71,11 +71,11 @@ def test_turn_start_gate_falls_back_to_the_estimate_without_any_reading(monkeypa
 
 def test_compaction_decision_reports_why_it_is_blocked() -> None:
     blocked = SimpleNamespace(
-        should_compress_info=lambda tokens: (False, "cooldown:5"),
-        should_compress=lambda tokens: False,
+        should_compact_info=lambda tokens: (False, "cooldown:5"),
+        should_compact=lambda tokens: False,
     )
     assert tc._compaction_decision(blocked, 100) == (False, "cooldown:5")
-    plain = SimpleNamespace(should_compress=lambda tokens: tokens > 10)
+    plain = SimpleNamespace(should_compact=lambda tokens: tokens > 10)
     assert tc._compaction_decision(plain, 100) == (True, None)
     assert tc._compaction_decision(plain, 1) == (False, None)
 
@@ -84,8 +84,8 @@ _BODY = "## Goal\n- ship the compaction change\n\n## Relevant Files\n- cli.py: r
 
 
 def _summary_row() -> dict:
-    content = ContextCompressor._with_summary_prefix(_BODY) + "\n\n" + _SUMMARY_END_MARKER
-    return {"role": "user", "content": content, COMPRESSED_SUMMARY_METADATA_KEY: True}
+    content = ContextCompactor._with_summary_prefix(_BODY) + "\n\n" + _SUMMARY_END_MARKER
+    return {"role": "user", "content": content, COMPACTED_SUMMARY_METADATA_KEY: True}
 
 
 def test_summary_text_is_recovered_without_its_scaffolding() -> None:
@@ -134,7 +134,7 @@ def test_compaction_stats_line_reads_naturally() -> None:
 import json
 import re
 
-from agent.context_compressor import (
+from agent.context_compactor import (
     PRUNE_MIN_RECLAIM_TOKENS,
     PRUNE_TOOL_OUTPUT_MAX_CHARS,
     PRUNE_TRIGGER_TOKENS,
@@ -144,25 +144,25 @@ from agent.context_compressor import (
 )
 
 
-def _compressor() -> ContextCompressor:
-    return ContextCompressor("test-model", quiet_mode=True)
+def _compactor() -> ContextCompactor:
+    return ContextCompactor("test-model", quiet_mode=True)
 
 
 def test_tool_output_prune_is_on_by_default_and_config_agrees() -> None:
     from son_of_anton_cli.config_defaults import DEFAULT_CONFIG
 
-    cc = _compressor()
+    cc = _compactor()
     assert cc.proactive_prune_tokens > 0, "masking old tool output must not need opting in"
     assert cc.proactive_prune_min_reclaim_tokens > 0, "…but must stay episodic (prompt cache)"
     assert cc.proactive_prune_min_result_chars >= _PRUNE_MIN_CHARS
-    cfg = DEFAULT_CONFIG["compression"]
+    cfg = DEFAULT_CONFIG["compaction"]
     assert cfg["proactive_prune_tokens"] == PRUNE_TRIGGER_TOKENS == cc.proactive_prune_tokens
     assert cfg["proactive_prune_min_reclaim_tokens"] == PRUNE_MIN_RECLAIM_TOKENS
     assert cfg["proactive_prune_min_result_chars"] == PRUNE_TOOL_OUTPUT_MAX_CHARS
 
 
 def test_summarizer_never_sees_more_than_the_tool_result_cap() -> None:
-    cc = _compressor()
+    cc = _compactor()
     big = "A" * 5_000 + "\nexit_code: 0 FINAL"
     out = cc._serialize_for_summary(
         [
@@ -182,7 +182,7 @@ def _headings(text: str) -> list[str]:
 
 def test_fallback_summary_uses_the_same_sections_as_the_llm_template(monkeypatch) -> None:
     """The deterministic fallback and the LLM prompt must describe one shape."""
-    import agent.context_compressor as compressor_module
+    import agent.context_compactor as compactor_module
 
     captured = {}
 
@@ -191,9 +191,9 @@ def test_fallback_summary_uses_the_same_sections_as_the_llm_template(monkeypatch
         body = "## Historical Task Snapshot\nUser asked: 'fix cli.py'\n\n## Objective\n- fix\n"
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=body))])
 
-    # ``call_llm`` is bound into the compressor module at import time.
-    monkeypatch.setattr(compressor_module, "call_llm", fake_call_llm)
-    cc = _compressor()
+    # ``call_llm`` is bound into the compactor module at import time.
+    monkeypatch.setattr(compactor_module, "call_llm", fake_call_llm)
+    cc = _compactor()
     turns = [
         {"role": "user", "content": "fix cli.py"},
         {"role": "assistant", "content": "on it", "tool_calls": [
@@ -208,9 +208,9 @@ def test_fallback_summary_uses_the_same_sections_as_the_llm_template(monkeypatch
         "## Objective", "## Important Details", "## Work State", "### Completed",
         "### Active", "### Blocked", "## Next Move", "## Relevant Files",
     ]
-    # A fresh compressor: the fallback of a compressor that already holds a
+    # A fresh compactor: the fallback of a compactor that already holds a
     # previous summary embeds it under its own heading.
-    fallback = ContextCompressor._strip_summary_prefix(_compressor()._build_static_fallback_summary(turns))
+    fallback = ContextCompactor._strip_summary_prefix(_compactor()._build_static_fallback_summary(turns))
     fallback_sections = [h for h in _headings(fallback) if h != "## Last Dropped Turns"]
     assert fallback_sections == template_sections
 
@@ -229,7 +229,7 @@ def _call(cid: str, name: str, **args) -> dict:
 
 
 def test_repeating_the_same_call_supersedes_the_older_observation() -> None:
-    cc = _compressor()
+    cc = _compactor()
     msgs = [
         _call("a", "read_file", path="cli.py"), {"role": "tool", "tool_call_id": "a", "content": "old " * 100},
         _call("b", "read_file", path="run_agent.py"), {"role": "tool", "tool_call_id": "b", "content": "other " * 100},
@@ -249,7 +249,7 @@ def test_repeating_the_same_call_supersedes_the_older_observation() -> None:
 
 
 def test_only_the_newest_screenshot_survives() -> None:
-    cc = _compressor()
+    cc = _compactor()
     shot = lambda i: [{"type": "text", "text": f"page {i}"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]  # noqa: E731
     msgs = [
         _call("s1", "browser_snapshot"), {"role": "tool", "tool_call_id": "s1", "content": shot(1)},

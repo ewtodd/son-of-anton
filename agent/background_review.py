@@ -1338,7 +1338,7 @@ def _run_review_in_thread(
             # Suppress all status/warning emits from the fork so the
             # user only sees the final successful-action summary.
             # Without this, mid-review "Iteration budget exhausted",
-            # rate-limit retries, compression warnings, and other
+            # rate-limit retries, compaction warnings, and other
             # lifecycle messages bubble up through _emit_status ->
             # _vprint and leak past the stdout redirect (they go via
             # _print_fn/status_callback, which bypass sys.stdout).
@@ -1361,7 +1361,7 @@ def _run_review_in_thread(
                 review_agent._cached_system_prompt = agent._cached_system_prompt
                 # Defensive: pin session_start + session_id to the
                 # parent's so any code path that re-renders parts of
-                # the system prompt (compression, plugin hooks) still
+                # the system prompt (compaction, plugin hooks) still
                 # produces byte-identical output. The cached-prompt
                 # assignment above already short-circuits the normal
                 # rebuild path, but these pins guarantee parity even
@@ -1375,17 +1375,17 @@ def _run_review_in_thread(
             # conversation (the review fires every ~10 turns). Leave session
             # finalization to the real owner (CLI close / gateway reset / cron).
             review_agent._end_session_on_close = False
-            # Never let the review fork compress. It shares the parent's
-            # session_id, so if it won a compression race it would rotate the
+            # Never let the review fork compact. It shares the parent's
+            # session_id, so if it won a compaction race it would rotate the
             # parent into a NEW child that the gateway never adopts (the fork
             # is single-lifecycle and dies right after this run_conversation).
             # The foreground turn would then start from the stale parent and
-            # compress it again, leaving the same parent with two sibling
+            # compact it again, leaving the same parent with two sibling
             # children (issue #38727). Review also needs full context to
-            # produce a good memory/skill summary — compressing would strip
-            # detail. Both compression triggers in conversation_loop.py gate on
-            # agent.compression_enabled, so this short-circuits both paths.
-            review_agent.compression_enabled = False
+            # produce a good memory/skill summary — compacting would strip
+            # detail. Both compaction triggers in conversation_loop.py gate on
+            # agent.compaction_enabled, so this short-circuits both paths.
+            review_agent.compaction_enabled = False
 
             # Register this fork on the PARENT's _active_children (the same
             # list interrupt() fans out to for subagent delegation) and

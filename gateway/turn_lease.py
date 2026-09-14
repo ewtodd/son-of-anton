@@ -42,7 +42,7 @@ Known limits (deliberate, flagged on #64934):
 
 - A CLI process sharing the session via CLI-continuity is outside any
   in-process lock — that pair needs a DB-level lease (separate design).
-- Mid-turn compression rotation leaves a small alias window: the tip-walk can
+- Mid-turn compaction rotation leaves a small alias window: the tip-walk can
   resolve a fresh child id while the parent-holding turn is still in flight.
   The mid-turn binding-sync sites are the right place to alias the lease in a
   follow-up.
@@ -266,8 +266,8 @@ class SessionTurnLeaseRegistry:
     def rebind(self, token: Optional[TurnLeaseToken], new_session_id: str) -> bool:
         """Alias a HELD lease onto ``new_session_id`` after mid-turn rotation.
 
-        Compression can rotate the durable session_id while a turn is in
-        flight (session-hygiene pre-compression, in-agent compression). The
+        Compaction can rotate the durable session_id while a turn is in
+        flight (session-hygiene pre-compaction, in-agent compaction). The
         turn's flush then targets the NEW id — so the serialization boundary
         must follow it, or an alias routing key resolving the new id (e.g. a
         topic tip-walk landing on the fresh child) could start a concurrent

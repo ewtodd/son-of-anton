@@ -17,7 +17,7 @@ def test_default_config_has_expected_sections() -> None:
         "physics",
         "terminal",
         "agent",
-        "compression",
+        "compaction",
         "memory",
         "cron",
         "gateway",

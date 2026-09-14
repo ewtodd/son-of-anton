@@ -790,7 +790,7 @@ def _run_backup_locked(args, son_of_anton_root: Path) -> None:
         print(f"Backup complete: {out_path}")
     print(f"  Files:       {file_count}")
     print(f"  Original:    {_format_size(total_bytes)}")
-    print(f"  Compressed:  {_format_size(zip_size)}")
+    print(f"  Compacted:  {_format_size(zip_size)}")
     print(f"  Time:        {elapsed:.1f}s")
 
     if external_to_add:

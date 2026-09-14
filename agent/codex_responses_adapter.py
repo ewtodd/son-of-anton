@@ -468,12 +468,12 @@ def _chat_messages_to_responses_input(
     items, and restructuring the wire around them
     (``prune_pre_checkpoint_items``). Checkpoints are persisted in the
     ``codex_reasoning_items`` sidecar and survive a mid-session model swap,
-    a ``compression.enabled: false`` flip, the rejection kill switch and a
+    a ``compaction.enabled: false`` flip, the rejection kill switch and a
     resumed session; without this flag a single captured checkpoint would
     keep deleting every pre-checkpoint item from every later request, on a
     model that cannot decrypt the blob (#85914). Default False = pre-feature
     wire, which is also correct for every caller that never sends
-    ``context_management`` (auxiliary/compression client, ad-hoc
+    ``context_management`` (auxiliary/compaction client, ad-hoc
     ``convert_messages``). Dropping the checkpoint costs nothing: Son of Anton'
     local history is never truncated by native compaction, so the full
     conversation is still on the wire.
@@ -529,7 +529,7 @@ def _chat_messages_to_responses_input(
                             # AND only while this request still asks for
                             # server-side compaction. Once the gate closes
                             # (model swapped out of the gpt-5.6 family,
-                            # compression disabled, rejection kill switch),
+                            # compaction disabled, rejection kill switch),
                             # the persisted checkpoint must not be replayed —
                             # replaying it is what makes the wire restructure
                             # below erase pre-checkpoint history forever.
@@ -741,9 +741,9 @@ def _chat_messages_to_responses_input(
     # restructure the wire around it. The server renders nothing placed
     # before a compaction item (live-verified Aug 2026), so pre-checkpoint
     # history is dead upload weight and — worse — the user's plaintext asks,
-    # and any local-compression summary already merged into that history,
+    # and any local-compaction summary already merged into that history,
     # silently vanish from the model's view. Keep the newest checkpoint
-    # first, retain pre-checkpoint USER messages and compression-SUMMARY
+    # first, retain pre-checkpoint USER messages and compaction-SUMMARY
     # messages (whole, never byte-sliced) verbatim within a token budget
     # each (Codex CLI parity for the user side), and leave the
     # post-checkpoint tail untouched. Gated on the CURRENT request's native

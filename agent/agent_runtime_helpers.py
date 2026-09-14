@@ -299,7 +299,7 @@ def sanitize_tool_call_arguments(
     last time, in order.  On the next call, the longest contiguous prefix of
     ``messages`` whose objects are ``is``-identical to the stored prefix is
     skipped; scanning starts at the first divergence (conservative: any
-    reordering, truncation, compression rewrite, or mid-list insertion breaks
+    reordering, truncation, compaction rewrite, or mid-list insertion breaks
     identity at that index and everything from there is re-scanned).
 
     Safety argument for skipping: a message in the matched prefix was fully
@@ -307,7 +307,7 @@ def sanitize_tool_call_arguments(
     or was rewritten to ``"{}"`` (valid).  The only code paths that mutate
     ``function["arguments"]`` on live history dicts between calls are the
     surrogate / non-ASCII sanitizers, which substitute characters *inside*
-    JSON string values and cannot invalidate JSON syntax.  Compression,
+    JSON string values and cannot invalidate JSON syntax.  Compaction,
     repair, undo, and steer paths replace or reorder message dicts, which
     breaks the identity match and forces a re-scan.  Holding strong
     references (the objects themselves, not ``id()``s) makes address reuse
@@ -437,7 +437,7 @@ def sanitize_tool_call_arguments(
 
     if cursor is not None:
         # Strong references to the exact objects validated this call, in
-        # order. Any future divergence (compression, undo, repair, steer)
+        # order. Any future divergence (compaction, undo, repair, steer)
         # breaks identity at the divergent index and re-scans from there.
         cursor["prefix"] = messages[:]
 
@@ -506,7 +506,7 @@ def note_turn_start(agent, turn_id: str):
         with _INFLIGHT_TURNS_LOCK:
             entry = _INFLIGHT_TURNS_BY_SESSION.get(session_id)
             _INFLIGHT_TURNS_BY_SESSION[session_id] = (turn_id, now)
-        # Stamp the session id this turn registered under: compression can
+        # Stamp the session id this turn registered under: compaction can
         # rotate agent.session_id mid-turn, and the persist-time clear must
         # pop the slot the turn actually holds, not the rotated id.
         agent._inflight_turn_session_id = session_id
@@ -1595,14 +1595,14 @@ def restore_primary_runtime(agent) -> bool:
             )
 
         # ── Restore context engine state ──
-        cc = agent.context_compressor
+        cc = agent.context_compactor
         cc.update_model(
-            model=rt["compressor_model"],
-            context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"],
-            api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"],
-            api_mode=rt.get("compressor_api_mode", ""),
+            model=rt["compactor_model"],
+            context_length=rt["compactor_context_length"],
+            base_url=rt["compactor_base_url"],
+            api_key=rt["compactor_api_key"],
+            provider=rt["compactor_provider"],
+            api_mode=rt.get("compactor_api_mode", ""),
         )
 
         # ── Rebind and re-select the primary credential pool ──
@@ -2539,7 +2539,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     ``model_switch.switch_model()`` has resolved credentials and
     validated the model.  This method performs the actual runtime
     swap: rebuilding clients, updating caching flags, and refreshing
-    the context compressor.
+    the context compactor.
 
     The implementation mirrors ``_try_activate_fallback()`` for the
     client-swap logic but also updates ``_primary_runtime`` so the
@@ -2810,8 +2810,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         )
     )
 
-    # ── Update context compressor ──
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
+    # ── Update context compactor ──
+    if hasattr(agent, "context_compactor") and agent.context_compactor:
         from agent.model_metadata import get_model_context_length
         if _sm_custom_providers is None:
             try:
@@ -2833,11 +2833,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             config_context_length=_effective_context_length,
             custom_providers=_sm_custom_providers,
         )
-        agent.context_compressor.update_model(
+        agent.context_compactor.update_model(
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+            api_key=agent.api_key,  # context_compactor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
@@ -2878,7 +2878,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     _reset_stale_streak(agent)
 
     # ── Update _primary_runtime so the change persists across turns ──
-    _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
+    _cc = agent.context_compactor if hasattr(agent, "context_compactor") and agent.context_compactor else None
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
@@ -2891,13 +2891,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
-        "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
-        "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
-        "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
-        "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
-        "compressor_context_length": _cc.context_length if _cc else 0,
-        "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
-        "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        "compactor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
+        "compactor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
+        "compactor_api_key": getattr(_cc, "api_key", "") if _cc else "",
+        "compactor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
+        "compactor_context_length": _cc.context_length if _cc else 0,
+        "compactor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
+        "compactor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
     # ── Reset fallback state ──
     agent._fallback_activated = False
@@ -3476,7 +3476,7 @@ def repair_empty_non_final_messages(
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
-    Runs unconditionally — not gated on whether the context compressor
+    Runs unconditionally — not gated on whether the context compactor
     is present — so orphans from session loading or manual message
     manipulation are always caught.
     """
@@ -3637,7 +3637,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a
     # payload where the same tool_call_id appears more than once with HTTP 400
     # "Duplicate value for 'tool_call_id'" (#58327). Duplicates can arise from
-    # retries, crash/resume glitches, or a compression window that re-emits a
+    # retries, crash/resume glitches, or a compaction window that re-emits a
     # tool result. This is the final pre-API chokepoint, so dedup defensively
     # here even though repair_message_sequence also consumes matched ids.
     #   (a) collapse duplicate tool_calls WITHIN an assistant message

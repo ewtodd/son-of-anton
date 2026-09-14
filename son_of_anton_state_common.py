@@ -91,10 +91,10 @@ _BRANCH_CHILD_SQL = (
 )
 
 
-_COMPRESSION_CHILD_SQL = (
+_COMPACTION_CHILD_SQL = (
     "EXISTS (SELECT 1 FROM sessions p"
     "        WHERE p.id = {a}.parent_session_id"
-    "        AND p.end_reason = 'compression')"
+    "        AND p.end_reason = 'compaction')"
 )
 
 
@@ -146,7 +146,7 @@ _RESET_CHILD_SQL = (
 
 
 # Rows that surface in pickers: roots + branch/reset children. Subagent runs
-# and compression continuations stay hidden.
+# and compaction continuations stay hidden.
 _LISTABLE_CHILD_SQL = (
     f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
     f" OR {_RESET_CHILD_SQL.format(a='s')})"
@@ -154,14 +154,14 @@ _LISTABLE_CHILD_SQL = (
 
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
-    """Subagent runs, not branch, reset, or compression children."""
+    """Subagent runs, not branch, reset, or compaction children."""
     branch = _BRANCH_CHILD_SQL.format(a=alias)
-    compression = _COMPRESSION_CHILD_SQL.format(a=alias)
+    compaction = _COMPACTION_CHILD_SQL.format(a=alias)
     reset = _RESET_CHILD_SQL.format(a=alias)
     return (
         f"({alias}.parent_session_id IS NOT NULL"
         f" AND NOT ({branch})"
-        f" AND NOT ({compression})"
+        f" AND NOT ({compaction})"
         f" AND NOT ({reset}))"
     )
 
@@ -216,7 +216,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the

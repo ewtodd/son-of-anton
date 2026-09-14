@@ -151,8 +151,8 @@ def resolve_breadcrumb_session() -> Optional[str]:
     """Resolve a bare ``-c`` for this terminal, or ``None`` to fall back.
 
     Returns the breadcrumb's session id only when it still exists in the
-    session DB, projected forward through the compression chain so the
-    resume lands on the live tip rather than a dead compressed parent
+    session DB, projected forward through the compaction chain so the
+    resume lands on the live tip rather than a dead compacted parent
     (same projection as ``main._resolve_session_by_name_or_id``).
     """
     if not is_enabled():
@@ -171,7 +171,7 @@ def resolve_breadcrumb_session() -> Optional[str]:
         if not db.get_session(session_id):
             return None  # session was deleted — fall back to latest
         try:
-            session_id = db.get_compression_tip(session_id) or session_id
+            session_id = db.get_compaction_tip(session_id) or session_id
         except Exception:
             pass
         return session_id

@@ -162,7 +162,7 @@ def _classify_write_denial(path: str) -> Optional[str]:
     for base_real in son_of_anton_dirs:
         # Session transcripts are application-owned state.  Letting the agent's
         # generic file tools rewrite state.db or legacy JSON snapshots can
-        # falsify conversation history and invalidate resume/compression state.
+        # falsify conversation history and invalidate resume/compaction state.
         try:
             if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
                 return True

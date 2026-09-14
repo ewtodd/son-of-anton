@@ -788,13 +788,13 @@ def _get_platform_tools(
     context_cfg = config.get("context") or {}
     if not isinstance(context_cfg, dict):
         context_cfg = {}
-    context_engine_name = str(context_cfg.get("engine") or "compressor").strip().lower()
+    context_engine_name = str(context_cfg.get("engine") or "compactor").strip().lower()
     explicit_empty_selection = (
         platform in platform_toolsets
         and isinstance(platform_toolsets.get(platform), list)
         and not toolset_names
     )
-    if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
+    if context_engine_name and context_engine_name != "compactor" and not explicit_empty_selection:
         enabled_toolsets.add("context_engine")
 
     # Preserve any explicit non-configurable toolset entries (for example,

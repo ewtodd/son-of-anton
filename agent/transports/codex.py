@@ -330,7 +330,7 @@ def _native_compaction_active(context_management: Any) -> bool:
     sending ``context_management``, replaying a ``type: "compaction"``
     checkpoint, restructuring the input around it — hangs off this one
     predicate, so a checkpoint that outlives the gate (model swapped out of
-    the gpt-5.6 family, compression disabled, rejection kill switch, resumed
+    the gpt-5.6 family, compaction disabled, rejection kill switch, resumed
     session) cannot keep reshaping requests on its own.
     """
     return isinstance(context_management, list) and bool(context_management)
@@ -404,11 +404,11 @@ class ResponsesApiTransport(ProviderTransport):
                 ``session_id`` header, and is the cache-scope fallback when no
                 ``cache_scope_id`` is given
             cache_scope_id: str | None — rotation-stable logical scope id
-                (compression-lineage root; see agent/prompt_cache_scope.py).
+                (compaction-lineage root; see agent/prompt_cache_scope.py).
                 Preferred over session_id when deriving the prompt_cache_key
                 content hash and the xAI x-grok-conv-id header; the Codex
                 x-client-request-id header mirrors the resulting body key.
-                Keeps the cache warm across context-compression session
+                Keeps the cache warm across context-compaction session
                 rotation (#79017)
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
@@ -593,8 +593,8 @@ class ResponsesApiTransport(ProviderTransport):
         # hash.
         #
         # cache_scope_id, when provided, is the rotation-stable logical scope
-        # (compression-lineage root — agent/prompt_cache_scope.py): legacy
-        # ``compression.in_place: false`` compaction rotates session_id
+        # (compaction-lineage root — agent/prompt_cache_scope.py): legacy
+        # ``compaction.in_place: false`` compaction rotates session_id
         # mid-conversation, and scoping by the physical id went cache-cold at
         # every rotation boundary (#79017).
         _cache_scope = _cache_scope_from_session_id(

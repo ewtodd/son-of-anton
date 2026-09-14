@@ -4465,15 +4465,15 @@ def show_config():
     else:
         print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
 
-    # Compression
+    # Compaction
     print()
-    print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))
-    compression = config.get('compression', {})
-    enabled = compression.get('enabled', True)
+    print(color("◆ Context Compaction", Colors.CYAN, Colors.BOLD))
+    compaction = config.get('compaction', {})
+    enabled = compaction.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
-        _tt = compression.get('threshold_tokens')
+        print(f"  Threshold:    {compaction.get('threshold', 0.50) * 100:.0f}%")
+        _tt = compaction.get('threshold_tokens')
         if _tt is not None:
             try:
                 _tt = int(_tt)
@@ -4481,10 +4481,10 @@ def show_config():
                     print(f"  Token cap:    {_tt:,} tokens (takes lower of ratio vs absolute)")
             except (TypeError, ValueError):
                 pass
-        print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
-        print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
-        print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
-        _aux_comp = config.get('auxiliary', {}).get('compression', {})
+        print(f"  Target ratio: {compaction.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+        print(f"  Protect last: {compaction.get('protect_last_n', 20)} messages")
+        print(f"  Protect first: {compaction.get('protect_first_n', 3)} non-system head messages")
+        _aux_comp = config.get('auxiliary', {}).get('compaction', {})
         _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")
         comp_provider = _aux_comp.get('provider', 'auto')

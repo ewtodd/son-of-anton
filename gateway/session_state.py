@@ -22,7 +22,7 @@ Scopes (placement follows where each dict is CLEARED today):
 
 - ``SessionState.turn`` — reset at end of every running turn.
 - ``SessionState.conversation`` — reset at conversation boundaries
-  (/new, /resume, auto-reset, expiry, compression-exhausted reset).
+  (/new, /resume, auto-reset, expiry, compaction-exhausted reset).
 - ``SessionState.persistent`` — own lifecycles (approval resolution, update
   prompt answer, native-image consumption); ``run_generation`` is monotonic
   and NEVER reset (#28686).
@@ -148,14 +148,14 @@ class PersistentState:
     # Monotonic run-generation counter (#28686).  NEVER reset: clearing it
     # would break stale-run detection.
     run_generation: int = 0
-    # Consecutive session-hygiene compression failures for this session
-    # (#79624).  The in-agent compressor escalates repeat timeouts via
-    # ContextCompressor._consecutive_timeout_failures, but hygiene builds a
+    # Consecutive session-hygiene compaction failures for this session
+    # (#79624).  The in-agent compactor escalates repeat timeouts via
+    # ContextCompactor._consecutive_timeout_failures, but hygiene builds a
     # FRESH AIAgent per run and bind_session_state() zeroes that counter, so
     # the in-agent ladder is structurally unreachable from the gateway.
     # Tracking the streak here — outside the per-run agent — lets hygiene
     # escalate its cooldown instead of retrying on a flat interval forever.
-    # Reset on a successful compression, not by turn/boundary resets.
+    # Reset on a successful compaction, not by turn/boundary resets.
     #
     # PROCESS-LOCAL, deliberately: `PersistentState` means "survives turn and
     # boundary resets", NOT "survives a restart" — this field has no disk flush

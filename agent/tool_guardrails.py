@@ -94,7 +94,7 @@ STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
 
 # How much of the canonical args JSON the stub carries so the model still
-# knows WHAT the referenced call was even if context compression later
+# knows WHAT the referenced call was even if context compaction later
 # evicts the referenced result (cheap dangling-reference mitigation).
 _RESULT_STUB_ARGS_PREVIEW_CHARS = 120
 
@@ -633,7 +633,7 @@ class ToolCallGuardrailController:
         """Build the reference stub replacing a byte-identical duplicate result.
 
         Carries the tool name + a canonical-args preview so that even if
-        context compression later evicts the referenced result, the model
+        context compaction later evicts the referenced result, the model
         still knows WHAT the call was (cheap dangling-reference mitigation).
         """
         try:

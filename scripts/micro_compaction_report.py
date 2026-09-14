@@ -2,7 +2,7 @@
 """Summarize micro-compaction telemetry from Son of Anton logs.
 
 Reads the content-free JSON lines emitted by
-``ContextCompressor._emit_micro_compaction_telemetry`` and reports what the
+``ContextCompactor._emit_micro_compaction_telemetry`` and reports what the
 feature actually bought you.
 
 Usage:
@@ -40,7 +40,7 @@ from collections import defaultdict
 from pathlib import Path
 
 MICRO_MARKER = "micro compaction telemetry: "
-BATCH_MARKER = "context compression attempt telemetry: "
+BATCH_MARKER = "context compaction attempt telemetry: "
 
 
 def default_log() -> Path:
@@ -84,7 +84,7 @@ def fmt(n) -> str:
 def report(micro: list[dict], batch: list[dict], per_session: bool) -> int:
     if not micro:
         print("No micro-compaction telemetry found.")
-        print("It may be disabled (compression.micro_compact), or no session")
+        print("It may be disabled (compaction.micro_compact), or no session")
         print("has run long enough to trigger a pass yet.")
         return 1
 

@@ -407,7 +407,7 @@ class GatewaySlashCommandsMixin:
 
         # Resolve model/context for cockpit-style status. Prefer the live or
         # cached agent because it carries the actual runtime route and context
-        # compressor. Fall back to persisted SessionDB metadata plus the
+        # compactor. Fall back to persisted SessionDB metadata plus the
         # SessionStore's last_prompt_tokens so /status remains useful between
         # turns without making billing/account calls.
         status_agent = agent if is_running else None
@@ -437,7 +437,7 @@ class GatewaySlashCommandsMixin:
                 provider_name = live_provider
                 base_url = _clean_str(getattr(status_agent, "base_url", ""))
                 route_resolved = True
-            ctx = getattr(status_agent, "context_compressor", None)
+            ctx = getattr(status_agent, "context_compactor", None)
             if ctx is not None:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
@@ -524,8 +524,8 @@ class GatewaySlashCommandsMixin:
         """Handle /context — the dedicated context-window view.
 
         /status shows a one-line ``used / total`` summary; this command is the
-        deep view: a usage gauge, auto-compression threshold and headroom,
-        compression count and last savings, and cumulative throughput — the last
+        deep view: a usage gauge, auto-compaction threshold and headroom,
+        compaction count and last savings, and cumulative throughput — the last
         clearly labelled as throughput, NOT context size.
 
         Resolves from the running agent (mid-turn), then the cached agent
@@ -558,12 +558,12 @@ class GatewaySlashCommandsMixin:
                     agent = None
         has_agent = bool(agent) and agent is not _AGENT_PENDING_SENTINEL
 
-        ctx = getattr(agent, "context_compressor", None) if has_agent else None
+        ctx = getattr(agent, "context_compactor", None) if has_agent else None
 
         # Resolve current-context size + window with cascading fallbacks.
-        #   used  : compressor.last_prompt_tokens → SessionStore.last_prompt_tokens
+        #   used  : compactor.last_prompt_tokens → SessionStore.last_prompt_tokens
         #   model : agent.model → SessionDB row model
-        #   window: compressor.context_length → effective gateway model route
+        #   window: compactor.context_length → effective gateway model route
         used = 0
         context_length = 0
         if ctx is not None:
@@ -628,7 +628,7 @@ class GatewaySlashCommandsMixin:
                 t("gateway.context.headroom", headroom=f"{headroom:,}"),
             ]
 
-            # Full view — compression / throughput need the live agent.
+            # Full view — compaction / throughput need the live agent.
             if ctx is not None:
                 threshold = getattr(ctx, "threshold_tokens", 0) or 0
                 threshold_pct = (getattr(ctx, "threshold_percent", 0) or 0) * 100
@@ -651,10 +651,10 @@ class GatewaySlashCommandsMixin:
                                 to_go=f"{threshold - used:,}",
                             )
                         )
-                compressions = getattr(ctx, "compression_count", 0) or 0
-                lines.append(t("gateway.context.compressions", count=compressions))
-                if compressions:
-                    savings = getattr(ctx, "_last_compression_savings_pct", None)
+                compactions = getattr(ctx, "compaction_count", 0) or 0
+                lines.append(t("gateway.context.compactions", count=compactions))
+                if compactions:
+                    savings = getattr(ctx, "_last_compaction_savings_pct", None)
                     if savings is not None:
                         lines.append(
                             t("gateway.context.last_savings", savings=f"{savings:.0f}")
@@ -1663,7 +1663,7 @@ class GatewaySlashCommandsMixin:
                                 load_gateway_config=_load_gateway_config,
                             )
                         except Exception as exc:
-                            logger.debug("preflight-compression switch warning failed: %s", exc)
+                            logger.debug("preflight-compaction switch warning failed: %s", exc)
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -1961,7 +1961,7 @@ class GatewaySlashCommandsMixin:
                 load_gateway_config=_load_gateway_config,
             )
         except Exception as exc:
-            logger.debug("preflight-compression switch warning failed: %s", exc)
+            logger.debug("preflight-compaction switch warning failed: %s", exc)
 
         async def _finish_switch() -> str:
             """Apply the resolved switch (agent, session, config) and build the reply."""
@@ -2263,7 +2263,7 @@ class GatewaySlashCommandsMixin:
         # compaction handoffs (durable role=user, sometimes without
         # display_kind on legacy sessions; #80622) — /retry must never
         # re-send a reference-only summary as if the user asked it.
-        from agent.context_compressor import is_user_originated_turn
+        from agent.context_compactor import is_user_originated_turn
 
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
@@ -3338,7 +3338,7 @@ class GatewaySlashCommandsMixin:
 
 
     async def _handle_compact_command(self, event: MessageEvent) -> str:
-        """Handle /compact command -- manually compress conversation context.
+        """Handle /compact command -- manually compact conversation context.
 
         Accepts an optional focus topic: ``/compact <focus>`` guides the
         summariser to preserve information related to *focus* while being
@@ -3357,35 +3357,35 @@ class GatewaySlashCommandsMixin:
         if not history or len(history) < 4:
             return t("gateway.compact.not_enough")
 
-        # Parse args: either a focus topic (full compress) or the
-        # boundary-aware "here [N]" form (partial compress).
-        from son_of_anton_cli.partial_compress import (
-            extract_compress_flags,
-            parse_partial_compress_args,
-            rejoin_compressed_head_and_tail,
-            split_history_for_partial_compress,
-            summarize_compress_preview,
+        # Parse args: either a focus topic (full compact) or the
+        # boundary-aware "here [N]" form (partial compact).
+        from son_of_anton_cli.partial_compact import (
+            extract_compact_flags,
+            parse_partial_compact_args,
+            rejoin_compacted_head_and_tail,
+            split_history_for_partial_compact,
+            summarize_compact_preview,
         )
-        from agent.conversation_compression import (
-            finalize_context_engine_compression_notification,
+        from agent.conversation_compaction import (
+            finalize_context_engine_compaction_notification,
         )
         _raw_args = (event.get_command_args() or "").strip()
         # Strip --preview/--dry-run/--aggressive before positional parsing
         # so the flags coexist with 'here [N]' / focus-topic forms.
-        _raw_args, _preview, _aggressive = extract_compress_flags(_raw_args)
-        partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
+        _raw_args, _preview, _aggressive = extract_compact_flags(_raw_args)
+        partial, keep_last, focus_topic = parse_partial_compact_args(_raw_args)
 
         _agg_note = ""
         if _aggressive:
             # LLM-free hard truncation is not supported on this surface —
             # it would need its own transcript-persistence branch outside
-            # the guarded _compress_context rotation machinery (#44794).
+            # the guarded _compact_context rotation machinery (#44794).
             _agg_note = t("gateway.compact.aggressive_unsupported")
             if not _preview:
                 return _agg_note
 
         if _preview:
-            # Report what WOULD be compressed — no agent, no writes.
+            # Report what WOULD be compacted — no agent, no writes.
             from agent.model_metadata import estimate_request_tokens_rough
             _pv_msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
@@ -3393,7 +3393,7 @@ class GatewaySlashCommandsMixin:
                 if m.get("role") in {"user", "assistant"} and m.get("content")
             ]
             approx_tokens = estimate_request_tokens_rough(_pv_msgs)
-            report = summarize_compress_preview(
+            report = summarize_compact_preview(
                 _pv_msgs, partial, keep_last, focus_topic, approx_tokens
             )
             lines = list(report["lines"])
@@ -3403,13 +3403,13 @@ class GatewaySlashCommandsMixin:
 
         try:
             from run_agent import AIAgent
-            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.manual_compaction_feedback import summarize_manual_compaction
             from agent.model_metadata import estimate_request_tokens_rough
 
             session_key = self._session_key_for_source(source)
             # Preserve the same platform + stable gateway session identity that a
             # normal gateway turn passes (gateway/run.py main turn), so external
-            # context engines bind this temporary compression agent to the
+            # context engines bind this temporary compaction agent to the
             # original platform conversation instead of falling back to an
             # unbound/default "cli" host source — see #50422. _platform_config_key
             # maps LOCAL->"cli" exactly like the live turn, avoiding a new
@@ -3430,9 +3430,9 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.compact.no_provider")
 
             # Pass the FULL transcript (tool results included) — same
-            # rationale as the session-hygiene auto-compress in
+            # rationale as the session-hygiene auto-compact in
             # gateway/run.py (#3854): filtering to user/assistant-only
-            # starves the compressor's tool-result pruning and can trip the
+            # starves the compactor's tool-result pruning and can trip the
             # protect-first/last early-return on short filtered histories.
             msgs = [
                 m for m in history
@@ -3446,13 +3446,13 @@ class GatewaySlashCommandsMixin:
             tail: list = []
             head = msgs
             if partial:
-                head, tail = split_history_for_partial_compress(msgs, keep_last)
+                head, tail = split_history_for_partial_compact(msgs, keep_last)
                 if not tail:
-                    # Degenerate split — fall back to full compression.
+                    # Degenerate split — fall back to full compaction.
                     partial = False
                     head = msgs
 
-            # Bind the temporary compression agent to the originating source's
+            # Bind the temporary compaction agent to the originating source's
             # platform + stable gateway session key. These are *authoritative*
             # identity invariants (derived from `source`), so assign them into
             # runtime_kwargs directly rather than via setdefault: a value already
@@ -3468,8 +3468,8 @@ class GatewaySlashCommandsMixin:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
 
-            # The manual compression helper skips memory-provider initialization,
-            # but _compress_context may persist its cached system prompt. Restore
+            # The manual compaction helper skips memory-provider initialization,
+            # but _compact_context may persist its cached system prompt. Restore
             # the exact live-session prompt so provider blocks are retained.
             session_row = None
             get_session = getattr(self._session_db, "get_session", None)
@@ -3478,7 +3478,7 @@ class GatewaySlashCommandsMixin:
                     session_row = await get_session(session_entry.session_id)
                 except Exception as exc:
                     logger.warning(
-                        "Manual compression could not restore the system prompt "
+                        "Manual compaction could not restore the system prompt "
                         "for session %s: %s. Preserving an empty prompt so the "
                         "live turn rebuilds it with its configured providers.",
                         session_entry.session_id,
@@ -3498,7 +3498,7 @@ class GatewaySlashCommandsMixin:
             )
             _seed_hygiene_system_prompt(tmp_agent, session_row)
             # Keep the real source platform during construction so external
-            # context engines bind correctly. If compression has to rebuild the
+            # context engines bind correctly. If compaction has to rebuild the
             # prompt, stamp that provider-less fallback as stale for the next
             # real gateway turn.
             tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
@@ -3519,18 +3519,18 @@ class GatewaySlashCommandsMixin:
                     msgs, system_prompt=_sys_prompt, tools=_tools
                 )
 
-                compressor = tmp_agent.context_compressor
-                if not compressor.has_content_to_compress(head):
+                compactor = tmp_agent.context_compactor
+                if not compactor.has_content_to_compact(head):
                     return t("gateway.compact.nothing_to_do")
 
                 # _run_in_executor_with_context (not a bare run_in_executor):
                 # the profile secret scope installed by the wrapper is a
                 # contextvar, and the default-executor hop would drop it —
-                # the compressor's aux-client provider resolution would then
+                # the compactor's aux-client provider resolution would then
                 # read credentials unscoped and fail closed under
                 # multiplexing.
-                compressed, _ = await self._run_in_executor_with_context(
-                    lambda: tmp_agent._compress_context(
+                compacted, _ = await self._run_in_executor_with_context(
+                    lambda: tmp_agent._compact_context(
                         head,
                         "",
                         approx_tokens=approx_tokens,
@@ -3540,34 +3540,34 @@ class GatewaySlashCommandsMixin:
                     )
                 )
 
-                # If _compress_context returned unchanged because a
-                # concurrent compression lock is held, tell the user
+                # If _compact_context returned unchanged because a
+                # concurrent compaction lock is held, tell the user
                 # clearly instead of showing the misleading
-                # "No changes from compression" no-op text. The wording
+                # "No changes from compaction" no-op text. The wording
                 # distinguishes a confirmed holder from an unconfirmed
-                # acquisition failure (describe_compression_lock_skip).
+                # acquisition failure (describe_compaction_lock_skip).
                 # The deferred context-engine notification is discarded by
                 # the finally block below (finalize committed=False).
-                _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
+                _lock_skipped = getattr(tmp_agent, "_compaction_skipped_due_to_lock", None)
                 if _lock_skipped is True or isinstance(_lock_skipped, str):
-                    from agent.manual_compression_feedback import (
-                        describe_compression_lock_skip,
+                    from agent.manual_compaction_feedback import (
+                        describe_compaction_lock_skip,
                     )
-                    return describe_compression_lock_skip(_lock_skipped)
+                    return describe_compaction_lock_skip(_lock_skipped)
 
                 if partial and tail:
-                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
+                    compacted = rejoin_compacted_head_and_tail(compacted, tail)
 
-                # _compress_context either rotated (legacy: ended the old
-                # session, created a continuation id — write compressed messages
+                # _compact_context either rotated (legacy: ended the old
+                # session, created a continuation id — write compacted messages
                 # into the NEW session so the original stays searchable) or
-                # compacted in place (compression.in_place / #38763: same id,
+                # compacted in place (compaction.in_place / #38763: same id,
                 # transcript replaced with the compacted set).
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
                 _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
 
-                # Persist the compressed transcript BEFORE repointing the live
+                # Persist the compacted transcript BEFORE repointing the live
                 # session onto the new session_id. Order matters: if we
                 # repointed first and the canonical DB write then failed (lock
                 # contention under concurrent writes, ENOSPC, a disk/IO error),
@@ -3577,37 +3577,37 @@ class GatewaySlashCommandsMixin:
                 # Writing first, and treating a write failure as fatal, keeps
                 # the old history reachable (on rotation the entry still points
                 # at it; in place the original transcript is untouched) and lets
-                # the outer handler surface a "compress failed" banner instead.
+                # the outer handler surface a "compact failed" banner instead.
                 #
                 # Only rewrite the transcript when rotation produced a NEW
                 # session id.  In-place compaction does NOT need a rewrite:
                 # archive_and_compact() has already soft-archived the previous
                 # active rows and inserted the compacted messages as the new
-                # active set inside _compress_context().  Calling
+                # active set inside _compact_context().  Calling
                 # rewrite_transcript() after in-place compaction would invoke
                 # replace_messages(active_only=False) which DELETEs ALL rows —
                 # including the archived turns that archive_and_compact()
                 # deliberately preserved (silent data loss, #61145).
                 #
-                # The third case: _compress_context could NOT rotate AND was
+                # The third case: _compact_context could NOT rotate AND was
                 # not in-place (e.g. legacy mode but _session_db unavailable /
                 # the DB split raised) — there session_id is unchanged for a
                 # FAILURE reason, and rewrite_transcript() would DELETE the
-                # original messages and replace them with only the compressed
+                # original messages and replace them with only the compacted
                 # summary (permanent data loss #44794, #39704).
                 if rotated:
                     if not await self.async_session_store.rewrite_transcript(
-                        new_session_id, compressed
+                        new_session_id, compacted
                     ):
                         raise RuntimeError(
-                            f"failed to persist compressed transcript for "
+                            f"failed to persist compacted transcript for "
                             f"session {new_session_id}"
                         )
                     session_entry.session_id = new_session_id
                     await self.async_session_store._save()
                 elif _in_place:
                     # archive_and_compact() already persisted the compacted
-                    # transcript inside _compress_context — nothing to do.
+                    # transcript inside _compact_context — nothing to do.
                     pass
                 else:
                     logger.warning(
@@ -3620,29 +3620,29 @@ class GatewaySlashCommandsMixin:
                 await self.async_session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
-                finalize_context_engine_compression_notification(
+                finalize_context_engine_compaction_notification(
                     tmp_agent,
                     committed=True,
                 )
                 new_tokens = estimate_request_tokens_rough(
-                    compressed, system_prompt=_sys_prompt, tools=_tools
+                    compacted, system_prompt=_sys_prompt, tools=_tools
                 )
-                summary = summarize_manual_compression(
+                summary = summarize_manual_compaction(
                     msgs,
-                    compressed,
+                    compacted,
                     approx_tokens,
                     new_tokens,
-                    compression_state=compressor,
+                    compaction_state=compactor,
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compact
                 # path (otherwise the failure is silently logged).
-                # _last_compress_aborted means the aux LLM returned no
-                # usable summary and the compressor preserved messages
+                # _last_compact_aborted means the aux LLM returned no
+                # usable summary and the compactor preserved messages
                 # unchanged (no drop, no placeholder).  force=True was
                 # passed above so any active cooldown is bypassed.
-                _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
-                _summary_err = getattr(compressor, "_last_summary_error", None)
+                _summary_aborted = bool(getattr(compactor, "_last_compact_aborted", False))
+                _summary_err = getattr(compactor, "_last_summary_error", None)
                 # Force-redact provider exception text at this UI boundary
                 # even when global redaction is disabled.
                 if _summary_err:
@@ -3651,10 +3651,10 @@ class GatewaySlashCommandsMixin:
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.
-                _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
-                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
+                _aux_fail_model = getattr(compactor, "_last_aux_model_failure_model", None)
+                _aux_fail_err = getattr(compactor, "_last_aux_model_failure_error", None)
             finally:
-                finalize_context_engine_compression_notification(
+                finalize_context_engine_compaction_notification(
                     tmp_agent,
                     committed=False,
                 )
@@ -3667,7 +3667,7 @@ class GatewaySlashCommandsMixin:
                 # wedge class fixed for /new (#35994) and hygiene/shutdown
                 # (#53175).
                 await self._cleanup_agent_resources_off_loop(
-                    tmp_agent, context="manual compression"
+                    tmp_agent, context="manual compaction"
                 )
             lines = [summary["headline"]]
             if focus_topic:
@@ -3692,7 +3692,7 @@ class GatewaySlashCommandsMixin:
                 )
             return "\n".join(lines)
         except Exception as e:
-            logger.warning("Manual compress failed: %s", e)
+            logger.warning("Manual compact failed: %s", e)
             return t("gateway.compact.failed", error=e)
 
     async def _handle_save_command(self, event: MessageEvent) -> str:
@@ -3915,7 +3915,7 @@ class GatewaySlashCommandsMixin:
                 target_id = await self._session_db.resolve_session_by_title(name)
         if not target_id:
             return t("gateway.resume.not_found", name=name)
-        # Compression creates child continuations that hold the live transcript.
+        # Compaction creates child continuations that hold the live transcript.
         # Follow that chain so gateway /resume matches CLI behavior (#15000).
         try:
             target_id = await self._session_db.resolve_resume_session_id(target_id)
@@ -4202,14 +4202,14 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
 
-            # Context window and compressions
-            ctx = agent.context_compressor
+            # Context window and compactions
+            ctx = agent.context_compactor
             _lpt = ctx.last_prompt_tokens if ctx.last_prompt_tokens > 0 else 0
             if _lpt:
                 pct = min(100, _lpt / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(t("gateway.usage.label_context", used=f"{_lpt:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
-            if ctx.compression_count:
-                lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+            if ctx.compaction_count:
+                lines.append(t("gateway.usage.label_compactions", count=ctx.compaction_count))
 
             # Per-category context breakdown (estimated — chars/4 heuristic).
             # Same engine the desktop popover uses (PR #54907). The system

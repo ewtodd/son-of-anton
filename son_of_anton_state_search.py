@@ -1138,14 +1138,14 @@ class SessionSearchMixin:
             )
             rows = cursor.fetchall()
 
-        from agent.context_compressor import ContextCompressor
+        from agent.context_compactor import ContextCompactor
 
         result: List[Dict[str, Any]] = []
         for row in rows:
             if len(result) >= int(limit):
                 break
             decoded = self._decode_content(row["content"])
-            if ContextCompressor._is_context_summary_content(decoded):
+            if ContextCompactor._is_context_summary_content(decoded):
                 # Compaction handoff — never a user-originated turn (#80622).
                 continue
             if isinstance(decoded, list):
@@ -2300,7 +2300,7 @@ class SessionSearchMixin:
         Desktop search uses this alongside FTS message search so users can paste
         a session id from logs, CLI output, or another Son of Anton surface and jump
         straight to that conversation.  Matching also checks ``_lineage_root_id``
-        for projected compression-chain tips, so an old root id still resolves to
+        for projected compaction-chain tips, so an old root id still resolves to
         the live continuation row.
         """
         needle = (query or "").strip().lower()
@@ -2309,7 +2309,7 @@ class SessionSearchMixin:
 
         # SQL-bounded: list_sessions_rich pushes the id LIKE filter into the
         # query (matching the row's own id AND any id in its forward
-        # compression chain), so we only materialize matching rows instead of
+        # compaction chain), so we only materialize matching rows instead of
         # scanning every session. Fetch a small multiple of `limit` so the
         # in-Python exact/prefix/substring ranking below has enough candidates
         # to order, then truncate.

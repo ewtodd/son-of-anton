@@ -74,7 +74,7 @@ _DISCOVER_SEARCH_FIELDS = (
 )
 
 # Prefixes that identify generated context-compaction handoff summaries.
-# These are inserted by agent/context_compressor.py as normal user/assistant
+# These are inserted by agent/context_compactor.py as normal user/assistant
 # messages but contain machine-generated summary metadata — not user content.
 # They must be excluded from discovery bookends to avoid re-introducing huge
 # compaction payloads into fresh sessions via session_search.  (#43175)
@@ -86,7 +86,7 @@ _COMPACTION_PREFIXES = (
 # Gateway /new, /reset, idle/daily expiry, and CLI /new end the predecessor
 # without carrying its transcript into the child. Those children share a
 # parent_session_id lineage with the current session, but the prior content
-# is NOT in live context — unlike compression continuations (summary carried
+# is NOT in live context — unlike compaction continuations (summary carried
 # forward) and live delegation children (parent still running).
 #
 # Derived from the canonical gateway reset-reason set so the recovery fence
@@ -132,10 +132,10 @@ def _is_compaction_summary(content: str) -> bool:
 def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
     """Walk parent_session_id chain to the lineage root.
 
-    Returns ``(root_id, has_compression_hop)`` where ``has_compression_hop`` is
-    True if any session along the chain ended with ``end_reason = 'compression'``
-    — i.e. at least one parent/ancestor was compression-rotated into this
-    lineage. That flag lets callers distinguish a compression-split lineage
+    Returns ``(root_id, has_compaction_hop)`` where ``has_compaction_hop`` is
+    True if any session along the chain ended with ``end_reason = 'compaction'``
+    — i.e. at least one parent/ancestor was compaction-rotated into this
+    lineage. That flag lets callers distinguish a compaction-split lineage
     (parent content summarised away, no longer in live context) from a
     delegation lineage (child content still visible to the parent agent).
 
@@ -145,15 +145,15 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
         return session_id, False
     visited: set[str] = set()
     cur = session_id
-    has_compression = False
+    has_compaction = False
     while cur and cur not in visited:
         visited.add(cur)
         try:
             s = db.get_session(cur)
             if not s:
                 break
-            if s.get("end_reason") == "compression":
-                has_compression = True
+            if s.get("end_reason") == "compaction":
+                has_compaction = True
             parent = s.get("parent_session_id")
             if not parent:
                 break
@@ -161,11 +161,11 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
         except Exception as e:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
-    return cur, has_compression
+    return cur, has_compaction
 
 
 def _resolve_lineage(db, session_id: str) -> str:
-    """Convenience: return only the lineage root (ignores compression hop)."""
+    """Convenience: return only the lineage root (ignores compaction hop)."""
     return _resolve_to_parent(db, session_id)[0]
 
 
@@ -182,17 +182,17 @@ def _session_end_reason(db, session_id: str) -> Optional[str]:
         return None
 
 
-def _is_compression_ended(db, session_id: str) -> bool:
-    """Return True if *session_id* itself ended with ``end_reason='compression'``.
+def _is_compaction_ended(db, session_id: str) -> bool:
+    """Return True if *session_id* itself ended with ``end_reason='compaction'``.
 
-    Unlike the ``has_compression_hop`` flag from :func:`_resolve_to_parent`
-    (which is True for any descendant of a compression-ended ancestor), this
+    Unlike the ``has_compaction_hop`` flag from :func:`_resolve_to_parent`
+    (which is True for any descendant of a compaction-ended ancestor), this
     checks only the session's own ``end_reason``. A delegation child created
-    under a compression continuation has ``parent_session_id`` set but its own
+    under a compaction continuation has ``parent_session_id`` set but its own
     ``end_reason`` is ``None`` — its content is still live to the parent agent,
     so it must stay excluded from discovery.
     """
-    return _session_end_reason(db, session_id) == "compression"
+    return _session_end_reason(db, session_id) == "compaction"
 
 
 def _session_left_live_context(db, session_id: str) -> bool:
@@ -200,7 +200,7 @@ def _session_left_live_context(db, session_id: str) -> bool:
 
     Two shapes qualify:
 
-    - ``compression``: the transcript was summarised into the continuation
+    - ``compaction``: the transcript was summarised into the continuation
       child, so the original rows left live context.
     - fresh resets (:data:`_FRESH_RESET_END_REASONS`): every
       ``_RESET_END_REASONS`` member plus CLI ``new_session`` — the child
@@ -212,7 +212,7 @@ def _session_left_live_context(db, session_id: str) -> bool:
     their content IS the current context.
     """
     end_reason = _session_end_reason(db, session_id)
-    return end_reason == "compression" or _is_fresh_reset_session(end_reason)
+    return end_reason == "compaction" or _is_fresh_reset_session(end_reason)
 
 
 def _is_fresh_reset_session(end_reason: Optional[str]) -> bool:
@@ -433,7 +433,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
         # list_sessions_rich (include_children=False) already applies the
         # canonical child classifier (_LISTABLE_CHILD_SQL): roots, /branch
         # children, and /new-reset children are admitted (stable markers plus
-        # the legacy same-key heuristic), while delegation/compression
+        # the legacy same-key heuristic), while delegation/compaction
         # children are hidden. Re-classifying rows here in Python duplicated
         # that predicate and re-hid legacy pre-marker reset children the SQL
         # deliberately admits — trust the query instead (#85756).
@@ -441,9 +441,9 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
-        )  # fetch extra so we can skip current / compression roots
+        )  # fetch extra so we can skip current / compaction roots
 
-        current_root, has_compression_hop = (
+        current_root, has_compaction_hop = (
             _resolve_to_parent(db, current_session_id)
             if current_session_id else (None, False)
         )
@@ -453,11 +453,11 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             sid = s.get("id", "")
             if sid == current_session_id:
                 continue
-            # Compression continuation: the root's original turns were
+            # Compaction continuation: the root's original turns were
             # summarised into the live child, so hide the root. /new-reset
             # children share a lineage root but carry no transcript — keep
             # that root browsable.
-            if has_compression_hop and current_root and sid == current_root:
+            if has_compaction_hop and current_root and sid == current_root:
                 continue
             results.append({
                 "session_id": sid,
@@ -516,7 +516,7 @@ def _scroll(
 
     # Locate the anchor before applying the current-lineage guard. Discovery
     # intentionally surfaces same-lineage history that is no longer in live
-    # context: in-place compacted rows, compression-ended parents, and
+    # context: in-place compacted rows, compaction-ended parents, and
     # /new-reset predecessors. Scroll must preserve that distinction instead
     # of rejecting the discovery result it just returned.
     anchor_state = _get_message_storage_state(db, around_message_id)
@@ -647,7 +647,7 @@ def _title_match_result(
     lineage_root = _resolve_lineage(db, session_id)
     if current_lineage_root and lineage_root == current_lineage_root:
         # Same-lineage title hits are in-context only when the session is
-        # still live. /new-reset and compression-ended parents are not.
+        # still live. /new-reset and compaction-ended parents are not.
         if not _session_left_live_context(db, session_id):
             return None
 
@@ -767,8 +767,8 @@ def _discover(
         # Skip the current session lineage — UNLESS the hit's transcript has
         # left live context. Three sub-cases:
         #
-        # Legacy compression rotation: the FTS hit lives in a session that
-        # itself ended with end_reason='compression'. That session's content
+        # Legacy compaction rotation: the FTS hit lives in a session that
+        # itself ended with end_reason='compaction'. That session's content
         # has been replaced by a summary in the continuation child, so it
         # must stay discoverable.
         #

@@ -1,4 +1,4 @@
-"""User-facing summaries for manual compression commands."""
+"""User-facing summaries for manual compaction commands."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ from typing import Any, Sequence
 from agent.redact import redact_sensitive_text
 
 
-def describe_compression_lock_skip(lock_signal: Any) -> str:
-    """User-facing text for a manual /compact skipped by the compression lock.
+def describe_compaction_lock_skip(lock_signal: Any) -> str:
+    """User-facing text for a manual /compact skipped by the compaction lock.
 
-    ``lock_signal`` is ``agent._compression_skipped_due_to_lock`` (or the
-    ``holder`` carried by the TUI's ``CompressionLockHeld``): a descriptive
-    holder string when another compressor CONFIRMED holds the lock, or
+    ``lock_signal`` is ``agent._compaction_skipped_due_to_lock`` (or the
+    ``holder`` carried by the TUI's ``CompactionLockHeld``): a descriptive
+    holder string when another compactor CONFIRMED holds the lock, or
     ``True``/``None`` when acquisition failed without a confirmed holder
-    (``son_of_anton_state.try_acquire_compression_lock`` catches ``sqlite3.Error``
+    (``son_of_anton_state.try_acquire_compaction_lock`` catches ``sqlite3.Error``
     internally and returns ``False``, so a failed acquire is NOT proof that
-    another compression is running). The two cases must be worded
+    another compaction is running). The two cases must be worded
     differently: claiming "already in progress" on an unconfirmed failure
     misdirects the user when the real problem is a broken lock subsystem.
     """
@@ -27,44 +27,44 @@ def describe_compression_lock_skip(lock_signal: Any) -> str:
     )
     if holder:
         return (
-            f"⏳ Compression already in progress for this session "
+            f"⏳ Compaction already in progress for this session "
             f"(holder: {holder}). Please wait for it to finish."
         )
     return (
-        "⏳ Compression skipped: could not acquire this session's "
-        "compression lock. Another compression may still be running, or "
+        "⏳ Compaction skipped: could not acquire this session's "
+        "compaction lock. Another compaction may still be running, or "
         "the lock check failed — try again shortly."
     )
 
 
-def summarize_manual_compression(
+def summarize_manual_compaction(
     before_messages: Sequence[dict[str, Any]],
     after_messages: Sequence[dict[str, Any]],
     before_tokens: int,
     after_tokens: int,
     *,
-    compression_state: Any = None,
+    compaction_state: Any = None,
 ) -> dict[str, Any]:
-    """Return consistent user-facing feedback for manual compression."""
+    """Return consistent user-facing feedback for manual compaction."""
     before_count = len(before_messages)
     after_count = len(after_messages)
     noop = list(after_messages) == list(before_messages)
     aborted = (
-        compression_state is not None
-        and getattr(compression_state, "_last_compress_aborted", False) is True
+        compaction_state is not None
+        and getattr(compaction_state, "_last_compact_aborted", False) is True
     )
     refused_would_grow = (
-        compression_state is not None
-        and getattr(compression_state, "_last_compress_refused_would_grow", False)
+        compaction_state is not None
+        and getattr(compaction_state, "_last_compact_refused_would_grow", False)
         is True
     )
     fallback_used = (
-        compression_state is not None
-        and getattr(compression_state, "_last_summary_fallback_used", False) is True
+        compaction_state is not None
+        and getattr(compaction_state, "_last_summary_fallback_used", False) is True
     )
     failure_reason = (
-        getattr(compression_state, "_last_summary_error", None)
-        if compression_state is not None
+        getattr(compaction_state, "_last_summary_error", None)
+        if compaction_state is not None
         else None
     )
     if not isinstance(failure_reason, str) or not failure_reason.strip():
@@ -72,19 +72,19 @@ def summarize_manual_compression(
 
     if refused_would_grow:
         headline = (
-            f"Compression refused (summary would grow the conversation): "
+            f"Compaction refused (summary would grow the conversation): "
             f"{before_count} messages preserved"
         )
     elif aborted:
-        headline = f"Compression aborted: {before_count} messages preserved"
+        headline = f"Compaction aborted: {before_count} messages preserved"
     elif fallback_used:
         headline = (
-            f"Compressed with fallback: {before_count} → {after_count} messages"
+            f"Compacted with fallback: {before_count} → {after_count} messages"
         )
     elif noop:
-        headline = f"No changes from compression: {before_count} messages"
+        headline = f"No changes from compaction: {before_count} messages"
     else:
-        headline = f"Compressed: {before_count} → {after_count} messages"
+        headline = f"Compacted: {before_count} → {after_count} messages"
 
     if noop and after_tokens == before_tokens:
         token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
@@ -106,7 +106,7 @@ def summarize_manual_compression(
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
         dropped_count = getattr(
-            compression_state, "_last_summary_dropped_count", None
+            compaction_state, "_last_summary_dropped_count", None
         )
         if not isinstance(dropped_count, int) or isinstance(dropped_count, bool):
             dropped_count = max(before_count - after_count, 0)
@@ -117,7 +117,7 @@ def summarize_manual_compression(
     elif not noop and after_count < before_count and after_tokens > before_tokens:
         note = (
             "Note: fewer messages can still raise this estimate when "
-            "compression rewrites the transcript into denser summaries."
+            "compaction rewrites the transcript into denser summaries."
         )
 
     if failure_reason and (aborted or fallback_used):

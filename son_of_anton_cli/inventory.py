@@ -320,7 +320,7 @@ def build_aux_picker_rows(
     current_base_url: str = "",
     max_models: int | None = None,
 ) -> list[dict]:
-    """Provider rows for any auxiliary-task picker (vision, compression, …).
+    """Provider rows for any auxiliary-task picker (vision, compaction, …).
 
     THE entry point for every aux picker — present and future. Call this
     instead of ``list_authenticated_providers()`` directly.

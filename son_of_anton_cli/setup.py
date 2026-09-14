@@ -4,7 +4,7 @@ Interactive setup wizard for Son of Anton Agent.
 Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
   2. Terminal Backend — where your agent runs commands
-  3. Agent Settings — iterations, compression, session reset
+  3. Agent Settings — iterations, compaction, session reset
   4. Messaging Platforms — connect Discord, Slack, Signal, etc.
   5. Tools — configure web search, vision, skills, etc.
 
@@ -732,8 +732,8 @@ def _apply_default_agent_settings(config: dict):
 
     config.setdefault("display", {})["tool_progress"] = "all"
 
-    config.setdefault("compression", {})["enabled"] = True
-    config["compression"]["threshold"] = 0.50
+    config.setdefault("compaction", {})["enabled"] = True
+    config["compaction"]["threshold"] = 0.50
 
     # Default: never auto-reset sessions. This matches the gateway's own
     # default (SessionResetPolicy.mode = "none"); we still write it
@@ -744,13 +744,13 @@ def _apply_default_agent_settings(config: dict):
     print_success("Applied recommended defaults:")
     print_info("  Max iterations: 150")
     print_info("  Tool progress: all")
-    print_info("  Compression threshold: 0.50")
-    print_info("  Session reset: never (use /reset or compression)")
+    print_info("  Compaction threshold: 0.50")
+    print_info("  Session reset: never (use /reset or compaction)")
     print_info("  Run `son-of-anton setup agent` later to customize.")
 
 
 def setup_agent_settings(config: dict):
-    """Configure agent behavior: iterations, progress display, compression, session reset."""
+    """Configure agent behavior: iterations, progress display, compaction, session reset."""
 
     print_header("Agent Settings")
     print()
@@ -802,26 +802,26 @@ def setup_agent_settings(config: dict):
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
 
-    # ── Context Compression ──
-    print_header("Context Compression")
+    # ── Context Compaction ──
+    print_header("Context Compaction")
     print_info("Automatically summarizes old messages when context gets too long.")
     print_info(
-        "Higher threshold = compress later (use more context). Lower = compress sooner."
+        "Higher threshold = compact later (use more context). Lower = compact sooner."
     )
 
-    config.setdefault("compression", {})["enabled"] = True
+    config.setdefault("compaction", {})["enabled"] = True
 
-    current_threshold = cfg_get(config, "compression", "threshold", default=0.50)
-    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
+    current_threshold = cfg_get(config, "compaction", "threshold", default=0.50)
+    threshold_str = prompt("Compaction threshold (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
         if 0.5 <= threshold <= 0.95:
-            config["compression"]["threshold"] = threshold
+            config["compaction"]["threshold"] = threshold
     except ValueError:
         pass
 
     print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
+        f"Context compaction threshold set to {config['compaction'].get('threshold', 0.50)}"
     )
 
     # ── Session Reset Policy ──
@@ -850,7 +850,7 @@ def setup_agent_settings(config: dict):
         "Inactivity + daily reset (reset whichever comes first)",
         "Inactivity only (reset after N minutes of no messages)",
         "Daily only (reset at a fixed hour each day)",
-        "Never auto-reset (recommended - context lives until /reset or context compression)",
+        "Never auto-reset (recommended - context lives until /reset or context compaction)",
         "Keep current settings",
     ]
 
@@ -911,7 +911,7 @@ def setup_agent_settings(config: dict):
     elif reset_idx == 3:  # None
         config["session_reset"]["mode"] = "none"
         print_info(
-            "Sessions will never auto-reset. Context is managed only by compression."
+            "Sessions will never auto-reset. Context is managed only by compaction."
         )
         print_warning(
             "Long conversations will grow in cost. Use /reset manually when needed."
@@ -1868,8 +1868,8 @@ def _blank_slate_minimize_config(config: dict):
     """
     config.setdefault("agent", {})["max_turns"] = 90
 
-    # Compression off — minimal footprint; user opts in if they want long sessions.
-    config.setdefault("compression", {})["enabled"] = False
+    # Compaction off — minimal footprint; user opts in if they want long sessions.
+    config.setdefault("compaction", {})["enabled"] = False
 
     # No automatic memory / user-profile capture.
     mem = config.setdefault("memory", {})
@@ -1926,7 +1926,7 @@ def _run_blank_slate_setup(config: dict, son_of_anton_home, is_existing: bool):
     print()
     print_success("Minimal baseline applied:")
     print_info("  Toolsets: file, terminal (everything else off)")
-    print_info("  Compression, memory, checkpoints, smart routing: off")
+    print_info("  Compaction, memory, checkpoints, smart routing: off")
 
     # ── The fork: stop here, or walk through enabling things ──
     print()

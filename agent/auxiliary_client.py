@@ -1,6 +1,6 @@
 """Shared auxiliary client router for side tasks.
 
-Provides a single resolution chain so every consumer (context compression,
+Provides a single resolution chain so every consumer (context compaction,
 session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
@@ -29,7 +29,7 @@ openai-codex (Step 1 above) or when a caller explicitly requests it with
 a model (auxiliary.<task>.provider + auxiliary.<task>.model).
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
-(e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
+(e.g. ``auxiliary.vision.provider``, ``auxiliary.compaction.model``).
 Default "auto" follows the chains above.
 
 Payment / credit exhaustion fallback:
@@ -185,7 +185,7 @@ _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """Resolve httpx ``verify`` for an auxiliary-client base_url.
 
-    Mirrors the main client's TLS resolution so auxiliary calls (compression,
+    Mirrors the main client's TLS resolution so auxiliary calls (compaction,
     vision, web_extract, title generation, etc.) honor per-provider
     ``ssl_ca_cert`` / ``ssl_verify`` config and the ``SON_OF_ANTON_CA_BUNDLE`` /
     ``SSL_CERT_FILE`` env conventions. Best-effort: any failure falls back to
@@ -287,8 +287,8 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
 # ── Interrupt protection for atomic auxiliary tasks ──────────────────────
 # Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
 # (e.g. an incoming user message while the agent is busy). Context
-# compression is the prime case: if the summary LLM call is interrupted
-# part-way, compression falls back to a static "summary unavailable" marker
+# compaction is the prime case: if the summary LLM call is interrupted
+# part-way, compaction falls back to a static "summary unavailable" marker
 # and the real handoff is lost (#23975). A thread-local flag lets such a
 # task mark its in-flight LLM call as interrupt-protected; the Codex
 # Responses stream's cancellation check honors it. An explicit host cancel
@@ -305,7 +305,7 @@ class AuxiliaryExplicitCancellation(BaseException):
     This deliberately follows ``asyncio.CancelledError`` and inherits directly
     from ``BaseException``: provider retry/fallback code catches ``Exception``
     broadly and must never reinterpret an explicit host stop as a transport
-    failure. ``cause`` is immutable class data so downstream compression code
+    failure. ``cause`` is immutable class data so downstream compaction code
     does not re-query a mutable host Event after the transport has unwound.
     """
 
@@ -346,7 +346,7 @@ def aux_interrupt_protection(
 ):
     """Mark the current thread's auxiliary LLM call as interrupt-protected.
 
-    Used by atomic aux tasks (compression) so a mid-flight gateway interrupt
+    Used by atomic aux tasks (compaction) so a mid-flight gateway interrupt
     doesn't abort the call and trigger a degraded fallback. Re-entrant-safe:
     restores the previous value on exit. ``cancel_check`` lets the host retain
     an explicit hard-cancel path; ``cancel_event`` is preferred when the host
@@ -422,14 +422,14 @@ class _AuxiliaryCancellationDecision:
 
 
 # ── Forward-progress hook for streamed auxiliary calls ───────────────────
-# Long auxiliary calls (context compression is the prime case) are watched by
+# Long auxiliary calls (context compaction is the prime case) are watched by
 # wall-clock deadlines in their hosts (gateway session hygiene). A fixed
 # deadline punishes SLOW summary models exactly as hard as HUNG ones: a
 # reasoning model happily streaming a large summary is killed mid-generation.
 # This thread-local hook lets the host observe liveness instead: the wire
 # consumers below tick it on every streamed token/SSE event, and the host
 # extends its deadline while tokens are moving (see gateway/run.py session
-# hygiene + CompressionCommitFence.touch_progress). Thread-local matches the
+# hygiene + CompactionCommitFence.touch_progress). Thread-local matches the
 # call topology — the aux call and its stream consumption run synchronously
 # on the thread that installed the hook.
 _aux_progress = threading.local()
@@ -471,13 +471,13 @@ def _run_protected_sync_provider_call(
 ) -> Any:
     """Run one protected provider callback in an attempt-isolated daemon.
 
-    A hard cancel must release the compression-owning thread promptly, but
+    A hard cancel must release the compaction-owning thread promptly, but
     auxiliary clients are process-shared and cannot safely be closed or evicted
     to wake one request.  Only protected calls with a captured hard-cancel source
     use this seam.  Their provider callback (including stream aggregation) runs
     in a daemon worker while the owner polls cancellation.  On cancel the owner
     unwinds immediately; the worker is left to finish under the provider timeout
-    already present in ``kwargs``.  It owns no transcript or compressor commit
+    already present in ``kwargs``.  It owns no transcript or compactor commit
     state and never holds the session lock.
 
     Ordinary auxiliary calls, and protected calls without a cancellation source,
@@ -666,7 +666,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     via prefix so the override tracks every 272K-capped family (5.4, 5.5,
     5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
     variant. (Name kept for backward compatibility with the
-    ``compression.codex_gpt55_autoraise`` config key.)
+    ``compaction.codex_gpt55_autoraise`` config key.)
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
@@ -722,17 +722,17 @@ def _fixed_temperature_for_model(
     return None
 
 
-def _compression_threshold_for_model(
+def _compaction_threshold_for_model(
     model: Optional[str],
     provider: Optional[str] = None,
     *,
     allow_codex_gpt55_autoraise: bool = True,
 ) -> Optional[float]:
-    """Return a context-compression threshold override for specific models.
+    """Return a context-compaction threshold override for specific models.
 
     The threshold is the fraction of the model's context window that must be
     consumed before Son of Anton triggers summarization.  Higher values delay
-    compression and preserve more raw context.
+    compaction and preserve more raw context.
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
@@ -748,7 +748,7 @@ def _compression_threshold_for_model(
         opt-out flag: 128K is the model's native window, so the raise is
         unambiguously correct.
 
-    Returns a float in (0, 1] to override the global ``compression.threshold``
+    Returns a float in (0, 1] to override the global ``compaction.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
@@ -1051,7 +1051,7 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     ``custom`` OpenAI-compatible endpoint behind a gateway/WAF that rejects the
     OpenAI SDK's identifying headers (``User-Agent: OpenAI/Python ...``,
     ``X-Stainless-*``) override them for auxiliary calls too — otherwise the
-    main turn would succeed but title/compression/vision calls to the same
+    main turn would succeed but title/compaction/vision calls to the same
     endpoint would still fail. (#40033)
 
     Returns the merged dict, or the original ``headers`` (possibly ``None``)
@@ -1242,7 +1242,7 @@ def _to_openai_base_url(base_url: str) -> str:
 
     Anthropic-**only** custom gateways (path ends in ``/anthropic`` but has no
     sibling ``/v1``) must keep their path; rewriting them to ``/v1`` yields 404
-    on compression/vision/title_generation (#83642).
+    on compaction/vision/title_generation (#83642).
 
     ZAI exposes its general API and Coding Plan on separate endpoints.  Its
     Anthropic-compatible Coding Plan endpoint maps to ``/api/coding/paas/v4``
@@ -1421,7 +1421,7 @@ class _CodexCompletionsAdapter:
         # Responses input[] — which the Responses API rejects with
         # "Invalid value: 'tool'. Supported values are: 'assistant', 'system',
         # 'developer', and 'user'." (issue #5709, hit hard by flush_memories()
-        # / compression replaying real session history that includes assistant
+        # / compaction replaying real session history that includes assistant
         # tool_calls + role="tool" results). The shared converter encodes
         # assistant tool calls as `function_call` items and tool results as
         # `function_call_output` items with a valid call_id, so every
@@ -1443,7 +1443,7 @@ class _CodexCompletionsAdapter:
         # to a backend "connection" that doesn't survive credential
         # rotation/gateway restarts — replaying one gets HTTP 401 "input
         # item ID does not belong to this connection" (#32716). Auxiliary
-        # calls (context compression, flush_memories, MoA aggregation) go
+        # calls (context compaction, flush_memories, MoA aggregation) go
         # through this adapter instead of agent/transports/codex.py's
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
@@ -1467,7 +1467,7 @@ class _CodexCompletionsAdapter:
         }
 
         # Preserve the chat.completions timeout contract. This adapter is used
-        # by auxiliary calls such as context compression; if the timeout is not
+        # by auxiliary calls such as context compaction; if the timeout is not
         # forwarded and enforced, a Codex Responses stream can sit behind a
         # dead-looking CLI until the user force-interrupts the whole session.
         timeout = kwargs.get("timeout")
@@ -1582,11 +1582,11 @@ class _CodexCompletionsAdapter:
             )
             if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
                 # Scope by the owning turn's conversation so two unrelated
-                # sessions with the same instructions/tools (e.g. compression,
+                # sessions with the same instructions/tools (e.g. compaction,
                 # MoA, flush_memories firing back-to-back on different
                 # sessions) don't bucket-share a prompt cache slot (#78941).
                 # Prefer the rotation-stable logical scope threaded through
-                # set_runtime_main() (compression-lineage root, #79017) and
+                # set_runtime_main() (compaction-lineage root, #79017) and
                 # fall back to the physical session id, mirroring the main
                 # transport (agent/transports/codex.py::build_kwargs).
                 _scope = _cache_scope_from_session_id(
@@ -1616,7 +1616,7 @@ class _CodexCompletionsAdapter:
         deadline = time.monotonic() + float(total_timeout) if total_timeout else None
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
-        # A protected provider call may outlive its owning compression attempt:
+        # A protected provider call may outlive its owning compaction attempt:
         # the owner returns promptly on hard cancellation while this adapter is
         # still blocked in the SDK stream on its isolated worker. Timer threads
         # do not inherit this worker's thread-local protection state, so freeze
@@ -1673,7 +1673,7 @@ class _CodexCompletionsAdapter:
             # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
             # this instance).  After we close the httpx transport above, the
             # cache must drop that entry — otherwise the next auxiliary call
-            # (compression retry, memory flush, etc.) reuses the dead client
+            # (compaction retry, memory flush, etc.) reuses the dead client
             # and fails fast with a connection error.  See issue #23432.
             try:
                 _evict_cached_client_instance(self._client)
@@ -1687,7 +1687,7 @@ class _CodexCompletionsAdapter:
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
-                # Honor interrupt protection for atomic aux tasks (compression):
+                # Honor interrupt protection for atomic aux tasks (compaction):
                 # a mid-flight gateway interrupt must NOT abort the summary call
                 # and trigger a degraded fallback marker (#23975). Explicit host
                 # cancellation has its own frozen exception; timeouts above still
@@ -1945,7 +1945,7 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     Prefer the credential pool, matching the main runtime/provider status
     path.  Some xAI OAuth logins live only as pool entries; falling straight
     to the singleton auth-store resolver would make auxiliary tasks such as
-    compression report "no provider configured" even though ``son-of-anton auth
+    compaction report "no provider configured" even though ``son-of-anton auth
     status`` shows xAI OAuth as logged in.
 
     Falls back to ``son_of_anton_cli.auth``'s singleton runtime resolver for older
@@ -2325,7 +2325,7 @@ def _resolve_moa_aggregator(preset_name: Optional[str]) -> Tuple[Optional[str], 
 
     "moa" is a virtual provider — the acting model of a preset is its
     aggregator slot, and there is no real "moa" HTTP endpoint. Auxiliary
-    tasks (title generation, compression, vision, commit messages, …) don't
+    tasks (title generation, compaction, vision, commit messages, …) don't
     need the reference fan-out, so every aux resolution layer maps
     provider="moa"/model=<preset> to the aggregator's real provider+model
     through this single helper (shared by ``_resolve_auto``,
@@ -2522,7 +2522,7 @@ def _relay_sync_completion(
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    # Protected compression calls isolate only the provider callback and stream
+    # Protected compaction calls isolate only the provider callback and stream
     # aggregation.  The owning thread remains free to unwind its lease/DB
     # transaction on hard cancel without touching the process-shared client.
     if route is None:
@@ -2643,7 +2643,7 @@ def set_runtime_main(
     Context-local state prevents concurrent gateway sessions from overwriting
     one another while retaining compatibility mirrors for legacy readers.
 
-    ``cache_scope`` is the rotation-stable logical cache scope (compression-
+    ``cache_scope`` is the rotation-stable logical cache scope (compaction-
     lineage root — agent/prompt_cache_scope.py) resolved once per turn by
     turn_context; auxiliary Responses calls prefer it over ``session_id``
     for prompt_cache_key derivation (#79017).
@@ -2989,7 +2989,7 @@ def _get_provider_chain() -> List[tuple]:
 # When an auxiliary provider returns HTTP 402 (Payment Required / credit
 # exhaustion), retrying it on every subsequent aux call is wasteful — the
 # provider stays depleted for hours or days, but the chain re-tries it as
-# the FIRST entry on every compression/title-gen/session-search call,
+# the FIRST entry on every compaction/title-gen/session-search call,
 # burns ~1 RTT, gets 402 again, then falls back. On a long Discord/LCM
 # session that adds up to dozens of doomed 402s.
 #
@@ -3174,10 +3174,10 @@ def _is_timeout_error(exc: Exception) -> bool:
     connection drop.
 
     A timeout burns the entire configured ``timeout`` before surfacing, so a
-    same-provider retry on the critical compression path doubles the
+    same-provider retry on the critical compaction path doubles the
     user-visible wall time (issue #54465). A streaming-close / dropped
     connection, by contrast, fails fast and is cheap to retry — those stay on
-    the retry path even for compression.
+    the retry path even for compaction.
     """
     try:
         from openai import APITimeoutError
@@ -3448,14 +3448,14 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
     anywhere): here the model name is valid but the *current provider/account*
     is structurally unable to run it. The canonical case is a configured
     fallback that cannot run the main model — e.g. an ``openai-codex`` /
-    ChatGPT-account fallback asked to compress a ``glm-5.2`` conversation::
+    ChatGPT-account fallback asked to compact a ``glm-5.2`` conversation::
 
         Error code: 400 - {'detail': "The 'glm-5.2' model is not supported
         when using Codex with a ChatGPT account."}
 
     The candidate authenticates fine and builds a client, so the auth and
     payment predicates don't fire and the call would otherwise raise and
-    abort the whole auxiliary task (commonly compression — which then drops
+    abort the whole auxiliary task (commonly compaction — which then drops
     middle turns and churns the session, destroying the prompt cache).
     Treating it as a fallback-worthy capability error lets the chain skip the
     incapable route and continue to the next candidate, mirroring the
@@ -3920,7 +3920,7 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     provider was called with. When that deadline was tuned for the primary
     (or the primary simply consumed its whole budget before failing over),
     the fallback aborted on the same clock even when independently healthy —
-    a 163k-token compression that needs ~90s on the fallback died at the
+    a 163k-token compaction that needs ~90s on the fallback died at the
     primary's 30s deadline every turn (#62452).
 
     Entries in ``auxiliary.<task>.fallback_chain`` may declare their own
@@ -4062,7 +4062,7 @@ def _call_fallback_candidate_sync(
     A fallback candidate can itself carry a stale credential (e.g. an expired
     ``ANTHROPIC_TOKEN`` picked up by ``_try_anthropic``). Before this helper,
     such a 401 propagated out of the fallback site and aborted the auxiliary
-    task (for compression: a 60s cooldown + context marker) even though other
+    task (for compaction: a 60s cooldown + context marker) even though other
     healthy candidates remained. Live case: a Codex-timeout → Anthropic
     fallback 401-looped five times in one session (mattalachia debug dump,
     Jul 2026).
@@ -4339,7 +4339,7 @@ def _try_main_agent_model_fallback(
     (provider, model) pair that just failed, mirroring
     :func:`_try_configured_fallback_chain`.  This matters for self-hosted /
     custom endpoints serving several models behind one provider label: the
-    aux compression model timing out says nothing about the health of the
+    aux compaction model timing out says nothing about the health of the
     main agent model deployed on the same URL (real incident: aux
     ``glm-5.2`` hung and timed out while main ``macaron-v1-venti`` on the
     identical endpoint was serving 448K-token turns fine — the
@@ -4411,14 +4411,14 @@ def _try_main_agent_model_fallback(
 # ── Context-window screening for runtime fallback chains (issue #52392) ──
 #
 # When the runtime auxiliary fallback chain selects a candidate that is
-# reachable but has a context window smaller than the compression task
+# reachable but has a context window smaller than the compaction task
 # requires, the call errors out instead of continuing to the next, viable
 # candidate. The startup feasibility check in
-# ``agent.conversation_compression.check_compression_model_feasibility``
+# ``agent.conversation_compaction.check_compaction_model_feasibility``
 # already filters too-small auxiliary models at startup, but the runtime
 # fallback chain (``_try_configured_fallback_chain`` and
 # ``_try_main_fallback_chain``) does not apply the same filter, so
-# compression can stop at the first alive door even if the room behind it
+# compaction can stop at the first alive door even if the room behind it
 # is too small.
 #
 # The helpers below screen each candidate by its effective context window
@@ -4430,9 +4430,9 @@ def _try_main_agent_model_fallback(
 def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     """Return the minimum context length required for an auxiliary task.
 
-    Only ``compression`` carries an explicit minimum today (the same
+    Only ``compaction`` carries an explicit minimum today (the same
     ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
-    ``check_compression_model_feasibility`` already enforces at startup).
+    ``check_compaction_model_feasibility`` already enforces at startup).
     Other tasks (``vision``, ``title_generation``, ``web_extract``,
     ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
     have no per-task context floor and the runtime chain must remain
@@ -4443,7 +4443,7 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     """
     if not task:
         return None
-    if task == "compression":
+    if task == "compaction":
         return MINIMUM_CONTEXT_LENGTH
     return None
 
@@ -4779,7 +4779,7 @@ def _resolve_auto_route(
 
     Priority:
       1. User's main provider + main model, regardless of provider type.
-         This means auxiliary tasks (compression, vision, web extraction,
+         This means auxiliary tasks (compaction, vision, web extraction,
          session search, etc.) use the same model the user configured for
          chat.  Users on OpenRouter/Nous get their chosen chat model; users
          on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
@@ -4844,7 +4844,7 @@ def _resolve_auto_route(
     # there is no real "moa" HTTP endpoint, so resolving an aux client against
     # provider="moa"/model=<preset> sends the preset name as the model id and
     # the provider 400s ("opus-gpt is not a valid model ID"). Auxiliary tasks
-    # (title generation, compression, vision, …) don't need the reference
+    # (title generation, compaction, vision, …) don't need the reference
     # fan-out — they should run on the aggregator, which is the preset's acting
     # model. Resolve the MoA preset to its aggregator slot and continue Step 1
     # with that real provider+model. Mirrors the MoA context-length resolution.
@@ -4970,7 +4970,7 @@ def _resolve_auto_route(
             return client, model, label
         tried.append(label)
     logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
-                   "Compression, summarization, and memory flush will not work. "
+                   "Compaction, summarization, and memory flush will not work. "
                    "Configure a model in config.yaml (model.provider/model.default "
                    "or a custom endpoint).",
                    ", ".join(tried))
@@ -5186,7 +5186,7 @@ def resolve_provider_client(
     # a stale configured model with a live fallback provider (e.g. Claude model
     # sent to Codex after the main lane fell back to gpt-5.5). Let _resolve_auto()
     # return the actual current runtime model when the caller did not explicitly
-    # request one. (# compression-current-model)
+    # request one. (# compaction-current-model)
     #
     # Nous + vision is the one carve-out: the branch below resolves its model
     # from the Portal's tier-aware vision recommendation (``_try_nous(vision=
@@ -5320,7 +5320,7 @@ def resolve_provider_client(
     # ── xAI Grok OAuth (device code → Responses API) ───────────────
     # Without this branch, an xai-oauth main provider falls through to the
     # generic ``oauth_external`` arm below and returns ``(None, None)``,
-    # silently re-routing every auxiliary task (compression, web extract,
+    # silently re-routing every auxiliary task (compaction, web extract,
     # session search, curator, etc.) to whatever Step-2 fallback the user
     # has configured.  Users on xAI Grok OAuth would then see surprise
     # OpenRouter / Nous bills for side tasks they thought were running on
@@ -5446,7 +5446,7 @@ def resolve_provider_client(
             # through _resolve_named_custom_runtime, so key_cmd has to be
             # honoured on both paths at matching precedence: otherwise the main
             # agent turn works while every auxiliary call (title generation,
-            # compression, vision, embedding) 401s on the placeholder below.
+            # compaction, vision, embedding) 401s on the placeholder below.
             custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
             if custom_key_cmd:
                 from agent.command_token_source import build_command_token_provider
@@ -5685,11 +5685,11 @@ def get_text_auxiliary_client(
     """Return (client, default_model_slug) for text-only auxiliary tasks.
 
     Args:
-        task: Optional task name ("compression", "web_extract") to check
+        task: Optional task name ("compaction", "web_extract") to check
               for a task-specific provider override.
 
     Callers may override the returned model via config.yaml
-    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
+    (e.g. auxiliary.compaction.model, auxiliary.web_extract.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -6576,7 +6576,7 @@ def _resolve_task_provider_model(
     # a literal model id. Without this, a config of `auxiliary.<task>.model: auto`
     # propagates the literal string "auto" to the wire, where the provider returns
     # a 200 OK with an error-text body (e.g. "the model 'auto' does not exist"),
-    # which downstream consumers like ContextCompressor accept as the task output.
+    # which downstream consumers like ContextCompactor accept as the task output.
     # The provider-side 'auto' is handled in _resolve_auto() via main_runtime
     # fallback, so dropping cfg_model to None here lets that path do its job.
     #
@@ -6709,16 +6709,16 @@ def _resolve_task_provider_model(
 
 _DEFAULT_AUX_TIMEOUT = 30.0
 
-# Compression summarises large conversation histories; a reasoning auxiliary
+# Compaction summarises large conversation histories; a reasoning auxiliary
 # model (e.g. Codex / GPT-5.5) can legitimately take longer than the default
-# ``auxiliary.compression.timeout`` (120 s), causing the stream to time out and
-# the compressor to fall back to the deterministic context marker (#54915).
-# This is a bounded *floor* applied only to config-derived compression timeouts
+# ``auxiliary.compaction.timeout`` (120 s), causing the stream to time out and
+# the compactor to fall back to the deterministic context marker (#54915).
+# This is a bounded *floor* applied only to config-derived compaction timeouts
 # — it does not affect other auxiliary tasks and does not override an explicit
-# per-call ``timeout=``.  A floor is harmless for fast compression models
+# per-call ``timeout=``.  A floor is harmless for fast compaction models
 # (they finish before the deadline) and is a minimum, so a higher config value
 # is kept unchanged.
-_COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
+_COMPACTION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
@@ -6784,15 +6784,15 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
 
     Uses the caller-provided ``timeout`` when given; otherwise reads
     ``auxiliary.{task}.timeout`` from config via :func:`_get_task_timeout`.
-    For the ``compression`` task only, applies a bounded floor so a reasoning
+    For the ``compaction`` task only, applies a bounded floor so a reasoning
     model summarising a large context is not cut off by the default timeout
     (#54915).  The floor is intentionally skipped when the caller passes an
     explicit ``timeout=`` — explicit per-call deadlines are always honoured —
     and it is a minimum (``max``), so a config value already above it is kept.
     """
     effective = timeout if timeout is not None else _get_task_timeout(task)
-    if timeout is None and task == "compression":
-        effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
+    if timeout is None and task == "compaction":
+        effective = max(effective, _COMPACTION_TIMEOUT_FLOOR_SECONDS)
     return effective
 
 
@@ -6845,7 +6845,7 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Per-task concurrency limiting (#23324)
 # ---------------------------------------------------------------------------
-# Background auxiliary work (title generation, context compression, etc.) can
+# Background auxiliary work (title generation, context compaction, etc.) can
 # spawn unbounded concurrent LLM calls when many sessions are active. During
 # provider incidents each call also retries / fans out across the fallback
 # chain, multiplying request volume on already-degraded endpoints. A per-task
@@ -7002,7 +7002,7 @@ def _build_call_kwargs(
     if max_tokens is not None:
         # We do NOT cap output by default. Most chat-completions providers treat
         # an omitted max_tokens as "use the model's max output", which is what we
-        # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
+        # want for auxiliary tasks (compaction summaries, titles, vision, etc.) —
         # an explicit cap only risks truncating a summary or 400-ing on providers
         # that reject the parameter outright (e.g. GitHub Copilot / newer OpenAI
         # GPT-5 models require max_completion_tokens, not max_tokens; ZAI vision
@@ -7029,7 +7029,7 @@ def _build_call_kwargs(
         )
         _is_moa = bool(task) and str(task) == "moa_reference"
         # Bounded tasks: the "omit the cap" rule above is right for open-ended
-        # auxiliary output (compression summaries, vision descriptions), where a
+        # auxiliary output (compaction summaries, vision descriptions), where a
         # cap risks truncation. It is wrong for tasks whose output is a handful
         # of tokens BY DEFINITION and whose caller passed an explicit ceiling.
         #
@@ -7310,7 +7310,7 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
 
 # ── Streamed aggregation for progress-hooked auxiliary calls ─────────────
 # When a forward-progress hook is installed (aux_progress_hook — today only
-# by context compression), the primary chat.completions attempt is upgraded
+# by context compaction), the primary chat.completions attempt is upgraded
 # to a streamed request that is aggregated back into a complete response.
 # Two effects, both deliberate:
 #   1. The configured ``timeout`` becomes an INTER-CHUNK idle timeout instead
@@ -7369,7 +7369,7 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     outright — e.g. Tencent Copilot returns
     ``{"code": 11101, "msg": "Non-stream chat request is currently not
     supported"}``. The main conversation loop already streams, so interactive
-    chat works; auxiliary tasks (title generation, compression, web extract)
+    chat works; auxiliary tasks (title generation, compaction, web extract)
     used the non-streaming path and failed on every call. When this returns
     True the auxiliary client sends ``stream=True`` and aggregates the chunks
     itself (see :func:`_aggregate_chat_stream`). Credit @kudi88 (PR #60686).
@@ -7804,7 +7804,7 @@ def _call_llm_impl(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
+        task: Auxiliary task name ("compaction", "vision", "web_extract",
               "session_search", "skills_hub", "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
@@ -8032,17 +8032,17 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # Compression is on the critical turn path: a user cannot
+            # Compaction is on the critical turn path: a user cannot
             # continue or resume an oversized session until it compacts. A
             # same-provider retry on a timeout means another full ``timeout``-
             # long wall-clock block before the except-chain below can fall
             # back — doubling the user-visible stall (issue #54465). Skip the
-            # same-provider retry for compression on a full-budget timeout and
+            # same-provider retry for compaction on a full-budget timeout and
             # fall straight through to provider/model fallback; fast blips (a
             # streaming-close or a 5xx) still retry, since those are cheap.
-            if task == "compression" and _is_timeout_error(transient_err):
+            if task == "compaction" and _is_timeout_error(transient_err):
                 logger.info(
-                    "Auxiliary compression: timeout on the critical path; "
+                    "Auxiliary compaction: timeout on the critical path; "
                     "skipping same-provider retry and falling back: %s",
                     transient_err,
                 )
@@ -8297,7 +8297,7 @@ def _call_llm_impl(
         # When the resolved provider returns 401 and neither the Nous
         # refresh path nor explicit provider credential refresh applies,
         # fall back to an alternative provider instead of dropping the
-        # auxiliary task on the floor (silent compression failure /
+        # auxiliary task on the floor (silent compaction failure /
         # message loss). Auth is NOT a capacity error: it only bypasses
         # the explicit-provider gate when the user is in auto mode.
         should_fallback = (
@@ -8321,7 +8321,7 @@ def _call_llm_impl(
         # the provider cannot serve this request — fall back. See #52228.
         # Model-incompatibility 400s are also a hard capability mismatch (the
         # route cannot run this model at all — e.g. a codex/ChatGPT-account
-        # fallback asked to compress a glm-5.2 conversation), so they bypass
+        # fallback asked to compact a glm-5.2 conversation), so they bypass
         # the explicit-provider gate and continue to the next candidate
         # instead of aborting the auxiliary task and churning the session.
         is_capacity_error = (
@@ -8702,12 +8702,12 @@ async def _async_call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # See call_llm(): compression is on the critical turn path,
+            # See call_llm(): compaction is on the critical turn path,
             # so skip the same-provider retry on a full-budget timeout and
             # fall straight through to fallback (issue #54465).
-            if task == "compression" and _is_timeout_error(transient_err):
+            if task == "compaction" and _is_timeout_error(transient_err):
                 logger.info(
-                    "Auxiliary compression (async): timeout on the critical "
+                    "Auxiliary compaction (async): timeout on the critical "
                     "path; skipping same-provider retry and falling back: %s",
                     transient_err,
                 )

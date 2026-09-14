@@ -1,7 +1,7 @@
 """
 Cron job management tools for Son of Anton Agent.
 
-Expose a single compressed action-oriented tool to avoid schema/context bloat.
+Expose a single compacted action-oriented tool to avoid schema/context bloat.
 Compatibility wrappers remain for direct Python callers and legacy tests.
 """
 
@@ -1636,7 +1636,7 @@ def cronjob(
 
 CRONJOB_SCHEMA = {
     "name": "cronjob",
-    "description": """Manage scheduled cron jobs with a single compressed tool.
+    "description": """Manage scheduled cron jobs with a single compacted tool.
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.

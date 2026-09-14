@@ -78,8 +78,8 @@ class SessionPortabilityMixin:
 
         Cron runs are flat, independent sessions whose id is
         ``cron_{job_id}_{timestamp}`` (see ``cron/scheduler.run_job``). They are
-        never compression roots and never branch, so this deliberately skips the
-        ``list_sessions_rich`` recursive compression-chain CTE / leading-wildcard
+        never compaction roots and never branch, so this deliberately skips the
+        ``list_sessions_rich`` recursive compaction-chain CTE / leading-wildcard
         ``id_query`` path — that path seeds from *every* ``source='cron'`` row in
         the DB and only filters to one job's runs after the scan, so it scales
         with the whole cron pile (a heavy history makes the desktop run-history
@@ -149,9 +149,9 @@ class SessionPortabilityMixin:
         """Fetch multiple sessions with the same enriched columns as
         ``_get_session_rich_row``, in a single query.
 
-        Used by ``list_sessions_rich``'s compression-tip projection to resolve
+        Used by ``list_sessions_rich``'s compaction-tip projection to resolve
         every tip row for a page in one round trip instead of one query per
-        compression-root row. Returns a dict keyed by session id; ids that
+        compaction-root row. Returns a dict keyed by session id; ids that
         don't exist are simply absent from the result (same as
         ``_get_session_rich_row`` returning ``None`` for them).
         """
@@ -272,8 +272,8 @@ class SessionPortabilityMixin:
         return {**session, "messages": messages}
 
     def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a compression lineage as one logical session dict."""
-        lineage_ids = self.get_compression_lineage(session_id)
+        """Export a compaction lineage as one logical session dict."""
+        lineage_ids = self.get_compaction_lineage(session_id)
         if not lineage_ids:
             return None
         segments = []

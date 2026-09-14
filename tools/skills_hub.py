@@ -1734,7 +1734,7 @@ class SkillsShSource(SkillSource):
             metas = [SkillMeta(**item) for item in cached]
             return metas[:limit] if limit > 0 else metas
 
-        # skills.sh serves the per-skill sitemaps brotli-compressed, and
+        # skills.sh serves the per-skill sitemaps brotli-compacted, and
         # httpx's optional brotlicffi backend has a streaming-decode bug
         # that fails on these specific payloads. Excluding "br" from
         # Accept-Encoding makes the server fall back to gzip (or
@@ -4250,7 +4250,7 @@ def _load_son_of_anton_index() -> Optional[dict]:
     # Hub (blank Browse-hub landing, index contributes 0 search hits) because
     # the error is caught below and we silently fall back to a (often absent)
     # stale cache.  Requesting gzip/deflate sidesteps the broken decoder while
-    # still compressing the transfer.  The identity retry is belt-and-braces
+    # still compacting the transfer.  The identity retry is belt-and-braces
     # for any future proxy that ignores the header and returns Brotli anyway.
     data = None
     for accept_encoding in ("gzip, deflate", "identity"):

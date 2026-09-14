@@ -1,7 +1,7 @@
 """System-prompt assembly for :class:`AIAgent`.
 
 The agent's system prompt is built once per session and reused across all
-turns — only context compression triggers a rebuild.  This keeps the
+turns — only context compaction triggers a rebuild.  This keeps the
 upstream prefix cache warm.  See ``son-of-anton-dev``'s
 ``references/system-prompt-invariant.md`` for the invariants and
 ``references/self-improvement-loop.md`` for how the background-review
@@ -186,7 +186,7 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
 def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     """Render once on a new session; never re-evaluate a restored prompt.
 
-    Compression rebuilds reuse the per-agent tuple. A fresh process restores
+    Compaction rebuilds reuse the per-agent tuple. A fresh process restores
     ``_cached_system_prompt`` before reconstructing its static cache prefix;
     because plugin sections live after memory in the volatile tail, that
     reconstruction can safely omit them and must not call plugin code again.
@@ -361,7 +361,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # None falls back to the historical flat default. This value is stable for
     # the life of the conversation, so it does not threaten prompt caching.
     _ctx_len: Optional[int] = None
-    _cc = getattr(agent, "context_compressor", None)
+    _cc = getattr(agent, "context_compactor", None)
     if _cc is not None:
         _cc_len = getattr(_cc, "context_length", None)
         if isinstance(_cc_len, int) and _cc_len > 0:
@@ -633,7 +633,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                     # the restore path can detect user-initiated capability
                     # changes (skills/toolsets/MCP/SOUL/roster) and rebuild
                     # ONCE per change instead of waiting for /new or
-                    # compression. Also marks this prompt as timeless — the
+                    # compaction. Also marks this prompt as timeless — the
                     # volatile timestamp line is omitted (see below), since a
                     # birth date pinned in a session that lives for months is
                     # misinformation.
@@ -831,7 +831,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     now = _son_of_anton_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
     # for the full day.  Minute-precision changes invalidate prefix-cache KV
-    # on every rebuild path (compression boundary, fresh-agent gateway turns,
+    # on every rebuild path (compaction boundary, fresh-agent gateway turns,
     # session resume without a stored prompt).  The model can still query the
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
@@ -887,7 +887,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     """Assemble the full system prompt from all layers.
 
     Called once per session (cached on ``agent._cached_system_prompt``) and
-    only rebuilt after context compression events. This ensures the system
+    only rebuilt after context compaction events. This ensures the system
     prompt is stable across all turns in a session, maximizing prefix cache
     hits.
 
@@ -915,7 +915,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
-    Called after context compression events. Also reloads memory from disk
+    Called after context compaction events. Also reloads memory from disk
     so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
@@ -934,7 +934,7 @@ def reconstruct_static_prefix(
 
     The static prefix is not persisted (only the full prompt is), so any
     path that adopts a stored/kept ``_cached_system_prompt`` — session
-    restore, the compression keep-prompt path, or a failover to a cache-on
+    restore, the compaction keep-prompt path, or a failover to a cache-on
     provider mid-turn (#72626) — must rebuild the stable tier to regain the
     two-block ``[static, volatile]`` system layout.
 

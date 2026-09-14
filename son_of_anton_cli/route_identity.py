@@ -58,7 +58,7 @@ def should_clear_context_pin(
     """True when a configured ``model.context_length`` pin no longer matches its runtime route.
 
     Fail-closed: any error during route comparison returns ``True`` (drop the pin)
-    so a stale window never silently inflates the compression threshold.
+    so a stale window never silently inflates the compaction threshold.
     """
     configured_model = str(configured_model or "").strip()
     if configured_model and configured_model != str(active_model or "").strip():

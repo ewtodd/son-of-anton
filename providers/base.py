@@ -95,7 +95,7 @@ class ProviderProfile:
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
     default_aux_model: str = (
-        ""  # cheap model for auxiliary tasks (compression, vision, etc.)
+        ""  # cheap model for auxiliary tasks (compaction, vision, etc.)
     )
     # empty = use main model
 

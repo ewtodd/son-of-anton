@@ -1590,7 +1590,7 @@ if _TEXTUAL_AVAILABLE:
                 self.query_one("#ctx-bar", Static).update(f"{'▰' * filled}{'▱' * (10 - filled)}  {pct}%")
                 self.query_one("#ctx-tokens", Static).update(
                     f"{_fmt_tokens(snap.get('context_tokens', 0))} / {_fmt_tokens(snap.get('context_length') or 0)}"
-                    + (f" · {snap['compressions']} compressed" if snap.get("compressions") else "")
+                    + (f" · {snap['compactions']} compacted" if snap.get("compactions") else "")
                 )
             self.query_one("#ctx-usage", Static).update(
                 f"in {_fmt_tokens(snap.get('session_input_tokens', 0))} · out {_fmt_tokens(snap.get('session_output_tokens', 0))}"

@@ -95,7 +95,7 @@ def _render_messages(session: dict[str, Any]) -> str:
     multi_segment = len(segments) > 1
     for segment in segments:
         if multi_segment:
-            parts.append(f"## Compression segment: {_session_id(segment)}\n")
+            parts.append(f"## Compaction segment: {_session_id(segment)}\n")
         for message in list(segment.get("messages") or []):
             parts.append(_message_heading(message) + "\n")
             rendered_content = _render_content(message.get("content"))

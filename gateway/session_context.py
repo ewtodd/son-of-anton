@@ -159,7 +159,7 @@ def set_current_session_id(session_id: str) -> None:
     """Synchronize ``SON_OF_ANTON_SESSION_ID`` across ContextVar and ``os.environ``.
 
     Long-lived single-process entrypoints like the CLI can rotate sessions via
-    ``/new``, ``/resume``, ``/branch``, or compression splits without
+    ``/new``, ``/resume``, ``/branch``, or compaction splits without
     reconstructing the entire agent. Tools still consult
     ``get_session_env("SON_OF_ANTON_SESSION_ID")`` with an ``os.environ`` fallback,
     so both storage paths must move together when the active session changes.

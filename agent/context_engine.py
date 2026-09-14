@@ -1,13 +1,13 @@
 """Abstract base class for pluggable context engines.
 
 A context engine controls how conversation context is managed when
-approaching the model's token limit. The built-in ContextCompressor
+approaching the model's token limit. The built-in ContextCompactor
 is the default implementation. Third-party engines (e.g. LCM) can
 replace it via the plugin system or by being placed in the
 ``plugins/context_engine/<name>/`` directory.
 
 Selection is config-driven: ``context.engine`` in config.yaml.
-Default is ``"compressor"`` (the built-in). Only one engine is active.
+Default is ``"compactor"`` (the built-in). Only one engine is active.
 
 The engine is responsible for:
   - Deciding when compaction should fire
@@ -19,8 +19,8 @@ Lifecycle:
   1. Engine is instantiated and registered (plugin register() or default)
   2. on_session_start() called when a conversation begins
   3. update_from_response() called after each API response with usage data
-  4. should_compress() checked after each turn
-  5. compress() called when should_compress() returns True
+  4. should_compact() checked after each turn
+  5. compact() called when should_compact() returns True
   6. on_session_end() called at real session boundaries (CLI exit, /reset,
      gateway session expiry) — NOT per-turn
 """
@@ -94,7 +94,7 @@ class ContextEngine(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier (e.g. 'compressor', 'lcm')."""
+        """Short identifier (e.g. 'compactor', 'lcm')."""
 
     # -- Token state (read by run_agent.py for display/logging) ------------
     #
@@ -105,7 +105,7 @@ class ContextEngine(ABC):
     last_total_tokens: int = 0
     threshold_tokens: int = 0
     context_length: int = 0
-    compression_count: int = 0
+    compaction_count: int = 0
 
     # -- Compaction parameters (read by the turn-start / post-response gates) --
     #
@@ -143,24 +143,24 @@ class ContextEngine(ABC):
         """
 
     @abstractmethod
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compact(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
-        """Return ``(should_compress, reason)``.
+    def should_compact_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+        """Return ``(should_compact, reason)``.
 
         The base implementation is backward-compatible: engines that only
-        implement ``should_compress`` get ``(should_compress(prompt_tokens),
+        implement ``should_compact`` get ``(should_compact(prompt_tokens),
         None)``. Concrete engines with richer block reasons (e.g. a
         summary-LLM cooldown or an anti-thrashing guard) override this to
         surface a human-readable reason so callers can warn the user instead
-        of silently skipping compression. Added for the silent-overflow
+        of silently skipping compaction. Added for the silent-overflow
         warning fix (#62625) so plugin engines don't raise AttributeError.
         """
-        return self.should_compress(prompt_tokens), None
+        return self.should_compact(prompt_tokens), None
 
     @abstractmethod
-    def compress(
+    def compact(
         self,
         messages: List[Dict[str, Any]],
         current_tokens: Optional[int] = None,
@@ -178,10 +178,10 @@ class ContextEngine(ABC):
 
         Args:
             focus_topic: Optional topic string from manual ``/compact <focus>``.
-                Engines that support guided compression should prioritise
+                Engines that support guided compaction should prioritise
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
-            force: Whether a user-requested compression should bypass an
+            force: Whether a user-requested compaction should bypass an
                 engine-owned cooldown. Engines without cooldowns may ignore it.
             memory_context: Text returned by memory providers immediately before
                 compaction. Summarizing engines should include non-empty text in
@@ -198,7 +198,7 @@ class ContextEngine(ABC):
     ) -> tuple[List[Dict[str, Any]], int]:
         """Deterministically trim old tool-result payloads without an LLM call.
 
-        Runs on a low, cost-oriented trigger independent of ``should_compress``
+        Runs on a low, cost-oriented trigger independent of ``should_compact``
         so large-window engines can reclaim re-sent tool output long before full
         compaction would fire. Returns ``(messages, n_pruned)``.
 
@@ -206,11 +206,11 @@ class ContextEngine(ABC):
         pruned. Engines that don't implement a cheap prune — and any engine that
         predates this hook — inherit this default, so the agent loop's
         post-tool-call prune path never raises ``AttributeError`` on them. The
-        built-in ContextCompressor overrides this with the real implementation.
+        built-in ContextCompactor overrides this with the real implementation.
         """
         return messages, 0
 
-    # -- Optional: per-turn context selection (distinct from compression) --
+    # -- Optional: per-turn context selection (distinct from compaction) --
 
     def select_context(
         self,
@@ -224,19 +224,19 @@ class ContextEngine(ABC):
 
         Called every turn after the request message list is assembled and
         before it is dispatched to the provider — independent of
-        ``should_compress()``. This lets an engine *select* which context
+        ``should_compact()``. This lets an engine *select* which context
         enters the prompt (retrieval, topic routing, role/branch switching)
         rather than *shrink* context that is already there. The two verbs are
         orthogonal:
 
-          - ``compress()``      : context is too long  -> make it shorter.
+          - ``compact()``      : context is too long  -> make it shorter.
           - ``select_context()``: this turn belongs to a different context
                                   -> use that one instead.
 
         Without this hook, engines that need per-turn access to the message
-        list have to force ``should_compress()`` to return ``True`` so that
-        ``compress()`` is invoked every turn purely as a callback — which
-        conflates selection with compression and degrades behaviour when the
+        list have to force ``should_compact()`` to return ``True`` so that
+        ``compact()`` is invoked every turn purely as a callback — which
+        conflates selection with compaction and degrades behaviour when the
         engine's backend is unavailable. ``select_context()`` removes the need
         for that workaround.
 
@@ -258,7 +258,7 @@ class ContextEngine(ABC):
         reach the provider — and (b) prompt-cache stability (an AGENTS.md
         invariant) is preserved: the default no-op leaves the request
         byte-identical, so cache behaviour is unchanged for the built-in
-        compressor and any non-implementing engine. An engine that *does*
+        compactor and any non-implementing engine. An engine that *does*
         replace the list changes its own cache prefix by definition; that is
         the engine's concern, and cache-control breakpoints are re-derived on
         the selected list. The hook is evaluated per provider request (so it
@@ -274,7 +274,7 @@ class ContextEngine(ABC):
             budget_tokens: The active model's context length, or 0 if unknown.
 
         Default returns ``None`` (no-op) — zero impact on the built-in
-        compressor or any existing engine.
+        compactor or any existing engine.
         """
         return None
 
@@ -302,8 +302,8 @@ class ContextEngine(ABC):
         guaranteed callback for every possible early exit; unifying all
         terminal paths behind one finalization seam is a separate follow-up.
 
-        Together the two hooks remove the need to abuse ``should_compress()`` /
-        ``compress()`` as a generic per-turn callback just to observe history,
+        Together the two hooks remove the need to abuse ``should_compact()`` /
+        ``compact()`` as a generic per-turn callback just to observe history,
         and they cover the case where a turn finishes and there may be no next
         request from which to infer the previous turn.
 
@@ -329,8 +329,8 @@ class ContextEngine(ABC):
 
     # -- Optional: turn-start maintenance hook ------------------------------
 
-    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
-        """Request a ``compress()`` pass at turn start while UNDER threshold.
+    def should_compact_preflight(self, messages: List[Dict[str, Any]]) -> bool:
+        """Request a ``compact()`` pass at turn start while UNDER threshold.
 
         Consulted once per turn, before the first model call, only when the
         real-usage gate did not already fire (and no failure cooldown is
@@ -350,7 +350,7 @@ class ContextEngine(ABC):
 
         Return ``None`` to suppress successful automatic lifecycle status for
         this compaction event. ``phase`` identifies the host call site (for
-        example ``"preflight"`` or ``"compress"``). ``context`` contains
+        example ``"preflight"`` or ``"compact"``). ``context`` contains
         best-effort fields such as ``approx_tokens`` and ``threshold_tokens``.
 
         This hook does not control warning/error messages or explicit manual
@@ -362,11 +362,11 @@ class ContextEngine(ABC):
 
     # -- Optional: manual /compact preflight ------------------------------
 
-    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+    def has_content_to_compact(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick check: is there anything in ``messages`` that can be compacted?
 
         Used by the gateway ``/compact`` command as a preflight guard —
-        returning False lets the gateway report "nothing to compress yet"
+        returning False lets the gateway report "nothing to compact yet"
         without making an LLM call.
 
         Default returns True (always attempt).  Engines with a cheap way
@@ -394,12 +394,12 @@ class ContextEngine(ABC):
     def on_session_reset(self) -> None:
         """Called on /new or /reset. Reset per-session state.
 
-        Default resets compression_count and token tracking.
+        Default resets compaction_count and token tracking.
         """
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
-        self.compression_count = 0
+        self.compaction_count = 0
 
     # -- Optional: tools ---------------------------------------------------
 
@@ -430,8 +430,8 @@ class ContextEngine(ABC):
 
         Default returns the standard fields run_agent.py expects.
         """
-        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
-        # (set by conversation_compression) to 0 so status readers don't see a
+        # Clamp the -1 "compaction just ran, awaiting real usage" sentinel
+        # (set by conversation_compaction) to 0 so status readers don't see a
         # raw -1 or a negative usage_percent on the transitional turn. Mirrors
         # the CLI/gateway status-bar paths (cli.py, tui_gateway/server.py).
         last_prompt = self.last_prompt_tokens if self.last_prompt_tokens > 0 else 0
@@ -443,7 +443,7 @@ class ContextEngine(ABC):
                 min(100, last_prompt / self.context_length * 100)
                 if self.context_length else 0
             ),
-            "compression_count": self.compression_count,
+            "compaction_count": self.compaction_count,
         }
 
     # -- Optional: model switch support ------------------------------------
@@ -468,7 +468,7 @@ class ContextEngine(ABC):
         # Falls back to _config_threshold_percent (the raw config value) when
         # no override matches. Plugin engines that override update_model() can
         # call resolve_model_threshold() for the same logic.
-        from agent.context_compressor import resolve_model_threshold
+        from agent.context_compactor import resolve_model_threshold
         if not hasattr(self, "_config_threshold_percent"):
             # Snapshot the pre-override percent ONCE so repeated model
             # switches fall back to the engine's configured value, not the

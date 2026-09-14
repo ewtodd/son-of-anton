@@ -985,7 +985,7 @@ class MemoryManager:
         """Notify all providers that the agent's session_id has rotated.
 
         Fires on ``/resume``, ``/branch``, ``/reset``, ``/new``, and
-        context compression — any path that reassigns
+        context compaction — any path that reassigns
         ``AIAgent.session_id`` without tearing the provider down.
 
         Providers keep running; they only need to refresh cached
@@ -1002,7 +1002,7 @@ class MemoryManager:
         # Only forward ``rewound`` when it's actually set. Passing it
         # unconditionally would inject ``rewound=False`` into every
         # provider's **kwargs for the common /resume, /branch, /new, and
-        # compression paths, polluting providers that capture extra kwargs
+        # compaction paths, polluting providers that capture extra kwargs
         # (and breaking exact-dict assertions). The /undo path sets
         # rewound=True explicitly; everyone else stays clean.
         if rewound:
@@ -1021,21 +1021,21 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Notify all providers before context compression.
+    def on_pre_compact(self, messages: List[Dict[str, Any]]) -> str:
+        """Notify all providers before context compaction.
 
-        Returns combined text from providers to include in the compression
+        Returns combined text from providers to include in the compaction
         summary prompt. Empty string if no provider contributes.
         """
         parts = []
         for provider in self._providers:
             try:
-                result = provider.on_pre_compress(messages)
+                result = provider.on_pre_compact(messages)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
                 logger.debug(
-                    "Memory provider '%s' on_pre_compress failed: %s",
+                    "Memory provider '%s' on_pre_compact failed: %s",
                     provider.name, e,
                 )
         return "\n\n".join(parts)

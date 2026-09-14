@@ -1130,7 +1130,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     - If it looks like a session ID (contains underscore + hex), try direct lookup first.
     - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
     - Falls back to the other method if the first doesn't match.
-    - If the resolved session is a compression root, follow the chain forward
+    - If the resolved session is a compaction root, follow the chain forward
       to the latest continuation. Users who remember the old root ID (e.g.
       from an exit summary printed before the bug fix, or from notes) get
       resumed at the live tip instead of a stale parent with no messages.
@@ -1151,10 +1151,10 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             resolved_id = db.resolve_session_by_title(name_or_id)
 
         if resolved_id:
-            # Project forward through compression chain so resumes land on
-            # the live tip instead of a dead compressed parent.
+            # Project forward through compaction chain so resumes land on
+            # the live tip instead of a dead compacted parent.
             try:
-                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+                resolved_id = db.get_compaction_tip(resolved_id) or resolved_id
             except Exception:
                 pass
 
@@ -2025,7 +2025,7 @@ def _clear_stale_openai_base_url():
     """Remove OPENAI_BASE_URL from ~/.son-of-anton/.env if the active provider is not 'custom'.
 
     After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
-    clients (compression, vision, delegation) with provider:auto to route
+    clients (compaction, vision, delegation) with provider:auto to route
     requests to the old custom endpoint instead of the newly selected
     provider.  See issue #5161.
     """
@@ -2055,7 +2055,7 @@ def _clear_stale_openai_base_url():
 # Auxiliary model configuration
 #
 # Son of Anton uses lightweight "auxiliary" models for side tasks (vision analysis,
-# context compression, web extraction, session search, etc.). Each task has
+# context compaction, web extraction, session search, etc.). Each task has
 # its own provider+model pair in config.yaml under `auxiliary.<task>`.
 #
 # The UI lives behind "Configure auxiliary models..." at the bottom of the
@@ -2067,7 +2067,7 @@ def _clear_stale_openai_base_url():
 # (task_key, display_name, short_description)
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
-    ("compression", "Compression", "context summarization"),
+    ("compaction", "Compaction", "context summarization"),
     ("web_extract", "Web extract", "web page summarization"),
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
@@ -2264,7 +2264,7 @@ def _aux_config_menu() -> None:
         print()
         print("  Auxiliary models — side-task routing")
         print()
-        print("  Side tasks (vision, compression, web extraction, etc.) default")
+        print("  Side tasks (vision, compaction, web extraction, etc.) default")
         print('  to your main chat model.  "auto" means "use my main model".')
         print("  Override a task below if you want it pinned to a specific")
         print("  provider/model.")
@@ -5431,7 +5431,7 @@ def main():
         "--lineage",
         choices=["single", "logical"],
         default="single",
-        help="md/qmd only: export one row or its compression lineage",
+        help="md/qmd only: export one row or its compaction lineage",
     )
     sessions_export.add_argument(
         "--delete-after-verified",

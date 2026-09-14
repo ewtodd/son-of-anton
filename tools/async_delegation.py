@@ -527,7 +527,7 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Terminally drop a claimed completion that can never be delivered.
 
     Used when the delivery target is permanently gone — the spawning session
-    ended at an explicit user boundary (/new, reset) rather than a compression
+    ended at an explicit user boundary (/new, reset) rather than a compaction
     rotation. Marking the row ``dropped`` (not ``delivered``) keeps the ack
     honest, and (not ``pending``) keeps restart recovery from replaying a
     completion that will be fail-closed dropped again every time.

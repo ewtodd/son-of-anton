@@ -158,9 +158,9 @@ from agent.model_metadata import (
 )
 from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
-from agent.context_compressor import (  # noqa: F401
-    COMPRESSED_SUMMARY_METADATA_KEY,
-    ContextCompressor,
+from agent.context_compactor import (  # noqa: F401
+    COMPACTED_SUMMARY_METADATA_KEY,
+    ContextCompactor,
 )
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
@@ -659,14 +659,14 @@ class AIAgent:
     ) -> None:
         """Notify the active context engine about a host session transition.
 
-        Generic host-side lifecycle helper. The built-in compressor keeps its
+        Generic host-side lifecycle helper. The built-in compactor keeps its
         existing reset behavior; plugin engines that implement richer hooks
         (``on_session_end``, ``on_session_reset``, ``on_session_start``,
         ``carry_over_new_session_context``) can flush old-session state,
         reset runtime counters, bind to the new session, and optionally
         carry retained context forward.
         """
-        engine = getattr(self, "context_compressor", None)
+        engine = getattr(self, "context_compactor", None)
         if not engine:
             return
 
@@ -731,9 +731,9 @@ class AIAgent:
         - API call count
         - Reasoning tokens
         - Estimated cost tracking
-        - Context compressor internal counters
+        - Context compactor internal counters
         
-        The method safely handles optional attributes (e.g., context compressor)
+        The method safely handles optional attributes (e.g., context compactor)
         using ``hasattr`` checks.
 
         When ``previous_messages`` / ``old_session_id`` / ``carry_over_context``
@@ -763,7 +763,7 @@ class AIAgent:
         # False for tool-loop follow-ups (#3040).
         self._is_user_initiated_turn = False
 
-        # Context engine reset/transition (works for built-in compressor and plugins)
+        # Context engine reset/transition (works for built-in compactor and plugins)
         self._transition_context_engine_session(
             old_session_id=old_session_id,
             new_session_id=getattr(self, "session_id", None),
@@ -774,9 +774,9 @@ class AIAgent:
 
         # Reset-only session switches (/new, /resume, /branch) update
         # agent.session_id before calling reset_session_state(). The built-in
-        # compressor keeps durable cooldown state keyed by its bound session,
+        # compactor keeps durable cooldown state keyed by its bound session,
         # so rebind it when the active session changed but no full start hook ran.
-        engine = getattr(self, "context_compressor", None)
+        engine = getattr(self, "context_compactor", None)
         target_session_id = getattr(self, "session_id", "") or ""
         bound_session_id = getattr(engine, "_session_id", "") if engine is not None else ""
         if (
@@ -966,7 +966,7 @@ class AIAgent:
         """Emit a user-visible warning through the same status plumbing.
 
         Unlike debug logs, these warnings are meant for degraded side paths
-        such as auxiliary compression or memory flushes where the main turn can
+        such as auxiliary compaction or memory flushes where the main turn can
         continue but the user needs to know something important failed.
         """
         message = strip_decorative_glyphs(message or "")
@@ -983,14 +983,14 @@ class AIAgent:
     def _warn_context_overflow_blocked(
         self, reason: str, preflight_tokens: int, threshold_tokens: int
     ) -> None:
-        """Surface a deduped warning when the context is over the compression
-        threshold but compression is blocked (summary-LLM cooldown or
+        """Surface a deduped warning when the context is over the compaction
+        threshold but compaction is blocked (summary-LLM cooldown or
         anti-thrashing).
 
         Without this signal the session keeps growing until the model silently
         stops answering — the conversation hits the hard provider token limit
         with no explanation. Centralised here so every caller that checks
-        ``should_compress_info`` (turn-start gate, conversation-loop
+        ``should_compact_info`` (turn-start gate, conversation-loop
         guards) shares identical dedup/reset logic.
 
         Dedup is on the *kind* of block (``cooldown`` / ``ineffective``), not the
@@ -1003,14 +1003,14 @@ class AIAgent:
         _warn_key = ("ctx_overflow_blocked", _warn_kind)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
-            from agent.conversation_compression import (
+            from agent.conversation_compaction import (
                 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
             )
-            # cooldown + anti-thrash (ineffective) are both "compression blocked".
+            # cooldown + anti-thrash (ineffective) are both "compaction blocked".
             if _warn_kind in ("cooldown", "ineffective"):
                 self._touch_activity(
-                    f"compression blocked ({reason})",
-                    provenance=ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
+                    f"compaction blocked ({reason})",
+                    provenance=ActivityProvenance.AGENT_COMPACTION_COOLDOWN,
                 )
             self._emit_warning(
                 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
@@ -1020,31 +1020,31 @@ class AIAgent:
                 )
             )
 
-    def _warn_uncompressed_context_overflow(
+    def _warn_uncompacted_context_overflow(
         self, preflight_tokens: int, context_length: int
     ) -> None:
-        """Surface a deduped warning when uncompressed context exceeds model limit.
+        """Surface a deduped warning when uncompacted context exceeds model limit.
 
-        When compression is explicitly disabled (compression.enabled: false), long
-        sessions can grow past the model context window with no compression to shrink
+        When compaction is explicitly disabled (compaction.enabled: false), long
+        sessions can grow past the model context window with no compaction to shrink
         them (#89297). Surface an actionable warning so the user knows to run /compact
-        or enable compression.
+        or enable compaction.
         """
-        _warn_key = ("uncompressed_ctx_overflow", context_length)
+        _warn_key = ("uncompacted_ctx_overflow", context_length)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
             self._emit_warning(
                 f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
-                f"context window (~{context_length:,} tokens) with compression disabled "
-                f"(compression.enabled: false). Use /compact to compress history or "
-                f"enable compression in config.yaml."
+                f"context window (~{context_length:,} tokens) with compaction disabled "
+                f"(compaction.enabled: false). Use /compact to compact history or "
+                f"enable compaction in config.yaml."
             )
 
     def _clear_context_overflow_warn(self) -> None:
         """Reset the dedup state for the blocked-overflow warning.
 
-        Call this whenever compression is no longer blocked while the context
-        is over threshold (e.g. the cooldown elapsed, or compression ran
+        Call this whenever compaction is no longer blocked while the context
+        is over threshold (e.g. the cooldown elapsed, or compaction ran
         successfully), so the warning can re-fire on the next blocked turn.
         """
         self._last_ctx_overflow_warn = None
@@ -1320,15 +1320,15 @@ class AIAgent:
             "auth_mode": getattr(self, "auth_mode", "") or "",
         }
 
-    def _check_compression_model_feasibility(self) -> None:
-        """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""
-        from agent.conversation_compression import check_compression_model_feasibility
-        check_compression_model_feasibility(self)
+    def _check_compaction_model_feasibility(self) -> None:
+        """Forwarder — see ``agent.conversation_compaction.check_compaction_model_feasibility``."""
+        from agent.conversation_compaction import check_compaction_model_feasibility
+        check_compaction_model_feasibility(self)
 
-    def _replay_compression_warning(self) -> None:
-        """Forwarder — see ``agent.conversation_compression.replay_compression_warning``."""
-        from agent.conversation_compression import replay_compression_warning
-        replay_compression_warning(self)
+    def _replay_compaction_warning(self) -> None:
+        """Forwarder — see ``agent.conversation_compaction.replay_compaction_warning``."""
+        from agent.conversation_compaction import replay_compaction_warning
+        replay_compaction_warning(self)
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
@@ -1920,7 +1920,7 @@ class AIAgent:
                 # ``_flush_messages_to_session_db_unlocked``).
                 if (
                     override is not None
-                    and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    and not msg.get(COMPACTED_SUMMARY_METADATA_KEY)
                     and (
                         not isinstance(msg.get("content"), list)
                         or isinstance(override, list)
@@ -2131,7 +2131,7 @@ class AIAgent:
             # Every message in that snapshot was already given its final
             # disposition (written+stamped, stamped as durable history, or
             # skipped as ephemeral scaffolding / non-dict), and no code path
-            # pops _DB_PERSISTED_MARKER from a live dict in place (compression
+            # pops _DB_PERSISTED_MARKER from a live dict in place (compaction
             # strips markers on fresh copies, which breaks identity here and
             # forces a full re-scan). Identity match ⇒ identical skip decision,
             # so starting after the matched prefix is behavior-preserving.
@@ -2206,7 +2206,7 @@ class AIAgent:
                     if (
                         _ov_content is not None
                         and (not isinstance(content, list) or isinstance(_ov_content, list))
-                        and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                        and not msg.get(COMPACTED_SUMMARY_METADATA_KEY)
                     ):
                         # The live content is what the API call sends; the
                         # override is the cleaned transcript value. If they
@@ -2292,9 +2292,9 @@ class AIAgent:
                     "display_kind": (
                         "hidden"
                         if (
-                            msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                            msg.get(COMPACTED_SUMMARY_METADATA_KEY)
                             and (
-                                ContextCompressor.classify_summary_content(
+                                ContextCompactor.classify_summary_content(
                                     msg.get("content")
                                 )
                                 == "standalone"
@@ -2319,8 +2319,8 @@ class AIAgent:
                 self._session_db.append_messages_batch(
                     session_id=self.session_id,
                     messages=_batch_rows,
-                    compression_lock_holder=getattr(
-                        self, "_active_compression_lock_holder", None
+                    compaction_lock_holder=getattr(
+                        self, "_active_compaction_lock_holder", None
                     ),
                     turn_lease_holder=getattr(
                         self, "_active_session_turn_lease_holder", None
@@ -2350,16 +2350,16 @@ class AIAgent:
             # so the turn-end explanation can distinguish lock contention
             # ("storage was busy, send it again") from disk-full/read-only.
             from son_of_anton_state import (
-                CompressionSessionClosedError,
+                CompactionSessionClosedError,
                 classify_persistence_error,
             )
 
             self._last_persistence_error_cause = classify_persistence_error(e)
-            if isinstance(e, CompressionSessionClosedError):
-                # Compression race: another path rotated this session while
+            if isinstance(e, CompactionSessionClosedError):
+                # Compaction race: another path rotated this session while
                 # this turn was still writing against it. The store resolves
                 # the continuation chain transitively via the canonical API
-                # ``get_compression_tip`` (bounded walk, excludes branch/
+                # ``get_compaction_tip`` (bounded walk, excludes branch/
                 # delegate/tool children, prefers live children over stale
                 # closed siblings such as ``ws_orphan_reap``). Adopt the tip
                 # ONLY when it is a different row AND still live, and retry
@@ -2371,10 +2371,10 @@ class AIAgent:
                     old_id = self.session_id
                     tip = None
                     try:
-                        tip = self._session_db.get_compression_tip(old_id)
+                        tip = self._session_db.get_compaction_tip(old_id)
                     except Exception as tip_exc:
                         logger.warning(
-                            "compression tip lookup failed for %s: %s",
+                            "compaction tip lookup failed for %s: %s",
                             old_id,
                             tip_exc,
                         )
@@ -2386,7 +2386,7 @@ class AIAgent:
                             tip_row = None
                         if tip_row is not None and tip_row.get("ended_at") is None:
                             logger.warning(
-                                "Adopted live compression tip %s for closed "
+                                "Adopted live compaction tip %s for closed "
                                 "session %s; retrying flush once",
                                 tip,
                                 old_id,
@@ -2394,7 +2394,7 @@ class AIAgent:
                             self.session_id = tip
                             self._flushed_db_message_ids = set()
                             self._last_flushed_db_idx = 0
-                            self._compression_adoption_failed = False
+                            self._compaction_adoption_failed = False
                             return self._flush_messages_to_session_db_unlocked(
                                 messages,
                                 conversation_history,
@@ -2402,9 +2402,9 @@ class AIAgent:
                             )
                 # No live tip (or budget exhausted): fail closed — never guess
                 # a target session. The per-turn diagnostic flag lets the
-                # turn-completion explanation name compression rotation
+                # turn-completion explanation name compaction rotation
                 # instead of the historical (misleading) full-disk advice.
-                self._compression_adoption_failed = True
+                self._compaction_adoption_failed = True
                 logger.warning("Session DB append_message failed: %s", e)
                 return False
             logger.warning("Session DB append_message failed: %s", e)
@@ -3191,7 +3191,7 @@ class AIAgent:
             message: Optional new message that triggered the interrupt.
                      If provided, the agent will include this in its response context.
             hard_cancel: Mark this as an explicit stop rather than a redirect or
-                         incoming-message interrupt. Compression may honor this
+                         incoming-message interrupt. Compaction may honor this
                          atomic signal even while ordinary interrupts are masked.
         
         Example (CLI):
@@ -3210,7 +3210,7 @@ class AIAgent:
             event = getattr(self, "_hard_interrupt_requested", None)
             if event is None:
                 return
-            fence = vars(self).get("_active_compression_commit_fence")
+            fence = vars(self).get("_active_compaction_commit_fence")
             cancel_before_commit = getattr(
                 type(fence), "cancel_before_commit", None
             )
@@ -3223,7 +3223,7 @@ class AIAgent:
                     return
                 except Exception:
                     logger.debug(
-                        "Compression hard-cancel fence admission failed",
+                        "Compaction hard-cancel fence admission failed",
                         exc_info=True,
                     )
             event.set()
@@ -3816,18 +3816,18 @@ class AIAgent:
             )
         if reason == "session_persistence_failed":
             cause = persistence_cause or "unknown"
-            if cause == "compression":
+            if cause == "compaction":
                 return (
                     prefix
                     + "the turn was stopped because another process was "
-                    "compressing this session. Your message should already be "
-                    "saved — please send it again after compression completes."
+                    "compacting this session. Your message should already be "
+                    "saved — please send it again after compaction completes."
                 )
-            if cause == "compression_closed":
+            if cause == "compaction_closed":
                 return (
                     prefix
                     + "the turn was stopped because this session was rotated "
-                    "by context compression and its live continuation could "
+                    "by context compaction and its live continuation could "
                     "not be adopted. The storage itself is healthy — refresh "
                     "the client (or start a new turn) so it picks up the new "
                     "session id, then send your message again."
@@ -3900,11 +3900,11 @@ class AIAgent:
         CLI/Gateway consumers share one observation source (#72016 / #72039).
 
         ``provenance`` defaults to ``unknown`` (the ordinary agent activity
-        clock). Named values are for special writers (e.g. compression);
+        clock). Named values are for special writers (e.g. compaction);
         ordinary call sites should leave the default.
 
         ``force_persist`` bypasses the 60s SessionDB rate limit so a
-        terminal stamp (e.g. compression completed) is not dropped.
+        terminal stamp (e.g. compaction completed) is not dropped.
         """
         from agent.session_activity import (
             bound_activity_description,
@@ -3969,7 +3969,7 @@ class AIAgent:
         Keeps ``_last_activity_ts`` so idle/watchdog clocks stay continuous
         across interrupt-recursive turns (#15654) and between turns. Clears
         description + provenance so idle cached agents / SessionDB listings
-        do not keep advertising the last mid-turn stamp (e.g. compression
+        do not keep advertising the last mid-turn stamp (e.g. compaction
         or tool execution) after the turn ended (#72039).
         """
         from agent.session_activity import ActivityProvenance
@@ -4083,9 +4083,9 @@ class AIAgent:
             except Exception:
                 pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
-        if hasattr(self, "context_compressor") and self.context_compressor:
+        if hasattr(self, "context_compactor") and self.context_compactor:
             try:
-                self.context_compressor.on_session_end(
+                self.context_compactor.on_session_end(
                     self.session_id or "",
                     messages or [],
                 )
@@ -4094,7 +4094,7 @@ class AIAgent:
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
-        Called when session_id rotates (e.g. /new, context compression);
+        Called when session_id rotates (e.g. /new, context compaction);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
         if self._memory_manager:
@@ -4106,11 +4106,11 @@ class AIAgent:
         # the memory manager's on_session_end. Without this, engines that
         # accumulate per-session state (DAGs, summaries) leak that state from
         # the rotated-out session into whatever comes next under the same
-        # compressor instance. Mirrors the call in shutdown_memory_provider().
+        # compactor instance. Mirrors the call in shutdown_memory_provider().
         # See issue #22394.
-        if hasattr(self, "context_compressor") and self.context_compressor:
+        if hasattr(self, "context_compactor") and self.context_compactor:
             try:
-                self.context_compressor.on_session_end(
+                self.context_compactor.on_session_end(
                     self.session_id or "",
                     messages or [],
                 )
@@ -4345,10 +4345,10 @@ class AIAgent:
 
         # 8. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
-        # (manual compression helpers that rotate to a continuation session_id,
+        # (manual compaction helpers that rotate to a continuation session_id,
         # or background-review forks that share the live parent's session_id and
         # must leave it open). end_session() is first-reason-wins and no-ops on
-        # an already-ended row, so this never clobbers a 'compression' /
+        # an already-ended row, so this never clobbers a 'compaction' /
         # 'cron_complete' / 'cli_close' reason set by an earlier terminal path.
         session_db = getattr(self, "_session_db", None)
         try:
@@ -5379,9 +5379,9 @@ class AIAgent:
             except Exception:
                 pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
-        if hasattr(self, "context_compressor") and self.context_compressor:
+        if hasattr(self, "context_compactor") and self.context_compactor:
             try:
-                self.context_compressor.on_session_end(
+                self.context_compactor.on_session_end(
                     self.session_id or "",
                     messages or [],
                 )
@@ -5390,7 +5390,7 @@ class AIAgent:
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
-        Called when session_id rotates (e.g. /new, context compression);
+        Called when session_id rotates (e.g. /new, context compaction);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
         if self._memory_manager:
@@ -5402,11 +5402,11 @@ class AIAgent:
         # the memory manager's on_session_end. Without this, engines that
         # accumulate per-session state (DAGs, summaries) leak that state from
         # the rotated-out session into whatever comes next under the same
-        # compressor instance. Mirrors the call in shutdown_memory_provider().
+        # compactor instance. Mirrors the call in shutdown_memory_provider().
         # See issue #22394.
-        if hasattr(self, "context_compressor") and self.context_compressor:
+        if hasattr(self, "context_compactor") and self.context_compactor:
             try:
-                self.context_compressor.on_session_end(
+                self.context_compactor.on_session_end(
                     self.session_id or "",
                     messages or [],
                 )
@@ -5641,10 +5641,10 @@ class AIAgent:
 
         # 8. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
-        # (manual compression helpers that rotate to a continuation session_id,
+        # (manual compaction helpers that rotate to a continuation session_id,
         # or background-review forks that share the live parent's session_id and
         # must leave it open). end_session() is first-reason-wins and no-ops on
-        # an already-ended row, so this never clobbers a 'compression' /
+        # an already-ended row, so this never clobbers a 'compaction' /
         # 'cron_complete' / 'cli_close' reason set by an earlier terminal path.
         session_db = getattr(self, "_session_db", None)
         try:
@@ -7753,8 +7753,8 @@ class AIAgent:
         *,
         max_dimension: int = 8000,
     ) -> bool:
-        """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
-        from agent.conversation_compression import try_shrink_image_parts_in_messages
+        """Forwarder — see ``agent.conversation_compaction.try_shrink_image_parts_in_messages``."""
+        from agent.conversation_compaction import try_shrink_image_parts_in_messages
         return try_shrink_image_parts_in_messages(
             api_messages,
             max_dimension=max_dimension,
@@ -8216,7 +8216,7 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(
+    def _compact_context(
         self,
         messages: list,
         system_message: str,
@@ -8228,22 +8228,22 @@ class AIAgent:
         defer_context_engine_notification: bool = False,
         commit_fence=None,
     ) -> tuple:
-        """Forwarder — see ``agent.conversation_compression.compress_context``.
+        """Forwarder — see ``agent.conversation_compaction.compact_context``.
 
         ``force=True`` is passed by the manual ``/compact`` slash command
         so users can bypass the summary-failure cooldown after an
-        auto-compress abort.  Auto-compress callers use the default
+        auto-compact abort.  Auto-compact callers use the default
         ``force=False``.
         """
-        from agent.conversation_compression import (
-            CompressionCommitFence,
-            compress_context,
-            resolve_context_compression_timeouts,
-            run_compress_context_with_progress_timeout,
+        from agent.conversation_compaction import (
+            CompactionCommitFence,
+            compact_context,
+            resolve_context_compaction_timeouts,
+            run_compact_context_with_progress_timeout,
         )
         # Out-of-turn compaction entry points — ``/compact`` (cli.py), the
         # gateway ``/compact`` command and its hygiene sweep (both of which
-        # build a throwaway agent), and partial head compression — call this
+        # build a throwaway agent), and partial head compaction — call this
         # forwarder directly, outside ``run_conversation``'s ambient scope.
         # With nothing ambient the summarizer's auxiliary call carries no
         # conversation tag and no Portal sticky key, so it routes independently
@@ -8256,25 +8256,25 @@ class AIAgent:
         # system prompt, so that request is a cold write on any endpoint. What
         # it buys is the turns AFTER compaction reading the cache it wrote.
         token = None
-        # Every AIAgent compression has a fence, including ordinary in-turn and
+        # Every AIAgent compaction has a fence, including ordinary in-turn and
         # manual paths. hard_interrupt() uses this exact instance to serialize
         # cancel admission against begin_commit().
-        active_fence = commit_fence or CompressionCommitFence()
+        active_fence = commit_fence or CompactionCommitFence()
         # A single agent can receive overlapping automatic/manual entrypoints.
         # Serialize fence publication so a waiter cannot replace the fence of
         # the attempt currently generating/committing a summary.
         fence_registration_lock = vars(self).setdefault(
-            "_compression_commit_fence_lock", threading.RLock()
+            "_compaction_commit_fence_lock", threading.RLock()
         )
         with fence_registration_lock:
             missing_fence = object()
             previous_fence = vars(self).get(
-                "_active_compression_commit_fence", missing_fence
+                "_active_compaction_commit_fence", missing_fence
             )
-            self._active_compression_commit_fence = active_fence
+            self._active_compaction_commit_fence = active_fence
         try:
             def _run(fence=None, target_messages=None):
-                return compress_context(
+                return compact_context(
                     self,
                     target_messages if target_messages is not None else messages,
                     system_message,
@@ -8292,7 +8292,7 @@ class AIAgent:
             if commit_fence is not None:
                 return _run(active_fence)
 
-            idle_timeout, total_ceiling = resolve_context_compression_timeouts()
+            idle_timeout, total_ceiling = resolve_context_compaction_timeouts()
             if idle_timeout <= 0:
                 return _run(active_fence)
 
@@ -8308,7 +8308,7 @@ class AIAgent:
                 # published to caller-visible state only via the returned
                 # value of an ADMITTED commit (the host discards results on
                 # timeout/cancel); durable SessionDB mutation is already
-                # gated behind the commit fence inside compress_context.
+                # gated behind the commit fence inside compact_context.
                 snapshot = copy.deepcopy(messages)
                 result_msgs, result_prompt = _run(
                     fence, target_messages=snapshot
@@ -8322,7 +8322,7 @@ class AIAgent:
                 return result_msgs, result_prompt
 
             # Resolve the fallback prompt lazily on timeout only. Eager
-            # rebuild here would raise before compress_context runs whenever
+            # rebuild here would raise before compact_context runs whenever
             # _cached_system_prompt is unset and _build_system_prompt fails
             # (lock-refresher / noop-exception tests rely on that path).
             def _fallback_prompt():
@@ -8333,7 +8333,7 @@ class AIAgent:
                     return self._build_system_prompt(system_message)
                 except Exception:
                     logger.debug(
-                        "compress_context timeout fallback prompt rebuild "
+                        "compact_context timeout fallback prompt rebuild "
                         "failed; using raw system_message",
                         exc_info=True,
                     )
@@ -8341,9 +8341,9 @@ class AIAgent:
 
             def _on_timeout(idle, waited, since_progress):
                 logger.warning(
-                    "Context compression made no progress for %.1fs "
+                    "Context compaction made no progress for %.1fs "
                     "(total wait %.1fs, ceiling %.1fs); continuing without "
-                    "compression",
+                    "compaction",
                     since_progress,
                     waited,
                     total_ceiling,
@@ -8352,39 +8352,39 @@ class AIAgent:
                 if callable(touch):
                     try:
                         touch(
-                            "context compression timed out",
-                            provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+                            "context compaction timed out",
+                            provenance=ActivityProvenance.AGENT_COMPACTION_TIMEOUT,
                         )
                     except Exception:
                         logger.debug(
-                            "compress_context timeout activity touch failed",
+                            "compact_context timeout activity touch failed",
                             exc_info=True,
                         )
                 # Same timeout cooldown ladder as summary-LLM timeouts
                 # (#62452): avoid re-burning the full idle budget every turn.
-                compressor = getattr(self, "context_compressor", None)
-                if compressor is not None:
-                    record = getattr(compressor, "record_timeout_failure", None)
+                compactor = getattr(self, "context_compactor", None)
+                if compactor is not None:
+                    record = getattr(compactor, "record_timeout_failure", None)
                     if callable(record):
                         try:
                             record(
-                                "host compress_context timeout "
+                                "host compact_context timeout "
                                 "(no summary progress)"
                             )
                         except Exception:
                             logger.debug(
-                                "failed to record compress_context timeout "
+                                "failed to record compact_context timeout "
                                 "cooldown",
                                 exc_info=True,
                             )
                 emit = getattr(self, "_emit_warning", None)
                 if callable(emit):
                     emit(
-                        "⚠ Context compression timed out "
+                        "⚠ Context compaction timed out "
                         f"after {idle:.1f}s with no output from the summary "
                         "model. No messages were dropped — continuing without "
-                        "compression. Run /compact to retry, /new for a clean "
-                        "session, or check auxiliary.compression."
+                        "compaction. Run /compact to retry, /new for a clean "
+                        "session, or check auxiliary.compaction."
                     )
 
             def _on_commit_overrun(waited, ceiling):
@@ -8395,13 +8395,13 @@ class AIAgent:
                 emit = getattr(self, "_emit_warning", None)
                 if callable(emit):
                     emit(
-                        "⚠ Context compression commit is taking unusually "
+                        "⚠ Context compaction commit is taking unusually "
                         f"long ({waited:.0f}s, ceiling {ceiling:.0f}s). "
                         "Waiting for it to finish safely — if this persists, "
                         "check SessionDB health (disk / lock contention)."
                     )
 
-            result = run_compress_context_with_progress_timeout(
+            result = run_compact_context_with_progress_timeout(
                 worker=_snapshot_worker,
                 messages=messages,
                 system_prompt_fallback=_fallback_prompt,
@@ -8412,7 +8412,7 @@ class AIAgent:
                 fence=active_fence,
                 telemetry_agent=self,
             )
-            # compress_context ran on a daemon pool worker thread; the session
+            # compact_context ran on a daemon pool worker thread; the session
             # id rotation updated son_of_anton_logging._session_context (a
             # threading.local) on the WORKER thread, not this one. Propagate
             # the current session_id back so subsequent log lines on this
@@ -8426,7 +8426,7 @@ class AIAgent:
             # ContextVar inside its own (copied) context, which the caller
             # never sees — and get_session_env() prefers an already-bound
             # ContextVar over os.environ. Rebind in the CALLER's context so
-            # post-compression tools/subprocesses on this thread resolve
+            # post-compaction tools/subprocesses on this thread resolve
             # SON_OF_ANTON_SESSION_ID to the child id after an out-of-place
             # rotation (idempotent when no rotation happened).
             try:
@@ -8435,16 +8435,16 @@ class AIAgent:
                     set_current_session_id(self.session_id)
             except Exception:
                 logger.debug(
-                    "post-compression session ContextVar rebind failed",
+                    "post-compaction session ContextVar rebind failed",
                     exc_info=True,
                 )
             return result
         finally:
             with fence_registration_lock:
                 if previous_fence is missing_fence:
-                    vars(self).pop("_active_compression_commit_fence", None)
+                    vars(self).pop("_active_compaction_commit_fence", None)
                 else:
-                    self._active_compression_commit_fence = previous_fence
+                    self._active_compaction_commit_fence = previous_fence
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -8666,7 +8666,7 @@ class AIAgent:
 
         Returns the session-lineage ROOT id rather than the current segment
         id, so one user-facing conversation keeps a single ``conversation=``
-        tag across context-compression rotation (`/new` starts a genuinely
+        tag across context-compaction rotation (`/new` starts a genuinely
         new lineage). Delegate subagents resolve through their
         ``_parent_session_id`` so an entire delegation tree tags as the
         parent conversation.
@@ -8930,7 +8930,7 @@ class AIAgent:
                         "Session is free; loading the latest transcript..."
                     )
 
-                # The holder may have compressed and rotated the session while
+                # The holder may have compacted and rotated the session while
                 # this process waited. Resolve and reload only AFTER admission;
                 # a caller-provided in-memory snapshot is necessarily stale.
                 # Skip when acquisition was immediate — no other process held
@@ -8947,7 +8947,7 @@ class AIAgent:
                         include_row_ids=True,
                     )
 
-                # Long model/tool/compression turns outlive a fixed TTL. Refresh
+                # Long model/tool/compaction turns outlive a fixed TTL. Refresh
                 # in a daemon thread; holder-qualified UPDATE and DELETE fence a
                 # late refresher/release from a successor lease.
                 durable_turn_lease_stop = threading.Event()

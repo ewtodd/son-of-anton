@@ -522,7 +522,7 @@ class InsightsEngine:
         if models:
             total_cost = sum(float(m.get("cost") or 0.0) for m in models)
             # Token totals likewise: the per-model breakdown includes
-            # auxiliary usage rows (vision/compression/titles — task
+            # auxiliary usage rows (vision/compaction/titles — task
             # dimension in session_model_usage, #23270) plus reconciled
             # residuals, while the sessions counters carry main-loop usage
             # only. Summing the breakdown keeps overview totals consistent

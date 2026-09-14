@@ -1623,8 +1623,8 @@ class ProcessRegistry:
         - ``owns_event(evt) -> bool``: positive-proof ownership callback.
           When provided, a routed event is consumed ONLY if the callback
           returns True; everything else is re-queued for its owner.
-          The TUI passes its compression-chain-aware ownership check here so
-          a post-compression session still claims its own pre-compression
+          The TUI passes its compaction-chain-aware ownership check here so
+          a post-compaction session still claims its own pre-compaction
           dispatches.
         - ``session_key``: plain key equality (CLI and other single-session
           callers). Non-matching addressed events are re-queued.

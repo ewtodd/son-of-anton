@@ -400,10 +400,10 @@ _CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
 
 
 def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
-    """Resolve a session id to the tip of its compression lineage.
+    """Resolve a session id to the tip of its compaction lineage.
 
     Best-effort: uses the parent's live SessionDB handle when present so a
-    delegation dispatched before a compression rotation still matches the
+    delegation dispatched before a compaction rotation still matches the
     rotated parent. Returns the input unchanged when resolution fails.
     """
     sid = str(session_id or "")
@@ -430,7 +430,7 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
     2. Durable conversation lineage — the child was registered with the
        owning conversation's durable session id
        (``owner_agent_session_id``); match it against the calling parent's
-       ``session_id``, resolving compression-rotation lineage on both sides.
+       ``session_id``, resolving compaction-rotation lineage on both sides.
 
     Tier 2 exists because the identity chain is BRITTLE across parent-agent
     rebuilds: the CLI sets ``self.agent = None`` mid-session (route-signature
@@ -452,7 +452,7 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
         return False
     if owner_sid == parent_sid:
         return True
-    # Compression rotation on either side: compare lineage tips.
+    # Compaction rotation on either side: compare lineage tips.
     return _resolve_session_lineage(owner_sid, parent_agent) in {
         parent_sid,
         _resolve_session_lineage(parent_sid, parent_agent),
@@ -1093,7 +1093,7 @@ DEFAULT_MAX_SUMMARY_CHARS = 24000
 # Fraction of the parent's *remaining* context headroom that the whole batch
 # of subagent summaries is allowed to consume. The per-summary budget is this
 # slice divided across the batch, so N children can't collectively blow the
-# parent's window (the compression/429 death-spiral in issue/PR #9126).
+# parent's window (the compaction/429 death-spiral in issue/PR #9126).
 _SUMMARY_HEADROOM_FRACTION = 0.5
 # Floor so a single summary always gets a usable slice even when the parent is
 # already nearly full — below this we'd be truncating to noise.
@@ -2331,12 +2331,12 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
     converting tokens→chars at the standard ~4 chars/token estimate.
 
     Returns the per-summary char budget, or None when the parent's context
-    state is unknown (no compressor / no token count) — in which case the
+    state is unknown (no compactor / no token count) — in which case the
     caller falls back to the static char ceiling only.
     """
     try:
-        compressor = getattr(parent_agent, "context_compressor", None)
-        context_length = getattr(compressor, "context_length", None)
+        compactor = getattr(parent_agent, "context_compactor", None)
+        context_length = getattr(compactor, "context_length", None)
         if not isinstance(context_length, int) or context_length <= 0:
             return None
 
@@ -2344,8 +2344,8 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
             used_tokens = 0
 
-        # Reserve the compressor's output budget so we measure INPUT headroom.
-        reserved = getattr(compressor, "max_tokens", 0) or 0
+        # Reserve the compactor's output budget so we measure INPUT headroom.
+        reserved = getattr(compactor, "max_tokens", 0) or 0
         headroom_tokens = context_length - int(used_tokens) - int(reserved)
         if headroom_tokens <= 0:
             # Parent is already over budget — give each summary only the floor.
@@ -2372,7 +2372,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
     in-context summary becomes a head slice plus a pointer to that file. This
     addresses issue/PR #9126: batch fan-out returned N full summaries verbatim,
     blowing the parent context and (on rate-limited providers) triggering a
-    compression/429 death spiral.
+    compaction/429 death spiral.
     """
     summaries = [
         r for r in results if isinstance(r, dict) and isinstance(r.get("summary"), str) and r["summary"]
@@ -4142,7 +4142,7 @@ def delegate_task(
                 get_session_env("SON_OF_ANTON_UI_SESSION_ID", "") or _origin_ui_session_id
             )
             # In desktop/TUI, the routable session key is the durable
-            # AIAgent.session_id. Context compression can rotate that id during
+            # AIAgent.session_id. Context compaction can rotate that id during
             # the same turn before the TUI-side session dict is re-anchored;
             # if we capture the stale approval/session context key here, the
             # async completion becomes an orphan and any desktop poller may
@@ -4163,7 +4163,7 @@ def delegate_task(
             # closed and the CLI could never claim its own completions, while
             # a restored foreign event with an empty key could leak into any
             # unfiltered consumer (#64484). Stamp the parent's durable session
-            # id instead; compression rotations are handled on the drain side
+            # id instead; compaction rotations are handled on the drain side
             # via resolve_resume_session_id lineage resolution.
             _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
             if _agent_session_id:

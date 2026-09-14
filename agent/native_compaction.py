@@ -23,9 +23,9 @@ Son of Anton' support is deliberately narrow (live verification, Aug 2026):
   most would 400 on the unknown parameter, and none can mint or decrypt
   the compaction blob.
 
-Ownership model: Son of Anton' local compression stays fully armed as the
+Ownership model: Son of Anton' local compaction stays fully armed as the
 fallback owner. The native threshold is clamped safely below the local
-compressor's trigger so the server compacts first; if it doesn't (native
+compactor's trigger so the server compacts first; if it doesn't (native
 disabled mid-session, provider hiccup, non-eligible route), the local
 summarizer fires exactly as before. There is no new custody state — the
 captured compaction items ride the existing ``codex_reasoning_items``
@@ -34,7 +34,7 @@ replay, cross-issuer stamping, and the encrypted-replay kill switch.
 
 This module stays free of transport/adapter dependencies so the transport,
 adapter, and conversation loop can share the gate without import cycles. The
-two exceptions — ``agent.context_compressor`` and ``agent.message_content`` —
+two exceptions — ``agent.context_compactor`` and ``agent.message_content`` —
 sit below this module in the dependency graph (neither imports
 ``native_compaction``), so importing their provenance/text primitives here
 introduces no cycle.
@@ -46,12 +46,12 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
-from agent.context_compressor import is_compaction_summary_message
+from agent.context_compactor import is_compaction_summary_message
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
 
-# Native compaction fires this many tokens below the local compressor's
+# Native compaction fires this many tokens below the local compactor's
 # trigger so the server always gets the first shot at compaction.
 LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 
@@ -86,12 +86,12 @@ def resolve_compact_threshold(
     configured_threshold: Any,
     local_trigger_tokens: Any = None,
 ) -> int:
-    """Clamp the configured native threshold below the local compressor trigger.
+    """Clamp the configured native threshold below the local compactor trigger.
 
     Without the clamp a native threshold above the local trigger would let the
     local summarizer fire first every time, making native compaction dead
-    config. ``local_trigger_tokens`` is ``ContextCompressor.threshold_tokens``
-    when a compressor is attached, else None.
+    config. ``local_trigger_tokens`` is ``ContextCompactor.threshold_tokens``
+    when a compactor is attached, else None.
     """
     try:
         configured = int(configured_threshold)
@@ -133,9 +133,9 @@ def native_compaction_context_management(
     """
     if not bool(getattr(agent, "codex_responses_native_compaction", False)):
         return None
-    # compression.enabled: false disables ALL automatic compaction, native
+    # compaction.enabled: false disables ALL automatic compaction, native
     # included — mirrors the codex_app_server_auto contract.
-    if not bool(getattr(agent, "compression_enabled", True)):
+    if not bool(getattr(agent, "compaction_enabled", True)):
         return None
     if is_xai_responses or is_github_responses:
         return None
@@ -146,10 +146,10 @@ def native_compaction_context_management(
     ):
         return None
 
-    compressor = getattr(agent, "context_compressor", None)
+    compactor = getattr(agent, "context_compactor", None)
     threshold = resolve_compact_threshold(
         getattr(agent, "codex_responses_compact_threshold", DEFAULT_COMPACT_THRESHOLD),
-        getattr(compressor, "threshold_tokens", None) if compressor is not None else None,
+        getattr(compactor, "threshold_tokens", None) if compactor is not None else None,
     )
     return [{"type": "compaction", "compact_threshold": threshold}]
 
@@ -159,7 +159,7 @@ def native_compaction_context_management(
 # Live verification (Aug 2026, gpt-5.6 @ api.openai.com): the server renders
 RETAINED_USER_MESSAGE_TOKEN_BUDGET = 64_000
 
-# Retention budget for local compression summary messages carried across a native
+# Retention budget for local compaction summary messages carried across a native
 # compaction boundary to prevent summary token inflation.
 RETAINED_SUMMARY_TOKEN_BUDGET = 32_000
 
@@ -206,13 +206,13 @@ def _extract_item_text(item: Any) -> Optional[str]:
 
 
 def _is_summary_item(item: Any) -> bool:
-    """True when *item* is a canonical Son of Anton compression-summary message.
+    """True when *item* is a canonical Son of Anton compaction-summary message.
 
     Delegates entirely to
-    ``agent.context_compressor.is_compaction_summary_message`` — the single
+    ``agent.context_compactor.is_compaction_summary_message`` — the single
     authoritative provenance check already used by every other summary
     consumer (memory providers, frontends, the compactor itself). It prefers
-    the exact, truthy ``COMPRESSED_SUMMARY_METADATA_KEY`` marker and falls
+    the exact, truthy ``COMPACTED_SUMMARY_METADATA_KEY`` marker and falls
     back to the canonical prefix classifier (``SUMMARY_PREFIX`` /
     ``LEGACY_SUMMARY_PREFIX`` / historical prefixes, including the
     merge-into-tail shape) for the case where the underscore-prefixed key
@@ -239,7 +239,7 @@ def prune_pre_checkpoint_items(
     The server drops every input item that precedes a replayed ``compaction``
     item (live-verified Aug 2026), so sending pre-checkpoint history is dead
     weight AND silently erases the user's plaintext asks — including any
-    local-compression summary the agent already produced, which previously
+    local-compaction summary the agent already produced, which previously
     vanished here because it carries ``role="assistant"``, not ``"user"``
     (#90975). When a checkpoint is present, rebuild the wire as::
 
@@ -250,8 +250,8 @@ def prune_pre_checkpoint_items(
       ``retained_user_token_budget``; the boundary message is head-truncated
       when it only partially fits (string content only) — goals are usually
       stated up front, so the head is the valuable end.
-    - Compression summary messages (``_is_summary_item``, the canonical
-      ``agent.context_compressor`` provenance check) are retained whole
+    - Compaction summary messages (``_is_summary_item``, the canonical
+      ``agent.context_compactor`` provenance check) are retained whole
       within ``retained_summary_token_budget``. A summary is never
       byte/character-sliced: Son of Anton summaries carry structural framing
       (handoff prefix, end marker, merge-into-tail delimiters) that a blind

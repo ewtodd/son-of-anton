@@ -146,7 +146,7 @@ FAILURE_REASON_BILLING_UNVERIFIED = "billing_unverified"
 
 # Throttle window for the "no available entries" INFO line. Credential
 # selection runs on a hot path (every model call, plus auxiliary tasks like
-# compression/moa/titles), so when a pool is empty or fully exhausted the
+# compaction/moa/titles), so when a pool is empty or fully exhausted the
 # un-throttled log fires on *every* selection. On Windows several Son of Anton
 # processes share one rotating log guarded by concurrent-log-handler's
 # cross-process lock; that per-selection volume storms the lock

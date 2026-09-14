@@ -414,9 +414,9 @@ def load_cli_config() -> Dict[str, Any]:
                 "loopback_host_alias": "host.docker.internal",
             },
         },
-        "compression": {
-            "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
+        "compaction": {
+            "enabled": True,      # Auto-compact when approaching context limit
+            "threshold": 0.50,    # Compact at 50% of model's context limit
             "min_tail_user_messages": 1,  # Real user messages guaranteed in the tail (1 = existing single anchor)
         },
         "agent": {
@@ -654,7 +654,7 @@ def load_cli_config() -> Dict[str, Any]:
     
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
-    # Compression config is read directly from config.yaml by run_agent.py and
+    # Compaction config is read directly from config.yaml by run_agent.py and
     # auxiliary_client.py — no env var bridging needed.
     # Only set env vars for non-empty / non-default values so auto-detection
     # still works.
@@ -2335,17 +2335,17 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         except Exception as _prune_exc:
             logger.debug("Ghost session prune skipped: %s", _prune_exc)
 
-        # One-time finalize of orphaned compression continuations (#20001).
+        # One-time finalize of orphaned compaction continuations (#20001).
         try:
             if not session_db.get_meta("orphaned_compression_finalize_v1"):
-                finalized = session_db.finalize_orphaned_compression_sessions()
+                finalized = session_db.finalize_orphaned_compaction_sessions()
                 session_db.set_meta("orphaned_compression_finalize_v1", "1")
                 if finalized:
                     logger.info(
-                        "Finalized %d orphaned compression sessions", finalized
+                        "Finalized %d orphaned compaction sessions", finalized
                     )
         except Exception as _finalize_exc:
-            logger.debug("Orphan compression finalize skipped: %s", _finalize_exc)
+            logger.debug("Orphan compaction finalize skipped: %s", _finalize_exc)
 
         cfg = (_load_full_config().get("sessions") or {})
 
@@ -4439,7 +4439,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         # `--provider <custom>` without `-m` must use that entry's
         # default_model. Otherwise the global model.default is sent to the
-        # custom endpoint and the compressor inherits the wrong context
+        # custom endpoint and the compactor inherits the wrong context
         # length (#86978). Explicit `-m` still wins.
         if not model and provider:
             try:
@@ -4997,8 +4997,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
     @staticmethod
-    def _compression_count_style(count: int) -> str:
-        """Return a style class reflecting context compression pressure."""
+    def _compaction_count_style(count: int) -> str:
+        """Return a style class reflecting context compaction pressure."""
         if count >= 10:
             return "class:status-bar-bad"
         if count >= 5:
@@ -5105,7 +5105,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
             "session_api_calls": 0,
-            "compressions": 0,
+            "compactions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
@@ -5200,22 +5200,22 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
 
-        compressor = getattr(agent, "context_compressor", None)
-        if compressor:
+        compactor = getattr(agent, "context_compactor", None)
+        if compactor:
             # last_prompt_tokens is parked at the -1 sentinel right after a
-            # compression, until the next real API call reports a prompt count
-            # (awaiting_real_usage_after_compression). The status bar must not
+            # compaction, until the next real API call reports a prompt count
+            # (awaiting_real_usage_after_compaction). The status bar must not
             # render that sentinel verbatim — it produced "-1/200K" / "-1%".
             # Clamp it to 0 so the one transitional turn reads as empty context.
-            context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            context_tokens = getattr(compactor, "last_prompt_tokens", 0) or 0
             if context_tokens < 0:
                 context_tokens = 0
-            context_length = getattr(compressor, "context_length", 0) or 0
+            context_length = getattr(compactor, "context_length", 0) or 0
             if context_length < 0:
                 context_length = 0
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
-            snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
+            snapshot["compactions"] = getattr(compactor, "compaction_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
@@ -5544,9 +5544,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts = [f"⚛ {snapshot['model_short']}", percent_label]
                 if battery_label:
                     parts.insert(0, battery_label)
-                compressions = snapshot.get("compressions", 0)
-                if compressions:
-                    parts.append(f"{compressions} compressed")
+                compactions = snapshot.get("compactions", 0)
+                if compactions:
+                    parts.append(f"{compactions} compacted")
                 bg_count = snapshot.get("active_background_tasks", 0)
                 if bg_count:
                     parts.append(f"bg {bg_count}")
@@ -5572,12 +5572,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 context_label = "ctx --"
 
-            compressions = snapshot.get("compressions", 0)
+            compactions = snapshot.get("compactions", 0)
             parts = [f"⚛ {snapshot['model_short']}", context_label, percent_label]
             if battery_label:
                 parts.insert(0, battery_label)
-            if compressions:
-                parts.append(f"{compressions} compressed")
+            if compactions:
+                parts.append(f"{compactions} compacted")
             bg_count = snapshot.get("active_background_tasks", 0)
             if bg_count:
                 parts.append(f"bg {bg_count}")
@@ -6378,7 +6378,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Expose a temporary busy state in the TUI while a slash command runs.
 
         Most synchronous slash commands must reserve the composer because their
-        completion changes the active session state. Manual compression is safe
+        completion changes the active session state. Manual compaction is safe
         to draft through: the queued input is processed against the compacted
         history after the command completes.
         """
@@ -6537,8 +6537,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
         ctx_len = None
-        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-            ctx_len = self.agent.context_compressor.context_length
+        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compactor'):
+            ctx_len = self.agent.context_compactor.context_length
         
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.
@@ -7855,7 +7855,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not agent or not history_snapshot:
             return None
 
-        engine = getattr(agent, "context_compressor", None)
+        engine = getattr(agent, "context_compactor", None)
         if engine is not None and hasattr(engine, "on_session_end"):
             try:
                 engine.on_session_end(session_id or "", history_snapshot)
@@ -8234,7 +8234,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # CLI resume counting and list_recent_user_messages. Compaction
         # handoffs are excluded too (durable role=user, sometimes without
         # display_kind on legacy sessions; #80622).
-        from agent.context_compressor import is_user_originated_turn
+        from agent.context_compactor import is_user_originated_turn
 
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
@@ -8288,7 +8288,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # messages (exclude display_kind timeline rows and compaction
         # handoffs — same predicate as list_recent_user_messages, resume
         # turn counting, and /retry; #80622).
-        from agent.context_compressor import is_user_originated_turn
+        from agent.context_compactor import is_user_originated_turn
 
         user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
@@ -9739,8 +9739,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
                     ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                        ctx_len = self.agent.context_compressor.context_length
+                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compactor'):
+                        ctx_len = self.agent.context_compactor.context_length
                     build_welcome_banner(
                         console=cc,
                         model=self.model,
@@ -9939,7 +9939,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "compact":
-            self._manual_compress(cmd_original)
+            self._manual_compact(cmd_original)
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
         elif canonical == "insights":
@@ -10270,7 +10270,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Return the GoalManager bound to the current session_id.
 
         Cached on ``self._goal_manager`` and rebound lazily when
-        ``session_id`` changes (e.g. after /new or a compression-driven
+        ``session_id`` changes (e.g. after /new or a compaction-driven
         session split).
         """
         try:
@@ -10472,7 +10472,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _owns_process_notification(self, event: dict) -> bool:
         """Return whether this CLI session provably owns a delegation event.
 
-        Delegations dispatched before context compression retain the original
+        Delegations dispatched before context compaction retain the original
         session key, so resolve that key to its continuation before comparing.
         Missing or foreign keys fail closed and remain queued for their owner.
         """
@@ -10728,7 +10728,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Record this terminal's live session for bare ``son-of-anton -c``.
 
         Called at session start and whenever ``self.session_id`` is
-        reassigned mid-run (/new, /branch, auto-compression rotation) so a
+        reassigned mid-run (/new, /branch, auto-compaction rotation) so a
         later bare ``-c`` in THIS terminal resumes THIS conversation's live
         tip. Best-effort — never raises, no-op without a terminal identity
         or when session.terminal_continue is false.
@@ -10744,7 +10744,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Move YOLO bypass state from an old session key to a new one.
 
         Called whenever ``self.session_id`` is reassigned mid-run — ``/branch``
-        forks into a new session, and auto-compression rotates the agent's
+        forks into a new session, and auto-compaction rotates the agent's
         session id into a fresh continuation session. Without this transfer
         the user's ``/yolo ON`` toggle would silently revert on the very next
         turn (the same UX failure mode that motivated this entire fix), since
@@ -10923,47 +10923,47 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if line:
             console.print(f"[dim]{_escape(line)}[/dim]")
 
-    def _manual_compress(self, cmd_original: str = ""):
-        """Manually trigger context compression on the current conversation.
+    def _manual_compact(self, cmd_original: str = ""):
+        """Manually trigger context compaction on the current conversation.
 
         Two modes:
 
-        * ``/compact [<focus>]`` — compress the *whole* history. An
+        * ``/compact [<focus>]`` — compact the *whole* history. An
           optional focus topic guides the summariser to preserve
           information related to *focus* while being more aggressive
           about discarding everything else.  Inspired by Claude Code's
           ``/compact <focus>`` feature.
-        * ``/compact here [N]`` — boundary-aware compression. Summarize
+        * ``/compact here [N]`` — boundary-aware compaction. Summarize
           everything *except* the most recent ``N`` exchanges (default
           2), which are preserved verbatim. Inspired by Claude Code's
           Rewind "Summarize up to here" action (v2.1.139, May 2026,
           https://code.claude.com/docs/en/whats-new/2026-w20). Lets the
-          user pick the compression boundary instead of leaving it to
+          user pick the compaction boundary instead of leaving it to
           the automatic token-budget heuristic.
         """
         if not self.conversation_history or len(self.conversation_history) < 4:
-            print("(._.) Not enough conversation to compress (need at least 4 messages).")
+            print("(._.) Not enough conversation to compact (need at least 4 messages).")
             return
 
         if not self.agent:
             print("(._.) No active agent -- send a message first.")
             return
 
-        # No compression_enabled gate here: the config flag disables
+        # No compaction_enabled gate here: the config flag disables
         # *automatic* compaction only. Manual /compact is an explicit user
         # action — the context-overflow error path (conversation_loop.py)
         # directs users here when auto-compaction is off, and the gateway's
         # /compact handler has never gated on the flag.
 
-        from son_of_anton_cli.partial_compress import (
-            extract_compress_flags,
-            parse_partial_compress_args,
-            rejoin_compressed_head_and_tail,
-            split_history_for_partial_compress,
-            summarize_compress_preview,
+        from son_of_anton_cli.partial_compact import (
+            extract_compact_flags,
+            parse_partial_compact_args,
+            rejoin_compacted_head_and_tail,
+            split_history_for_partial_compact,
+            summarize_compact_preview,
         )
-        from agent.conversation_compression import (
-            finalize_context_engine_compression_notification,
+        from agent.conversation_compaction import (
+            finalize_context_engine_compaction_notification,
         )
 
         # Args after the command word (e.g. "/compact here 3" -> "here 3").
@@ -10975,14 +10975,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Strip --preview/--dry-run/--aggressive before positional parsing
         # so the flags coexist with 'here [N]' / focus-topic forms.
-        raw_args, preview, aggressive = extract_compress_flags(raw_args)
-        partial, keep_last, focus_topic = parse_partial_compress_args(raw_args)
+        raw_args, preview, aggressive = extract_compact_flags(raw_args)
+        partial, keep_last, focus_topic = parse_partial_compact_args(raw_args)
         focus_topic = focus_topic or ""
 
         if aggressive:
             # LLM-free hard truncation is not supported: it would need its
             # own transcript-persistence path outside the guarded
-            # _compress_context rotation machinery. Surface that instead of
+            # _compact_context rotation machinery. Surface that instead of
             # silently mis-parsing the flag as a focus topic.
             print("(._.) --aggressive is not supported; use '/compact here [N]' "
                   "to keep only recent exchanges, or /undo to drop turns.")
@@ -10998,7 +10998,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 system_prompt=_sys_prompt,
                 tools=_tools,
             )
-            report = summarize_compress_preview(
+            report = summarize_compact_preview(
                 self.conversation_history,
                 partial,
                 keep_last,
@@ -11010,10 +11010,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
 
         original_count = len(self.conversation_history)
-        with self._busy_command("Compressing context...", blocks_input=False):
+        with self._busy_command("Compacting context...", blocks_input=False):
             try:
                 from agent.model_metadata import estimate_request_tokens_rough
-                from agent.manual_compression_feedback import summarize_manual_compression
+                from agent.manual_compaction_feedback import summarize_manual_compaction
                 original_history = list(self.conversation_history)
 
                 # Boundary-aware split: only the head is summarized; the
@@ -11021,19 +11021,19 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 tail: list = []
                 head = original_history
                 if partial:
-                    head, tail = split_history_for_partial_compress(
+                    head, tail = split_history_for_partial_compact(
                         original_history, keep_last
                     )
                     if not tail:
                         # Split degenerated (everything would be kept, or
-                        # no head left to compress). Fall back to full
-                        # compression so the user still gets an action.
+                        # no head left to compact). Fall back to full
+                        # compaction so the user still gets an action.
                         partial = False
                         head = original_history
 
                 # Include system prompt + tool schemas in the estimate —
                 # a transcript-only number understates real request pressure
-                # and can even appear to grow after compression because a
+                # and can even appear to grow after compaction because a
                 # dense handoff summary replaces many short turns (#6217).
                 _sys_prompt = getattr(self.agent, "_cached_system_prompt", "") or ""
                 _tools = getattr(self.agent, "tools", None) or None
@@ -11043,22 +11043,22 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     tools=_tools,
                 )
                 if partial:
-                    print(f"Summarizing up to here: compressing {len(head)} of "
+                    print(f"Summarizing up to here: compacting {len(head)} of "
                           f"{original_count} messages (~{approx_tokens:,} tokens), "
                           f"keeping last {keep_last} exchange(s) verbatim...")
                 elif focus_topic:
-                    print(f"Compressing {original_count} messages (~{approx_tokens:,} tokens), "
+                    print(f"Compacting {original_count} messages (~{approx_tokens:,} tokens), "
                           f"focus: \"{focus_topic}\"...")
                 else:
-                    print(f"Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
+                    print(f"Compacting {original_count} messages (~{approx_tokens:,} tokens)...")
 
-                # Pass None as system_message so _compress_context rebuilds
+                # Pass None as system_message so _compact_context rebuilds
                 # the system prompt from scratch via _build_system_prompt(None).
                 # Passing _cached_system_prompt caused duplication because
                 # _build_system_prompt appends system_message to prompt_parts
                 # which already contain the agent identity — resulting in the
                 # identity block appearing twice (issue #15281).
-                compressed, _ = self.agent._compress_context(
+                compacted, _ = self.agent._compact_context(
                     head,
                     None,
                     approx_tokens=approx_tokens,
@@ -11067,43 +11067,43 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     defer_context_engine_notification=True,
                 )
 
-                # If _compress_context returned unchanged because a
-                # concurrent compression lock is held, tell the user
+                # If _compact_context returned unchanged because a
+                # concurrent compaction lock is held, tell the user
                 # clearly instead of showing the misleading
-                # "No changes from compression" no-op text. The wording
+                # "No changes from compaction" no-op text. The wording
                 # distinguishes a confirmed holder from an unconfirmed
-                # acquisition failure (describe_compression_lock_skip).
+                # acquisition failure (describe_compaction_lock_skip).
                 # Type-pinned check (is True / str): the flag's only real
                 # values are None/True/holder-string, and a bare getattr
                 # truthiness test is fooled by MagicMock auto-attributes on
                 # test-double agents (skill pitfall: MagicMock vs hasattr).
                 _lock_skip_signal = getattr(
-                    self.agent, "_compression_skipped_due_to_lock", None
+                    self.agent, "_compaction_skipped_due_to_lock", None
                 )
                 if _lock_skip_signal is True or isinstance(_lock_skip_signal, str):
-                    from agent.manual_compression_feedback import (
-                        describe_compression_lock_skip,
+                    from agent.manual_compaction_feedback import (
+                        describe_compaction_lock_skip,
                     )
                     print(
                         "  "
-                        + describe_compression_lock_skip(
-                            self.agent._compression_skipped_due_to_lock
+                        + describe_compaction_lock_skip(
+                            self.agent._compaction_skipped_due_to_lock
                         )
                     )
-                    self.agent._compression_skipped_due_to_lock = None
+                    self.agent._compaction_skipped_due_to_lock = None
                     # No boundary was committed on a lock-skip; discard the
                     # deferred context-engine notification (exactly-once).
-                    finalize_context_engine_compression_notification(
+                    finalize_context_engine_compaction_notification(
                         self.agent,
                         committed=False,
                     )
                     return
 
                 if partial and tail:
-                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
-                self.conversation_history = compressed
-                # _compress_context ends the old session and creates a new child
-                # session on the agent (run_agent.py::_compress_context). Sync the
+                    compacted = rejoin_compacted_head_and_tail(compacted, tail)
+                self.conversation_history = compacted
+                # _compact_context ends the old session and creates a new child
+                # session on the agent (run_agent.py::_compact_context). Sync the
                 # CLI's session_id so /status, /resume, exit summary, and title
                 # generation all point at the live continuation session, not the
                 # ended parent. Without this, subsequent end_session() calls target
@@ -11116,10 +11116,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     getattr(self, "_write_terminal_breadcrumb", lambda: None)()
                     self._pending_title = None
                     # Manual /compact replaces conversation_history with a new
-                    # compressed handoff for the child session. Persist it from
+                    # compacted handoff for the child session. Persist it from
                     # offset 0 so resume can recover the continuation after exit.
                     self.agent._flush_messages_to_session_db(self.conversation_history, None)
-                finalize_context_engine_compression_notification(
+                finalize_context_engine_compaction_notification(
                     self.agent,
                     committed=True,
                 )
@@ -11128,13 +11128,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     system_prompt=_sys_prompt,
                     tools=_tools,
                 )
-                summary = summarize_manual_compression(
+                summary = summarize_manual_compaction(
                     original_history,
                     self.conversation_history,
                     approx_tokens,
                     new_tokens,
-                    compression_state=getattr(
-                        self.agent, "context_compressor", None
+                    compaction_state=getattr(
+                        self.agent, "context_compactor", None
                     ),
                 )
                 if (
@@ -11151,11 +11151,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     print(f"     {summary['note']}")
 
             except Exception as e:
-                finalize_context_engine_compression_notification(
+                finalize_context_engine_compaction_notification(
                     self.agent,
                     committed=False,
                 )
-                print(f"  Compression failed: {e}")
+                print(f"  Compaction failed: {e}")
 
 
 
@@ -11251,11 +11251,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
 
-        compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
-        ctx_len = compressor.context_length
+        compactor = agent.context_compactor
+        last_prompt = compactor.last_prompt_tokens if compactor.last_prompt_tokens > 0 else 0
+        ctx_len = compactor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
-        compressions = compressor.compression_count
+        compactions = compactor.compaction_count
 
         msg_count = len(self.conversation_history)
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
@@ -11275,7 +11275,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
+        print(f"  Compactions:     {compactions}")
 
         # Nous credits magnitudes + monthly-grant gauge (agent-independent — also
         # runs at the no-agent / no-calls early-returns above). See the helper.
@@ -12876,7 +12876,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
-            # If auto-compression fired mid-turn, the agent created a new
+            # If auto-compaction fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync
             # the CLI's session_id so /status, /resume, title generation,
             # and the exit summary all target the live child session rather
@@ -13836,7 +13836,7 @@ def main(
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
                             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                             sys.exit(130)
-                        # Sync session_id if mid-run compression created a
+                        # Sync session_id if mid-run compaction created a
                         # continuation session. The exit line below reports
                         # session_id to stderr for automation wrappers; without
                         # this sync it would point at the ended parent.

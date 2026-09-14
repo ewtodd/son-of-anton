@@ -178,7 +178,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[focus instructions]"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
-    CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
+    CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compaction stats, and throughput", "Session",
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

@@ -2,7 +2,7 @@
 
 Provides a structured taxonomy of API errors and a priority-ordered
 classification pipeline that determines the correct recovery action
-(retry, rotate credential, fallback to another provider, compress
+(retry, rotate credential, fallback to another provider, compact
 context, or abort).
 
 Replaces scattered inline string-matching with a centralized classifier
@@ -54,8 +54,8 @@ class FailoverReason(enum.Enum):
     ssl_cert_verification = "ssl_cert_verification"
 
     # Context / payload
-    context_overflow = "context_overflow"  # Context too large — compress, not failover
-    payload_too_large = "payload_too_large"  # 413 — compress payload
+    context_overflow = "context_overflow"  # Context too large — compact, not failover
+    payload_too_large = "payload_too_large"  # 413 — compact payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
     # Model / provider policy
@@ -94,7 +94,7 @@ class ClassifiedError:
     # Recovery action hints — the retry loop checks these instead of
     # re-classifying the error itself.
     retryable: bool = True
-    should_compress: bool = False
+    should_compact: bool = False
     should_rotate_credential: bool = False
     should_fallback: bool = False
 
@@ -200,7 +200,7 @@ _RATE_LIMIT_PATTERNS = [
     # as "Throttling error: Too many tokens, please wait before trying
     # again."  Without this entry the message falls through to the
     # context-overflow list (which contains "too many tokens") and the retry
-    # loop compresses a healthy session instead of backing off.  Matched
+    # loop compacts a healthy session instead of backing off.  Matched
     # BEFORE _CONTEXT_OVERFLOW_PATTERNS in the message-only path, so the
     # throttle wins.  (port of anomalyco/opencode#37848's exclusion guard)
     "throttling",
@@ -260,7 +260,7 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     # Anthropic's structured 413 error type.  Normally arrives with an HTTP
     # 413 status (handled by the status path), but aggregators/proxies can
     # re-wrap it into a plain message with no status attribute — route it to
-    # the same compression recovery.  (port of anomalyco/opencode#37848)
+    # the same compaction recovery.  (port of anomalyco/opencode#37848)
     "request_too_large",
     "request exceeds the maximum size",
 ]
@@ -324,7 +324,7 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # off it (e.g. "max_tokens: 65536 > context_window: 200000 ..."). Do NOT
     # remove it. Provider empty-response advisories also contain "very low
     # max_tokens", but those are intercepted by _EMPTY_PROVIDER_RESPONSE_PATTERNS
-    # BEFORE this list is consulted, so they never mis-route into compression.
+    # BEFORE this list is consulted, so they never mis-route into compaction.
     "max_tokens",
     "maximum number of tokens",
     # vLLM / local inference server patterns
@@ -410,9 +410,9 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
 #   "all messages must have non-empty content except for the optional final
 #    assistant message"  /  errorCode INVALID_REQUEST_BODY
 # These are NOT context overflow — the input may be tiny — but a large
-# session used to mis-route them into the compression loop via the generic
-# "400 + large session" heuristic below, ending in "Cannot compress further"
-# every retry (the input is unchanged, so compression cannot help).  Match
+# session used to mis-route them into the compaction loop via the generic
+# "400 + large session" heuristic below, ending in "Cannot compact further"
+# every retry (the input is unchanged, so compaction cannot help).  Match
 # the message-shape signals explicitly and fail fast as a format_error so the
 # loop stops looping.  The empty-stub creation is the root cause (fixed in
 # chat_completion_helpers); this pattern stops the misclassification symptom
@@ -431,11 +431,11 @@ _INVALID_MESSAGE_BODY_PATTERNS = [
     "content field is required",
     "messages: at least one message is required",
     # Qwen / vLLM chat templates raise this when the request has no surviving
-    # non-empty user turn (oversized session truncation, compression that
+    # non-empty user turn (oversized session truncation, compaction that
     # dropped the only user message, or a resumed lineage that opens with
-    # assistant/tool). Deterministic — compression cannot invent a user
+    # assistant/tool). Deterministic — compaction cannot invent a user
     # query the template already rejected. Fail fast as format_error so we
-    # do not thrash the compression loop or mis-route into llama.cpp
+    # do not thrash the compaction loop or mis-route into llama.cpp
     # grammar recovery when local engines wrap the raise_exception as
     # applyPromptTemplate / "Unable to generate parser for this template".
     _NO_USER_QUERY_SIGNAL,
@@ -555,8 +555,8 @@ _THINKING_SIG_PATTERNS = [
 # Provider empty-response advisories (OpenRouter / nano-gpt / similar).
 # Checked before context-overflow matching because the advisory text often
 # mentions "max_tokens" as a possible cause, which historically sat in
-# _CONTEXT_OVERFLOW_PATTERNS and sent healthy sessions into a compression
-# death spiral ending in "Cannot compress further".
+# _CONTEXT_OVERFLOW_PATTERNS and sent healthy sessions into a compaction
+# death spiral ending in "Cannot compact further".
 _EMPTY_PROVIDER_RESPONSE_PATTERNS = [
     "returned an empty response",
     "empty response despite retries",
@@ -588,7 +588,7 @@ _TIMEOUT_MESSAGE_PATTERNS = [
 # Deliberately EXCLUDES mid-stream disconnect strings ("connection reset by
 # peer", "peer closed connection", "unexpected eof", "socket hang up") —
 # those belong to _SERVER_DISCONNECT_PATTERNS, whose classification step
-# runs later and routes large sessions to context-overflow compression.
+# runs later and routes large sessions to context-overflow compaction.
 # A connection that was never established cannot be a server-side overflow
 # rejection, so these are safe to classify as plain retryable transport.
 _CONNECTION_MESSAGE_PATTERNS = [
@@ -638,7 +638,7 @@ _TRANSPORT_ERROR_TYPES = frozenset({
 # transient transport hiccup OR server-side context overflow rejection
 # (common when the API gateway disconnects instead of returning an HTTP
 # error for oversized requests).  A large session + one of these patterns
-# triggers the context-overflow-with-compression recovery path.
+# triggers the context-overflow-with-compaction recovery path.
 _SERVER_DISCONNECT_PATTERNS = [
     "server disconnected",
     "peer closed connection",
@@ -678,9 +678,9 @@ _SSL_CERT_VERIFY_PATTERNS = [
 # An SSL alert mid-stream is almost always a transport-layer hiccup
 # (flaky network, mid-session TLS renegotiation failure, load balancer
 # dropping the connection) — NOT a server-side context overflow signal.
-# So we want the retry path but NOT the compression path; lumping these
+# So we want the retry path but NOT the compaction path; lumping these
 # into _SERVER_DISCONNECT_PATTERNS would trigger unnecessary (and
-# expensive) context compression on any large-session SSL hiccup.
+# expensive) context compaction on any large-session SSL hiccup.
 #
 # The OpenSSL library constructs error codes by prepending a format string
 # to the uppercased alert reason; OpenSSL 3.x changed the separator
@@ -860,7 +860,7 @@ def classify_api_error(
     # same recovery (strip all reasoning_details and retry without thinking
     # blocks — see the thinking_signature handler in conversation_loop.py):
     #   1. Signature mismatch: a thinking block is signed against the full
-    #      turn content; any upstream mutation (context compression, session
+    #      turn content; any upstream mutation (context compaction, session
     #      truncation, message merging) invalidates the signature.
     #      Pattern: "signature" + "thinking".
     #   2. Frozen-block mutation: Anthropic rejects any change to the
@@ -886,7 +886,7 @@ def classify_api_error(
         return _result(
             FailoverReason.thinking_signature,
             retryable=True,
-            should_compress=False,
+            should_compact=False,
         )
 
     # Anthropic long-context tier gate (429 "extra usage" + "long context")
@@ -898,7 +898,7 @@ def classify_api_error(
         return _result(
             FailoverReason.long_context_tier,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     # Anthropic OAuth subscription rejects the 1M-context beta header.
@@ -917,7 +917,7 @@ def classify_api_error(
         return _result(
             FailoverReason.oauth_long_context_beta_forbidden,
             retryable=True,
-            should_compress=False,
+            should_compact=False,
         )
 
     # llama.cpp's ``json-schema-to-grammar`` converter (used by its OAI
@@ -935,7 +935,7 @@ def classify_api_error(
     # shape (handled via _INVALID_MESSAGE_BODY_PATTERNS → format_error),
     # not a tool-schema grammar rejection — matching it here strips
     # pattern/format keywords and retries uselessly while the real fix
-    # is /new (or a successful compression that preserves a user turn).
+    # is /new (or a successful compaction that preserves a user turn).
     if status_code == 400:
         _llama_cpp_grammar_hit = (
             "error parsing grammar" in error_msg
@@ -954,7 +954,7 @@ def classify_api_error(
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,
             retryable=True,
-            should_compress=False,
+            should_compact=False,
         )
 
     # xAI Grok subscription entitlement errors.
@@ -1053,10 +1053,10 @@ def classify_api_error(
             should_fallback=False,
         )
 
-    # ── 5b. SSL/TLS transient errors → retry as timeout (not compression) ──
+    # ── 5b. SSL/TLS transient errors → retry as timeout (not compaction) ──
     # SSL alerts mid-stream are transport hiccups, not server-side context
     # overflow signals.  Classify before the disconnect check so a large
-    # session doesn't incorrectly trigger context compression when the real
+    # session doesn't incorrectly trigger context compaction when the real
     # cause is a flaky TLS handshake.  Also matches when the error is
     # wrapped in a generic exception whose message string carries the SSL
     # alert text but the type isn't ssl.SSLError (happens with some SDKs
@@ -1076,8 +1076,8 @@ def classify_api_error(
         # model is much more likely the upstream proxy idle-killing a
         # long thinking stream than a true context overflow — even on
         # large sessions.  The default disconnect+large-session routing
-        # below would otherwise send the user into the compression
-        # branch (should_compress=True) and silently delete
+        # below would otherwise send the user into the compaction
+        # branch (should_compact=True) and silently delete
         # conversation history on a phantom context-length error.
         # Reasoning models have multi-minute thinking phases that
         # routinely exceed the cloud gateway's idle window (NVIDIA
@@ -1087,7 +1087,7 @@ def classify_api_error(
         # agent/reasoning_timeouts.py raises the stale-detector
         # threshold to tolerate long thinking, so a true
         # transport-layer failure here is recoverable via the retry
-        # path — not via context compression.  Reclassify as timeout.
+        # path — not via context compaction.  Reclassify as timeout.
         # (Part 1 of Fixes #52310.)
         from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         if get_reasoning_stale_timeout_floor(model) is not None:
@@ -1102,7 +1102,7 @@ def classify_api_error(
             return _result(
                 FailoverReason.context_overflow,
                 retryable=True,
-                should_compress=True,
+                should_compact=True,
             )
         return _result(FailoverReason.timeout, retryable=True)
 
@@ -1252,7 +1252,7 @@ def _classify_by_status(
         return result_fn(
             FailoverReason.payload_too_large,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     if status_code == 429:
@@ -1324,40 +1324,40 @@ def _classify_by_status(
         # report context overflow with an HTTP 500 instead of the standard
         # 400/413. The request-validation guard above already ran, so any
         # remaining explicit context-overflow signal routes into the
-        # compression-and-retry path (mirroring _classify_400) instead of
+        # compaction-and-retry path (mirroring _classify_400) instead of
         # blind server_error retries that exhaust and drop the turn.
         # Empty-response advisories that mention "max_tokens" must not enter
-        # that compression path.
+        # that compaction path.
         if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
             return result_fn(
                 FailoverReason.server_error,
                 retryable=True,
-                should_compress=False,
+                should_compact=False,
             )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
                 retryable=True,
-                should_compress=True,
+                should_compact=True,
             )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
         # Same overflow-as-5xx variant (server busy / model-load OOM, or a
         # Cloudflare/Tailscale hop relabeling the status). Route explicit
-        # overflow bodies into compression; otherwise treat as transient
+        # overflow bodies into compaction; otherwise treat as transient
         # overload and retry.
         if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
             return result_fn(
                 FailoverReason.server_error,
                 retryable=True,
-                should_compress=False,
+                should_compact=False,
             )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
                 retryable=True,
-                should_compress=True,
+                should_compact=True,
             )
         return result_fn(FailoverReason.overloaded, retryable=True)
 
@@ -1480,14 +1480,14 @@ def _classify_400(
     #    Use 'max_completion_tokens' instead."
     # That string contains the literal substring "max_tokens", which historically
     # sat in _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
-    # misclassified as context_overflow, routed into the compression loop,
-    # re-sent with the same bad parameter, and ends in "Cannot compress
+    # misclassified as context_overflow, routed into the compaction loop,
+    # re-sent with the same bad parameter, and ends in "Cannot compact
     # further".  These errors are deterministic (every retry gets the identical
     # rejection), so classify as a non-retryable format_error and fall back.
     #
     # NOTE: we deliberately do NOT key off the generic ``invalid_request_error``
     # code here — OpenAI stamps that same code on genuine context-overflow 400s,
-    # so matching it would mis-route real overflows away from compression. The
+    # so matching it would mis-route real overflows away from compaction. The
     # unambiguous signals are the explicit "unsupported/unknown parameter"
     # message text and the specific parameter-level error codes.
     if (
@@ -1504,8 +1504,8 @@ def _classify_400(
     # Malformed message array (empty-content assistant stub, etc.). Must be
     # checked BEFORE context_overflow: the input can be tiny, so the generic
     # "400 + large session" heuristic would otherwise mis-route it into the
-    # compression loop and thrash until "Cannot compress further" on every
-    # retry (the request is unchanged, so compression cannot fix it). This is
+    # compaction loop and thrash until "Cannot compact further" on every
+    # retry (the request is unchanged, so compaction cannot fix it). This is
     # a deterministic request-shape rejection — fail fast as a non-retryable
     # format_error and fall back. Checked against the message text AND the
     # structured error code, since proxies (litellm/Bedrock) surface the
@@ -1517,7 +1517,7 @@ def _classify_400(
         logger.warning(
             "Malformed message array 400 (invalid request body) classified as "
             "format_error, NOT context overflow — failing fast + falling back "
-            "instead of entering the compression loop. This usually means an "
+            "instead of entering the compaction loop. This usually means an "
             "empty-content assistant stub is in the transcript; num_messages=%s "
             "approx_tokens=%s. error=%.200s",
             num_messages, approx_tokens, error_msg,
@@ -1528,15 +1528,15 @@ def _classify_400(
             should_fallback=True,
         )
 
-    # Empty-provider-response advisories must not enter compression. They
+    # Empty-provider-response advisories must not enter compaction. They
     # often mention "max_tokens" as a possible cause and used to match the
-    # bare overflow pattern, then thrash compress until "Cannot compress
+    # bare overflow pattern, then thrash compact until "Cannot compact
     # further" on an otherwise healthy session (custom endpoints / nano-gpt).
     if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
         return result_fn(
             FailoverReason.server_error,
             retryable=True,
-            should_compress=False,
+            should_compact=False,
         )
 
     # Context overflow from 400
@@ -1544,7 +1544,7 @@ def _classify_400(
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
@@ -1596,7 +1596,7 @@ def _classify_400(
         # "errorCode": "...", "errorArgs": {"reason": "..."}}.  Without these
         # keys err_body_msg stays "" and a long, descriptive rejection is
         # wrongly treated as a "generic" (bare) error below, which — on a
-        # large session — mis-routes into the compression loop.  Recognize
+        # large session — mis-routes into the compaction loop.  Recognize
         # them so the is_generic heuristic sees the real message length.
         if not err_body_msg:
             err_body_msg = str(body.get("errorMessage") or "").strip().lower()
@@ -1616,7 +1616,7 @@ def _classify_400(
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     # Non-retryable format error
@@ -1675,7 +1675,7 @@ def _classify_by_error_code(
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     if code_lower == "invalid_encrypted_content":
@@ -1705,7 +1705,7 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.payload_too_large,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     # Multimodal tool content patterns (from message text when no status_code)
@@ -1777,12 +1777,12 @@ def _classify_by_message(
         )
 
     # Empty-provider-response advisories (often mention "max_tokens") must
-    # retry without compression — see the matching 400-path guard above.
+    # retry without compaction — see the matching 400-path guard above.
     if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
         return result_fn(
             FailoverReason.server_error,
             retryable=True,
-            should_compress=False,
+            should_compact=False,
         )
 
     # Context overflow patterns
@@ -1790,7 +1790,7 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,
-            should_compress=True,
+            should_compact=True,
         )
 
     # Auth patterns
@@ -1836,7 +1836,7 @@ def _classify_by_message(
     # generic, so _TRANSPORT_ERROR_TYPES never matches and the error would
     # fall through to FailoverReason.unknown. Classified as timeout (the
     # transport bucket) so the retry loop's eager transport fallback and
-    # client rebuild apply. Never routes to compression: a connection that
+    # client rebuild apply. Never routes to compaction: a connection that
     # was never established is not a context-overflow signal.
     if any(p in error_msg for p in _CONNECTION_MESSAGE_PATTERNS):
         return result_fn(FailoverReason.timeout, retryable=True)

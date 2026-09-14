@@ -3,7 +3,7 @@
 The inner retry loop in ``run_conversation`` (``while retry_count <
 max_retries``) makes several distinct recovery attempts on a single model API
 call: a credential-pool 429 retry, a per-provider OAuth refresh (codex,
-anthropic, nous), a long-context compression restart, a length-
+anthropic, nous), a long-context compaction restart, a length-
 continuation restart, and a handful of format-recovery branches (thinking-
 signature stripping, multimodal-tool-content stripping, llama.cpp grammar
 fallback, image shrink, invalid-encrypted-content, 1M-beta header).
@@ -16,7 +16,7 @@ the loop mutates in place (``state.codex_auth_retry_attempted = True``), giving
 the recovery bookkeeping a single named, testable home.
 
 Loop-control variables (``retry_count``, ``max_retries``,
-``max_compression_attempts``) intentionally stay as plain locals — they are the
+``max_compaction_attempts``) intentionally stay as plain locals — they are the
 ``while`` mechanics, not recovery bookkeeping, and putting them on the object
 would add indirection without clarifying anything.
 
@@ -63,7 +63,7 @@ class TurnRetryState:
     auth_failover_attempted: bool = False
 
     # ── Restart signals (read by the outer loop after the attempt) ───────
-    restart_with_compressed_messages: bool = False
+    restart_with_compacted_messages: bool = False
     restart_with_length_continuation: bool = False
     # Set when a content-filter stream stall (e.g. MiniMax "new_sensitive")
     # has been escalated to the fallback chain: the partial-stream content

@@ -247,7 +247,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
             },
             {
                 "key": "auto_extract",
-                "description": "Automatically curate completed turns and compression/memory hooks",
+                "description": "Automatically curate completed turns and compaction/memory hooks",
                 "default": "true",
                 "choices": ["true", "false"],
             },
@@ -342,15 +342,15 @@ class ByteRoverMemoryProvider(MemoryProvider):
         t = threading.Thread(target=_write, daemon=True, name="brv-memwrite")
         t.start()
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Extract insights before context compression discards turns."""
+    def on_pre_compact(self, messages: List[Dict[str, Any]]) -> str:
+        """Extract insights before context compaction discards turns."""
         if not self._auto_extract:
-            logger.debug("ByteRover pre-compression flush skipped (auto_extract disabled)")
+            logger.debug("ByteRover pre-compaction flush skipped (auto_extract disabled)")
             return ""
         if not messages:
             return ""
 
-        # Build a summary of messages about to be compressed
+        # Build a summary of messages about to be compacted
         parts = []
         for msg in messages[-10:]:  # last 10 messages
             role = msg.get("role", "")
@@ -366,12 +366,12 @@ class ByteRoverMemoryProvider(MemoryProvider):
         def _flush():
             try:
                 _run_brv(
-                    ["curate", "--", f"[Pre-compression context]\n{combined}"],
+                    ["curate", "--", f"[Pre-compaction context]\n{combined}"],
                     timeout=_CURATE_TIMEOUT, cwd=self._cwd,
                 )
-                logger.info("ByteRover pre-compression flush: %d messages", len(parts))
+                logger.info("ByteRover pre-compaction flush: %d messages", len(parts))
             except Exception as e:
-                logger.debug("ByteRover pre-compression flush failed: %s", e)
+                logger.debug("ByteRover pre-compaction flush failed: %s", e)
 
         t = threading.Thread(target=_flush, daemon=True, name="brv-flush")
         t.start()

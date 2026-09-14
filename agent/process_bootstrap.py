@@ -163,7 +163,7 @@ def build_keepalive_http_client(
     proxies (#54049, #12952) and stalled TLS handshakes by stripping
     ``TCP_NODELAY``.
 
-    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
+    ``verify`` is forwarded to httpx so auxiliary-client calls (compaction,
     vision, web_extract, title generation, etc.) honor the same per-provider
     ``ssl_ca_cert`` / ``ssl_verify`` and ``SON_OF_ANTON_CA_BUNDLE`` settings the main
     client uses. It is passed on the client AND on the plain no-proxy mounts

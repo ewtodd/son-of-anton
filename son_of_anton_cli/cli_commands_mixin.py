@@ -646,7 +646,7 @@ class CLICommandsMixin:
             _cprint("  Use /sessions or `son-of-anton sessions list` to see available sessions.")
             return
 
-        # If the target is the empty head of a compression chain, redirect to
+        # If the target is the empty head of a compaction chain, redirect to
         # the descendant that actually holds the transcript. See #15000.
         try:
             resolved_id = self._session_db.resolve_resume_session_id(target_id)
@@ -654,7 +654,7 @@ class CLICommandsMixin:
             resolved_id = target_id
         if resolved_id and resolved_id != target_id:
             _cprint(
-                f"  Session {target_id} was compressed into {resolved_id}; "
+                f"  Session {target_id} was compacted into {resolved_id}; "
                 f"resuming the descendant with your transcript."
             )
             target_id = resolved_id
@@ -746,7 +746,7 @@ class CLICommandsMixin:
                 pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        from agent.context_compressor import is_user_originated_turn
+        from agent.context_compactor import is_user_originated_turn
 
         # Count only user-originated turns (#80622): legacy compaction
         # handoffs are durable role=user rows without display_kind.

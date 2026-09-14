@@ -20,10 +20,10 @@ ACTIVITY_DESCRIPTION_MAX = 120
 
 # Durable SessionDB activity heartbeat cadence (seconds between writes per
 # session). Contract: MUST stay >= 30s — the SessionDB write path is
-# contended (deadline/patience retry, compression-lock patience), and the
+# contended (deadline/patience retry, compaction-lock patience), and the
 # heartbeat is an observation-only projection that never justifies extra
 # write pressure. This cadence is deliberately a code constant, independent
-# of any compression.* or agent.* config, so no configuration can turn the
+# of any compaction.* or agent.* config, so no configuration can turn the
 # heartbeat into a high-frequency writer. Matches the kanban auto-heartbeat
 # cadence. force_persist (terminal stamps) is the only bypass.
 SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
@@ -33,10 +33,10 @@ class ActivityProvenance(str, Enum):
     """Where a durable/in-memory activity stamp came from."""
 
     UNKNOWN = "unknown"
-    # Compression writers (#72424 / activity contract): heartbeat, host timeout, cooldown.
-    AGENT_COMPRESSION = "agent.compression"
-    AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
-    AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
+    # Compaction writers (#72424 / activity contract): heartbeat, host timeout, cooldown.
+    AGENT_COMPACTION = "agent.compaction"
+    AGENT_COMPACTION_TIMEOUT = "agent.compaction_timeout"
+    AGENT_COMPACTION_COOLDOWN = "agent.compaction_cooldown"
 
 
 def bound_activity_description(description: Optional[str]) -> str:
@@ -65,8 +65,8 @@ def reset_session_activity_persist_window(agent: Any) -> None:
 
     The next ``_touch_activity`` / ``_persist_session_activity_if_due`` will
     write through even if a stamp landed within the last 60s. Used for
-    terminal compression labels that must not stay stuck on mid-compress
-    text (e.g. "context compression in progress" after /compact).
+    terminal compaction labels that must not stay stuck on mid-compact
+    text (e.g. "context compaction in progress" after /compact).
     """
     try:
         agent._session_activity_last_persist_mono = 0.0

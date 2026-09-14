@@ -33,7 +33,7 @@ Two properties shape almost every design decision and are the lens for reviewing
 - **Per-conversation prompt caching is sacred.** A long-lived conversation reuses a cached
   prefix every turn. Anything that mutates past context, swaps toolsets, or rebuilds the
   system prompt mid-conversation invalidates that cache and multiplies the user's cost.
-  We do not do it (the one exception is context compression).
+  We do not do it (the one exception is context compaction).
 - **The core is a narrow waist; capability lives at the edges.** Every model tool we add
   is sent on every API call, so the bar for a new *core* tool is high. Most new capability
   should arrive as a CLI command + skill, a plugin, or an MCP server — not as core surface.
@@ -150,7 +150,7 @@ son-of-anton/
 ├── son_of_anton_state.py       # SessionDB — SQLite session store (FTS5 search)
 ├── son_of_anton_constants.py   # get_son_of_anton_home(), display_son_of_anton_home()
 ├── son_of_anton_logging.py     # setup_logging() — agent.log / errors.log / gateway.log
-├── agent/                # Agent internals (providers, memory, caching, compression, ...)
+├── agent/                # Agent internals (providers, memory, caching, compaction, ...)
 ├── son_of_anton_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, ssh)
@@ -598,7 +598,7 @@ period clamped to 120s–2h; 120s grace for one-shot jobs; file lock at
 
 **Do NOT implement changes that would** alter past context mid-conversation, change
 toolsets mid-conversation, or reload memories/rebuild system prompts mid-conversation.
-The ONLY time we alter context is during context compression.
+The ONLY time we alter context is during context compaction.
 
 Slash commands that mutate system-prompt state (skills, tools, memory, etc.) must be
 **cache-aware**: default to deferred invalidation (change takes effect next session),

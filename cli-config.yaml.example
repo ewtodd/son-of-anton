@@ -61,11 +61,11 @@ agent:
   max_turns: 90              # tool-calling iterations per conversation
 
 # =============================================================================
-# Context Compression
+# Context Compaction
 # =============================================================================
-compression:
+compaction:
   enabled: true
-  threshold: 0.85            # compress at 85% of context limit
+  threshold: 0.85            # compact at 85% of context limit
 
 # =============================================================================
 # Memory (cross-session learning; provider optional)

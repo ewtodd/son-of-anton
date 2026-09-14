@@ -771,23 +771,23 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "compression": {
+    "compaction": {
         "enabled": True,
-        "progress_notices": False,    # opt-in (#52995): when True, routine compression
+        "progress_notices": False,    # opt-in (#52995): when True, routine compaction
                                       # progress statuses (compacting/idle/retry)
                                       # are delivered to chat gateway
                                       # platforms instead of being suppressed by the
                                       # gateway noise filter. Default False keeps
-                                      # routine compression silent-by-design on chat
+                                      # routine compaction silent-by-design on chat
                                       # surfaces (server-side logging only). Failure
                                       # notices and manual /compact feedback are
                                       # always visible regardless of this setting.
-        "threshold": 0.50,            # compress when context usage exceeds this ratio.
+        "threshold": 0.50,            # compact when context usage exceeds this ratio.
                                       # Models with context windows below 512K are
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
-        "threshold_tokens": None,     # absolute token cap — when set, compression
+        "threshold_tokens": None,     # absolute token cap — when set, compaction
                                       # triggers at the lower of the ratio-based
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
@@ -803,15 +803,15 @@ DEFAULT_CONFIG = {
                                       #              tokens after compaction; costs a few
                                       #              extra summarizer calls at the
                                       #              compaction boundary.
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "protect_last_n": 20,         # minimum recent messages to keep uncompacted
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
-                                      # survive in the uncompressed tail. 1 = existing
+                                      # survive in the uncompacted tail. 1 = existing
                                       # single last-user anchor (default, behavior-
                                       # preserving); raise to e.g. 3 to keep the last
                                       # 3 real user turns verbatim when bulky tool
                                       # outputs fill the tail token budget.
-        "max_attempts": 3,            # compression retry rounds before a turn gives up
-                                      # with "max compression attempts reached". Raise
+        "max_attempts": 3,            # compaction retry rounds before a turn gives up
+                                      # with "max compaction attempts reached". Raise
                                       # (e.g. 6) for tool-schema-heavy sessions where 3
                                       # rounds cannot clear the request estimate.
                                       # Validated >= 1, hard-capped at 10.
@@ -825,7 +825,7 @@ DEFAULT_CONFIG = {
                                       # call, nothing to hallucinate, and the LLM
                                       # summarizer later sees a much smaller input.
                                       # Defaults mirror opencode's prune (protect 40K,
-                                      # reclaim >= 20K). 0 = off. Built-in compressor
+                                      # reclaim >= 20K). 0 = off. Built-in compactor
                                       # only (other engines inherit a no-op).
                                       # NOTE: each committed prune rewrites already-sent
                                       # history, breaking the provider prompt-cache
@@ -843,7 +843,7 @@ DEFAULT_CONFIG = {
                                       # breaks episodic. 0 = no minimum-savings gate.
         "micro_compact": False,       # opt-in: after each completed turn, fold the
                                       # oldest un-absorbed exchange into a rolling
-                                      # summary, amortizing compression cost instead
+                                      # summary, amortizing compaction cost instead
                                       # of paying it in one batch stall. Default False
                                       # because a pass rewrites already-sent history
                                       # and so breaks the provider prompt-cache prefix
@@ -864,17 +864,17 @@ DEFAULT_CONFIG = {
                                       # exceeds this many tokens, the next pass
                                       # re-summarizes the summary itself instead of
                                       # letting it grow without bound.
-        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
-        "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
+        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compact threshold by message count
+        "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compaction
                                       # WITHOUT forward progress. The summary call streams, so
                                       # this is an inactivity budget: a slow model still
                                       # producing tokens keeps extending the wait; only a
                                       # silent/hung call is cut off.
-        "hygiene_total_ceiling_seconds": 600,  # absolute cap on the hygiene compression wait even
+        "hygiene_total_ceiling_seconds": 600,  # absolute cap on the hygiene compaction wait even
                                       # while tokens are still moving — bounds a degenerate
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
-        "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
+        "context_timeout_seconds": 120,  # inactivity budget for in-agent compact_context
                                       # (conversation loop, /compact, preflight, etc.).
                                       # Same progress-aware semantics as hygiene_timeout_seconds:
                                       # streamed summary tokens extend the wait; only a silent
@@ -882,7 +882,7 @@ DEFAULT_CONFIG = {
                                       # (callers that already pass commit_fence, e.g. gateway
                                       # hygiene, never use this path).
         "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
-                                      # in-agent compress_context wait (summary /
+                                      # in-agent compact_context wait (summary /
                                       # stream phase) even while tokens are still
                                       # moving. Clamped to >= context_timeout_seconds
                                       # when the idle budget is > 0. Guarantee:
@@ -901,7 +901,7 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
-        "abort_on_summary_failure": False,  # When True, auto-compression that fails
+        "abort_on_summary_failure": False,  # When True, auto-compaction that fails
                                       # to generate a summary (aux LLM errored / returned
                                       # non-JSON / timed out) aborts entirely instead of
                                       # dropping the middle window with a static
@@ -932,7 +932,7 @@ DEFAULT_CONFIG = {
                                       # thread context, so Son of Anton' summarizer cannot
                                       # shrink it (#36801). native = codex decides when
                                       # to compact its own thread (default); son-of-anton =
-                                      # Son of Anton' compression threshold triggers
+                                      # Son of Anton' compaction threshold triggers
                                       # thread/compact/start; off = never auto-trigger
                                       # (codex may still compact natively).
         "codex_responses_native": False,  # Opt in to OpenAI's server-side compaction
@@ -940,10 +940,10 @@ DEFAULT_CONFIG = {
                                       # gpt-5.6-family models on api.openai.com or
                                       # the ChatGPT Codex backend; every other
                                       # route/model is unaffected. Son of Anton' local
-                                      # compression stays armed as the fallback.
+                                      # compaction stays armed as the fallback.
         "codex_responses_compact_threshold": 200000,  # Server-side compaction trigger
                                       # (input tokens). Clamped below the local
-                                      # compression threshold at request time so
+                                      # compaction threshold at request time so
                                       # the server compacts before Son of Anton does.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
@@ -982,7 +982,7 @@ DEFAULT_CONFIG = {
                                       # Time-based; complements (does not replace)
                                       # the size-based `threshold` above. Skipped
                                       # when the context is already at/below the
-                                      # post-compression target (threshold ×
+                                      # post-compaction target (threshold ×
                                       # target_ratio) and it honors the same
                                       # failure-cooldown / anti-thrash / per-session
                                       # lock guards as every automatic compaction.
@@ -1010,7 +1010,7 @@ DEFAULT_CONFIG = {
     # main-agent settings).
     #
     #   auxiliary:
-    #     compression:
+    #     compaction:
     #       provider: deepseek
     #       model: deepseek-v4
     #
@@ -1027,7 +1027,7 @@ DEFAULT_CONFIG = {
         # Restrict the auxiliary auto-chain's aggregator fallback to free
         # (:free) SKUs. When true, the aggregator step is skipped entirely
         # unless the resolved fallback model ends in ":free" — a PAID lane
-        # is never engaged for background auxiliary traffic (compression,
+        # is never engaged for background auxiliary traffic (compaction,
         # title generation, session search, vision, web extract).
         "free_only": False,
         # Override the auxiliary auto-chain's aggregator fallback model.
@@ -1058,12 +1058,12 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
-        "compression": {
+        "compaction": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "timeout": 120,        # seconds — compaction summarises large contexts; increase for local models
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
@@ -1463,12 +1463,12 @@ DEFAULT_CONFIG = {
     
     # Context engine -- controls how the context window is managed when
     # approaching the model's token limit.
-    # "compressor" = built-in lossy summarization (default).
+    # "compactor" = built-in lossy summarization (default).
     # Set to a plugin name to activate an alternative engine (e.g. "lcm"
     # for Lossless Context Management).  The engine must be installed as
     # a plugin in plugins/context_engine/<name>/ or ~/.son-of-anton/plugins/.
     "context": {
-        "engine": "compressor",
+        "engine": "compactor",
         # Return freed glibc allocator pages after long-running agent/TUI
         # cleanup boundaries. Unsupported platforms are safe no-ops.
         "memory_trim": {
@@ -1536,7 +1536,7 @@ DEFAULT_CONFIG = {
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch
         # fan-out (N children) returns N summaries at once, which can exceed
-        # the parent's context window and trigger a compression/429 death
+        # the parent's context window and trigger a compaction/429 death
         # spiral. delegate_task sizes each summary against the parent's
         # remaining context headroom (split across the batch); when it must
         # trim, the full text is spilled to ~/.son-of-anton/cache/delegation/
@@ -2546,7 +2546,7 @@ DEFAULT_CONFIG = {
         # of rows) can exhaust memory when its transcript is materialized in
         # one shot, so interactive resume and in-memory export are guarded by
         # bounded row counts. Set a limit to 0 to disable that guard.
-        # Max active messages (across the full compression lineage) a session
+        # Max active messages (across the full compaction lineage) a session
         # may hold and still be resumed interactively (CLI/TUI/desktop).
         "max_resume_messages": 20000,
         # Max active messages a single session may hold for an in-memory
@@ -2861,7 +2861,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 38,
+    "_config_version": 39,
 }
 
 # Optional environment variables that enhance functionality

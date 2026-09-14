@@ -3190,7 +3190,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         A permanent per-sid latch is correct for a session being left behind:
         it dedupes that id's ``_finalize_session_async`` against the commit
-        compression already performed. In-place compression keeps the *same*
+        compaction already performed. In-place compaction keeps the *same*
         id, so the latch would otherwise reject every later commit for a
         session that is still accumulating turns (#74695).
         """
@@ -4693,7 +4693,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     ) -> None:
         """Commit the old session and rotate cached state to the new session_id.
 
-        Fires on /resume, /branch, /reset, /new, and context compression.
+        Fires on /resume, /branch, /reset, /new, and context compaction.
         Without this hook, ``_session_id`` stays stuck at the value
         ``initialize()`` cached, so subsequent ``sync_turn()`` writes land in
         the already-closed old session and ``on_session_end()`` tries to
@@ -4710,7 +4710,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         rewound = bool(kwargs.get("rewound"))
-        compression = kwargs.get("reason") == "compression"
+        compaction = kwargs.get("reason") == "compaction"
 
         # Rotate cached session state synchronously (cheap, in-memory) and
         # snapshot the old session under the lock so a concurrent sync_turn
@@ -4726,28 +4726,28 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if rotate:
                 self._session_id = new_id
                 self._turn_count = 0
-            elif compression:
+            elif compaction:
                 # commit_memory_session() has already extracted every turn up
                 # to this boundary. Keep the same sid, but start the live
                 # session's turn accounting again at zero so an immediate
                 # session end cannot duplicate the just-finished extraction.
                 self._turn_count = 0
 
-        if compression:
+        if compaction:
             # Discard both old and new session IDs so the profile is re-injected
-            # after in-place or forked compression. The key stored in
+            # after in-place or forked compaction. The key stored in
             # _profile_prefetched_sessions may be either the session_id passed
             # to prefetch() or self._session_id, so discard both to be safe.
             self._profile_prefetched_sessions.discard(old_session_id)
             self._profile_prefetched_sessions.discard(new_id)
 
             if not rotate and old_session_id:
-                # In-place compression (the default) keeps the same session id.
-                # compress_context() has just committed it, latching the guard —
+                # In-place compaction (the default) keeps the same session id.
+                # compact_context() has just committed it, latching the guard —
                 # but the session is still live, so every later commit for it
-                # (the next compression, /new, normal session end, startup
-                # recovery) would be rejected and post-compression turns would
-                # never be extracted. Re-arm the guard now that compression has
+                # (the next compaction, /new, normal session end, startup
+                # recovery) would be rejected and post-compaction turns would
+                # never be extracted. Re-arm the guard now that compaction has
                 # finished; turns arriving after this point are genuinely new.
                 #
                 # Rotation mode is untouched: there a fresh child id is minted
@@ -4757,7 +4757,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         if not rotate:
             # Same-session rewind (/undo) or no-op rotation: no new commit.
-            # Compression already reset the extracted-turn count above.
+            # Compaction already reset the extracted-turn count above.
             logger.debug(
                 "OpenViking on_session_switch skipped rotation: session=%s rewound=%s",
                 old_session_id, rewound,

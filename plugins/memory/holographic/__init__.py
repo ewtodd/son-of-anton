@@ -369,9 +369,9 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
-        # Local import (pattern used in initialize()): the compressor module is
+        # Local import (pattern used in initialize()): the compactor module is
         # heavier than this plugin and is only needed when auto_extract is on.
-        from agent.context_compressor import (
+        from agent.context_compactor import (
             _MERGED_PRIOR_CONTEXT_HEADER,
             _MERGED_SUMMARY_DELIMITER,
             is_compaction_summary_message,
@@ -381,7 +381,7 @@ class HolographicMemoryProvider(MemoryProvider):
             """Return the genuine user text preceding a merged-into-tail
             compaction summary, or None when the whole message is a summary.
 
-            Merge-into-tail messages (agent/context_compressor.py ~3163-3190)
+            Merge-into-tail messages (agent/context_compactor.py ~3163-3190)
             wrap real prior tail content BEFORE ``_MERGED_SUMMARY_DELIMITER``,
             prefixed with ``_MERGED_PRIOR_CONTEXT_HEADER``, then append the
             generated handoff summary AFTER the delimiter. Dropping the whole

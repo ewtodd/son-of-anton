@@ -3,7 +3,7 @@
 Estimates how the next provider request is composed: system prompt tiers,
 tool schemas, and conversation history. Uses the same rough char/4 heuristic
 as ``agent.model_metadata.estimate_request_tokens_rough`` so numbers align
-with compression thresholds — not exact tokenizer counts.
+with compaction thresholds — not exact tokenizer counts.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def compute_session_context_breakdown(
 
     estimated_total = sum(tokens for _, _, tokens in categories)
 
-    comp = getattr(agent, "context_compressor", None)
+    comp = getattr(agent, "context_compactor", None)
     context_max = int(getattr(comp, "context_length", 0) or 0) if comp else 0
     measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
     context_used = measured_used if measured_used > 0 else estimated_total

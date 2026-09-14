@@ -466,7 +466,7 @@ def list_active_loops() -> List[Tuple[str, LoopState]]:
 def migrate_loop_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
     """Carry a persistent /loop from a parent session to its continuation.
 
-    Context compression rotates ``session_id`` to a fresh child session;
+    Context compaction rotates ``session_id`` to a fresh child session;
     without this the loop silently dies at the compaction boundary (the
     same hazard /goal hit in #33618). Copies the loop onto the new session
     and archives the old row as ``cleared`` so exactly one active loop row

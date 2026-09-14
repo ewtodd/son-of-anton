@@ -5,7 +5,7 @@ Todo Tool Module - Planning & Task Management
 Provides an in-memory task list the agent uses to decompose complex tasks,
 track progress, and maintain focus across long conversations. The state
 lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+the conversation after context compaction events.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -22,8 +22,8 @@ from typing import Dict, Any, List, Optional
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 
 # Bounds on persisted todo state. The todo list is a planning aid the model
-# re-reads after every context-compression event (see format_for_injection),
-# so unbounded item content or count defeats the compression it rides through.
+# re-reads after every context-compaction event (see format_for_injection),
+# so unbounded item content or count defeats the compaction it rides through.
 # These caps keep a single oversized item (whether authored by the model or
 # replayed from caller-supplied history on the API server) from inflating the
 # re-injection block. Generous relative to real plans — a todo item is a short
@@ -36,7 +36,7 @@ MAX_TODO_ITEMS = 256
 # before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
-# Persisted as ordinary message content. ContextCompressor uses this stable
+# Persisted as ordinary message content. ContextCompactor uses this stable
 # header to distinguish the synthetic post-compaction row from a real user.
 TODO_INJECTION_HEADER = (
     "[Your active task list was preserved across context compression]"
@@ -117,9 +117,9 @@ class TodoStore:
 
     def format_for_injection(self) -> Optional[str]:
         """
-        Render the todo list for post-compression injection.
+        Render the todo list for post-compaction injection.
 
-        Returns a human-readable string to append to the compressed
+        Returns a human-readable string to append to the compacted
         message history, or None if the list is empty.
         """
         if not self._items:
@@ -134,7 +134,7 @@ class TodoStore:
         }
 
         # Only inject pending/in_progress items — completed/cancelled ones
-        # cause the model to re-do finished work after compression.
+        # cause the model to re-do finished work after compaction.
         active_items = [
             item for item in self._items
             if item["status"] in {"pending", "in_progress"}
@@ -153,7 +153,7 @@ class TodoStore:
     def _cap_content(content: str) -> str:
         """Truncate oversized todo content to MAX_TODO_CONTENT_CHARS.
 
-        A single huge item would otherwise inflate the post-compression
+        A single huge item would otherwise inflate the post-compaction
         re-injection block (format_for_injection) without bound. Keep the
         head — the actionable part of a task description — plus a marker.
         """

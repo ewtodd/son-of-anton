@@ -291,42 +291,42 @@ def finalize_turn(
         # ── Post-turn micro-compaction ────────────────────────────
         # After the assistant response is finalized but before the session is
         # persisted, run micro-compaction to absorb the oldest uncompacted
-        # exchange into the rolling summary.  This amortizes compression
+        # exchange into the rolling summary.  This amortizes compaction
         # across turns rather than batching it into one big pause.
         if not interrupted and not failed:
             try:
-                _compressor = getattr(agent, "context_compressor", None)
+                _compactor = getattr(agent, "context_compactor", None)
                 # Strict `is True` + isinstance gates: plugin context engines
-                # (and MagicMock compressors in tests) satisfy getattr/duck
+                # (and MagicMock compactors in tests) satisfy getattr/duck
                 # checks with truthy auto-attributes — a bare truthiness check
                 # here called _micro_compact on a mock and spliced its (empty-
                 # iterating) return value over the transcript, wiping it.
                 if (
-                    _compressor
-                    and getattr(_compressor, '_micro_compact_enabled', False) is True
-                    and callable(getattr(_compressor, '_micro_compact', None))
+                    _compactor
+                    and getattr(_compactor, '_micro_compact_enabled', False) is True
+                    and callable(getattr(_compactor, '_micro_compact', None))
                     and final_response
                     # Persistence-isolated agents (background review fork)
                     # must not micro-compact: the pass burns a real aux-LLM
                     # call on a throwaway replay transcript, and if the
-                    # compressor ever holds a session_db binding it would
+                    # compactor ever holds a session_db binding it would
                     # archive_and_compact the CANONICAL session rows — the
                     # exact write class _persist_disabled exists to stop.
                     and not getattr(agent, "_persist_disabled", False)
                 ):
                     _before = len(messages)
-                    _compacted = _compressor._micro_compact(messages)
+                    _compacted = _compactor._micro_compact(messages)
                     # Micro-compaction defrag rewrites the newest MICRO
                     # marker's content and pops _db_persisted from the live
                     # dict in place — the sibling of the pop site above. The
-                    # compressor has no agent reference, so it raises a flag
+                    # compactor has no agent reference, so it raises a flag
                     # for us to invalidate the bounded flush-scan cursor;
                     # otherwise the rewritten marker row is identity-skipped
                     # and the stale summary persists to state.db.
                     if getattr(
-                        _compressor, "_flush_scan_cursor_invalidated", False
+                        _compactor, "_flush_scan_cursor_invalidated", False
                     ):
-                        _compressor._flush_scan_cursor_invalidated = False
+                        _compactor._flush_scan_cursor_invalidated = False
                         agent._db_flush_scan_prefix = None
                     if isinstance(_compacted, list) and _compacted:
                         messages[:] = _compacted
@@ -608,7 +608,7 @@ def finalize_turn(
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,
-        "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0,
+        "last_prompt_tokens": getattr(agent.context_compactor, "last_prompt_tokens", 0) or 0,
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
@@ -630,7 +630,7 @@ def finalize_turn(
             "health (`son-of-anton doctor`), then send your message again"
         )
         # Machine-readable cause for the gateway/desktop: exactly
-        # 'session_persistence_failed:<locked|compression|turn_lease|corrupt|disk|unknown>'.
+        # 'session_persistence_failed:<locked|compaction|turn_lease|corrupt|disk|unknown>'.
         # Never clobber a failure_reason another path already stamped.
         if "failure_reason" not in result:
             _cause = getattr(agent, "_last_persistence_error_cause", None)

@@ -1968,7 +1968,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # session), and pollute generated session titles.  One strip at the
     # storage boundary cleans content for every downstream consumer:
     # API replay, session transcript, gateway delivery, CLI display,
-    # compression, title generation.
+    # compaction, title generation.
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
 
@@ -1976,7 +1976,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # from assistant content BEFORE the message enters conversation history.
     # If the model accidentally inlines a secret in its natural-language
     # response, catch it here at the persistence boundary so it never
-    # reaches state.db, session_*.json, gateway delivery, or compression.
+    # reaches state.db, session_*.json, gateway delivery, or compaction.
     # Respects SON_OF_ANTON_REDACT_SECRETS via redact_sensitive_text — no-op
     # when disabled. (#19798)
     if isinstance(_san_content, str) and _san_content:
@@ -2499,14 +2499,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # LM Studio: preload before probing the fallback's context length.
         agent._ensure_lmstudio_runtime_loaded()
 
-        # Update context compressor limits for the fallback model.
-        # Without this, compression decisions use the primary model's
+        # Update context compactor limits for the fallback model.
+        # Without this, compaction decisions use the primary model's
         # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
         # causing oversized sessions to overflow the fallback.
         # Also pass _config_context_length so the explicit config override
         # (model.context_length in config.yaml) is respected — without this,
         # the fallback activation drops to 128K even when config says 204800.
-        if hasattr(agent, 'context_compressor') and agent.context_compressor:
+        if hasattr(agent, 'context_compactor') and agent.context_compactor:
             from agent.model_metadata import get_model_context_length
             # ``agent.api_key`` may be callable (Entra ID); the
             # context-length resolver expects a string for live
@@ -2519,7 +2519,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
-            agent.context_compressor.update_model(
+            agent.context_compactor.update_model(
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
@@ -2620,8 +2620,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     # Shared constant so compaction recognizers can identify this runtime nudge
     # by its stable content after SessionDB projection strips metadata flags
-    # (see MAX_ITERATIONS_SUMMARY_REQUEST / _is_synthetic_compression_user_turn).
-    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+    # (see MAX_ITERATIONS_SUMMARY_REQUEST / _is_synthetic_compaction_user_turn).
+    from agent.context_compactor import MAX_ITERATIONS_SUMMARY_REQUEST
 
     summary_request = MAX_ITERATIONS_SUMMARY_REQUEST
     append_message(messages, {"role": "user", "content": summary_request})
@@ -2682,7 +2682,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 api_messages.insert(sys_offset + idx, pfm.copy())
 
         # Same safety net as the main loop: repair tool-call/result
-        # pairing before asking for a final summary.  Compression and
+        # pairing before asking for a final summary.  Compaction and
         # session resume can leave a tool result whose parent assistant
         # tool_call was summarized away; Responses API rejects that as
         # "No tool call found for function call output".

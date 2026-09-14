@@ -846,6 +846,44 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
         print(f"  ⚠ {message}")
 
 
+def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
+    # Version 38 → 39: the compress family was renamed to compact throughout
+    # the codebase. Config follows: ``compression`` → ``compaction``,
+    # ``auxiliary.compression`` → ``auxiliary.compaction``, and the built-in
+    # context engine name ``compressor`` → ``compactor``. Values already
+    # present under the new key win; the old key is removed.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    moved: list[str] = []
+
+    def _fold(container: Dict[str, Any], old_key: str, new_key: str, label: str) -> None:
+        old = container.pop(old_key, None)
+        if not isinstance(old, dict):
+            return
+        new = container.setdefault(new_key, {})
+        if isinstance(new, dict):
+            for key, value in old.items():
+                new.setdefault(key, value)
+        moved.append(label)
+
+    _fold(config, "compression", "compaction", "compression → compaction")
+    aux = config.get("auxiliary")
+    if isinstance(aux, dict):
+        _fold(aux, "compression", "compaction", "auxiliary.compression → auxiliary.compaction")
+    ctx = config.get("context")
+    if isinstance(ctx, dict) and str(ctx.get("engine", "")).strip().lower() == "compressor":
+        ctx["engine"] = "compactor"
+        moved.append("context.engine: compressor → compactor")
+
+    if moved:
+        _persist_migration(config)
+        if not quiet:
+            print(f"  ✓ Renamed compaction settings: {', '.join(moved)}")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -871,6 +909,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (36, _migrate_to_36),
     (37, _migrate_to_37),
     (38, _migrate_to_38),
+    (39, _migrate_to_39),
 )
 
 

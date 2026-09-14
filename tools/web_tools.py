@@ -24,7 +24,7 @@ LLM Processing:
 Debug Mode:
 - Set WEB_TOOLS_DEBUG=true to enable detailed logging
 - Creates web_tools_debug_UUID.json in ./logs directory
-- Captures all tool calls, results, and compression metrics
+- Captures all tool calls, results, and compaction metrics
 
 Usage:
     from web_tools import web_search_tool, web_extract_tool

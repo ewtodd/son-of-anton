@@ -25,7 +25,7 @@ Optional hooks (override to opt in):
   on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
   on_session_end(messages)               — end-of-session extraction
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
-  on_pre_compress(messages) -> str       — extract before context compression
+  on_pre_compact(messages) -> str       — extract before context compaction
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
   backup_paths() -> list[str]            — extra on-disk paths to include in `son-of-anton backup`
@@ -270,7 +270,7 @@ class MemoryProvider(ABC):
         """Called when the agent switches session_id mid-process.
 
         Fires on ``/resume``, ``/branch``, ``/reset``, ``/new`` (CLI), the
-        gateway equivalents, and context compression — any path that
+        gateway equivalents, and context compaction — any path that
         reassigns ``AIAgent.session_id`` without tearing the provider down.
 
         Providers that cache per-session state in ``initialize()``
@@ -284,7 +284,7 @@ class MemoryProvider(ABC):
             The session_id the agent just switched to.
         parent_session_id:
             The previous session_id, if meaningful — set for ``/branch``
-            (fork lineage), context compression (continuation lineage),
+            (fork lineage), context compaction (continuation lineage),
             and ``/resume`` (the session we're leaving). Empty string
             when no lineage applies.
         reset:
@@ -292,7 +292,7 @@ class MemoryProvider(ABC):
             resumption of an existing one. Fired by ``/reset`` / ``/new``.
             Providers should flush accumulated per-session buffers
             (``_session_turns``, ``_turn_counter``, etc.) when this is
-            set. ``False`` for ``/resume`` / ``/branch`` / compression
+            set. ``False`` for ``/resume`` / ``/branch`` / compaction
             where the logical conversation continues under the new id.
         rewound:
             ``True`` if session_id is unchanged but the transcript was
@@ -302,14 +302,14 @@ class MemoryProvider(ABC):
         Default is no-op for backward compatibility.
         """
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        """Called before context compression discards old messages.
+    def on_pre_compact(self, messages: List[Dict[str, Any]]) -> str:
+        """Called before context compaction discards old messages.
 
-        Use to extract insights from messages about to be compressed.
+        Use to extract insights from messages about to be compacted.
         messages is the list that will be summarized/discarded.
 
-        Return text to include in the compression summary prompt so the
-        compressor preserves provider-extracted insights. Return empty
+        Return text to include in the compaction summary prompt so the
+        compactor preserves provider-extracted insights. Return empty
         string for no contribution (backwards-compatible default).
         """
         return ""

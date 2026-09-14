@@ -24,7 +24,7 @@ import threading
 from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
-from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+from agent.context_compactor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ _CONTROL_WRAPPERS = (
 
 # Son of Anton' own machine-authored openers. A compaction handoff or a resumed
 # session must not be titled after the scaffolding that carried it. The legacy
-# summary prefix comes from the compressor rather than a fourth local copy —
+# summary prefix comes from the compactor rather than a fourth local copy —
 # compaction still emits it, and a session named after it is named after us.
 _MACHINE_PREFIXES = (
     "[CONTEXT COMPACTION",

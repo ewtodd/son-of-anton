@@ -7809,8 +7809,8 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     try:
         enabled = getattr(agent, "enabled_toolsets", None)
         context_engine_allowed = enabled is None or "context_engine" in enabled
-        compressor = getattr(agent, "context_compressor", None)
-        get_schemas = getattr(compressor, "get_tool_schemas", None) if compressor else None
+        compactor = getattr(agent, "context_compactor", None)
+        get_schemas = getattr(compactor, "get_tool_schemas", None) if compactor else None
         if context_engine_allowed and callable(get_schemas):
             for schema in get_schemas():
                 if not isinstance(schema, dict):

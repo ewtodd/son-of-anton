@@ -22,7 +22,7 @@ Silent (returns ``""``) when:
 - anything at all goes wrong (never crash a prompt build).
 
 Deterministic within a process: the result is computed once and cached, so
-compression-triggered prompt rebuilds produce identical bytes.
+compaction-triggered prompt rebuilds produce identical bytes.
 
 Toggle via ``agent.bot_mode_protocol`` in config.yaml (default True).
 """

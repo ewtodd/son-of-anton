@@ -198,7 +198,7 @@ VALID_HOOKS: Set[str] = {
     # error_body, error, approx_tokens, context_length, num_messages) and
     # should self-scope on ``provider``. Return None to pass, or a dict::
     #   {"reason": "<FailoverReason name>",          # required
-    #    "retryable": bool, "should_compress": bool,
+    #    "retryable": bool, "should_compact": bool,
     #    "should_rotate_credential": bool, "should_fallback": bool,
     #    "message": str, "error_context": dict}      # all optional
     # Dispatch is run-all-then-pick-first: every registered callback runs
@@ -2182,7 +2182,7 @@ class PluginContext:
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:
-        """Register a context engine to replace the built-in ContextCompressor.
+        """Register a context engine to replace the built-in ContextCompactor.
 
         Only one context engine plugin is allowed. If a second plugin tries
         to register one, it is rejected with a warning.
@@ -2922,7 +2922,7 @@ class PluginContext:
         """Register a plugin-defined auxiliary LLM task.
 
         Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
-        compression, smart-approval, etc.) that route through ``auxiliary_client.py``.
+        compaction, smart-approval, etc.) that route through ``auxiliary_client.py``.
         Each task has its own ``auxiliary.<key>`` config block where users can
         pin a provider/model independent of the main chat model.
 
@@ -2938,7 +2938,7 @@ class PluginContext:
         Args:
             key: stable task key (snake_case). Used in config ``auxiliary.<key>``
                 and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
-                built-in task key (vision, compression, web_extract, approval,
+                built-in task key (vision, compaction, web_extract, approval,
                 mcp, title_generation, skills_hub, curator).
             display_name: human-readable name shown in the picker.
             description: short one-line description shown next to the name.
@@ -6394,7 +6394,7 @@ def get_plugin_error_classification(
         out: Dict[str, Any] = {"reason": reason}
         for key in (
             "retryable",
-            "should_compress",
+            "should_compact",
             "should_rotate_credential",
             "should_fallback",
         ):

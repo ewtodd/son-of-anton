@@ -6,4 +6,4 @@ external_dependencies:
     install: "curl -fsSL https://byterover.dev/install.sh | sh"
     check: "brv --version"
 hooks:
-  - on_pre_compress
+  - on_pre_compact

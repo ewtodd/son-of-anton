@@ -60,8 +60,8 @@ def get_memory_dir() -> Path:
     return get_son_of_anton_home() / "memories"
 
 # Stable header prefixes for the system-prompt memory blocks rendered by
-# MemoryStore._render_block. Exported so compression's prompt-retention check
-# (agent/conversation_compression.py) can detect a leftover block for a
+# MemoryStore._render_block. Exported so compaction's prompt-retention check
+# (agent/conversation_compaction.py) can detect a leftover block for a
 # target whose entries have since been emptied — keep in lockstep with
 # _render_block below.
 MEMORY_BLOCK_HEADERS = {

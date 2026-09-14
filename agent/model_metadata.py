@@ -1,6 +1,6 @@
 """Model metadata, context lengths, and token estimation utilities.
 
-Pure utility functions with no AIAgent dependency. Used by ContextCompressor
+Pure utility functions with no AIAgent dependency. Used by ContextCompactor
 and run_agent.py for pre-flight context checks.
 """
 
@@ -407,7 +407,7 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 # Short-lived in-process cache for local-server context probes. Bounds the
 # probe rate when the new local-endpoint live-probe paths (reconcile-on-hit +
 # pre-defaults step 7) resolve the same model several times during one startup
-# (banner, /model switch, compressor update_model). Keyed by (model, base_url);
+# (banner, /model switch, compactor update_model). Keyed by (model, base_url);
 # values are (result, monotonic_timestamp). Not persisted to disk — cross-
 # restart freshness is handled by the reconcile logic re-probing after expiry.
 _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
@@ -544,7 +544,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi-k3": 1_048_576,
     "kimi": 262144,
     # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
-    # so these fallbacks keep token budgeting / compression from probing down
+    # so these fallbacks keep token budgeting / compaction from probing down
     # to the 128k default. Ids are matched longest-first, so dated variants
     # (e.g. solar-pro3-250127) resolve via their family prefix.
     # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
@@ -1619,7 +1619,7 @@ def get_context_length_from_provider_error(
     Context-overflow recovery must not invent a new model window size.  Some
     providers only say that the input exceeds the context window without
     reporting the actual maximum.  In that case callers should keep the
-    configured context length and try compression only, rather than stepping
+    configured context length and try compaction only, rather than stepping
     down through guessed probe tiers (1M → 256K → 128K → ...).
     """
     parsed_limit = parse_context_limit_from_error(error_msg)
@@ -1635,7 +1635,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
     Background — two distinct context errors exist:
       1. "Prompt too long"  — the INPUT itself exceeds the context window.
-           Fix: compress history, and only reduce context_length if the
+           Fix: compact history, and only reduce context_length if the
            provider explicitly reports the actual lower limit.
       2. "max_tokens too large" — input is fine, but input + requested_output > window.
            Fix: reduce max_tokens (the output cap) for this call.
@@ -1663,7 +1663,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         #    requested 65536 output tokens and your prompt contains 77409
         #    characters ..."
         # The "requested N output tokens" phrasing means the OUTPUT cap is the
-        # problem (the input itself fits) — reduce max_tokens, don't compress.
+        # problem (the input itself fits) — reduce max_tokens, don't compact.
         "maximum context length" in error_lower
         and "requested" in error_lower
         and "output tokens" in error_lower
@@ -1673,7 +1673,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # real max-output cap, e.g.
         #   "Range of max_tokens should be [1, 65536]"
         # The input itself fits — this is purely an output-cap error, so reduce
-        # max_tokens and retry; do NOT compress.
+        # max_tokens and retry; do NOT compact.
         "range of max_tokens should be" in error_lower
     ) or (
         # OpenAI-compatible relays may reject a request whose output cap exceeds
@@ -1759,7 +1759,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     #    tokens."
     # Available output = window - input. When the input alone is at or over
     # the window this stays None, so the caller correctly falls through to
-    # compression instead of futilely shrinking the output cap.
+    # compaction instead of futilely shrinking the output cap.
     #
     # Caveat: when max_tokens is the BINDING constraint, vLLM does not report
     # the real prompt size at all.  It back-computes a lower bound from the
@@ -1767,7 +1767,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # N == window + 1 - requested_output -- so window - N is always exactly
     # requested_output - 1.  Subtracting the caller's safety margin then walks
     # the cap down ~65 tokens per retry while the reported input walks up by
-    # the same amount, burning every compression attempt without ever fitting.
+    # the same amount, burning every compaction attempt without ever fitting.
     # Detect that degenerate case and halve the requested cap instead: it
     # carries the same guarantee (strictly below what was rejected) and
     # converges in one or two retries.
@@ -1799,11 +1799,11 @@ def is_output_cap_error(error_msg: str) -> bool:
 
     Why this matters: an output-cap 400 is deterministic (every retry with the
     same ``max_tokens`` gets the identical rejection).  If such an error is
-    misclassified as a context-overflow it gets routed into the compression
-    loop, the compressor re-issues the call with the same oversized
+    misclassified as a context-overflow it gets routed into the compaction
+    loop, the compactor re-issues the call with the same oversized
     ``max_tokens``, the provider rejects it identically, and the session
-    death-loops until "cannot compress further" (issue #55546, DashScope/Qwen:
-    "Range of max_tokens should be [1, 65536]").  Compression cannot help an
+    death-loops until "cannot compact further" (issue #55546, DashScope/Qwen:
+    "Range of max_tokens should be [1, 65536]").  Compaction cannot help an
     output-cap error — the input already fits.
 
     The signal: the error talks about ``max_tokens`` (or its aliases) as a
@@ -1841,7 +1841,7 @@ def is_output_cap_error(error_msg: str) -> bool:
 
     # If the error ALSO clearly describes an oversized INPUT, it is a genuine
     # context overflow that happens to mention max_tokens — let the
-    # context-overflow path handle it (it can compress the input).
+    # context-overflow path handle it (it can compact the input).
     input_overflow_signal = (
         "prompt is too long" in error_lower
         or "prompt too long" in error_lower
@@ -2177,7 +2177,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     The live-probe paths added for local endpoints (reconcile-on-hit and the
     pre-defaults step-7 probe) can fire this function several times in quick
     succession during one startup — banner display, ``/model`` switch,
-    compressor ``update_model`` all resolve the same model. Each raw probe
+    compactor ``update_model`` all resolve the same model. Each raw probe
     issues synchronous ``detect_local_server_type`` + query HTTP calls (bounded
     by the 3s httpx timeout), so an unreachable/slow local server would pay
     that cost repeatedly. A tiny in-process TTL cache collapses back-to-back
@@ -2724,9 +2724,9 @@ def get_model_context_length(
     # ``custom_providers`` is loaded here when the caller did not pass it.
     # Gating this step on the ARGUMENT meant it only ran for callers that
     # happened to thread the list through — one of the three call sites did.
-    # The rest (the CLI's @-reference sizing, the context compressor) skipped
+    # The rest (the CLI's @-reference sizing, the context compactor) skipped
     # straight past a context_length sitting in config.yaml and fell through to
-    # the catalog's generic 128K. The compressor is the worst place for that:
+    # the catalog's generic 128K. The compactor is the worst place for that:
     # it sizes compaction against a window eight times smaller than the real
     # one, so it compacts a conversation that had plenty of room left.
     if base_url and model:
@@ -2805,7 +2805,7 @@ def get_model_context_length(
             # Reject non-positive cached values — a 0 or negative value
             # is always a bug (corrupted cache, probe failure, or manual
             # edit).  Without this guard, `0 is not None` short-circuits
-            # the resolution chain and the compressor gets context_length=0,
+            # the resolution chain and the compactor gets context_length=0,
             # breaking every status-bar and /usage display downstream.
             if cached <= 0:
                 logger.warning(
@@ -2892,7 +2892,7 @@ def get_model_context_length(
             # Modelfile context values first.  _query_local_context_length
             # prefers num_ctx from Modelfile, while _query_ollama_api_show
             # returns the GGUF training max first which can be larger and
-            # would create a false-safe window for compression (#63122).
+            # would create a false-safe window for compaction (#63122).
             # Non-local endpoints preserve the existing GGUF-first behavior.
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
@@ -3163,7 +3163,7 @@ def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate for pre-flight checks.
 
     Uses ceiling division so short texts (1-3 chars) never estimate as
-    0 tokens, which would cause the compressor and pre-flight checks to
+    0 tokens, which would cause the compactor and pre-flight checks to
     systematically undercount when many short tool results are present.
     CJK/Hangul/Kana text is much denser than English under common LLM
     tokenizers, so count those codepoints as roughly one token each instead
@@ -3196,7 +3196,7 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
     image — the Anthropic pricing model — instead of counting raw base64
     character length. Without this, a single ~1MB screenshot would be
-    estimated at ~250K tokens and trigger premature context compression.
+    estimated at ~250K tokens and trigger premature context compaction.
 
     Per-message results are memoized (see ``_estimate_message_tokens_cached``)
     keyed on a deep *identity fingerprint* of the message, so re-walking a

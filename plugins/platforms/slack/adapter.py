@@ -1015,7 +1015,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._AGENT_VIEW_CONTEXTS_MAX = 5000
         # Status-bubble dedup (issue #30045, extended to Slack): remember the
         # message ts of the last status bubble per (channel, thread, status
-        # key) so repeated progress callbacks (compression retries, fallback
+        # key) so repeated progress callbacks (compaction retries, fallback
         # switches, ...) edit ONE message in place instead of appending a new
         # bubble per event — long retry loops used to spam threads with
         # dozens of out-of-order status messages.
@@ -2929,7 +2929,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Send a status message, or edit the previous one with the same key.
 
         Issue #30045 extended to Slack: progress/status callbacks
-        (context-pressure, compression retries, model fallback, lifecycle)
+        (context-pressure, compaction retries, model fallback, lifecycle)
         used to append a fresh bubble on every call, spamming threads during
         long retry loops. The first call posts and the message ts is
         remembered; subsequent calls with the same (channel, thread,

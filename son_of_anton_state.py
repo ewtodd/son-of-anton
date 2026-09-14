@@ -9,7 +9,7 @@ history, and model configuration for CLI and gateway sessions.
 Key design decisions:
 - WAL mode for concurrent readers + one writer (gateway multi-platform)
 - FTS5 virtual table for fast text search across all session messages
-- Compression-triggered session splitting via parent_session_id chains
+- Compaction-triggered session splitting via parent_session_id chains
 - Batch runner and RL trajectories are NOT stored here (separate systems)
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
@@ -50,7 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from son_of_anton_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
-    _COMPRESSION_CHILD_SQL,
+    _COMPACTION_CHILD_SQL,
     _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _LISTABLE_CHILD_SQL,
@@ -164,18 +164,18 @@ class SessionExportTooLargeError(ValueError):
         )
 
 
-_COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
+_COMPACTION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
 
 def _system_prompt_hash(system_prompt: str) -> str:
     return hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
 
 
-def _compression_lock_holder_process_is_dead(holder: str) -> bool:
+def _compaction_lock_holder_process_is_dead(holder: str) -> bool:
     """Return True only when a structured lock holder's local PID is gone.
 
-    Compression locks are stored in a host-local SQLite database and holder
-    IDs created by ``conversation_compression`` start with ``pid=<n>``. A
+    Compaction locks are stored in a host-local SQLite database and holder
+    IDs created by ``conversation_compaction`` start with ``pid=<n>``. A
     process killed during gateway shutdown cannot release its lease, so waiting
     for the full TTL makes every new turn repeatedly attempt compaction. Reclaim
     only when the kernel proves that PID no longer exists; legacy/unstructured
@@ -183,7 +183,7 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     remain protected until normal TTL expiry (conservative: PID reuse must
     never steal a live lease, and a wrongly-kept lease self-heals via TTL).
     """
-    match = _COMPRESSION_LOCK_HOLDER_PID_RE.search(holder or "")
+    match = _COMPACTION_LOCK_HOLDER_PID_RE.search(holder or "")
     if match is None:
         return False
     try:
@@ -1586,8 +1586,8 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # can never silently desynchronize them.
 PERSISTENCE_ERROR_CAUSES = (
     "locked",
-    "compression",
-    "compression_closed",
+    "compaction",
+    "compaction_closed",
     "turn_lease",
     "corrupt",
     "disk",
@@ -1622,10 +1622,10 @@ def classify_persistence_error(exc_or_str) -> str:
 
     * ``"locked"``  — SQLite lock/busy contention (another process holds the
       database write lock); transient, retry-later guidance applies.
-    * ``"compression"`` — a live compression lease refused the transcript
+    * ``"compaction"`` — a live compaction lease refused the transcript
       write; the database itself is healthy and unlocked.
-    * ``"compression_closed"`` — the write targeted a session already
-      rotated (closed) by compression and no live continuation was adopted;
+    * ``"compaction_closed"`` — the write targeted a session already
+      rotated (closed) by compaction and no live continuation was adopted;
       the store is healthy — the client must refresh/adopt the new session
       id, so disk-space advice would be a misdiagnosis.
     * ``"turn_lease"`` — a presented session-turn-lease holder no longer
@@ -1642,24 +1642,24 @@ def classify_persistence_error(exc_or_str) -> str:
     """
     if exc_or_str is None:
         return "unknown"
-    # A refused write during a live compression lease is contention, not
-    # storage damage — but its message ("is being compressed by another
-    # writer" / "Compression lease lost") contains neither "locked" nor
+    # A refused write during a live compaction lease is contention, not
+    # storage damage — but its message ("is being compacted by another
+    # writer" / "Compaction lease lost") contains neither "locked" nor
     # "busy", so it must be matched by type and by phrase (for strings that
     # survived RPC wrapping).
     if isinstance(exc_or_str, SessionTurnLeaseLostError):
         return "turn_lease"
-    if isinstance(exc_or_str, CompressionSessionClosedError):
-        return "compression_closed"
-    if isinstance(exc_or_str, CompressionSessionBusyError):
-        return "compression"
+    if isinstance(exc_or_str, CompactionSessionClosedError):
+        return "compaction_closed"
+    if isinstance(exc_or_str, CompactionSessionBusyError):
+        return "compaction"
     text = str(exc_or_str).lower()
     if "turn lease" in text:
         return "turn_lease"
-    if "closed by compression" in text:
-        return "compression_closed"
-    if "being compressed" in text or "compression lease" in text:
-        return "compression"
+    if "closed by compaction" in text:
+        return "compaction_closed"
+    if "being compacted" in text or "compaction lease" in text:
+        return "compaction"
     # Structural corruption BEFORE the lock and disk buckets: "database disk
     # image is malformed" contains "disk" (and some wrapped corruption
     # strings mention "locked" recovery attempts), so later buckets would
@@ -2571,33 +2571,33 @@ BEGIN
 END;
 """
 
-class CompressionSessionClosedError(RuntimeError):
-    """A durable write targeted a parent already closed by compression."""
+class CompactionSessionClosedError(RuntimeError):
+    """A durable write targeted a parent already closed by compaction."""
 
     def __init__(self, session_id: str):
         self.session_id = session_id
         super().__init__(
-            f"Session {session_id!r} is closed by compression; "
+            f"Session {session_id!r} is closed by compaction; "
             "adopt its live continuation before appending messages"
         )
 
 
-class CompressionSessionBusyError(RuntimeError):
-    """A non-owner tried to write while compression owns the session."""
+class CompactionSessionBusyError(RuntimeError):
+    """A non-owner tried to write while compaction owns the session."""
 
 
-class SessionCompressionInProgressError(CompressionSessionBusyError):
-    """A concurrent writer collided with a *live* compression lock.
+class SessionCompactionInProgressError(CompactionSessionBusyError):
+    """A concurrent writer collided with a *live* compaction lock.
 
-    Split out from :class:`CompressionSessionBusyError` because the two
+    Split out from :class:`CompactionSessionBusyError` because the two
     conditions that class covers need opposite handling. This one is
-    transient: a healthy compressor holds the session for a few seconds and
+    transient: a healthy compactor holds the session for a few seconds and
     the lock row carries its own ``expires_at``, so the write can simply wait
-    (see ``_execute_write``'s patience loop). The other case, a compressor
+    (see ``_execute_write``'s patience loop). The other case, a compactor
     discovering its own lease is gone, is permanent and must fail fast rather
     than spin out the whole patience budget.
 
-    Subclassing keeps every existing ``except CompressionSessionBusyError``
+    Subclassing keeps every existing ``except CompactionSessionBusyError``
     handler working unchanged.
     """
 
@@ -3044,15 +3044,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # wait out the full routine patience under contention. Sub-second budget;
     # a skipped write is retried naturally at the next heartbeat window.
     _ACTIVITY_WRITE_PATIENCE_S = 0.5
-    # A live compression lock gets its own, much shorter budget than the write
-    # lock. Compression publishes in a couple of seconds, so a brief wait saves
+    # A live compaction lock gets its own, much shorter budget than the write
+    # lock. Compaction publishes in a couple of seconds, so a brief wait saves
     # the overwhelming majority of concurrent turns (#75083). It deliberately
     # stays short: the lease is a correctness boundary, not just a busy signal
-    # (see test_compression_lease_blocks_non_owner_but_allows_owner_flush), so
+    # (see test_compaction_lease_blocks_non_owner_but_allows_owner_flush), so
     # a writer that is still locked out after this budget must still be
     # refused rather than allowed to land a stale turn in a session whose
-    # compression is genuinely long-running or wedged.
-    _COMPRESSION_BUSY_WAIT_S = 5.0
+    # compaction is genuinely long-running or wedged.
+    _COMPACTION_BUSY_WAIT_S = 5.0
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     _WRITE_RETRY_SLOW_AFTER_S = 2.0
@@ -3906,9 +3906,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
-        # Set on the first compression-busy collision so the short wait is
+        # Set on the first compaction-busy collision so the short wait is
         # measured from then, not from the start of the write.
-        compression_deadline: Optional[float] = None
+        compaction_deadline: Optional[float] = None
 
         # Transient engine-level error observed on contended WAL appends
         # (dual gateway/agent writers; FTS5 trigram sync holds the write
@@ -3940,24 +3940,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
                     self._try_incremental_merge_fts()
                 return result
-            except SessionCompressionInProgressError:
-                # A live foreign compression lock is transient: the compressor
+            except SessionCompactionInProgressError:
+                # A live foreign compaction lock is transient: the compactor
                 # publishes in a couple of seconds. Without any wait, a steer
-                # that lands mid-compression aborts the user's turn as
+                # that lands mid-compaction aborts the user's turn as
                 # session_persistence_failed and sends the operator hunting
                 # disk space that was never the problem (#75083).
                 #
-                # The budget is _COMPRESSION_BUSY_WAIT_S, not the write-lock
+                # The budget is _COMPACTION_BUSY_WAIT_S, not the write-lock
                 # patience: the lease is a correctness boundary, so a writer
                 # still locked out after a short wait must be refused rather
                 # than left to land a stale turn once a long-running or wedged
-                # compression finally lets go.
-                if compression_deadline is None:
-                    compression_deadline = min(
-                        time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline
+                # compaction finally lets go.
+                if compaction_deadline is None:
+                    compaction_deadline = min(
+                        time.monotonic() + self._COMPACTION_BUSY_WAIT_S, deadline
                     )
                 if self._sleep_before_write_retry(
-                    compression_deadline, self._COMPRESSION_BUSY_WAIT_S
+                    compaction_deadline, self._COMPACTION_BUSY_WAIT_S
                 ):
                     continue
                 raise
@@ -4466,18 +4466,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         switching to it (IDOR scoping — without them the ``sessions`` table has
         no chat/thread to compare).
 
-        When ``parent_session_id`` is set (compression fork, delegate/subagent
+        When ``parent_session_id`` is set (compaction fork, delegate/subagent
         spawn, branch continuation) and this row's own ``cwd``/``git_repo_root``/
         ``git_branch``/``profile_name`` are still NULL after the insert, they are
         backfilled from the parent row. Callers of ``create_session`` for a child
         session historically didn't propagate these fields themselves (e.g. the
-        compression-fork path), so a lineage could silently lose its working
+        compaction-fork path), so a lineage could silently lose its working
         directory and drop out of the project sidebar every time it forked
         (#64709), or lose its owning profile and be aggregated as "default" every
         time it rotated or branched (the cross-profile session-jump bug). This
         only fills NULLs — an explicit value on the child is never overwritten.
-        For compression forks specifically
-        (parent ended with ``end_reason='compression'``), the gateway origin
+        For compaction forks specifically
+        (parent ended with ``end_reason='compaction'``), the gateway origin
         columns (``user_id``/``session_key``/``chat_id``/``chat_type``/
         ``thread_id``/``display_name``/``origin_json``) are inherited too, so a
         crash before the gateway re-records the peer can't strand the child
@@ -4580,8 +4580,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # write leaves the child row without origin columns, so
                 # ``find_latest_gateway_session_for_peer`` can't recover the
                 # mapping on restart. Inherit them from the parent at creation
-                # time — but ONLY for compression forks (parent already ended
-                # with end_reason='compression'). Delegate/subagent children
+                # time — but ONLY for compaction forks (parent already ended
+                # with end_reason='compaction'). Delegate/subagent children
                 # are spawned while the parent is still live and must NOT
                 # inherit routing keys, or peer recovery could repoint gateway
                 # traffic into a subagent's session.
@@ -4612,7 +4612,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        AND EXISTS (
                            SELECT 1 FROM sessions p
                            WHERE p.id = sessions.parent_session_id
-                             AND p.end_reason = 'compression'
+                             AND p.end_reason = 'compaction'
                        )""",
                     (session_id,),
                 )
@@ -4638,7 +4638,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         thread_id: str = None,
         display_name: str = None,
         origin_json: str = None,
-        include_compression_ancestors: bool = False,
+        include_compaction_ancestors: bool = False,
     ) -> None:
         """Persist the gateway routing peer for an existing session row.
 
@@ -4648,7 +4648,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         sessions.json.  They are COALESCE'd only in the sense that ``None``
         leaves the existing value untouched.
 
-        ``include_compression_ancestors`` keeps a logical compression lineage
+        ``include_compaction_ancestors`` keeps a logical compaction lineage
         on one routing peer when an explicit gateway resume moves its tip to a
         different lane. Normal per-turn metadata refreshes update only the
         supplied row.
@@ -4669,16 +4669,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             lineage_cte = ""
             target_clause = "WHERE id = ?"
             query_params = []
-            if include_compression_ancestors:
+            if include_compaction_ancestors:
                 lineage_cte = """
-                    WITH RECURSIVE compression_lineage(id) AS (
+                    WITH RECURSIVE compaction_lineage(id) AS (
                         SELECT ?
                         UNION
                         SELECT parent.id
-                        FROM compression_lineage lineage
+                        FROM compaction_lineage lineage
                         JOIN sessions child ON child.id = lineage.id
                         JOIN sessions parent ON parent.id = child.parent_session_id
-                        WHERE parent.end_reason = 'compression'
+                        WHERE parent.end_reason = 'compaction'
                           AND json_extract(
                               COALESCE(child.model_config, '{}'),
                               '$._branched_from'
@@ -4690,7 +4690,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                           AND COALESCE(child.source, '') != 'tool'
                     )
                 """
-                target_clause = "WHERE id IN (SELECT id FROM compression_lineage)"
+                target_clause = "WHERE id IN (SELECT id FROM compaction_lineage)"
                 query_params.append(session_id)
             query_params.extend(
                 (
@@ -4704,7 +4704,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     origin_json,
                 )
             )
-            if not include_compression_ancestors:
+            if not include_compaction_ancestors:
                 query_params.append(session_id)
             conn.execute(
                 f"""{lineage_cte}
@@ -4721,7 +4721,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # between routing publication and row creation). Insert it with
             # the full identity so the session is durably routable — never
             # leave first-creation to an identity-less lazy writer.
-            if not include_compression_ancestors:
+            if not include_compaction_ancestors:
                 cur = conn.execute(
                     "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
                 )
@@ -5077,7 +5077,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cleanup's ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap``
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
-        compression splits are not.
+        compaction splits are not.
 
         Ordering and emptiness (#82616): candidates are ranked by actual
         conversation recency (``last_activity_at``, falling back to
@@ -5086,7 +5086,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         but an empty keyed row is still returned rather than ``None``:
         returning ``None`` mints a brand-new session id, which is a worse
         outcome than resuming an empty-but-correctly-keyed row (and "empty"
-        may just mean the transcript lives under a compression child).
+        may just mean the transcript lives under a compaction child).
 
         Reset boundaries fence recovery (#68539): an intentional boundary
         such as ``session_reset`` (or any explicit non-recoverable
@@ -5404,11 +5404,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
-    # Children that carry a ``parent_session_id`` but are NOT compression
+    # Children that carry a ``parent_session_id`` but are NOT compaction
     # continuations: branches, delegate/subagent runs, and tool sessions.
     # A marker only disqualifies a child when it points at the parent being
-    # queried — compression continuations inherit the rotated agent's
-    # ``model_config`` verbatim (``publish_compression_child`` callers pass
+    # queried — compaction continuations inherit the rotated agent's
+    # ``model_config`` verbatim (``publish_compaction_child`` callers pass
     # ``agent._session_init_model_config``), so a delegate subagent's
     # continuation carries ``_delegate_from=<the delegate's own parent>``.
     # Matching markers by mere presence misclassified those real
@@ -5422,12 +5422,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 
-    def find_live_compression_child(
+    def find_live_compaction_child(
         self, parent_session_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Return the unique live direct child of a compression-ended session.
+        """Return the unique live direct child of a compaction-ended session.
 
-        A stale agent may observe that another compression path already rotated
+        A stale agent may observe that another compaction path already rotated
         its parent. Recovery is safe only when the durable lineage identifies
         exactly one live direct continuation. Multiple children are treated as
         ambiguous and fail closed rather than guessing which transcript owns
@@ -5443,7 +5443,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if (
                 parent is None
                 or parent["ended_at"] is None
-                or parent["end_reason"] != "compression"
+                or parent["end_reason"] != "compaction"
             ):
                 return None
             rows = self._conn.execute(
@@ -5465,12 +5465,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
-    def reopen_orphaned_compression_session(self, session_id: str) -> bool:
-        """Reopen a compression parent only when no continuation was published.
+    def reopen_orphaned_compaction_session(self, session_id: str) -> bool:
+        """Reopen a compaction parent only when no continuation was published.
 
-        Compression publication is atomic in current builds, but older builds
+        Compaction publication is atomic in current builds, but older builds
         could leave a closed parent behind after an interrupted handoff.  This
-        recovery is deliberately conservative: an active compression lease or
+        recovery is deliberately conservative: an active compaction lease or
         any canonical child means the lineage is still owned by another path,
         so the caller must fail closed instead of reopening the parent.
         """
@@ -5485,7 +5485,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if (
                 parent is None
                 or parent["ended_at"] is None
-                or parent["end_reason"] != "compression"
+                or parent["end_reason"] != "compaction"
             ):
                 return False
 
@@ -5507,7 +5507,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if child is not None:
                 return False
 
-            # refresh_compression_lock() deliberately lets an owner revive its
+            # refresh_compaction_lock() deliberately lets an owner revive its
             # own expired row. Reclaim that row inside this write transaction
             # before reopening: refresh-first makes the lease active and aborts
             # recovery; recovery-first deletes the holder identity so a later
@@ -5533,7 +5533,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             updated = conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
                 "WHERE id = ? AND ended_at IS NOT NULL "
-                "AND end_reason = 'compression'",
+                "AND end_reason = 'compaction'",
                 (session_id,),
             )
             # rowcount==1 is guaranteed by the parent SELECT at the top of
@@ -5545,7 +5545,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return bool(self._execute_write(_do))
 
-    def publish_compression_child(
+    def publish_compaction_child(
         self,
         *,
         parent_session_id: str,
@@ -5557,23 +5557,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         system_prompt: str = None,
         cwd: str = None,
         profile_name: str = None,
-        compression_lock_holder: str = None,
-        require_compression_lease: bool = True,
+        compaction_lock_holder: str = None,
+        require_compaction_lease: bool = True,
         watermark: Optional[int] = None,
         watermark_ceiling: Optional[int] = None,
     ) -> None:
-        """Atomically close a parent and publish its durable compression child.
+        """Atomically close a parent and publish its durable compaction child.
 
         The parent closure, child row, and compacted handoff become visible in
         one transaction. Readers can therefore observe either the live parent or
         a complete child, never an ended parent with a missing/empty child.
 
         Concurrent-append safety (#75316): when *watermark* is provided (the
-        parent's :meth:`get_active_message_watermark` captured at compression
+        parent's :meth:`get_active_message_watermark` captured at compaction
         start), parent rows that arrived during the slow summary call
         (``id > watermark``) are cloned into the child AFTER the handoff —
         same pure-SQL column clone as :meth:`archive_and_compact`, with the
-        session id rewritten — so a mid-compression append survives rotation
+        session id rewritten — so a mid-compaction append survives rotation
         instead of stranding in the closed parent.
 
         *watermark_ceiling* bounds the clone from above: the rotation path
@@ -5589,14 +5589,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "SELECT holder, expires_at FROM compression_locks WHERE session_id = ?",
                 (parent_session_id,),
             ).fetchone()
-            if require_compression_lease and (
+            if require_compaction_lease and (
                 lock_row is None
-                or not compression_lock_holder
-                or lock_row["holder"] != compression_lock_holder
+                or not compaction_lock_holder
+                or lock_row["holder"] != compaction_lock_holder
                 or float(lock_row["expires_at"]) <= time.time()
             ):
-                raise CompressionSessionBusyError(
-                    f"Compression lease lost before publication: {parent_session_id}"
+                raise CompactionSessionBusyError(
+                    f"Compaction lease lost before publication: {parent_session_id}"
                 )
             parent = conn.execute(
                 """SELECT ended_at, cwd, git_branch, git_repo_root,
@@ -5606,11 +5606,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (parent_session_id,),
             ).fetchone()
             if parent is None:
-                raise RuntimeError(f"Compression parent not found: {parent_session_id}")
+                raise RuntimeError(f"Compaction parent not found: {parent_session_id}")
             if parent["ended_at"] is not None:
-                raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
+                raise RuntimeError(f"Compaction parent already ended: {parent_session_id}")
             if not messages:
-                raise RuntimeError("Compression child handoff must not be empty")
+                raise RuntimeError("Compaction child handoff must not be empty")
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
 
             conn.execute(
@@ -5632,7 +5632,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     parent["git_branch"],
                     parent["git_repo_root"],
                     # Same inheritance contract as _insert_session_row's
-                    # compression-fork backfill (#59527 / cross-profile jump
+                    # compaction-fork backfill (#59527 / cross-profile jump
                     # fix): the child stays on the parent's profile and keeps
                     # the gateway routing/origin columns so peer recovery
                     # still works after a crash at the boundary.
@@ -5694,13 +5694,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (total_messages, total_tool_calls, child_session_id),
             )
             updated = conn.execute(
-                "UPDATE sessions SET ended_at = ?, end_reason = 'compression' "
+                "UPDATE sessions SET ended_at = ?, end_reason = 'compaction' "
                 "WHERE id = ? AND ended_at IS NULL",
                 (time.time(), parent_session_id),
             )
             if updated.rowcount != 1:
                 raise RuntimeError(
-                    f"Compression parent changed during publication: {parent_session_id}"
+                    f"Compaction parent changed during publication: {parent_session_id}"
                 )
 
         self._execute_write(_do)
@@ -5709,7 +5709,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Mark a session as ended.
 
         No-ops when the session is already ended. The first end_reason wins:
-        compression-split sessions must keep their ``end_reason = 'compression'``
+        compaction-split sessions must keep their ``end_reason = 'compaction'``
         record even if a later stale ``end_session()`` call (e.g. from a
         desynced CLI session_id after ``/resume`` or ``/branch``) targets them
         with a different reason. Use ``reopen_session()`` first if you
@@ -5760,7 +5760,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (``find_latest_gateway_session_for_peer``) treats as recoverable:
         ``agent_close`` (older gateway cleanup bug) and ``ws_orphan_reap``
         (mistaken TUI reaper).  Explicit conversation boundaries such as
-        ``compression``, ``session_reset``, ``session_switch``, etc. are
+        ``compaction``, ``session_reset``, ``session_switch``, etc. are
         preserved — the first writer wins for those, and a later expiry
         finalization must not silently overwrite them.
 
@@ -5941,13 +5941,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
-    def record_compression_failure_cooldown(
+    def record_compaction_failure_cooldown(
         self,
         session_id: str,
         cooldown_until: float,
         error: Optional[str] = None,
     ) -> None:
-        """Persist the active compression-failure cooldown for a session."""
+        """Persist the active compaction-failure cooldown for a session."""
         if not session_id:
             return
 
@@ -5962,15 +5962,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._execute_write(_do)
         except sqlite3.Error as exc:
             logger.warning(
-                "record_compression_failure_cooldown(%s) failed: %s",
+                "record_compaction_failure_cooldown(%s) failed: %s",
                 session_id, exc,
             )
 
-    def get_compression_failure_cooldown(
+    def get_compaction_failure_cooldown(
         self,
         session_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Return the active compression-failure cooldown for ``session_id``."""
+        """Return the active compaction-failure cooldown for ``session_id``."""
         if not session_id:
             return None
         now = time.time()
@@ -6003,13 +6003,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "error": error,
         }
 
-    def get_compression_failure_cooldown_row(
+    def get_compaction_failure_cooldown_row(
         self,
         session_id: str,
     ) -> Dict[str, Any]:
         """Return the exact stored cooldown columns without expiry filtering.
 
-        Compression cancellation uses this under its session lease so rollback
+        Compaction cancellation uses this under its session lease so rollback
         can preserve an expired row, a partially-null row, or an absent session
         exactly instead of converting those states through the active-cooldown
         API.
@@ -6042,7 +6042,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "error": error,
         }
 
-    def restore_compression_failure_cooldown_row(
+    def restore_compaction_failure_cooldown_row(
         self,
         session_id: str,
         snapshot: Dict[str, Any],
@@ -6055,10 +6055,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         expected_exists = bool(snapshot.get("session_exists", False))
         if not expected_exists:
-            actual = self.get_compression_failure_cooldown_row(session_id)
+            actual = self.get_compaction_failure_cooldown_row(session_id)
             if actual.get("session_exists", False):
                 raise RuntimeError(
-                    "cannot restore absent compression cooldown row: session now exists"
+                    "cannot restore absent compaction cooldown row: session now exists"
                 )
             return
 
@@ -6073,11 +6073,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(
-                    f"compression cooldown rollback session missing: {session_id}"
+                    f"compaction cooldown rollback session missing: {session_id}"
                 )
 
         self._execute_write(_do)
-        actual = self.get_compression_failure_cooldown_row(session_id)
+        actual = self.get_compaction_failure_cooldown_row(session_id)
         expected = {
             "session_exists": True,
             "cooldown_until": float(deadline) if deadline is not None else None,
@@ -6085,12 +6085,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         }
         if actual != expected:
             raise RuntimeError(
-                f"compression cooldown rollback verification failed: "
+                f"compaction cooldown rollback verification failed: "
                 f"expected={expected!r}, actual={actual!r}"
             )
 
-    def clear_compression_failure_cooldown(self, session_id: str) -> None:
-        """Clear any persisted compression-failure cooldown for a session."""
+    def clear_compaction_failure_cooldown(self, session_id: str) -> None:
+        """Clear any persisted compaction-failure cooldown for a session."""
         if not session_id:
             return
 
@@ -6105,11 +6105,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._execute_write(_do)
         except sqlite3.Error as exc:
             logger.warning(
-                "clear_compression_failure_cooldown(%s) failed: %s",
+                "clear_compaction_failure_cooldown(%s) failed: %s",
                 session_id, exc,
             )
 
-    def get_compression_fallback_streak(self, session_id: str) -> int:
+    def get_compaction_fallback_streak(self, session_id: str) -> int:
         """Return the persisted deterministic-fallback streak."""
         if not session_id:
             return 0
@@ -6133,7 +6133,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except (TypeError, ValueError):
             return 0
 
-    def set_compression_fallback_streak(self, session_id: str, streak: int) -> None:
+    def set_compaction_fallback_streak(self, session_id: str, streak: int) -> None:
         """Persist the deterministic-fallback streak for one session."""
         if not session_id:
             return
@@ -6183,12 +6183,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
-    def get_compression_ineffective_count(self, session_id: str) -> int:
+    def get_compaction_ineffective_count(self, session_id: str) -> int:
         """Return the persisted ineffective-compaction strike count.
 
-        Mirrors ``get_compression_fallback_streak``: this is the durable half
-        of the anti-thrash guard (``_ineffective_compression_count`` on the
-        built-in compressor), persisted so that a fresh compressor bound to a
+        Mirrors ``get_compaction_fallback_streak``: this is the durable half
+        of the anti-thrash guard (``_ineffective_compaction_count`` on the
+        built-in compactor), persisted so that a fresh compactor bound to a
         resumed session inherits an armed/tripped guard instead of starting
         from zero across process restarts (#54923).
         """
@@ -6214,7 +6214,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except (TypeError, ValueError):
             return 0
 
-    def set_compression_ineffective_count(self, session_id: str, count: int) -> None:
+    def set_compaction_ineffective_count(self, session_id: str, count: int) -> None:
         """Persist the ineffective-compaction strike count for one session."""
         if not session_id:
             return
@@ -6229,16 +6229,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     # ──────────────────────────────────────────────────────────────────────
-    # Compression locks
+    # Compaction locks
     # ──────────────────────────────────────────────────────────────────────
-    # Atomic per-session locks that prevent two compression paths from
+    # Atomic per-session locks that prevent two compaction paths from
     # racing on the same session_id and producing orphan child sessions.
     #
-    # The race: ``conversation_compression.py`` rotates ``agent.session_id``
-    # as a side effect of a successful compression (end old session, create
+    # The race: ``conversation_compaction.py`` rotates ``agent.session_id``
+    # as a side effect of a successful compaction (end old session, create
     # new). That mutation is local to the AIAgent instance — but ``state.db``
     # is shared across all instances. Two AIAgents that share the same
-    # ``session_id`` at the moment they both decide to compress (most
+    # ``session_id`` at the moment they both decide to compact (most
     # commonly the parent turn's agent + a background-review fork started
     # right after the turn ended) each end the parent and create their own
     # NEW session, parented to the same old id. The gateway SessionEntry
@@ -6246,16 +6246,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # writes — Damien's "parent → two orphan children" repro shape.
     #
     # The lock is keyed by ``session_id`` and is held for the duration of
-    # the compress() call plus the rotation. ``holder`` identifies the
+    # the compact() call plus the rotation. ``holder`` identifies the
     # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
     # via ``expires_at`` if the holder process crashed without releasing.
-    def refresh_compression_lock(
+    def refresh_compaction_lock(
         self,
         session_id: str,
         holder: str,
         ttl_seconds: float = 300.0,
     ) -> bool:
-        """Extend the compression lock lease if ``holder`` still owns it.
+        """Extend the compaction lock lease if ``holder`` still owns it.
 
         Ownership is decided by the ``holder`` column alone, deliberately NOT
         by ``expires_at``: a live owner whose refresher thread was starved
@@ -6263,12 +6263,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         retry budget) past its own TTL must be able to revive its still-unclaimed
         row on the next tick. Requiring ``expires_at >= now`` here made such a
         stall permanent — every later refresh matched 0 rows, so the owner kept
-        compressing and rotating with no lease at all, which is exactly the
+        compacting and rotating with no lease at all, which is exactly the
         unprotected window a competing path can fork the session lineage in.
 
         This does not resurrect a lock somebody else already took: SQLite
         serialises writes, so a reclaim (DELETE-expired + INSERT-or-IGNORE in
-        :meth:`try_acquire_compression_lock`) and this UPDATE never interleave.
+        :meth:`try_acquire_compaction_lock`) and this UPDATE never interleave.
         Reclaim-first replaces ``holder``, so this UPDATE matches nothing and
         returns False; refresh-first pushes ``expires_at`` into the future, so
         the reclaimer's DELETE-expired matches nothing and its acquire fails.
@@ -6290,28 +6290,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return bool(self._execute_write(_do))
         except sqlite3.Error as exc:
             logger.warning(
-                "refresh_compression_lock(%s) failed: %s",
+                "refresh_compaction_lock(%s) failed: %s",
                 session_id, exc,
             )
             return False
 
-    def try_acquire_compression_lock(
+    def try_acquire_compaction_lock(
         self,
         session_id: str,
         holder: str,
         ttl_seconds: float = 300.0,
     ) -> bool:
-        """Try to atomically acquire the compression lock for ``session_id``.
+        """Try to atomically acquire the compaction lock for ``session_id``.
 
         Returns ``True`` on success (caller now owns the lock and must
-        release via :meth:`release_compression_lock`).  Returns ``False``
+        release via :meth:`release_compaction_lock`).  Returns ``False``
         if another holder already owns a non-expired lock — the caller
-        MUST NOT proceed with compression in that case (its rotation would
+        MUST NOT proceed with compaction in that case (its rotation would
         race against the holder's, splitting the session lineage).
 
         Expired locks (``expires_at < now``) are reclaimed transparently.
         Structured holders whose local ``pid=`` no longer exists are reclaimed
-        immediately, so a gateway killed during compression does not stall the
+        immediately, so a gateway killed during compaction does not stall the
         replacement process for the full lease TTL.
 
         Implementation: single-transaction DELETE-expired + INSERT-or-IGNORE,
@@ -6339,7 +6339,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 if (
                     current_expires_at < now
-                    or _compression_lock_holder_process_is_dead(current_holder)
+                    or _compaction_lock_holder_process_is_dead(current_holder)
                 ):
                     conn.execute(
                         "DELETE FROM compression_locks "
@@ -6368,7 +6368,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             acquired, reclaimed_holder = self._execute_write(_do)
             if reclaimed_holder:
                 logger.warning(
-                    "Reclaimed stale compression lock for session=%s "
+                    "Reclaimed stale compaction lock for session=%s "
                     "(holder=%s)",
                     session_id,
                     reclaimed_holder,
@@ -6376,19 +6376,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return bool(acquired)
         except sqlite3.Error as exc:
             logger.warning(
-                "try_acquire_compression_lock(%s) failed: %s",
+                "try_acquire_compaction_lock(%s) failed: %s",
                 session_id, exc,
             )
-            # Fail open: returning False makes the caller skip compression,
+            # Fail open: returning False makes the caller skip compaction,
             # which is the safe behaviour when the lock subsystem is broken.
             return False
 
-    def release_compression_lock(self, session_id: str, holder: str) -> None:
-        """Release the compression lock for ``session_id`` iff we own it.
+    def release_compaction_lock(self, session_id: str, holder: str) -> None:
+        """Release the compaction lock for ``session_id`` iff we own it.
 
         Idempotent: no-op when the lock has already expired and been
         reclaimed by a different holder, or when no lock exists. The
-        ``holder`` check prevents a late-returning compressor from
+        ``holder`` check prevents a late-returning compactor from
         clobbering a fresh lock held by someone else.
         """
         if not session_id:
@@ -6405,12 +6405,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._execute_write(_do)
         except sqlite3.Error as exc:
             logger.warning(
-                "release_compression_lock(%s) failed: %s",
+                "release_compaction_lock(%s) failed: %s",
                 session_id, exc,
             )
 
     def _session_turn_lease_key_on_conn(self, conn, session_id: str) -> str:
-        """Walk compression parents on ``conn`` to the conversation lease key.
+        """Walk compaction parents on ``conn`` to the conversation lease key.
 
         Must run on the same connection as the lease INSERT/UPDATE/DELETE.
         A prior ``get_session`` failure must not compute a child id that the
@@ -6441,14 +6441,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ):
                 break
             parent = _row(parent_id)
-            if not parent or parent.get("end_reason") != "compression":
+            if not parent or parent.get("end_reason") != "compaction":
                 break
             seen.add(parent_id)
             current = parent
         return str(current.get("id") or session_id) if current else session_id
 
     def _session_turn_lease_key(self, session_id: str) -> str:
-        """Return the stable serialization key for every compression segment.
+        """Return the stable serialization key for every compaction segment.
 
         Acquire/refresh/release resolve this inside their write transaction.
         This helper is for tests and diagnostics; it does not swallow lock
@@ -6470,7 +6470,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation.
 
-        Compression rotates a session into child segments, so the durable key
+        Compaction rotates a session into child segments, so the durable key
         is the lineage root rather than the current segment id. The walk and
         INSERT share one write transaction. Expired leases and leases whose
         structured local holder PID is known dead are reclaimed in that same
@@ -6492,7 +6492,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 current_holder = row["holder"]
                 if (
                     float(row["expires_at"]) <= now
-                    or _compression_lock_holder_process_is_dead(current_holder)
+                    or _compaction_lock_holder_process_is_dead(current_holder)
                 ):
                     conn.execute(
                         "DELETE FROM session_turn_leases "
@@ -6560,7 +6560,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ):
                     return True
             except sqlite3.Error as exc:
-                # Long holder transactions (compression publish, large
+                # Long holder transactions (compaction publish, large
                 # flushes) can exhaust a single write-patience budget.
                 # Keep polling until wait_seconds or should_abort.
                 if classify_persistence_error(exc) != "locked":
@@ -6624,7 +6624,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
-    def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
+    def get_compaction_lock_holder(self, session_id: str) -> Optional[str]:
         """Return the current (non-expired) holder for ``session_id``, or None.
 
         Diagnostic helper — not used by the locking protocol itself.
@@ -6694,7 +6694,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Keeps ``last_activity_at`` intact so idle / watchdog clocks stay
         continuous. Description and provenance are observation labels for
         *what was happening at* that timestamp during an active turn; once
-        the turn is idle they must not keep advertising "compressing" /
+        the turn is idle they must not keep advertising "compacting" /
         "executing tool" (#72039).
 
         Response-critical-path contract (#76354 review S1): runs in the
@@ -7580,7 +7580,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         ``task`` distinguishes what kind of work consumed the tokens:
         ``''`` (empty) is the main agent loop; auxiliary calls record their
-        task name (``vision``, ``compression``, ``title_generation``, ...)
+        task name (``vision``, ``compaction``, ``title_generation``, ...)
         via :meth:`record_auxiliary_usage` (issue #23270).
         """
         row = conn.execute(
@@ -7680,7 +7680,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> None:
         """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
 
-        Auxiliary calls (vision, compression, title_generation, web_extract,
+        Auxiliary calls (vision, compaction, title_generation, web_extract,
         session_search, ...) historically discarded their usage, leaving the
         dashboard's per-model analytics blind to aux model spend. This writes
         a per-(model, provider, task) delta into ``session_model_usage`` —
@@ -7759,13 +7759,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
-    def finalize_orphaned_compression_sessions(self) -> int:
-        """Mark orphaned compression continuation sessions as ended.
+    def finalize_orphaned_compaction_sessions(self) -> int:
+        """Mark orphaned compaction continuation sessions as ended.
 
         Targets child sessions that were never finalized: parent is ended
-        with reason='compression', child has messages but no end_reason/ended_at
+        with reason='compaction', child has messages but no end_reason/ended_at
         and api_call_count=0.  Non-destructive: preserves all messages and sets
-        end_reason='orphaned_compression'.  Fix for #20001.
+        end_reason='orphaned_compaction'.  Fix for #20001.
         """
         cutoff = time.time() - 604800  # 7 days
 
@@ -7775,7 +7775,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
                 UPDATE sessions
                 SET ended_at = ?,
-                    end_reason = 'orphaned_compression'
+                    end_reason = 'orphaned_compaction'
                 WHERE api_call_count = 0
                   AND end_reason IS NULL
                   AND ended_at IS NULL
@@ -7784,7 +7784,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND EXISTS (
                       SELECT 1 FROM sessions p
                       WHERE p.id = sessions.parent_session_id
-                        AND p.end_reason = 'compression'
+                        AND p.end_reason = 'compaction'
                         AND p.ended_at IS NOT NULL
                   )
                   AND EXISTS (
@@ -7945,16 +7945,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return cleaned
 
-    def _is_compression_ancestor(
+    def _is_compaction_ancestor(
         self, conn, *, ancestor_id: str, descendant_id: str
     ) -> bool:
-        """Return True if *ancestor_id* is a compression predecessor of
+        """Return True if *ancestor_id* is a compaction predecessor of
         *descendant_id* (walking parent links up the continuation chain).
 
         The continuation edge is the canonical one shared with
         :func:`_ephemeral_child_sql` / :meth:`set_session_archived`
-        (``_COMPRESSION_CHILD_SQL``): a parent → child edge counts only when the
-        parent ended with ``end_reason = 'compression'`` and the child started
+        (``_COMPACTION_CHILD_SQL``): a parent → child edge counts only when the
+        parent ended with ``end_reason = 'compaction'`` and the child started
         at or after the parent's ``ended_at``, which distinguishes continuations
         from delegate subagents / branch children that also carry a
         ``parent_session_id``. Expressed as a single recursive CTE rather than a
@@ -7962,9 +7962,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
             return False
-        # Walk parent links up from the descendant, following only compression
+        # Walk parent links up from the descendant, following only compaction
         # continuation edges, and check whether ancestor_id is reached.
-        edge = _COMPRESSION_CHILD_SQL.format(a="child")
+        edge = _COMPACTION_CHILD_SQL.format(a="child")
         row = conn.execute(
             f"""
             WITH RECURSIVE ancestors(id) AS (
@@ -8027,8 +8027,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 conflict = cursor.fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
-                    # A compression continuation is the live, projected-forward
-                    # head of its conversation; its compressed predecessors are
+                    # A compaction continuation is the live, projected-forward
+                    # head of its conversation; its compacted predecessors are
                     # ended and hidden from the session list (list_sessions_rich
                     # projects roots → tip). When the title that "conflicts" is
                     # held by such a hidden ancestor, the user has no way to free
@@ -8038,7 +8038,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     # onto the continuation. Uniqueness is preserved (still only
                     # one session carries the exact title) and the parent-link
                     # lineage is untouched.
-                    if self._is_compression_ancestor(
+                    if self._is_compaction_ancestor(
                         conn, ancestor_id=conflict_id, descendant_id=session_id
                     ):
                         conn.execute(
@@ -8128,7 +8128,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def set_session_title_source(self, session_id: str, source: str) -> bool:
         """Overwrite a title's provenance without touching the title text.
 
-        Used when a title is carried across a session boundary (compression
+        Used when a title is carried across a session boundary (compaction
         rotation) and the copy must keep the original's authority rather than
         the authority of whichever setter performed the copy.
         """
@@ -8149,8 +8149,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Archive or unarchive a session.
 
         Archived sessions are hidden from the default session list but keep all
-        their messages — this is a soft hide, not a delete. For compression
-        chains, archive the whole logical conversation. Desktop lists compression
+        their messages — this is a soft hide, not a delete. For compaction
+        chains, archive the whole logical conversation. Desktop lists compaction
         roots projected forward to their latest continuation; updating only the
         displayed tip lets the still-unarchived root resurrect it on refresh.
         Returns True when at least one row was updated.
@@ -8166,7 +8166,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8175,7 +8175,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8196,13 +8196,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return rowcount > 0
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
-        """Pin or unpin a session (and its whole compression lineage).
+        """Pin or unpin a session (and its whole compaction lineage).
 
         ``pinned`` is a durable "keep" flag: pinned sessions are exempt from
         the ``sessions.auto_archive`` stale sweep (see
         :meth:`archive_stale_sessions`). Desktop is the current writer — its
         sidebar pins mirror here so a backend/other-surface sweep honours
-        them. Like :meth:`set_session_archived` the whole compression chain is
+        them. Like :meth:`set_session_archived` the whole compaction chain is
         flipped as a unit, so pinning the surfaced tip protects the root (and
         vice-versa) no matter which id the caller holds. Returns True when at
         least one row changed.
@@ -8218,7 +8218,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8227,7 +8227,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8248,7 +8248,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return rowcount > 0
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
-        """Hide or unhide a session (and its whole compression lineage).
+        """Hide or unhide a session (and its whole compaction lineage).
 
         ``hidden`` is a generic "don't show in the global Sessions sidebar"
         flag: a hidden session is dropped from the default
@@ -8256,7 +8256,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         stays fully resumable by the surface that owns it — useful for plugins
         that manage their own sessions (e.g. kanban) and don't want them
         cluttering the shared recents list. Like :meth:`set_session_archived`
-        / :meth:`set_session_pinned` the whole compression chain is flipped as
+        / :meth:`set_session_pinned` the whole compaction chain is flipped as
         a unit, so hiding the surfaced tip hides the root (and vice-versa) no
         matter which id the caller holds. Returns True when at least one row
         changed.
@@ -8272,7 +8272,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8281,7 +8281,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8302,7 +8302,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return rowcount > 0
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
-        """Mark a session read or unread (and its whole compression lineage).
+        """Mark a session read or unread (and its whole compaction lineage).
 
         Read state is a watermark, not a flag: ``last_read_at`` records when
         the conversation was last read, and it counts as unread when activity
@@ -8317,7 +8317,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         * timestamp — read up to that moment.
 
         Like :meth:`set_session_archived` / :meth:`set_session_pinned`, the
-        whole compression chain is stamped as a unit, so reading the surfaced
+        whole compaction chain is stamped as a unit, so reading the surfaced
         tip clears the root (and vice-versa) no matter which id the caller
         holds. Returns True when at least one row changed.
         """
@@ -8332,7 +8332,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM ancestors a
                     JOIN sessions child ON child.id = a.id
                     JOIN sessions parent ON parent.id = child.parent_session_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   descendants(id) AS (
                     SELECT ?
@@ -8341,7 +8341,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM descendants d
                     JOIN sessions parent ON parent.id = d.id
                     JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                   ),
                   lineage(id) AS (
                     SELECT id FROM ancestors
@@ -8453,30 +8453,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
-        """Walk the compression-continuation chain forward and return the tip.
+    def get_compaction_tip(self, session_id: str) -> Optional[str]:
+        """Walk the compaction-continuation chain forward and return the tip.
 
-        A compression continuation is a child of a session whose
-        ``end_reason = 'compression'``.  Older builds tried to distinguish
+        A compaction continuation is a child of a session whose
+        ``end_reason = 'compaction'``.  Older builds tried to distinguish
         continuations from branches/subagents by requiring
         ``child.started_at >= parent.ended_at``.  That ordering is too brittle:
-        gateway + compression races can insert the real continuation row before
+        gateway + compaction races can insert the real continuation row before
         the parent row's ``ended_at`` is written, while a stale websocket later
         creates/reuses a sibling that *does* satisfy the timestamp test.  The
         visible symptom is brutal: desktop resume follows the stale sibling and
         the user's latest messages look "lost" even though they are persisted in
         the real continuation chain.
 
-        Instead, only follow children of compression-ended parents, exclude
+        Instead, only follow children of compaction-ended parents, exclude
         explicit branch/delegate/tool children, and prefer children that are
-        themselves continuing the compression chain (``end_reason='compression'``)
+        themselves continuing the compaction chain (``end_reason='compaction'``)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
         continuation exists.
         """
         current = session_id
         seen = {current} if current else set()
-        # Bound the walk defensively — compression chains this deep are
+        # Bound the walk defensively — compaction chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
             with self._lock:
@@ -8486,13 +8486,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
+                      AND parent.end_reason = 'compaction'
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
-                        WHEN child.end_reason = 'compression' THEN 0
+                        WHEN child.end_reason = 'compaction' THEN 0
                         WHEN child.ended_at IS NULL THEN 1
                         ELSE 2
                       END,
@@ -8563,7 +8563,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         offset: int = 0,
         include_children: bool = False,
         min_message_count: int = 0,
-        project_compression_tips: bool = True,
+        project_compaction_tips: bool = True,
         order_by_last_active: bool = False,
         include_archived: bool = False,
         archived_only: bool = False,
@@ -8584,29 +8584,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Uses a single query with correlated subqueries instead of N+2 queries.
 
         By default, child sessions that represent implementation details
-        (subagent runs, compression continuations) are excluded. User-visible
+        (subagent runs, compaction continuations) are excluded. User-visible
         branch and reset children remain listable. Pass ``include_children=True``
         to include every child.
 
-        With ``project_compression_tips=True`` (default), sessions that are
-        roots of compression chains are projected forward to their latest
+        With ``project_compaction_tips=True`` (default), sessions that are
+        roots of compaction chains are projected forward to their latest
         continuation — one logical conversation = one list entry, showing the
         live continuation's id/message_count/title/last_active. This prevents
-        compressed continuations from being invisible to users while keeping
+        compacted continuations from being invisible to users while keeping
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
 
         Pass ``order_by_last_active=True`` to sort by most-recent activity
-        instead of original conversation start time. For compression chains,
+        instead of original conversation start time. For compaction chains,
         the "most-recent activity" is taken from the live tip (not the root),
-        so an old conversation that was compressed and continued recently
+        so an old conversation that was compacted and continued recently
         surfaces in the correct slot. Ordering is computed at SQL level via
-        a recursive CTE that walks compression-continuation edges, so LIMIT
+        a recursive CTE that walks compaction-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
 
         ``search_query`` matches case-insensitive substrings against each
         surfaced row's title and id (and, like ``id_query``, every title/id in
-        its forward compression chain). A punctuation-stripped variant is also
+        its forward compaction chain). A punctuation-stripped variant is also
         matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
         ``order_by_last_active`` path.
 
@@ -8636,7 +8636,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         if not include_children:
             # Show roots and user-visible branch/reset sessions, while still
-            # hiding sub-agent runs and compression continuations. All four
+            # hiding sub-agent runs and compaction continuations. All four
             # carry parent_session_id, so the shared predicate classifies the
             # edge from stable markers plus legacy-compatible parent metadata.
             #
@@ -8695,7 +8695,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # session-id search) don't have to fetch every row and filter in
         # Python. ``id_query`` is matched as a case-insensitive substring
         # against each surfaced row's id AND every id in its forward
-        # compression chain — so searching a compression *root* id or a *tip*
+        # compaction chain — so searching a compaction *root* id or a *tip*
         # id both resolve to the same projected conversation. Only used in the
         # order_by_last_active path (which builds the chain CTE); other callers
         # pass id_query=None.
@@ -8703,14 +8703,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         search_needle = (search_query or "").strip().lower()
         if order_by_last_active:
             # Compute effective_last_active by walking each surfaced session's
-            # compression-continuation chain forward in SQL and taking the MAX
+            # compaction-continuation chain forward in SQL and taking the MAX
             # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
             # level instead of fetching every row and sorting in Python, while
-            # still surfacing old compression roots whose live tip is fresh.
+            # still surfacing old compaction roots whose live tip is fresh.
             #
             # The CTE seeds from rows the outer WHERE admits (roots +
             # user-visible branch/reset children), then recursively joins through
-            # compression-continuation edges. Do NOT require
+            # compaction-continuation edges. Do NOT require
             # child.started_at >= parent.ended_at here: real desktop/gateway
             # races can insert the continuation row before the parent's
             # ended_at is written, while stale websocket siblings may satisfy
@@ -8724,7 +8724,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
-                # compression chain matches the needle. LIKE with a leading
+                # compaction chain matches the needle. LIKE with a leading
                 # wildcard can't use an index, but the chain membership and
                 # the small result set keep this bounded — far cheaper than
                 # fetching every session and scanning in Python.
@@ -8771,7 +8771,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason = 'compaction'
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
@@ -8834,7 +8834,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             sessions.append(s)
 
         # Back-fill pinned conversations the page missed. A pin outlives
-        # recency, so this runs BEFORE compression projection below — a
+        # recency, so this runs BEFORE compaction projection below — a
         # back-filled root then projects to its live tip exactly like a row
         # that had made the page on its own. One extra query, bounded by the
         # number of pins (a handful), never N+1 per pin.
@@ -8873,23 +8873,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 seen_ids.add(s["id"])
                 sessions.append(s)
 
-        # Project compression roots forward to their tips. Each row whose
-        # end_reason is 'compression' has a continuation child; replace the
+        # Project compaction roots forward to their tips. Each row whose
+        # end_reason is 'compaction' has a continuation child; replace the
         # surfaced fields (id, message_count, title, last_active, ended_at,
         # end_reason, preview) with the tip's values so the list entry acts
         # as the live conversation. Keep the root's started_at to preserve
         # chronological ordering by original conversation start.
-        if project_compression_tips and not include_children:
-            # get_compression_tip() walks each root's chain individually (it's
+        if project_compaction_tips and not include_children:
+            # get_compaction_tip() walks each root's chain individually (it's
             # a per-session graph walk, not batchable in one query), but the
             # tip *row* fetch afterward was previously one _get_session_rich_row()
-            # call per compression root. Batch that half instead: resolve
+            # call per compaction root. Batch that half instead: resolve
             # every tip id first, then fetch all tip rows in a single query.
             tip_ids_by_root: Dict[str, str] = {}
             for s in sessions:
-                if s.get("end_reason") != "compression":
+                if s.get("end_reason") != "compaction":
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                tip_id = self.get_compaction_tip(s["id"])
                 if tip_id != s["id"]:
                     tip_ids_by_root[s["id"]] = tip_id
 
@@ -9070,7 +9070,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         conn,
         session_id: str,
-        compression_lock_holder: Optional[str],
+        compaction_lock_holder: Optional[str],
         turn_lease_holder: Optional[str] = None,
         turn_lease_ttl_seconds: float = 300.0,
     ) -> None:
@@ -9082,10 +9082,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         patience note below).
         """
         # NOTE (#75316 redesign): appends do NOT check compression_locks.
-        # The lock's job is to stop two COMPRESSIONS colliding, not to fence
-        # ordinary transcript writes. Concurrent appends during a compression
+        # The lock's job is to stop two COMPACTIONS colliding, not to fence
+        # ordinary transcript writes. Concurrent appends during a compaction
         # are safe by construction: archive_and_compact() commits against a
-        # watermark captured at compression start and clones every row that
+        # watermark captured at compaction start and clones every row that
         # arrived after it back into the live transcript, in the same write
         # transaction. Blocking appends here was the root cause of a whole
         # symptom family — turns dying as session_persistence_failed while a
@@ -9125,9 +9125,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if (
             session is not None
             and session["ended_at"] is not None
-            and session["end_reason"] == "compression"
+            and session["end_reason"] == "compaction"
         ):
-            raise CompressionSessionClosedError(session_id)
+            raise CompactionSessionClosedError(session_id)
 
     @staticmethod
     def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
@@ -9196,7 +9196,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         api_content: Optional[str] = None,
         display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None,
-        compression_lock_holder: Optional[str] = None,
+        compaction_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None,
         turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
@@ -9259,7 +9259,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._check_transcript_write_guards(
                 conn,
                 session_id,
-                compression_lock_holder,
+                compaction_lock_holder,
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
@@ -9322,7 +9322,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-        compression_lock_holder: Optional[str] = None,
+        compaction_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None,
         chunk_rows: Optional[int] = None,
         turn_lease_ttl_seconds: float = 300.0,
@@ -9363,7 +9363,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 inserted_total += self.append_messages_batch(
                     session_id,
                     messages[start:start + chunk_rows],
-                    compression_lock_holder=compression_lock_holder,
+                    compaction_lock_holder=compaction_lock_holder,
                     turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds,
                 )
@@ -9373,7 +9373,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._check_transcript_write_guards(
                 conn,
                 session_id,
-                compression_lock_holder,
+                compaction_lock_holder,
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
@@ -9786,9 +9786,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if (
                 session is not None
                 and session["ended_at"] is not None
-                and session["end_reason"] == "compression"
+                and session["end_reason"] == "compaction"
             ):
-                raise CompressionSessionClosedError(session_id)
+                raise CompactionSessionClosedError(session_id)
             if archive_dropped:
                 # Content-preserving UPDATE: the rows keep their FTS entries
                 # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
@@ -9835,9 +9835,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return cursor.fetchone() is not None
 
     def get_active_message_watermark(self, session_id: str) -> int:
-        """MAX(id) of the session's active rows — the compression watermark.
+        """MAX(id) of the session's active rows — the compaction watermark.
 
-        Captured at compression START (before the slow provider summary call).
+        Captured at compaction START (before the slow provider summary call).
         Every active row with ``id > watermark`` at commit time arrived
         concurrently and must survive the compaction verbatim. Returns 0 for
         an empty/unknown session.
@@ -9880,7 +9880,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           recoverable via get_messages(..., include_inactive=True).
 
         Concurrent-append safety (#75316): when *watermark* is provided (the
-        value of :meth:`get_active_message_watermark` captured at compression
+        value of :meth:`get_active_message_watermark` captured at compaction
         START), rows that arrived during the slow provider summary call
         (``id > watermark``) are NOT summarized away. They are re-sequenced
         after the compacted set by a pure-SQL column clone (every column
@@ -9893,8 +9893,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         behavior.
 
         Commit-fence safety: when *lock_holder* is provided, the commit
-        verifies INSIDE the transaction that the compression lock is still
-        held by that holder and unexpired — a compression whose lease was
+        verifies INSIDE the transaction that the compaction lock is still
+        held by that holder and unexpired — a compaction whose lease was
         reclaimed (crash cleanup, TTL expiry, competing writer) fails the
         commit instead of clobbering the winner's transcript.
 
@@ -9916,15 +9916,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     or lock_row["holder"] != lock_holder
                     or float(lock_row["expires_at"]) <= time.time()
                 ):
-                    raise SessionCompressionInProgressError(
-                        f"Compression lease for {session_id!r} lost before "
+                    raise SessionCompactionInProgressError(
+                        f"Compaction lease for {session_id!r} lost before "
                         "commit; refusing to publish a stale compaction"
                     )
 
             patched_model_config = None
             if model_config_patch is not None:
                 # on_missing="raise": a prune/compaction must not commit
-                # against a vanished session row (the compressor's caller
+                # against a vanished session row (the compactor's caller
                 # converts the raised error into a safe keep-the-original
                 # no-op), unlike the flag setters which tolerate missing rows.
                 patched_model_config = self._merge_model_config_json(
@@ -10283,42 +10283,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def resolve_resume_session_id(self, session_id: str) -> str:
         """Redirect a resume target to the descendant session that holds the messages.
 
-        Context compression ends the current session and forks a new child session
+        Context compaction ends the current session and forks a new child session
         (linked via ``parent_session_id``). The flush cursor is reset, so the
         child is where new messages actually land — the parent ends up with
         ``message_count = 0`` rows unless messages had already been flushed to
-        it before compression. See #15000.
+        it before compaction. See #15000.
 
         This helper walks ``parent_session_id`` forward from ``session_id`` and
         returns the descendant in the chain that has the **most recent** messages.
         Unlike the original logic, it does NOT short-circuit when the starting
         session already has messages — a descendant that was created by
-        compression may hold the continuation content and should be preferred
+        compaction may hold the continuation content and should be preferred
         by the WebUI and gateway for ``--resume`` and session loading.
 
         If no descendant (including the starting session) has any messages,
         the original ``session_id`` is returned unchanged.
 
         The chain is always walked via the child whose ``started_at`` is
-        latest; that matches the single-chain shape that compression creates.
+        latest; that matches the single-chain shape that compaction creates.
         A depth cap (32) guards against accidental loops in malformed data.
         """
         if not session_id:
             return session_id
 
-        # Follow the compression-continuation chain forward to the live tip
-        # FIRST. Auto-compression ends the current session and forks a
+        # Follow the compaction-continuation chain forward to the live tip
+        # FIRST. Auto-compaction ends the current session and forks a
         # continuation child, but a long-lived parent keeps its own flushed
         # message rows — so the empty-head walk below never redirects it, and
-        # resuming the parent id reloads the pre-compression transcript while
-        # the turns generated *after* compression (and their responses) sit in
-        # the continuation. ``get_compression_tip`` is lineage-aware: it only
-        # follows children whose parent ended with ``end_reason='compression'``
+        # resuming the parent id reloads the pre-compaction transcript while
+        # the turns generated *after* compaction (and their responses) sit in
+        # the continuation. ``get_compaction_tip`` is lineage-aware: it only
+        # follows children whose parent ended with ``end_reason='compaction'``
         # (created after the parent was ended), so delegation / branch children
         # never hijack the resume. This is the fix for the desktop "I came back
         # and the reply isn't there" report on large sessions.
         try:
-            tip = self.get_compression_tip(session_id)
+            tip = self.get_compaction_tip(session_id)
         except Exception:
             tip = session_id
         if tip and tip != session_id:
@@ -10347,9 +10347,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # heuristic — a post-reset conversation must never be reached
                 # by resuming the parent the user reset away), and tool
                 # children. They also carry a ``parent_session_id`` yet
-                # are NOT compression continuations; following them would hijack
+                # are NOT compaction continuations; following them would hijack
                 # the resume target to an unrelated session (e.g. a subagent
-                # run). This mirrors the child-exclusion in ``get_compression_tip``.
+                # run). This mirrors the child-exclusion in ``get_compaction_tip``.
                 try:
                     child_row = self._conn.execute(
                         "SELECT id FROM sessions AS child "
@@ -10583,7 +10583,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         - ``model_history`` — the tip session's active rows, alternation-repaired
           (the live-replay working conversation). Equivalent to
           ``get_messages_as_conversation(session_id, repair_alternation=True)``.
-        - ``display_history`` — the full compression lineage (ancestors → tip),
+        - ``display_history`` — the full compaction lineage (ancestors → tip),
           verbatim, with replayed-user dedup. Explicit ``/branch`` sessions are
           excluded from this lineage because their own rows already contain the
           copied transcript; including the live parent's rows would let messages
@@ -10685,7 +10685,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> int:
         """Return active row count or reject an unsafe in-memory export.
 
-        Exporting one session does not include compression ancestors, so this
+        Exporting one session does not include compaction ancestors, so this
         guard deliberately counts only the requested segment. The limited
         subquery stops as soon as it proves the transcript exceeds the bound.
 
@@ -10717,7 +10717,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def get_ancestor_display_prefix(self, session_id: str) -> List[Dict[str, Any]]:
         """Return the ancestor-only display messages for a session lineage.
 
-        These are messages from parent/grandparent sessions (compression
+        These are messages from parent/grandparent sessions (compaction
         ancestors) that appear in the display transcript but NOT in the
         tip session's model-fed history. Used by ``session.resume`` to
         build the ``display_history_prefix`` that ``_live_session_payload``
@@ -10761,9 +10761,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _is_explicit_branch_session(self, session_id: str) -> bool:
         """Return whether *session_id* is a copied user-facing branch.
 
-        Branches and compression continuations both use ``parent_session_id``,
+        Branches and compaction continuations both use ``parent_session_id``,
         but they have different history semantics: a branch owns a copied
-        transcript, while a compression continuation needs its ended parent's
+        transcript, while a compaction continuation needs its ended parent's
         archived rows for display. The durable ``_branched_from`` marker is the
         existing discriminator written by all branch creation paths.
         """
@@ -10788,7 +10788,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def get_conversation_root(self, session_id: str) -> str:
         """Return the ROOT id of *session_id*'s lineage chain.
 
-        The root is the stable "conversation id": context compression
+        The root is the stable "conversation id": context compaction
         rotates ``session_id`` to a new segment linked via
         ``parent_session_id``, and delegate subagents hang off their
         parent the same way. Walking to the root gives every segment of
@@ -11018,7 +11018,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Pass ``exclude_children=True`` to count only the conversations that
         ``list_sessions_rich`` surfaces (root + branch/reset sessions), hiding
-        sub-agent runs and compression continuations. Use it whenever the count
+        sub-agent runs and compaction continuations. Use it whenever the count
         is paired with a ``list_sessions_rich`` page (e.g. sidebar "load more"
         totals) so the total matches the number of listable rows — otherwise the
         raw row count is inflated by children and "load more" never settles.
@@ -11097,7 +11097,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility
         (roots + branch/reset sessions, excluding sub-agent runs, delegates,
-        and compression continuations) so the source counts match what the
+        and compaction continuations) so the source counts match what the
         Sessions page actually lists.
         """
         where_clauses = []
@@ -11162,8 +11162,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """True when ``session`` is a branch, delegate, or tool child of its parent.
 
         Markers only count as a fork when they point at ``parent_session_id``.
-        Compression copies ``model_config`` onto the continuation
-        (``publish_compression_child`` callers pass
+        Compaction copies ``model_config`` onto the continuation
+        (``publish_compaction_child`` callers pass
         ``agent._session_init_model_config``), so a delegate's continuation
         carries ``_delegate_from=<the delegate's own parent>``. Presence-only
         matching would treat that real continuation as a fork — the same
@@ -11188,22 +11188,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return branched == parent_id or delegated == parent_id
         return branched is not None or delegated is not None
 
-    def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
+    def _is_compaction_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
         if not parent_id or self._is_explicit_fork_child_row(child):
             return False
         parent = self.get_session(parent_id)
-        return bool(parent and parent.get("end_reason") == "compression")
+        return bool(parent and parent.get("end_reason") == "compaction")
 
-    def get_compression_lineage(self, session_id: str) -> List[str]:
-        """Return compression ancestors through tip in chronological order."""
+    def get_compaction_lineage(self, session_id: str) -> List[str]:
+        """Return compaction ancestors through tip in chronological order."""
         session = self.get_session(session_id)
         if not session or self._is_explicit_fork_child_row(session):
             return [session_id] if session else []
 
         root = session
         ancestors = {root["id"]}
-        while self._is_compression_child_row(root):
+        while self._is_compaction_child_row(root):
             parent = self.get_session(root["parent_session_id"])
             if not parent or parent["id"] in ancestors:
                 break
@@ -11213,7 +11213,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         lineage = [root["id"]]
         seen = {root["id"]}
         current = root
-        while current.get("end_reason") == "compression":
+        while current.get("end_reason") == "compaction":
             with self._lock:
                 rows = self._conn.execute(
                     """
@@ -11226,7 +11226,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             next_child = None
             for row in rows:
                 candidate = dict(row)
-                if self._is_compression_child_row(candidate):
+                if self._is_compaction_child_row(candidate):
                     next_child = candidate
                     break
             if not next_child or next_child["id"] in seen:
@@ -11235,7 +11235,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             seen.add(next_child["id"])
             current = next_child
             if current["id"] == session_id:
-                # Continue to include later compression tips only when the
+                # Continue to include later compaction tips only when the
                 # requested session itself was compacted.
                 continue
         return lineage if session_id in lineage else [session_id]
@@ -11283,7 +11283,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Return every session row that :meth:`delete_session` would remove.
 
         The requested session is first, followed by its recursively discovered
-        delegate/subagent children. Branch and compression children are not
+        delegate/subagent children. Branch and compaction children are not
         included because deletion preserves them by orphaning their parent
         reference.
         """
@@ -11306,7 +11306,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Delegate subagent children (``model_config._delegate_from``) are
         cascade-deleted with the parent so they never resurface in session
-        pickers as orphaned rows. Branch / compression children are orphaned
+        pickers as orphaned rows. Branch / compaction children are orphaned
         (``parent_session_id → NULL``) so they remain accessible independently.
         When *sessions_dir* is provided, also removes on-disk transcript
         files (``.json`` / ``.jsonl`` / ``request_dump_*``) for every deleted
@@ -11827,8 +11827,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Same filter surface as :meth:`prune_sessions`, but instead of deleting
         rows it flips ``archived = 1`` via :meth:`set_session_archived` so
-        each match's compression lineage is archived as a unit (an unarchived
-        compression root would otherwise resurrect the conversation in
+        each match's compaction lineage is archived as a unit (an unarchived
+        compaction root would otherwise resurrect the conversation in
         Desktop's projected list). Nothing is deleted; messages and transcript
         files are untouched. Returns the number of sessions matched.
 
@@ -11860,9 +11860,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           * ``pinned = 0`` when ``exclude_pinned`` (the Desktop "keep" flag).
           * ``archived = 0`` so repeat runs are idempotent no-ops.
           * only lineage *tips* / standalone rows are candidates
-            (``end_reason <> 'compression'``); a stale tip archives its whole
+            (``end_reason <> 'compaction'``); a stale tip archives its whole
             chain via :meth:`set_session_archived`, so we never resurrect an
-            active conversation by matching an old compressed-away root whose
+            active conversation by matching an old compacted-away root whose
             live continuation is recent.
 
         Returns the number of sessions archived. Never raises for an empty or
@@ -11877,7 +11877,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"""
                 SELECT s.id FROM sessions s
                 WHERE s.archived = 0
-                  AND COALESCE(s.end_reason, '') <> 'compression'
+                  AND COALESCE(s.end_reason, '') <> 'compaction'
                   {pin_clause}
                   AND {_sql_session_last_active("s")} < ?
                 ORDER BY s.started_at ASC

@@ -989,7 +989,7 @@ def cmd_sessions(args, sessions_parser=None):
                 )
 
         candidates = db.list_prune_candidates(**filters)
-        # Archive expands each selected row to its compression lineage, which
+        # Archive expands each selected row to its compaction lineage, which
         # can include open continuations; a direct-open count would therefore
         # describe the eventual archive effect inaccurately.
         skipped_open = (
