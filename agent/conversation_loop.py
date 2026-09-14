@@ -6900,8 +6900,8 @@ def run_conversation(
                     # Proactive tool-result prune: reclaim re-sent history on
                     # large-window models long before should_compress() (≈50% of
                     # the window) would ever fire. Deterministic, no LLM call;
-                    # protects the recent tail. No-op unless proactive_prune_tokens
-                    # is configured and _real_tokens is above it — and even then
+                    # protects the recent tail. On by default (opencode-style);
+                    # no-op below proactive_prune_tokens — and even above it
                     # the prune only commits when it reclaims at least
                     # proactive_prune_min_reclaim_tokens, so prompt-cache breaks
                     # stay episodic like compression's (the one sanctioned cache

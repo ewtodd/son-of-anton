@@ -5,7 +5,8 @@ Uses auxiliary model (cheap/fast) to summarize middle turns while
 protecting head and tail context.
 
 Improvements over v2:
-  - Structured summary template with Resolved/Pending question tracking
+  - Structured summary template (Objective / Important Details / Work State /
+    Next Move / Relevant Files, after opencode) headed by the task snapshot
   - Filter-safe summarizer preamble that treats prior turns as source material
   - Historical (reference-only) section headings replace "Next Steps"/"Remaining Work" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
@@ -670,6 +671,33 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+# Supersession (prune pass 1b): an older result of the SAME call is folded
+# behind this prefix. Tools whose result is user input rather than an
+# observation of the environment are exempt — the same question can get a
+# different answer each time.
+_SUPERSEDED_PREFIX = "[Superseded by a later identical call]"
+_SUPERSESSION_EXEMPT_TOOLS = frozenset({"clarify"})
+
+
+def _normalize_tool_args(tool_args: Any) -> str:
+    """Canonical form of a tool call's arguments for supersession matching."""
+    if not isinstance(tool_args, str):
+        return str(tool_args or "")
+    try:
+        return json.dumps(json.loads(tool_args), sort_keys=True, ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return tool_args.strip()
+
+# Deterministic tool-output prune defaults (on by default; mirrors opencode's
+# PRUNE_PROTECT / PRUNE_MINIMUM / TOOL_OUTPUT_MAX_CHARS). Old tool results are
+# the bulk of a long session's tokens and the least information-dense; folding
+# them to one-line summaries needs no model call and cannot hallucinate. The
+# reclaim floor keeps the (cache-breaking) rewrite episodic: it commits only
+# when at least this much would otherwise be re-sent on every call.
+PRUNE_TRIGGER_TOKENS = 40_000
+PRUNE_MIN_RECLAIM_TOKENS = 20_000
+PRUNE_TOOL_OUTPUT_MAX_CHARS = 2_000
 
 # Floor shared by _prune_old_tool_results' ``min_prune_chars`` default, the
 # constructor clamp on ``proactive_prune_min_result_chars``, and the clarify
@@ -1781,6 +1809,34 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] ({_len:,} chars result)"
 
 
+_LAST_OUTPUT_LINES = 3
+_LAST_OUTPUT_MAX_CHARS = 240
+
+
+def _last_output_lines(tool_content: str) -> str:
+    """The final non-empty lines of a command's output, one short string.
+
+    A masked test/command result must keep its stop signal — "42 passed",
+    "error: ...", the last log line — or the model re-runs the command to
+    learn what it already knew. Terminal results are JSON envelopes with an
+    ``output`` field; raw text is used as-is.
+    """
+    text = tool_content or ""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and isinstance(parsed.get("output"), str):
+            text = parsed["output"]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    tail = " | ".join(lines[-_LAST_OUTPUT_LINES:])
+    if len(tail) > _LAST_OUTPUT_MAX_CHARS:
+        tail = "…" + tail[-(_LAST_OUTPUT_MAX_CHARS - 1):]
+    return tail
+
+
 def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     try:
@@ -1800,7 +1856,11 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
         exit_code = exit_match.group(1) if exit_match else "?"
-        return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        summary = f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        tail = _last_output_lines(content)
+        if tail:
+            summary += f"; last lines: {tail}"
+        return summary
 
     if tool_name == "read_file":
         path = args.get("path", "?")
@@ -2980,9 +3040,9 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         threshold_tokens_cap: Any = None,
-        proactive_prune_tokens: int = 0,
-        proactive_prune_min_result_chars: int = 8000,
-        proactive_prune_min_reclaim_tokens: int = 4096,
+        proactive_prune_tokens: int = PRUNE_TRIGGER_TOKENS,
+        proactive_prune_min_result_chars: int = PRUNE_TOOL_OUTPUT_MAX_CHARS,
+        proactive_prune_min_reclaim_tokens: int = PRUNE_MIN_RECLAIM_TOKENS,
         min_tail_user_messages: int = 1,
         tail_mode: str = "legacy",
     ):
@@ -3026,10 +3086,11 @@ class ContextCompressor(ContextEngine):
         # can be longer than the floor it replaces, so Pass 2 would re-summarize
         # its own output every turn (corrupting it and never converging); a
         # negative value would strip every non-tail tool result outright. A
-        # configured 0 keeps the 8000 default via `or`. Keep the floor well above
-        # typical summary length (default 8000) to stay idempotent.
+        # configured 0 keeps the default via `or`. Keep the floor well above
+        # typical summary length to stay idempotent.
         self.proactive_prune_min_result_chars = max(
-            _PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000)
+            _PRUNE_MIN_CHARS,
+            int(proactive_prune_min_result_chars or PRUNE_TOOL_OUTPUT_MAX_CHARS),
         )
         # Minimum estimated token reclaim before a proactive prune COMMITS.
         # Every commit rewrites messages the provider has already seen, which
@@ -3557,6 +3618,76 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
+        # Pass 1b: Supersession. The same call (tool name + arguments) made
+        # again later makes the older observation stale — the newest read of
+        # a file, run of a test suite, or listing of a directory is the only
+        # one that is still true. Older copies are folded to the one-line
+        # summary (exit code + last lines survive) rather than removed, so
+        # tool_call/tool_result pairs stay atomic. Tail-agnostic like dedup:
+        # the surviving newest result may itself sit in the protected tail.
+        seen_calls: dict[tuple[str, str], int] = {}
+        for i in range(len(result) - 1, -1, -1):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
+                continue
+            if content.startswith(("[Duplicate tool output", _SUPERSEDED_PREFIX)):
+                continue
+            tool_name, tool_args = call_id_to_tool.get(
+                msg.get("tool_call_id", ""), ("unknown", "")
+            )
+            if tool_name == "unknown" or tool_name in _SUPERSESSION_EXEMPT_TOOLS:
+                continue
+            key = (tool_name, _normalize_tool_args(tool_args))
+            if key in seen_calls:
+                result[i] = {
+                    **msg,
+                    "content": (
+                        f"{_SUPERSEDED_PREFIX} "
+                        + _summarize_tool_result(tool_name, tool_args, content)
+                    ),
+                }
+                pruned += 1
+            else:
+                seen_calls[key] = i
+
+        # Pass 1c: Screenshots — keep only the newest (k=1, as OpenHands-Versa's
+        # browsing condenser does). A stale screenshot is worth almost nothing
+        # once a newer one exists, and image parts are the most expensive
+        # observation there is. Tail-agnostic for the same reason as dedup.
+        newest_screenshot_seen = False
+        for i in range(len(result) - 1, -1, -1):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            has_image = (
+                isinstance(content, dict) and bool(content.get("_multimodal"))
+            ) or (
+                isinstance(content, list)
+                and any(
+                    isinstance(p, dict)
+                    and p.get("type") in {"image", "image_url", "input_image"}
+                    for p in content
+                )
+            )
+            if not has_image:
+                continue
+            if not newest_screenshot_seen:
+                newest_screenshot_seen = True
+                continue
+            if isinstance(content, dict):
+                summary = content.get("text_summary") or "[screenshot removed to save context]"
+                result[i] = {**msg, "content": f"[screenshot removed] {str(summary)[:200]}"}
+            else:
+                stripped = _strip_image_parts_from_parts(content)
+                if stripped is None:
+                    continue
+                result[i] = {**msg, "content": stripped}
+            pruned += 1
+
         # Ghost-skill defense (#32106): skills just loaded (or actively
         # referenced in the protected tail) keep their full skill_view
         # bodies through the ordinary prune passes. Without this, a skill
@@ -3590,7 +3721,7 @@ class ContextCompressor(ContextEngine):
                 return False
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 return False
-            if content.startswith("[Duplicate tool output"):
+            if content.startswith(("[Duplicate tool output", _SUPERSEDED_PREFIX)):
                 return False
             # Already replaced by a prior prune/pressure pass (1-line summary).
             if content.startswith("[") and " chars)" in content and len(content) < 400:
@@ -3861,9 +3992,16 @@ class ContextCompressor(ContextEngine):
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
-    _CONTENT_MAX = 6000       # total chars per message body
+    _CONTENT_MAX = 6000       # total chars per message body (user/assistant)
     _CONTENT_HEAD = 4000      # chars kept from the start
     _CONTENT_TAIL = 1500      # chars kept from the end
+    # Tool results are capped harder (opencode: 2,000 chars). They carry the
+    # least information per token, and a small summarizer drops sections when
+    # its input is dominated by raw output. Head keeps the command/path
+    # context; the tail keeps the exit line / final error.
+    _TOOL_RESULT_MAX = PRUNE_TOOL_OUTPUT_MAX_CHARS
+    _TOOL_RESULT_HEAD = 1500
+    _TOOL_RESULT_TAIL = 400
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
     # Aggregate cap over the whole serialized block, applied AFTER the
@@ -3920,11 +4058,16 @@ class ContextCompressor(ContextEngine):
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
 
-            # Tool results: keep enough content for the summarizer
+            # Tool results: enough for the summarizer to name what happened,
+            # never the raw dump (see _TOOL_RESULT_MAX).
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                if len(content) > self._TOOL_RESULT_MAX:
+                    content = (
+                        content[:self._TOOL_RESULT_HEAD]
+                        + "\n...[truncated]...\n"
+                        + content[-self._TOOL_RESULT_TAIL:]
+                    )
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
@@ -4115,37 +4258,32 @@ class ContextCompressor(ContextEngine):
         body = f"""{HISTORICAL_TASK_HEADING}
 {active_task}
 
-## Goal
-Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+## Objective
+- Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
 
-## Constraints & Preferences
-- This fallback was generated locally without an LLM summary call.
+## Important Details
+- This fallback was generated locally without an LLM summary call, for {len(turns_to_summarize)} compacted message(s).{reason_text}
 - Secrets and credentials were redacted before preservation.
 - The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
 
-## Completed Actions
-{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
+## Work State
+### Completed
+{chr(10).join(completed) if completed else "- (none recoverable from compacted turns)"}
 
-## Active State
-Unknown from deterministic fallback. Inspect current repository/session state if needed.
+### Active
+- Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
-## Blocked
+### Blocked
 {_bullets(blockers, limit=5)}
 
-## Key Decisions
-None recoverable from deterministic fallback.
-
-## Resolved Questions
-None recoverable from deterministic fallback.
+## Next Move
+1. (none recoverable — take direction from the latest user message)
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
 
 ## Last Dropped Turns
-{_bullets(last_dropped_turns, limit=8)}
-
-## Critical Context
-Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
+{_bullets(last_dropped_turns, limit=8)}"""
         # Ghost-skill defense (#32106): the fallback's per-turn truncation
         # (``_FALLBACK_TURN_MAX_CHARS``) routinely cuts [SKILL_PRUNED: ...]
         # markers out of the compacted turns. Re-derive the ghosted skills
@@ -4372,10 +4510,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
-        Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
-        Questions, Files, Remaining Work) with explicit preamble telling the
-        summarizer not to answer questions.  When a previous summary exists,
-        generates an iterative update instead of summarizing from scratch.
+        Uses a structured template (task snapshot, then Objective, Important
+        Details, Work State, Next Move, Relevant Files) with an explicit
+        preamble telling the summarizer not to answer questions.  When a
+        previous summary exists, generates an iterative update instead of
+        summarizing from scratch.
 
         Args:
             focus_topic: Optional focus string for guided compression.  When
@@ -4490,24 +4629,17 @@ work, write the reverse signal verbatim and DO NOT carry forward the
 cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
 in-flight work is cancelled."
 If no outstanding task exists, write "None."]"""
-            _goal_instructions = "[What the user is trying to accomplish overall]"
+            _goal_instructions = (
+                "[One or two brief sentences: what the user is trying to accomplish]"
+            )
             _constraints_instructions = (
-                "[User preferences, coding style, constraints, important decisions. "
+                "[Constraints and preferences, decisions and WHY, important facts "
+                "and assumptions, exact values/config/error strings needed to "
+                "continue. Quote corrections the USER gave and record what changed. "
                 "Any security or safety constraint the user stated (files/data to "
                 "avoid, operations that must not be performed, credential-handling "
-                "rules) MUST be quoted VERBATIM here so it continues to apply "
-                "after compaction — never paraphrase those.]"
-            )
-            _resolved_questions_instructions = (
-                "[Questions the user asked that were ALREADY answered — include the "
-                "answer so it is not repeated]"
-            )
-            _pending_asks_instructions = (
-                "[Questions or requests from the user that have NOT yet been answered "
-                "or fulfilled. These are STALE — they were from the compacted turns. "
-                "Write them here for reference only. The agent must NOT act on them "
-                "unless the latest user message explicitly requests it. If none, "
-                'write "None."]'
+                "rules) MUST be quoted VERBATIM so it continues to apply after "
+                'compaction — never paraphrase those. Otherwise "(none)".]'
             )
         else:
             _language_and_provenance_rule = (
@@ -4528,12 +4660,6 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             _constraints_instructions = (
                 "[Runtime, configuration, and technical constraints only. Do not "
                 "invent user preferences.]"
-            )
-            _resolved_questions_instructions = (
-                "[Write exactly: None. No user-authored questions exist.]"
-            )
-            _pending_asks_instructions = (
-                "[Write exactly: None. No user-authored requests exist.]"
             )
 
         _summarizer_preamble = (
@@ -4569,52 +4695,40 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
         else:
             _temporal_anchoring_rule = ""
 
-        # Shared structured template (used by both paths).
-        _template_sections = f"""{HISTORICAL_TASK_HEADING}
+        # Shared structured template (used by both paths). Modelled on
+        # opencode's compaction template (Objective / Important Details /
+        # Work State / Next Move / Relevant Files): few sections, terse
+        # bullets, exact identifiers — a constrained extraction task a
+        # mid-size summarizer completes reliably. The task snapshot stays
+        # first: provenance validation and post-compaction grounding key on
+        # that heading.
+        _template_sections = f"""Output exactly the Markdown structure below and keep the section order unchanged.
+
+{HISTORICAL_TASK_HEADING}
 {_historical_task_instructions}
 
-## Goal
-{_goal_instructions}
+## Objective
+- {_goal_instructions}
 
-## Constraints & Preferences
-{_constraints_instructions}
+## Important Details
+- {_constraints_instructions}
 
-## Completed Actions
-[Numbered list of concrete actions taken — include tool used, target, and outcome.
-Format each as: N. ACTION target — outcome [tool: name]
-Example:
-1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
-2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
-3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
-Be specific with file paths, commands, line numbers, and results.]
+## Work State
+### Completed
+- [finished work, verified facts, or changes made — "ACTION target — outcome [tool: name]", with exact file paths, commands, line numbers and results; otherwise "(none)"]
 
-## Active State
-[Current working state — include:
-- Working directory and branch (if applicable)
-- Modified/created files with brief note on each
-- Test status (X/Y passing)
-- Any running processes or servers
-- Environment details that matter]
+### Active
+- [current work, partial changes, or investigation state: working directory/branch, modified files, test status (X/Y passing), running processes; otherwise "(none)"]
 
-## Blocked
-[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
+### Blocked
+- [blockers, failing commands, or unknowns — include the exact error text; otherwise "(none)"]
 
-## Key Decisions
-[Important technical decisions and WHY they were made]
-
-## Errors & Fixes
-[Errors hit during the compacted turns and how each was resolved — include the
-exact error text. Pay special attention to corrections the USER gave; quote
-the user's correction and record what changed as a result.]
-
-## Resolved Questions
-{_resolved_questions_instructions}
+## Next Move
+1. [immediate concrete action, or "(none)"]
+2. [next action if known, or "(none)"]
 
 ## Relevant Files
-[Files read, modified, or created — with brief note on each]
-
-## Critical Context
-[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
+- [file or directory path: why it matters, or "(none)"]
 
 {_PRUNED_SKILLS_SECTION_HEADING}
 [If any [SKILL_PRUNED: ...reload with skill_view(...)] markers appear in the input,
@@ -4622,7 +4736,12 @@ repeat each one verbatim here — copy the exact text, do NOT paraphrase, summar
 or describe them. These markers tell the agent which skills must be reloaded before
 use. If none appear, omit this section entirely.]
 
-Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Rules:
+- Keep every section, even when empty.
+- Use terse bullets, not prose paragraphs. Target ~{summary_budget} tokens.
+- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known. Avoid vague descriptions like "made some changes" — say exactly what changed.
+- NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.
+- Do not mention the summary process or that context was compacted.
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
@@ -4647,7 +4766,15 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+The PREVIOUS SUMMARY covers everything that happened before the NEW TURNS. Construct a new summary that combines both. The previous summary is discarded after this: anything you do not carry into the new summary is lost.
+
+When combining:
+- Carry forward objectives, constraints, user directives, decisions, and parallel workstreams from the previous summary even when the new turns do not mention them. Drop only what is finished and no longer needed.
+- The new turns are more recent than the previous summary. Where they conflict, the new turns win: state the corrected fact and drop the old claim.
+- Add new progress, decisions, constraints, and context from the new turns.
+- Move completed work from "Active" to "Completed". If a blocker has been resolved, reflect that while keeping any details still needed to continue.
+- Update "Objective" and "Next Move" to reflect the current work state.
+- CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:

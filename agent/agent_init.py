@@ -1933,19 +1933,34 @@ def init_agent(
         except (TypeError, ValueError):
             return default
 
-    # Opt-in proactive tool-result prune trigger (0 = disabled — the
-    # default, so an unset key is behavior-neutral).  Negative values are
+    # Deterministic tool-result prune (on by default, opencode-style; see
+    # PRUNE_* in agent.context_compressor). 0 disables; negative values are
     # treated as disabled rather than erroring.
+    from agent.context_compressor import (
+        PRUNE_MIN_RECLAIM_TOKENS,
+        PRUNE_TOOL_OUTPUT_MAX_CHARS,
+        PRUNE_TRIGGER_TOKENS,
+    )
     compression_proactive_prune_tokens = max(
-        0, _parse_prune_int(_compression_cfg.get("proactive_prune_tokens", 0), 0)
+        0,
+        _parse_prune_int(
+            _compression_cfg.get("proactive_prune_tokens", PRUNE_TRIGGER_TOKENS),
+            PRUNE_TRIGGER_TOKENS,
+        ),
     )
     compression_proactive_prune_min_chars = _parse_prune_int(
-        _compression_cfg.get("proactive_prune_min_result_chars", 8000), 8000
+        _compression_cfg.get(
+            "proactive_prune_min_result_chars", PRUNE_TOOL_OUTPUT_MAX_CHARS
+        ),
+        PRUNE_TOOL_OUTPUT_MAX_CHARS,
     )
     compression_proactive_prune_min_reclaim = max(
         0,
         _parse_prune_int(
-            _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
+            _compression_cfg.get(
+                "proactive_prune_min_reclaim_tokens", PRUNE_MIN_RECLAIM_TOKENS
+            ),
+            PRUNE_MIN_RECLAIM_TOKENS,
         ),
     )
     # protect_first_n is the number of non-system messages to protect at
