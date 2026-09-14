@@ -8,7 +8,7 @@ from agent.redact import redact_sensitive_text
 
 
 def describe_compression_lock_skip(lock_signal: Any) -> str:
-    """User-facing text for a manual /compress skipped by the compression lock.
+    """User-facing text for a manual /compact skipped by the compression lock.
 
     ``lock_signal`` is ``agent._compression_skipped_due_to_lock`` (or the
     ``holder`` carried by the TUI's ``CompressionLockHeld``): a descriptive

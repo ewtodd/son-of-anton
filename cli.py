@@ -9938,7 +9938,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_approvals_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
-        elif canonical == "compress":
+        elif canonical == "compact":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
@@ -10928,12 +10928,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         Two modes:
 
-        * ``/compress [<focus>]`` — compress the *whole* history. An
+        * ``/compact [<focus>]`` — compress the *whole* history. An
           optional focus topic guides the summariser to preserve
           information related to *focus* while being more aggressive
           about discarding everything else.  Inspired by Claude Code's
           ``/compact <focus>`` feature.
-        * ``/compress here [N]`` — boundary-aware compression. Summarize
+        * ``/compact here [N]`` — boundary-aware compression. Summarize
           everything *except* the most recent ``N`` exchanges (default
           2), which are preserved verbatim. Inspired by Claude Code's
           Rewind "Summarize up to here" action (v2.1.139, May 2026,
@@ -10950,10 +10950,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
 
         # No compression_enabled gate here: the config flag disables
-        # *automatic* compaction only. Manual /compress is an explicit user
+        # *automatic* compaction only. Manual /compact is an explicit user
         # action — the context-overflow error path (conversation_loop.py)
         # directs users here when auto-compaction is off, and the gateway's
-        # /compress handler has never gated on the flag.
+        # /compact handler has never gated on the flag.
 
         from son_of_anton_cli.partial_compress import (
             extract_compress_flags,
@@ -10966,7 +10966,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             finalize_context_engine_compression_notification,
         )
 
-        # Args after the command word (e.g. "/compress here 3" -> "here 3").
+        # Args after the command word (e.g. "/compact here 3" -> "here 3").
         raw_args = ""
         if cmd_original:
             _parts = cmd_original.strip().split(None, 1)
@@ -10984,7 +10984,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # own transcript-persistence path outside the guarded
             # _compress_context rotation machinery. Surface that instead of
             # silently mis-parsing the flag as a focus topic.
-            print("(._.) --aggressive is not supported; use '/compress here [N]' "
+            print("(._.) --aggressive is not supported; use '/compact here [N]' "
                   "to keep only recent exchanges, or /undo to drop turns.")
             if not preview:
                 return
@@ -11115,7 +11115,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self.session_id = self.agent.session_id
                     getattr(self, "_write_terminal_breadcrumb", lambda: None)()
                     self._pending_title = None
-                    # Manual /compress replaces conversation_history with a new
+                    # Manual /compact replaces conversation_history with a new
                     # compressed handoff for the child session. Persist it from
                     # offset 0 so resume can recover the continuation after exit.
                     self.agent._flush_messages_to_session_db(self.conversation_history, None)

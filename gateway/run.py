@@ -116,7 +116,7 @@ _NOISY_STATUS_RE = re.compile(
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     # Buffered attempt/overflow retry chatter replayed through _emit_status
     # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
-    # keep manual /compress feedback ("Compressed: 30 → 12 messages") and
+    # keep manual /compact feedback ("Compressed: 30 → 12 messages") and
     # failure notices out of the match.
     r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
     r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
@@ -312,7 +312,7 @@ def _status_template_to_regex(template: str) -> str:
 # noisy statuses matched by _NOISY_STATUS_RE are compression
 # progress (deliverable when the user opted in) versus unrelated aux/retry
 # chatter (always suppressed on chat surfaces). Failure notices and manual
-# /compress feedback never match _NOISY_STATUS_RE in the first
+# /compact feedback never match _NOISY_STATUS_RE in the first
 # place, so they are unaffected by this gate.
 _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
     "|".join(
@@ -3504,7 +3504,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     is what the service answers with. Unset, both get ``model.default`` and
     nothing changes.
 
-    Without this, temporary AIAgent instances (e.g. /compress) fall
+    Without this, temporary AIAgent instances (e.g. /compact) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
@@ -14450,7 +14450,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
           3. Catch-all busy-reject text. Rejecting is required rather than
              falling through to interrupt + discard: commands like /model,
              /reasoning, /voice, /insights, /title, /resume, /retry,
-             /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
+             /undo, /compact, /usage, /reload-mcp, /sethome, /reset (all
              registered as Discord slash commands) would interrupt the
              agent AND get silently discarded by the slash-command safety
              net, producing a zero-char response. See #5057, #6252, #10370.
@@ -15761,8 +15761,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
-        if canonical == "compress":
-            return await self._handle_compress_command(event)
+        if canonical == "compact":
+            return await self._handle_compact_command(event)
 
         if canonical == "usage":
             return await self._handle_usage_command(event)
@@ -17672,7 +17672,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                                 f"after {_hyg_timeout_seconds:.1f}s "
                                                 "with no output from the summary model. "
                                                 "No messages were dropped — continuing without "
-                                                "compression. Run /compress to retry, /reset for "
+                                                "compression. Run /compact to retry, /reset for "
                                                 "a clean session, or check your "
                                                 "auxiliary.compression model configuration."
                                             )
@@ -17749,7 +17749,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # (silent data loss, #61145).
                                     #
                                     # The danger this guards against (mirrors the
-                                    # /compress fix #44794/#39704): if _compress_context
+                                    # /compact fix #44794/#39704): if _compress_context
                                     # returns a summary but neither rotates nor completes
                                     # archive_and_compact(), the session_id is unchanged
                                     # for a FAILURE reason, and an unconditional
@@ -17757,7 +17757,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # messages and replace them with only the compressed
                                     # summary (permanent data loss, #21301).
                                     #
-                                    # Write-before-repoint (mirrors manual /compress):
+                                    # Write-before-repoint (mirrors manual /compact):
                                     # if we repointed session_entry onto the child SID
                                     # and rewrite_transcript then failed (lock/ENOSPC),
                                     # the live entry would already reference a brand-new
@@ -17845,7 +17845,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     # user — agent.log alone is invisible on
                                     # TG/Discord/etc. — so they know the chat
                                     # is "frozen" at the current size and can
-                                    # /compress to retry or /reset to start
+                                    # /compact to retry or /reset to start
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     _hyg_aborted = _comp is not None and getattr(
@@ -17908,7 +17908,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                         _warn_msg = (
                                             "Context compression aborted "
                                             f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
+                                            "conversation is unchanged. Run /compact "
                                             "to retry, /reset for a clean session, or "
                                             "check your auxiliary.compression model "
                                             "configuration."

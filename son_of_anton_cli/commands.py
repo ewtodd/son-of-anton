@@ -149,8 +149,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("worktree", "Show, list, create, or prune isolated git worktrees", "Session",
                cli_only=True, args_hint="[new [name]|list|prune [--dry-run]]",
                subcommands=("new", "list", "prune")),
-    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
-               aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
+    CommandDef("compact", "Compact conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
+               args_hint="[here [N] | focus topic | --preview|--dry-run]"),
     CommandDef("rollback", "List or restore filesystem checkpoints (restores keep your hand-edits; --all overrides)", "Session",
                args_hint="[number] [--all]"),
     CommandDef("stop", "Kill all running background processes", "Session",
@@ -363,7 +363,7 @@ for _cmd in COMMAND_REGISTRY:
 # here falls under the base "Session" header. Names are bare (no leading /).
 HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     "Context": (
-        "compress", "compact", "context", "ctx", "status",
+        "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
         "background", "bg", "btw", "agents", "tasks", "queue", "steer",
@@ -459,7 +459,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     Queueing is always wrong for a recognized slash command because the
     safety net in gateway.run discards any command text that reaches
     the pending queue — which meant a mid-run /model (or /reasoning,
-    /voice, /insights, /title, /resume, /retry, /undo, /compress,
+    /voice, /insights, /title, /resume, /retry, /undo, /compact,
     /usage, /reload-mcp, /sethome, /reset) would silently
     interrupt the agent AND get discarded, producing a zero-char
     response. See issue #5057 / PRs #6252, #10370, #4665.
@@ -558,7 +558,7 @@ GATEWAY_HELP_CORE: frozenset[str] = frozenset({
     # Model + permissions
     "model", "perm", "yolo",
     # Context
-    "status", "context", "compress",
+    "status", "context", "compact",
     # Turn control while the agent is busy
     "queue", "steer",
     # Background + automation

@@ -11,7 +11,7 @@ TIPS = [
     # --- Slash Commands ---
     "/background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
-    "/compress manually compresses conversation context when things get long.",
+    "/compact manually compresses conversation context when things get long.",
     "/rollback lists filesystem checkpoints — restore files the agent modified to any prior state.",
     "/rollback diff 2 previews what changed since checkpoint 2 without restoring anything.",
     "/rollback 2 src/file.py restores a single file from a specific checkpoint.",
@@ -246,7 +246,7 @@ TIPS = [
     "prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.",
     "SOUL.md completely replaces the agent's default identity — rewrite it to make Son of Anton your own.",
     "SOUL.md is auto-seeded with a default personality on first run. Edit it to customize.",
-    "/compress <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.",
+    "/compact <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.",
     "On second+ compression, the compressor updates the previous summary instead of starting from scratch.",
     "Before a gateway session reset, Son of Anton auto-flushes important facts to memory in the background.",
     "network.force_ipv4: true in config.yaml fixes hangs on servers with broken IPv6 — monkey-patches socket.",

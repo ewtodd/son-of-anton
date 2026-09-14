@@ -965,7 +965,7 @@ def build_turn_context(
             # signal the session keeps growing until the model silently stops
             # answering — the conversation hits the hard provider token limit
             # with no explanation. Surface a deduped warning so the user can
-            # take action (/new or /compress) instead of hitting a silent hang.
+            # take action (/new or /compact) instead of hitting a silent hang.
             agent._warn_context_overflow_blocked(
                 _compress_block_reason,
                 _usage_tokens,
@@ -1041,7 +1041,7 @@ def build_turn_context(
         # covers both turn-start and mid-turn growth (every provider request
         # passes through it). Here we only RE-ARM the dedup once the session
         # is back under the window, so the guard can warn again after the
-        # user compacts (/compress with force=True works with compression
+        # user compacts (/compact with force=True works with compression
         # disabled) and the context later regrows past the limit.
         _ctx_len = getattr(
             getattr(agent, "context_compressor", None), "context_length", None

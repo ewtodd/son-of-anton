@@ -780,7 +780,7 @@ DEFAULT_CONFIG = {
                                       # gateway noise filter. Default False keeps
                                       # routine compression silent-by-design on chat
                                       # surfaces (server-side logging only). Failure
-                                      # notices and manual /compress feedback are
+                                      # notices and manual /compact feedback are
                                       # always visible regardless of this setting.
         "threshold": 0.50,            # compress when context usage exceeds this ratio.
                                       # Models with context windows below 512K are
@@ -875,7 +875,7 @@ DEFAULT_CONFIG = {
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
         "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
-                                      # (conversation loop, /compress, preflight, etc.).
+                                      # (conversation loop, /compact, preflight, etc.).
                                       # Same progress-aware semantics as hygiene_timeout_seconds:
                                       # streamed summary tokens extend the wait; only a silent
                                       # worker is cut off. 0 = disable the owned wrapper
@@ -907,7 +907,7 @@ DEFAULT_CONFIG = {
                                       # dropping the middle window with a static
                                       # "summary unavailable" placeholder.  Messages are
                                       # preserved unchanged and the session "freezes" at
-                                      # its current size until the user runs /compress
+                                      # its current size until the user runs /compact
                                       # (which bypasses the failure cooldown) or /new.
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose

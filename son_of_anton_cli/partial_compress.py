@@ -4,7 +4,7 @@ Inspired by Claude Code's Rewind menu "Summarize up to here" action
 (v2.1.139–v2.1.142, Week 20, May 2026):
 https://code.claude.com/docs/en/whats-new/2026-w20
 
-Son of Anton already has ``/compress`` (full-history compaction) and an
+Son of Anton already has ``/compact`` (full-history compaction) and an
 automatic token-budget tail-protection heuristic inside
 ``ContextCompressor``. What was missing is *user-chosen* boundary
 control: "fold everything before this point into a summary, but keep
@@ -14,7 +14,7 @@ instead of leaving it to the token-budget heuristic.
 
 This module owns the pure, side-effect-free split logic so both the
 CLI (``cli.py::_manual_compress``) and the gateway
-(``gateway/run.py::_handle_compress_command``) share one
+(``gateway/run.py::_handle_compact_command``) share one
 implementation. The slash-command surfaces handle compression of the
 *head* via the existing ``_compress_context`` pipeline (preserving all
 the session-rotation / lock / memory-notify machinery) and then
@@ -30,7 +30,7 @@ Design notes / invariants honored:
   backwards to the nearest ``user`` turn so the rejoin is always legal.
 
 * **No silent context mutation.** This is a manual, user-invoked
-  action. It rotates the session exactly like ``/compress`` does (via
+  action. It rotates the session exactly like ``/compact`` does (via
   the caller), so the prompt-cache reset is explicit and expected, not
   silent.
 
@@ -44,10 +44,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 #: Default number of recent exchanges to preserve verbatim when the user
-#: runs ``/compress here`` without an explicit count.
+#: runs ``/compact here`` without an explicit count.
 DEFAULT_KEEP_LAST = 2
 
-#: Hard ceiling so a fat-fingered ``/compress here 9999`` doesn't turn
+#: Hard ceiling so a fat-fingered ``/compact here 9999`` doesn't turn
 #: into a no-op surprise — clamp instead.
 MAX_KEEP_LAST = 100
 
@@ -55,7 +55,7 @@ MAX_KEEP_LAST = 100
 def parse_partial_compress_args(
     raw_args: str,
 ) -> Tuple[bool, int, Optional[str]]:
-    """Parse the argument string after ``/compress``.
+    """Parse the argument string after ``/compact``.
 
     Recognizes the boundary-aware forms:
 
@@ -66,7 +66,7 @@ def parse_partial_compress_args(
                             menu label "Summarize up to here")
 
     Anything else is treated as a focus topic for the existing full
-    ``/compress <focus>`` behavior.
+    ``/compact <focus>`` behavior.
 
     Returns ``(partial, keep_last, focus_topic)``:
 
@@ -110,7 +110,7 @@ def parse_partial_compress_args(
 
 def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
     """Strip ``--preview``/``--dry-run``/``--aggressive`` flags from the
-    argument string after ``/compress`` (or its ``/compact`` alias).
+    argument string after ``/compact`` (or its ``/compact`` alias).
 
     Flags may appear anywhere and coexist with the positional forms
     (``here [N]``, ``--keep N``, or a focus topic); the returned
@@ -149,10 +149,10 @@ def summarize_compress_preview(
     focus_topic: Optional[str],
     approx_tokens: int,
 ) -> Dict[str, Any]:
-    """Build the ``/compress --preview`` report — pure, no side effects.
+    """Build the ``/compact --preview`` report — pure, no side effects.
 
     Shared by the CLI (``cli.py::_manual_compress``) and the gateway
-    (``gateway/slash_commands.py::_handle_compress_command``) so both
+    (``gateway/slash_commands.py::_handle_compact_command``) so both
     surfaces report the same numbers the real run would use.
 
     Returns a dict with ``head_count``/``tail_count``/``lines`` where

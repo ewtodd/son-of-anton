@@ -9743,7 +9743,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> None:
         """Atomically replace the stored messages for a session.
 
-        Used by transcript-rewrite flows such as /retry, /undo, and /compress.
+        Used by transcript-rewrite flows such as /retry, /undo, and /compact.
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
 

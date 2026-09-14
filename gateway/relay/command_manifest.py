@@ -93,7 +93,7 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
             "description": "Inject a message after the next tool call (no interrupt)",
             "options": [_opt("text", "What to tell the agent")],
         },
-        {"name": "compress", "description": "Compress conversation context"},
+        {"name": "compact", "description": "Compact conversation context"},
         {
             "name": "title",
             "description": "Set or show the session title",

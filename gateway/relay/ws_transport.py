@@ -187,7 +187,6 @@ def _normalize_slack_parent_command(
 
     payload = parent_parts[1].strip() if len(parent_parts) > 1 else ""
     subcommand_map = slack_subcommand_map()
-    subcommand_map["compact"] = "/compress"
     payload_parts = payload.split() if payload else []
     first_word = payload_parts[0] if payload_parts else ""
 

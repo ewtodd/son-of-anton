@@ -3217,7 +3217,7 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
-        # (gateway hygiene, /compress) can surface a visible warning.
+        # (gateway hygiene, /compact) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
         self._last_feasibility_skip: bool = False
@@ -3225,7 +3225,7 @@ class ContextCompressor(ContextEngine):
         # and return the original messages unchanged instead of dropping
         # the middle window with a static placeholder.  Callers inspect
         # this flag to know "compression was attempted but aborted, freeze
-        # the chat until the user manually retries via /compress".
+        # the chat until the user manually retries via /compact".
         self._last_compress_aborted: bool = False
         # Set True when the summary call failed with an authentication /
         # permission error (HTTP 401/403). Auth failures are non-recoverable
@@ -3422,7 +3422,7 @@ class ContextCompressor(ContextEngine):
         # returns. Tokens stay above threshold, so without this guard every
         # subsequent turn re-fires _compress_context() — re-inserting the
         # marker and re-entering the loop, making the CLI appear frozen until
-        # the cooldown expires (issue #11529). Manual /compress passes
+        # the cooldown expires (issue #11529). Manual /compact passes
         # force=True, which clears this cooldown in compress() before running,
         # so it still retries immediately.
         _cooldown_remaining = self._summary_failure_cooldown_until - time.monotonic()
@@ -3482,7 +3482,7 @@ class ContextCompressor(ContextEngine):
                     "Compression skipped — repeated compaction attempts did not "
                     "restore healthy context. ineffective=%d fallback=%d. "
                     "Auto-compaction will retry once in %.0fs. Consider /new "
-                    "to start fresh, or /compress <topic> for focused "
+                    "to start fresh, or /compact <topic> for focused "
                     "compression.",
                     self._ineffective_compression_count,
                     self._fallback_compression_streak,
@@ -4535,7 +4535,7 @@ class ContextCompressor(ContextEngine):
             return None
 
         # Strict-redact prompt inputs that bypass _serialize_for_summary:
-        # a manual `/compress <focus>` string, and a previous summary that
+        # a manual `/compact <focus>` string, and a previous summary that
         # may predate compaction redaction (resumed from a persisted
         # handoff message written before this boundary existed).
         if focus_topic:
@@ -4790,7 +4790,7 @@ Use this exact structure:
 
 {_template_sections}"""
 
-        # Inject focus topic guidance when the user provides one via /compress <focus>.
+        # Inject focus topic guidance when the user provides one via /compact <focus>.
         # This goes at the end of the prompt so it takes precedence.
         if focus_topic:
             prompt += f"""
@@ -5789,7 +5789,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         is always implicitly protected — it's load-bearing context that
         must never be summarised away.  This keeps semantics stable across
         call paths where the system prompt may or may not be included in
-        the ``messages`` list (e.g. the gateway ``/compress`` handler
+        the ``messages`` list (e.g. the gateway ``/compact`` handler
         strips it before calling compress()).
 
         The ``protect_first_n`` portion DECAYS after the first compression
@@ -6272,13 +6272,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
 
     # ------------------------------------------------------------------
-    # ContextEngine: manual /compress preflight
+    # ContextEngine: manual /compact preflight
     # ------------------------------------------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
         """Return True if there is a non-empty middle region to compact.
 
-        Overrides the ABC default so the gateway ``/compress`` guard can
+        Overrides the ABC default so the gateway ``/compact`` guard can
         skip the LLM call when the transcript is still entirely inside
         the protected head/tail.
         """
@@ -6910,7 +6910,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         The summary marker carries the rolling summary text and the
         ``_compressed_summary`` metadata flag so downstream consumers
-        (resume, handoff, /compress) handle it identically to batch
+        (resume, handoff, /compact) handle it identically to batch
         compaction summaries.
 
         Alternation safety: the marker is ``assistant``-role. An exchange is
@@ -7080,7 +7080,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
             force: If True, clear any active summary-failure cooldown before
-                running so a manual ``/compress`` can retry immediately after
+                running so a manual ``/compact`` can retry immediately after
                 an auto-compression abort, and bypass the pre-LLM feasibility
                 skip so an explicit user request always exercises the full
                 summary path.  Auto-compress callers pass False.
@@ -7111,9 +7111,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
         telemetry["chunk_count"] = 0
 
-        # Manual /compress (force=True) bypasses the failure cooldown so the
+        # Manual /compact (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
-        # this, /compress would silently no-op for 30-60s after a failure.
+        # this, /compact would silently no-op for 30-60s after a failure.
         if force:
             self._clear_compression_failure_cooldown()
         n_messages = len(messages)
@@ -7412,7 +7412,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # compression entirely.  Feasibility skips are tracked separately
         # in ``_prellm_skip_count`` for observability.
         #
-        # Skipped when ``force=True`` (manual /compress) so auth/error
+        # Skipped when ``force=True`` (manual /compact) so auth/error
         # handling paths are always exercised on explicit user request.
         feasibility_skip = False
         if not force and self._ineffective_compression_count >= 1:
@@ -7509,7 +7509,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "quota error — aborting compression. %d message(s) "
                         "preserved unchanged; the session was NOT rotated. "
                         "Check the provider credential, permission, quota, or "
-                        "inference endpoint, then retry with /compress or "
+                        "inference endpoint, then retry with /compact or "
                         "start fresh with /new.",
                         n_skipped,
                     )
@@ -7518,7 +7518,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "Summary generation failed with a network/connection "
                         "error — aborting compression. %d message(s) preserved "
                         "unchanged; the session was NOT rotated. This is "
-                        "transient: retry with /compress once connectivity "
+                        "transient: retry with /compact once connectivity "
                         "recovers, or continue the conversation as-is.",
                         n_skipped,
                     )
@@ -7527,7 +7527,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "Summary generation failed — aborting compression "
                         "(compression.abort_on_summary_failure=true). "
                         "%d message(s) preserved unchanged. Conversation is "
-                        "frozen until the next /compress or /new.",
+                        "frozen until the next /compact or /new.",
                         n_skipped,
                     )
             return messages
@@ -7653,7 +7653,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         _force_user_leading = compress_start == 0 or last_head_role == "system"
         # Zero-user-turn guard (#58753). The #52160 guard above only fires
         # when the system prompt sits *inside* ``messages`` (the gateway
-        # ``/compress`` path). The main auto-compression path passes the
+        # ``/compact`` path). The main auto-compression path passes the
         # transcript WITHOUT the system prompt (it is prepended at
         # request-build time), so ``last_head_role`` defaults to "user" and
         # the summary is emitted as role="assistant". On a session whose only

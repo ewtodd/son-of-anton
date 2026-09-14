@@ -3104,7 +3104,7 @@ class AIAgent:
         if not messages:
             return
 
-        # Re-derive the target path each call so /branch and /compress
+        # Re-derive the target path each call so /branch and /compact
         # session-id changes land in the right file without any re-point
         # bookkeeping at the call sites.  Sanitize the session ID into a
         # single traversal-free path segment — session IDs can come from
@@ -8230,7 +8230,7 @@ class AIAgent:
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
 
-        ``force=True`` is passed by the manual ``/compress`` slash command
+        ``force=True`` is passed by the manual ``/compact`` slash command
         so users can bypass the summary-failure cooldown after an
         auto-compress abort.  Auto-compress callers use the default
         ``force=False``.
@@ -8242,7 +8242,7 @@ class AIAgent:
             run_compress_context_with_progress_timeout,
         )
         # Out-of-turn compaction entry points — ``/compact`` (cli.py), the
-        # gateway ``/compress`` command and its hygiene sweep (both of which
+        # gateway ``/compact`` command and its hygiene sweep (both of which
         # build a throwaway agent), and partial head compression — call this
         # forwarder directly, outside ``run_conversation``'s ambient scope.
         # With nothing ambient the summarizer's auxiliary call carries no
@@ -8383,7 +8383,7 @@ class AIAgent:
                         "⚠ Context compression timed out "
                         f"after {idle:.1f}s with no output from the summary "
                         "model. No messages were dropped — continuing without "
-                        "compression. Run /compress to retry, /new for a clean "
+                        "compression. Run /compact to retry, /new for a clean "
                         "session, or check auxiliary.compression."
                     )
 

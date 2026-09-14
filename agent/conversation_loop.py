@@ -1292,7 +1292,7 @@ def _compression_deferred_result(
     """Build the soft turn result for a lock-contended compression defer.
 
     Another path (a sibling turn, a background review fork, a manual
-    ``/compress``) holds this session's compression lock, so every
+    ``/compact``) holds this session's compression lock, so every
     compression pass this turn no-oped and the request still does not fit.
     This is a TEMPORARY condition — the lock winner is actively shrinking
     the same session — so the turn must end as a soft defer
@@ -2409,7 +2409,7 @@ def run_conversation(
             # tool-result growth) and surface a deduped, actionable warning
             # when the request exceeds the model context window. The dedup is
             # re-armed by the turn prologue once the session is back
-            # under the window (manual /compress works with compression
+            # under the window (manual /compact works with compression
             # disabled), so the guard warns again on a later re-overflow.
             # context_compressor always exists (agent_init constructs it even
             # when compression is disabled) and its context_length property
@@ -4641,9 +4641,9 @@ def run_conversation(
                 # gate) but a provider overflow error would still silently
                 # compress + rotate the session, bypassing the user's
                 # explicit choice.  Surface a terminal error instead so the
-                # user can compact manually (``/compress``), start fresh
+                # user can compact manually (``/compact``), start fresh
                 # (``/new``), switch to a larger-context model, or reduce
-                # attachments.  Forced compaction via ``/compress``
+                # attachments.  Forced compaction via ``/compact``
                 # (``force=True``) is unaffected — it never reaches this loop.
                 #
                 # Output-cap errors (max_tokens too large) are NOT input
@@ -4671,7 +4671,7 @@ def run_conversation(
                         force=True,
                     )
                     agent._vprint(
-                        f"{agent.log_prefix}   💡 Run /compress to compact manually, /new to start fresh, "
+                        f"{agent.log_prefix}   💡 Run /compact to compact manually, /new to start fresh, "
                         f"switch to a larger-context model, or reduce attachments.",
                         force=True,
                     )
@@ -4682,7 +4682,7 @@ def run_conversation(
                     agent._persist_session(messages, conversation_history)
                     _final_response = (
                         "Context overflow and auto-compaction is disabled "
-                        "(compression.enabled: false). Run /compress to compact manually, "
+                        "(compression.enabled: false). Run /compact to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
                     return {
@@ -4991,7 +4991,7 @@ def run_conversation(
                         # Terminal — surface the buffered retry trace.
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compact to retry compression.", force=True)
                         logger.error("%s413 compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Request payload too large: max compression attempts ({max_compression_attempts}) reached."
@@ -5063,7 +5063,7 @@ def run_conversation(
                         # sees what compression attempts were made.
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compact to retry compression.", force=True)
                         logger.error("%s413 payload too large. Cannot compress further.", agent.log_prefix)
                         agent._persist_session(messages, conversation_history)
                         _final_response = "Request payload too large (413). Cannot compress further."
@@ -5141,7 +5141,7 @@ def run_conversation(
                         if compression_attempts > max_compression_attempts:
                             agent._flush_status_buffer()
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                            agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                            agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compact to retry compression.", force=True)
                             logger.error("%sContext compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
                             agent._persist_session(messages, conversation_history)
                             _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
@@ -5295,7 +5295,7 @@ def run_conversation(
                     if compression_attempts > max_compression_attempts:
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compact to retry compression.", force=True)
                         logger.error("%sContext compression failed after %d attempts.", agent.log_prefix, max_compression_attempts)
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
@@ -5358,7 +5358,7 @@ def run_conversation(
                         # Can't compress further and already at minimum tier
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
+                        agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compact to manually trigger compression.", force=True)
                         logger.error("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}")
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."

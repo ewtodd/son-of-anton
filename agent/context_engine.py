@@ -177,7 +177,7 @@ class ContextEngine(ABC):
         OpenAI-format message sequence.
 
         Args:
-            focus_topic: Optional topic string from manual ``/compress <focus>``.
+            focus_topic: Optional topic string from manual ``/compact <focus>``.
                 Engines that support guided compression should prioritise
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
@@ -354,18 +354,18 @@ class ContextEngine(ABC):
         best-effort fields such as ``approx_tokens`` and ``threshold_tokens``.
 
         This hook does not control warning/error messages or explicit manual
-        commands such as ``/compress``.
+        commands such as ``/compact``.
         """
         if not self.emit_automatic_compaction_status:
             return None
         return default_message
 
-    # -- Optional: manual /compress preflight ------------------------------
+    # -- Optional: manual /compact preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick check: is there anything in ``messages`` that can be compacted?
 
-        Used by the gateway ``/compress`` command as a preflight guard —
+        Used by the gateway ``/compact`` command as a preflight guard —
         returning False lets the gateway report "nothing to compress yet"
         without making an LLM call.
 

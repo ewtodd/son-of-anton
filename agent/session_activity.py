@@ -66,7 +66,7 @@ def reset_session_activity_persist_window(agent: Any) -> None:
     The next ``_touch_activity`` / ``_persist_session_activity_if_due`` will
     write through even if a stamp landed within the last 60s. Used for
     terminal compression labels that must not stay stuck on mid-compress
-    text (e.g. "context compression in progress" after /compress).
+    text (e.g. "context compression in progress" after /compact).
     """
     try:
         agent._session_activity_last_persist_mono = 0.0

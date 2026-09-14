@@ -170,14 +170,14 @@ def _emit_compaction_done(agent: Any) -> None:
 
 
 # ── Routine compression status templates ────────────────────────────────────
-# Every ROUTINE (non-failure, non-manual-/compress) compression status line the
+# Every ROUTINE (non-failure, non-manual-/compact) compression status line the
 # agent emits lives here so the gateway noise filter and its tests can couple
 # to the real emitted wording instead of hand-copied literals. These are
 # suppressed on human-facing chat platforms by _TELEGRAM_NOISY_STATUS_RE
 # (gateway/run.py) — when rewording ANY of them, update that regex and the
 # pinned data in tests/gateway/test_telegram_noise_filter.py in the same PR.
 # Failure notices (⚠ Compression aborted / empty transcript / codex compaction
-# failed) and manual /compress feedback (manual_compression_feedback.py) are
+# failed) and manual /compact feedback (manual_compression_feedback.py) are
 # deliberate carve-outs from silence and must NOT be added here.
 IDLE_COMPACTION_STATUS_TEMPLATE = (
     "💤 Resumed after {idle_seconds}s idle — compacting "
@@ -209,7 +209,7 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
     "(~{tokens:,} tokens >= {threshold:,}) "
     "but compression is currently blocked ({reason}). "
     "The model may stop responding. Run /new to start a fresh "
-    "session or /compress to retry immediately."
+    "session or /compact to retry immediately."
 )
 
 # Sample-formatted instances of every routine compression status line, for
@@ -1510,7 +1510,7 @@ class _CompressionActivityHeartbeat:
             return
         # Terminal completed/failed must reach SessionDB even inside the
         # ordinary 60s activity persist window — otherwise durable labels
-        # stay on "context compression in progress" after /compress (which
+        # stay on "context compression in progress" after /compact (which
         # never hits run_conversation's turn-end clear).
         self._touch(desc, force_persist=True)
 
@@ -2300,7 +2300,7 @@ def compress_context(
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.
         force: If True, bypass any active summary-failure cooldown.  Set
-            by the manual ``/compress`` slash command so users can retry
+            by the manual ``/compact`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
         defer_context_engine_notification: Delay the existing context-engine
@@ -2483,7 +2483,7 @@ def compress_context(
     _legacy_session_db_without_lock_api = False
     # Clear any stale lock-skip signal from a prior call so this call's
     # outcome alone determines what callers see.  Without this an
-    # auto-compress lock-skip followed by a successful manual /compress
+    # auto-compress lock-skip followed by a successful manual /compact
     # would falsely report "Compression already in progress" and discard
     # the compression results.
     agent._compression_skipped_due_to_lock = None
@@ -2632,7 +2632,7 @@ def compress_context(
             _lock_holder = None  # don't release a lock we don't own
             # Signal to callers that this no-op is due to a concurrent lock,
             # not a genuine "nothing to compress" or aux-model failure.
-            # Manual /compress callers can surface a clear status message
+            # Manual /compact callers can surface a clear status message
             # instead of the misleading "No changes from compression" text.
             agent._compression_skipped_due_to_lock = existing or True
             # Surface to the user once — quiet for downstream auto-compress loops
@@ -2864,7 +2864,7 @@ def compress_context(
         # When durable DID grow, ADOPT it and continue rather than aborting.
         # Aborting returned the stale snapshot unchanged, so busy sessions
         # (memory review / shared session_id writers) stayed permanently
-        # behind the DB: every /compress and auto-compress saw
+        # behind the DB: every /compact and auto-compress saw
         # "changed before lease acquisition", surfaced as the misleading
         # "No changes from compression", and never reclaimed tokens.
         if not in_place and _lock_db is not None and _lock_sid:
@@ -3020,7 +3020,7 @@ def compress_context(
         # the timeout cooldown the host recorded. Install a cancellation
         # check the compressor consults BEFORE clearing the failure cooldown;
         # removed in the finally below so it cannot leak into later attempts
-        # (e.g. a manual /compress force-clear).
+        # (e.g. a manual /compact force-clear).
         if commit_fence is not None:
             try:
                 agent.context_compressor._compression_cancelled_check = (
@@ -3158,7 +3158,7 @@ def compress_context(
                     agent._emit_warning(
                         f"⚠ Compression aborted: {_err}. "
                         "No messages were dropped — conversation continues unchanged. "
-                        "Run /compress to retry, or /new to start a fresh session."
+                        "Run /compact to retry, or /new to start a fresh session."
                     )
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:
@@ -3434,7 +3434,7 @@ def compress_context(
                         f"{_rough_out:,}",
                     )
                     # Flag the refusal on the compressor state so manual
-                    # /compress feedback can report it honestly. Without this,
+                    # /compact feedback can report it honestly. Without this,
                     # the CLI compared the returned list against its pre-call
                     # snapshot, saw a difference (durable-snapshot adoption can
                     # legitimately change the count), and printed
@@ -3468,7 +3468,7 @@ def compress_context(
                     # after the normal threshold. Without this, the unchanged
                     # transcript stays over the compression threshold and
                     # automatic compression retries the identical summary
-                    # request on every turn (#88568). Manual /compress keeps
+                    # request on every turn (#88568). Manual /compact keeps
                     # bypassing the latch (force=True skips the guards).
                     try:
                         agent.context_compressor.record_rejected_compaction()

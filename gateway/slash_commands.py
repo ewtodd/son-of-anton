@@ -1,7 +1,7 @@
 """Gateway slash-command handlers for GatewayRunner.
 
 Extracted from ``gateway/run.py`` (god-file decomposition Phase 3b). These are
-the in-session slash commands (/model, /reset, /usage, /compress, ...) the
+the in-session slash commands (/model, /reset, /usage, /compact, ...) the
 gateway dispatches from ``_handle_message``. There are 42 of them (~3,200 LOC);
 lifting them into a mixin that ``GatewayRunner`` inherits keeps every
 ``self._handle_*_command`` dispatch + test reference working via the MRO, while
@@ -3337,14 +3337,14 @@ class GatewaySlashCommandsMixin:
             return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)
 
 
-    async def _handle_compress_command(self, event: MessageEvent) -> str:
-        """Handle /compress command -- manually compress conversation context.
+    async def _handle_compact_command(self, event: MessageEvent) -> str:
+        """Handle /compact command -- manually compress conversation context.
 
-        Accepts an optional focus topic: ``/compress <focus>`` guides the
+        Accepts an optional focus topic: ``/compact <focus>`` guides the
         summariser to preserve information related to *focus* while being
         more aggressive about discarding everything else.
 
-        Also accepts the boundary-aware form ``/compress here [N]``:
+        Also accepts the boundary-aware form ``/compact here [N]``:
         summarize everything except the most recent ``N`` exchanges
         (default 2), kept verbatim. Inspired by Claude Code's Rewind
         "Summarize up to here" action (v2.1.139, May 2026,
@@ -3355,7 +3355,7 @@ class GatewaySlashCommandsMixin:
         history = await self.async_session_store.load_transcript(session_entry.session_id)
 
         if not history or len(history) < 4:
-            return t("gateway.compress.not_enough")
+            return t("gateway.compact.not_enough")
 
         # Parse args: either a focus topic (full compress) or the
         # boundary-aware "here [N]" form (partial compress).
@@ -3380,7 +3380,7 @@ class GatewaySlashCommandsMixin:
             # LLM-free hard truncation is not supported on this surface —
             # it would need its own transcript-persistence branch outside
             # the guarded _compress_context rotation machinery (#44794).
-            _agg_note = t("gateway.compress.aggressive_unsupported")
+            _agg_note = t("gateway.compact.aggressive_unsupported")
             if not _preview:
                 return _agg_note
 
@@ -3427,7 +3427,7 @@ class GatewaySlashCommandsMixin:
                 session_key=session_key,
             )
             if not runtime_kwargs.get("api_key"):
-                return t("gateway.compress.no_provider")
+                return t("gateway.compact.no_provider")
 
             # Pass the FULL transcript (tool results included) — same
             # rationale as the session-hygiene auto-compress in
@@ -3521,7 +3521,7 @@ class GatewaySlashCommandsMixin:
 
                 compressor = tmp_agent.context_compressor
                 if not compressor.has_content_to_compress(head):
-                    return t("gateway.compress.nothing_to_do")
+                    return t("gateway.compact.nothing_to_do")
 
                 # _run_in_executor_with_context (not a bare run_in_executor):
                 # the profile secret scope installed by the wrapper is a
@@ -3611,7 +3611,7 @@ class GatewaySlashCommandsMixin:
                     pass
                 else:
                     logger.warning(
-                        "Manual /compress: session rotation did not occur "
+                        "Manual /compact: session rotation did not occur "
                         "(session_id unchanged) and in-place mode is off — "
                         "preserving original transcript instead of overwriting "
                         "it (#44794)."
@@ -3635,7 +3635,7 @@ class GatewaySlashCommandsMixin:
                     compression_state=compressor,
                 )
                 # Detect summary-generation failure so we can surface a
-                # visible warning to the user even on the manual /compress
+                # visible warning to the user even on the manual /compact
                 # path (otherwise the failure is silently logged).
                 # _last_compress_aborted means the aux LLM returned no
                 # usable summary and the compressor preserved messages
@@ -3671,21 +3671,21 @@ class GatewaySlashCommandsMixin:
                 )
             lines = [summary["headline"]]
             if focus_topic:
-                lines.append(t("gateway.compress.focus_line", topic=focus_topic))
+                lines.append(t("gateway.compact.focus_line", topic=focus_topic))
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
             if _summary_aborted:
                 lines.append(
                     t(
-                        "gateway.compress.aborted",
+                        "gateway.compact.aborted",
                         error=(_summary_err or "unknown error"),
                     )
                 )
             elif _aux_fail_model:
                 lines.append(
                     t(
-                        "gateway.compress.aux_failed",
+                        "gateway.compact.aux_failed",
                         model=_aux_fail_model,
                         error=(_aux_fail_err or "unknown error"),
                     )
@@ -3693,7 +3693,7 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
-            return t("gateway.compress.failed", error=e)
+            return t("gateway.compact.failed", error=e)
 
     async def _handle_save_command(self, event: MessageEvent) -> str:
         """Handle /save — export the current session and send it as a document.

@@ -8170,7 +8170,6 @@ class SlackAdapter(BasePlatformAdapter):
             from son_of_anton_cli.commands import slack_subcommand_map
 
             subcommand_map = slack_subcommand_map()
-            subcommand_map["compact"] = "/compress"
             # Guard against whitespace-only text where ``text`` is truthy but
             # ``text.split()`` returns ``[]`` (e.g. user sends ``/son-of-anton   ``).
             parts = legacy_text.split() if legacy_text else []

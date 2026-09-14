@@ -3704,7 +3704,7 @@ class SessionStore:
         """Drop queued pending messages for a session.
 
         Called by ``rewrite_transcript`` and ``rewind_session`` so that
-        /retry, /undo, /compress — which replace or truncate the transcript —
+        /retry, /undo, /compact — which replace or truncate the transcript —
         don't leave stale messages that would be re-inserted on the next
         append.
         """
@@ -3739,7 +3739,7 @@ class SessionStore:
     ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
-        Used by /retry and /compress to persist modified conversation
+        Used by /retry and /compact to persist modified conversation
         history. state.db is the canonical store. (/undo is not a caller:
         it soft-archives rows via rewind_session / rewind_to_message.)
 
@@ -3753,7 +3753,7 @@ class SessionStore:
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
         the result, but callers that would otherwise commit a destructive state
-        change on top of a failed write — e.g. /compress repointing the live
+        change on top of a failed write — e.g. /compact repointing the live
         session onto a fresh session_id — must check it so they can surface an
         error instead of silently dropping the conversation.
         """
