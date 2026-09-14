@@ -448,8 +448,11 @@ services.son-of-anton.instances.ricky = {
 };
 ```
 <!---->
-`git.github` is a runtime path to a *public* SSH key. On activation the module
-installs it (and a small `~/.ssh/config` that routes `github.com` to it) into
+`git.github` is a runtime path to a *private* SSH key (OpenSSH format) whose
+public half you register on GitHub — as a deploy key on the repos this
+instance works on, or on a bot account added to them. On activation the
+module installs it (and a small ssh config that routes `github.com` to it)
+into
 the instance's `HOME` and chowns both to the instance user; the service runs
 git with `GIT_SSH_COMMAND` pinned to that key. The agent's terminal tool
 inherits the same environment, so a plain `git clone`/`git push` works with no

@@ -193,15 +193,14 @@
                         type = types.nullOr types.str;
                         default = null;
                         description = ''
-                          Runtime path to the public SSH key of a GitHub
-                          account that can pull and push the repositories
-                          this instance works on (for example a bot account
-                          the human added to the repository, or a
-                          fine-grained key added to the machine).
+                          Runtime path to a *private* SSH key (OpenSSH format)
+                          whose public half is registered on GitHub — as a
+                          deploy key on the repositories this instance works
+                          on, or on a bot account added to them.
 
-                          Activation installs the key and a matching
-                          ~/.ssh/config for github.com into the instance's
-                          HOME (stateDir, or workingDirectory for a
+                          Activation installs the key and a matching ssh
+                          config for github.com into the instance's HOME
+                          (stateDir, or workingDirectory for a
                           managedAccount) and chowns both to the instance
                           user. Plain `git clone`/`git push` over ssh — the
                           agent's terminal tool included — then uses that
@@ -209,7 +208,8 @@
 
                           A `str` on purpose: pass a runtime path such as an
                           agenix secret. A Nix path literal would copy the
-                          key into the store, where every user can read it.
+                          private key into the store, where every user can
+                          read it.
                         '';
                         example = literalExpression ''config.age.secrets."soa-ricky-github-key".path'';
                       };
@@ -557,20 +557,21 @@
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
 
-              # git over SSH for the agent's terminal tool: GIT_SSH_COMMAND
-              # pins the key installed by activation, so git never prompts
-              # for an agent or tries the account's default identity.
-              unitConfig = lib.optionalAttrs (inst.git.github != null) {
-                Environment = [
-                  "GIT_SSH_COMMAND=ssh -F ${gitSshConfigFor inst} -i ${gitKeyFor inst} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-                ];
-              };
-
               # inst.environment and inst.environmentFiles are written to
               # $SON_OF_ANTON_HOME/.env by the activation script.
               # load_son_of_anton_dotenv() reads them at Python startup — no
               # systemd EnvironmentFile needed.
-              environment = unitEnvironmentFor inst;
+              #
+              # git over SSH for the agent's terminal tool: GIT_SSH_COMMAND
+              # pins the key installed by activation, so git never prompts
+              # for an agent or tries the account's default identity. It
+              # goes here ([Service] Environment=), NOT under unitConfig —
+              # Environment= is not a valid [Unit] key and systemd silently
+              # drops unknown keys.
+              environment = unitEnvironmentFor inst
+                // lib.optionalAttrs (inst.git.github != null) {
+                  GIT_SSH_COMMAND = "ssh -F ${gitSshConfigFor inst} -i ${gitKeyFor inst} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new";
+                };
 
               serviceConfig = (serviceConfigFor inst) // {
                 ExecStart = lib.escapeShellArgs (common.gatewayArgv inst);
