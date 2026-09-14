@@ -4,7 +4,7 @@
 tool-calling loop ever started: stdio guarding, runtime-main wiring, retry-counter
 resets, user-message sanitization, todo/nudge-counter hydration, system-prompt
 restore-or-build, session-row creation (before compression, whose DB writes
-reference the row), preflight context compression, the ``pre_llm_call`` plugin
+reference the row), turn-start context compaction, the ``pre_llm_call`` plugin
 hook, external-memory prefetch, and crash-resilience persistence (last, so the
 user row is written once with its final ``api_content`` sidecar).
 
@@ -33,7 +33,6 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
-    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
     recover_rotated_compression_session,
@@ -43,10 +42,7 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.model_metadata import (
-    estimate_messages_tokens_rough,
-    estimate_request_tokens_rough,
-)
+from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
@@ -320,49 +316,60 @@ def compression_made_progress(
 _compression_made_progress = compression_made_progress
 
 
-def _compression_warrants_another_preflight_pass(
-    orig_tokens: int, new_tokens: int, threshold_tokens: int
-) -> bool:
-    """Whether an over-threshold request merits another immediate summary.
+def resolve_turn_start_compaction_tokens(
+    compressor: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Token figure the turn-start compaction gate compares to the threshold.
 
-    Row-count progress is enough to prove that a compression boundary was real,
-    but not enough to justify another expensive pass before trying the provider.
-    Continue only when the request remains over threshold *and* the previous pass
-    materially reduced its estimated token pressure (>5%).
+    Real provider usage comes first — the same rule opencode applies at the
+    top of its loop (``isOverflow(lastFinished.tokens)``): ``last_prompt_tokens``
+    is the prompt size the provider reported for the previous response, and
+    the request about to go out differs from it by one user message. A
+    character-count estimate of the pending request is never used while a
+    real reading exists: it over-counts CJK text, tool schemas and reasoning
+    replay severalfold and used to fire compactions at a third of the real
+    window.
+
+    ``-1`` is the post-compaction sentinel: compaction just rewrote the
+    transcript and no provider reading exists for the new shape, so return
+    ``None`` and let the next response settle it (#36718). ``0`` means no
+    usage was ever reported (resumed session, usage-less provider, model
+    switch); only then fall back to the request estimate — the fallback the
+    tool-loop gate already uses (#2153).
     """
-    return (
-        new_tokens >= threshold_tokens
-        and orig_tokens > 0
-        and new_tokens < orig_tokens * 0.95
+    try:
+        last = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        last = 0
+    if last > 0:
+        return last
+    if last < 0:
+        return None
+    return estimate_request_tokens_rough(
+        messages, system_prompt=system_prompt or "", tools=tools
     )
 
 
-def _should_run_preflight_estimate(
-    messages: List[Dict[str, Any]],
-    protect_first_n: int,
-    protect_last_n: int,
-    threshold_tokens: int,
-) -> bool:
-    """Cheap gate for the (expensive) full preflight token estimate.
+def _compaction_decision(compressor: Any, tokens: int) -> "tuple[bool, str | None]":
+    """``(compact_now, block_reason)`` for *tokens* against the engine's gate.
 
-    Returns ``True`` when either:
-      (a) message count exceeds the protected ranges (the historical gate), or
-      (b) a cheap char-based estimate already crosses the configured threshold
-          — the few-but-huge case from issue #27405 that the count-only gate
-          would silently skip (a handful of very large messages never trips
-          the count condition, so compression was never attempted and the
-          turn hit a hard context-overflow error).
-
-    Branch (b) uses ``estimate_messages_tokens_rough`` (the shared char-based
-    estimator) so a single large base64 image isn't mistaken for ~250K tokens.
-    It intentionally undercounts vs. the full request estimate — it omits the
-    system prompt and tool schemas — because it is only a *hint* deciding
-    whether to pay for the authoritative ``estimate_request_tokens_rough``,
-    which (together with ``should_compress``) makes the real decision.
+    ``should_compress_info`` is the built-in compressor's richer form (it
+    names why an over-threshold context is NOT being compacted: summary-LLM
+    cooldown or the anti-thrash breaker). Plugin engines and minimal test
+    doubles may only implement ``should_compress``.
     """
-    if len(messages) > protect_first_n + protect_last_n + 1:
-        return True
-    return estimate_messages_tokens_rough(messages) >= threshold_tokens
+    info = getattr(compressor, "should_compress_info", None)
+    if callable(info):
+        try:
+            decision, reason = info(tokens)
+            return bool(decision), reason
+        except Exception:
+            pass
+    return bool(compressor.should_compress(tokens)), None
 
 
 def _should_idle_compact(
@@ -409,7 +416,7 @@ class TurnContext:
     original_user_message: Any
     # Working message list for this turn (loop appends to it).
     messages: List[Dict[str, Any]]
-    # May be reset to None by preflight compression (new session created).
+    # May be reset to None by turn-start compaction (new session created).
     conversation_history: Optional[List[Dict[str, Any]]]
     # Cached system prompt active for this turn (may be rebuilt by compression).
     active_system_prompt: Optional[str]
@@ -424,8 +431,6 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
-    # Turn-start preflight already proved an immediate retry ineffective.
-    preflight_compression_blocked: bool = False
 
 
 def build_turn_context(
@@ -748,7 +753,7 @@ def build_turn_context(
     # Create the DB session row now that _cached_system_prompt is populated, so
     # the persisted snapshot is written non-NULL on the first turn (Issue
     # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
-    # Must run BEFORE preflight compression: in-place compaction inserts
+    # Must run BEFORE turn-start compaction: in-place compaction inserts
     # message rows referencing this session (archive_and_compact), and
     # rotation creates a child with parent_session_id pointing at it — with
     # PRAGMA foreign_keys=ON, a missing parent row fails both INSERTs on a
@@ -771,7 +776,7 @@ def build_turn_context(
         )
     finally:
         # Clear the staged CLI input eagerly (as the pre-refactor code did)
-        # so a crash in preflight compression — which runs between this row
+        # so a crash in turn-start compaction — which runs between this row
         # create and the late crash-persist below — doesn't leave a stale
         # _pending_cli_user_message that the next turn would mistake for a
         # fresh staged input.
@@ -782,11 +787,11 @@ def build_turn_context(
     # When a session resumes after a long idle gap, compact the accumulated
     # history up front so the rest of the conversation does not keep re-reading
     # a large stale context on every turn. This fires on elapsed wall-clock time
-    # rather than size, so it complements (does not replace) the token-threshold
-    # preflight below. ``_last_activity_ts`` is the last time this turn loop did
+    # rather than size, so it complements (does not replace) the real-usage
+    # gate below. ``_last_activity_ts`` is the last time this turn loop did
     # work; nothing has touched it yet this turn, so it measures the gap since
     # the previous turn finished. The cheap gap pre-check gates the (more
-    # expensive) token estimate, mirroring ``_should_run_preflight_estimate``.
+    # expensive) token estimate.
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if agent.compression_enabled and _idle_after > 0 and messages:
         _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
@@ -851,112 +856,65 @@ def build_turn_context(
                     )
                     # Compaction rebuilt the list, so the index of this turn's
                     # just-appended user message is stale — re-anchor it the
-                    # same way the preflight path does below.
+                    # same way the turn-start path does below.
                     current_turn_user_idx = reanchor_current_turn_user_idx(
                         messages, user_message
                     )
                     agent._persist_user_message_idx = current_turn_user_idx
 
-    # ── Preflight context compression ──
-    # Gate the (expensive) full token estimate behind a cheap pre-check.
-    # See ``_should_run_preflight_estimate`` for the OR semantics that fix
-    # issue #27405 (a few very large messages slipping past the count gate).
-    _preflight_compressed = False
-    _preflight_compression_blocked = False
-    agent._turn_received_provider_response = False
-    agent._turn_preflight_display_snapshot = None
-    if agent.compression_enabled and _should_run_preflight_estimate(
-        messages,
-        agent.context_compressor.protect_first_n,
-        agent.context_compressor.protect_last_n,
-        agent.context_compressor.threshold_tokens,
-    ):
-        _preflight_tokens = estimate_request_tokens_rough(
+    # ── Turn-start compaction (real provider usage) ──
+    # The gate is the prompt size the provider reported for the previous
+    # response — opencode's overflow rule — not a character-count estimate of
+    # the request about to be sent. Rough estimates over-count CJK text, tool
+    # schemas and reasoning replay severalfold; gating on them used to stall
+    # a turn on a "preflight" compaction at a third of the real window before
+    # the user's message had even been sent. See
+    # ``resolve_turn_start_compaction_tokens`` for the two fallbacks.
+    #
+    # One pass only. Compaction rewrites the transcript, so no real reading
+    # exists for the new shape until the provider answers; a second pass here
+    # could only be driven by an estimate. If the compacted request still does
+    # not fit, the provider's overflow handler in the loop compacts again with
+    # that authoritative signal.
+    _turn_start_compacted = False
+    if agent.compression_enabled:
+        _compressor = agent.context_compressor
+        _usage_tokens = resolve_turn_start_compaction_tokens(
+            _compressor,
             messages,
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
-        _compressor = agent.context_compressor
-        # getattr guard: minimal compressor doubles (SimpleNamespace in the
-        # engine-preflight tests) and plugin context engines lack this
-        # ContextCompressor-only method — absence means no snapshot, and the
-        # finalizer's rollback stays disarmed for the turn (display-only).
-        _snapshot_fn = getattr(
-            _compressor, "snapshot_preflight_display_tokens", None
-        )
-        if callable(_snapshot_fn):
-            _snapshot_val = _snapshot_fn()
-            # Type pin: MagicMock compressors return truthy Mock objects —
-            # only a real int snapshot may arm the interrupted-turn rollback.
-            if isinstance(_snapshot_val, int) and not isinstance(
-                _snapshot_val, bool
-            ):
-                agent._turn_preflight_display_snapshot = _snapshot_val
-        _defer_preflight = getattr(
-            _compressor,
-            "should_defer_preflight_to_real_usage",
-            lambda _tokens: False,
-        )
-        _preflight_deferred = _defer_preflight(_preflight_tokens)
-        _codex_native_auto = False
-
-        if not _preflight_deferred:
-            _last = _compressor.last_prompt_tokens
-            # Do NOT overwrite the -1 sentinel (#36718).
-            if _last >= 0 and _preflight_tokens > _last:
-                _compressor.last_prompt_tokens = _preflight_tokens
-
         _compression_cooldown = getattr(
             _compressor,
             "get_active_compression_failure_cooldown",
             lambda: None,
         )()
-
         _should_compress_now = False
         _compress_block_reason = None
-        if _preflight_deferred:
-            logger.info(
-                "Skipping preflight compression: rough estimate ~%s >= %s, "
-                "but last real provider prompt was %s after compression",
-                f"{_preflight_tokens:,}",
-                f"{_compressor.threshold_tokens:,}",
-                f"{_compressor.last_real_prompt_tokens:,}",
+        if _usage_tokens is None:
+            logger.debug(
+                "Turn-start compaction: awaiting real provider usage after "
+                "the previous compaction (session %s)",
+                agent.session_id or "none",
             )
         elif _compression_cooldown:
             logger.info(
-                "Skipping preflight compression: same-session cooldown active "
+                "Skipping turn-start compaction: same-session cooldown active "
                 "(~%s seconds remaining, session %s)",
                 int(_compression_cooldown.get("remaining_seconds", 0.0)),
                 agent.session_id or "none",
             )
-            if _preflight_tokens >= _compressor.threshold_tokens:
-                # Context is over threshold but compression is blocked by the
-                # summary-LLM cooldown — surface a warning (see block below).
+            if _usage_tokens >= _compressor.threshold_tokens:
+                # Over threshold but blocked by the summary-LLM cooldown —
+                # surface a warning (see block below).
                 _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
                 _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
-        elif _codex_native_auto:
-            logger.info(
-                "Skipping Son of Anton preflight compression for codex app-server "
-                "(mode=%s); Son of Anton will not start thread compaction here.",
-                "native",
-            )
         else:
-            _should_compress_now = _compressor.should_compress(_preflight_tokens)
-            if not _should_compress_now:
-                # Context is over threshold but compression is blocked
-                # (summary-LLM cooldown or anti-thrashing). Ask should_compress_info
-                # for the human-readable reason so we can surface a warning below.
-                # getattr guard: minimal compressor doubles (SimpleNamespace in
-                # the engine-preflight tests) and older plugin engines lack the
-                # method — absence means no block reason, no warning.
-                _info = getattr(_compressor, "should_compress_info", None)
-                if callable(_info):
-                    try:
-                        _compress_block_reason = _info(_preflight_tokens)[1]
-                    except Exception:
-                        _compress_block_reason = None
+            _should_compress_now, _compress_block_reason = _compaction_decision(
+                _compressor, _usage_tokens
+            )
         if _should_compress_now:
-            _preflight_compressed = True
             # Compression is actually running (block cleared / was never
             # blocked) — reset the dedup so a future blocked-over-threshold
             # turn can warn again. Real session boundary.
@@ -966,72 +924,33 @@ def build_turn_context(
             if callable(_clear_warn):
                 _clear_warn()
             logger.info(
-                "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
-                f"{_preflight_tokens:,}",
+                "Turn-start compaction: %s tokens >= %s threshold "
+                "(model %s, ctx %s, source=%s)",
+                f"{_usage_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 agent.model,
                 f"{_compressor.context_length:,}",
+                "provider" if getattr(_compressor, "last_prompt_tokens", 0) > 0
+                else "estimate",
             )
-            _preflight_status = automatic_compaction_status_message(
-                _compressor,
-                phase="preflight",
-                default_message=PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
-                    tokens=_preflight_tokens,
-                    threshold=_compressor.threshold_tokens,
-                ),
-                approx_tokens=_preflight_tokens,
-                threshold_tokens=_compressor.threshold_tokens,
-                context_length=_compressor.context_length,
-                model=agent.model,
+            _turn_start_input = messages
+            messages, active_system_prompt = agent._compress_context(
+                messages, system_message, approx_tokens=_usage_tokens,
+                task_id=effective_task_id,
             )
-            if _preflight_status:
-                agent._emit_status(_preflight_status)
-            # Preflight passes honor the same configured per-turn cap
-            # (compression.max_attempts) as the loop's compression sites;
-            # default 3 preserves the prior hardcoded behavior.
-            _max_preflight_passes = max(
-                1, int(getattr(agent, "max_compression_attempts", 3) or 3)
-            )
-            for _pass in range(_max_preflight_passes):
-                _orig_len = len(messages)
-                _orig_tokens = _preflight_tokens
-                _preflight_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
-                if (
-                    messages is _preflight_input
-                    and compression_skipped_due_to_lock(agent)
-                ):
-                    # #69870 lock-skip: another path holds this session's
-                    # compression lock, so the pass no-oped. That is a
-                    # temporary DEFER, not proof the transcript cannot
-                    # compress — do NOT arm the insufficient-progress
-                    # blocker (the loop's error handlers must keep their
-                    # provider-proven retry budget) and stop preflight
-                    # passes for this turn; the lock winner is shrinking
-                    # the same session concurrently.
+            if messages is _turn_start_input:
+                # ``_compress_context`` returns the INPUT list object on every
+                # skip path (per-session lock held elsewhere, cooldown,
+                # anti-thrash breaker, codex-native routing) — leave the
+                # turn's bookkeeping untouched.
+                if compression_skipped_due_to_lock(agent):
                     logger.info(
-                        "Preflight compression deferred: compression lock "
+                        "Turn-start compaction deferred: compression lock "
                         "held by another path (session %s)",
                         agent.session_id or "none",
                     )
-                    break
-                # Re-estimate now so size-only compression (same row count,
-                # lower token count — e.g. summarising tool outputs) is
-                # recognised as progress instead of being misread as
-                # "Cannot compress further". Fixes #39548.
-                _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
-                )
-                if not _compression_made_progress(
-                    _orig_len, len(messages), _orig_tokens, _preflight_tokens
-                ):
-                    _preflight_compression_blocked = True
-                    break  # Cannot compress further: neither rows nor tokens moved
+            else:
+                _turn_start_compacted = True
                 conversation_history = conversation_history_after_compression(
                     agent, messages, conversation_history
                 )
@@ -1040,21 +959,6 @@ def build_turn_context(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                if not _compressor.should_compress(_preflight_tokens):
-                    break
-                if not _compression_warrants_another_preflight_pass(
-                    _orig_tokens,
-                    _preflight_tokens,
-                    _compressor.threshold_tokens,
-                ):
-                    _preflight_compression_blocked = True
-                    logger.warning(
-                        "Preflight compression made insufficient progress: "
-                        "~%s -> ~%s request tokens; skipping additional passes",
-                        f"{_orig_tokens:,}",
-                        f"{_preflight_tokens:,}",
-                    )
-                    break
         elif _compress_block_reason:
             # Context is already over the compression threshold, but compression
             # is blocked (summary LLM cooldown or anti-thrashing). Without a
@@ -1064,7 +968,7 @@ def build_turn_context(
             # take action (/new or /compress) instead of hitting a silent hang.
             agent._warn_context_overflow_blocked(
                 _compress_block_reason,
-                _preflight_tokens,
+                _usage_tokens,
                 _compressor.threshold_tokens,
             )
         else:
@@ -1075,38 +979,20 @@ def build_turn_context(
             _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
             if callable(_clear_warn):
                 _clear_warn()
-            # Engine maintenance only when NO skip-branch fired: a failure
-            # cooldown, deferred estimate, or codex-native route must keep
-            # the engine hook un-consulted (#20316 contract — the cooldown
-            # exists precisely because compression recently failed).
-            if _compression_cooldown or _preflight_deferred or _codex_native_auto:
-                _engine_preflight = None
-            else:
+            # ── Engine-driven sub-threshold maintenance (#20316) ──
+            # Context engines that override ``should_compress_preflight()``
+            # (e.g. LCM-style incremental leaf-chunk compaction) can request
+            # deferred maintenance below the token threshold. The default
+            # ``ContextEngine.should_compress_preflight()`` returns False, so
+            # the built-in ``ContextCompressor`` path never enters here. The
+            # hook stays un-consulted while a failure cooldown is active or
+            # no reading exists yet — the cooldown exists precisely because
+            # compression recently failed.
+            _engine_preflight = None
+            if not _compression_cooldown and _usage_tokens is not None:
                 _engine_preflight = getattr(
                     _compressor, "should_compress_preflight", None
                 )
-            # ── Engine-driven sub-threshold preflight maintenance (#20316) ──
-            # None of the threshold-path branches fired (not deferred, no
-            # failure cooldown, not codex-native, and should_compress() said
-            # the request is under pressure). Context engines that override
-            # ``should_compress_preflight()`` (e.g. LCM-style incremental
-            # leaf-chunk compaction) can still request deferred maintenance
-            # below the token threshold. The default
-            # ``ContextEngine.should_compress_preflight()`` returns False, so
-            # the built-in ``ContextCompressor`` path is byte-identical.
-            #
-            # Attempt-cap integration: the engine gets exactly ONE
-            # ``compress()`` pass per turn. It is mutually exclusive with the
-            # threshold multi-pass loop above (if/elif), so turn-start
-            # preflight passes stay bounded by the resolved
-            # ``compression.max_attempts`` cap (floor 1) in every case.
-            #
-            # No-op-blocking integration: a sub-threshold engine pass that
-            # no-ops says nothing about over-threshold compressibility, so it
-            # must neither set nor clear ``_preflight_compression_blocked``
-            # (#64382) — and being in the ``else`` arm it can never run after
-            # the threshold loop has proven a retry ineffective.
-            # (resolved above, gated on no skip-branch having fired)
             _wants_engine_preflight = False
             if callable(_engine_preflight):
                 try:
@@ -1116,31 +1002,28 @@ def build_turn_context(
                     # turn: swallow at debug level and skip maintenance.
                     logger.debug(
                         "should_compress_preflight raised %s; skipping "
-                        "engine-driven preflight maintenance",
+                        "engine-driven maintenance",
                         _preflight_exc,
                     )
                     _wants_engine_preflight = False
             if _wants_engine_preflight:
                 logger.info(
-                    "Engine-driven preflight maintenance: %s requested "
+                    "Engine-driven turn-start maintenance: %s requested "
                     "compress() at ~%s tokens (below %s threshold)",
                     getattr(_compressor, "name", type(_compressor).__name__),
-                    f"{_preflight_tokens:,}",
+                    f"{_usage_tokens:,}",
                     f"{getattr(_compressor, 'threshold_tokens', 0):,}",
                 )
                 _engine_input = messages
                 messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
+                    messages, system_message, approx_tokens=_usage_tokens,
                     task_id=effective_task_id,
                 )
-                # ``_compress_context`` returns the INPUT list object on every
-                # skip path (per-session lock held elsewhere, cooldown,
-                # anti-thrash breaker, codex-native routing) and an engine may
-                # legitimately no-op. Only re-baseline the flush history and
-                # re-anchor the user row after a REAL compaction — a skip must
-                # leave the turn's bookkeeping untouched.
+                # Only re-baseline the flush history and re-anchor the user
+                # row after a REAL compaction — an engine may legitimately
+                # no-op and return the input list.
                 if messages is not _engine_input:
-                    _preflight_compressed = True
+                    _turn_start_compacted = True
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
@@ -1201,7 +1084,7 @@ def build_turn_context(
                     if callable(_clear_warn):
                         _clear_warn()
 
-    if _preflight_compressed:
+    if _turn_start_compacted:
         # Compression rebuilt the list (tail messages are fresh compaction
         # copies), so the pre-compression index of this turn's user message
         # is stale. Re-anchor both index trackers: the api_content stamp
@@ -1370,7 +1253,7 @@ def build_turn_context(
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
-            # In-place preflight compaction has ALREADY inserted this turn's
+            # In-place turn-start compaction has ALREADY inserted this turn's
             # user row (archive_and_compact runs before prefetch/pre_llm_call
             # can compose the sidecar), and the crash persist below identity-
             # skips every compacted dict (they are all in the rebound
@@ -1378,7 +1261,7 @@ def build_turn_context(
             # Backfill it onto the freshly-inserted row directly. Rotation
             # mode needs nothing here: its compacted copies flush to the
             # child session after this stamp.
-            if _preflight_compressed and bool(
+            if _turn_start_compacted and bool(
                 getattr(agent, "_last_compaction_in_place", False)
             ):
                 _db = getattr(agent, "_session_db", None)
@@ -1398,7 +1281,7 @@ def build_turn_context(
                         )
 
     # Crash-resilience: persist the inbound user turn before the first LLM
-    # call. Runs after preflight compression (which rewrites history anyway)
+    # call. Runs after turn-start compaction (which rewrites history anyway)
     # and after prefetch/pre_llm_call, so the user row is written once with
     # its final api_content instead of being re-written mid-turn.
     # Keep row creation and the marker-based append in the same per-agent
@@ -1449,5 +1332,4 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
-        preflight_compression_blocked=_preflight_compression_blocked,
     )

@@ -990,7 +990,7 @@ class AIAgent:
         Without this signal the session keeps growing until the model silently
         stops answering — the conversation hits the hard provider token limit
         with no explanation. Centralised here so every caller that checks
-        ``should_compress_info`` (turn-context preflight, conversation-loop
+        ``should_compress_info`` (turn-start gate, conversation-loop
         guards) shares identical dedup/reset logic.
 
         Dedup is on the *kind* of block (``cooldown`` / ``ineffective``), not the
@@ -1908,7 +1908,7 @@ class AIAgent:
                 # blocks. A list override, however, is the original clean
                 # multimodal payload (for example before a queued /model note)
                 # and must replace the API-local list once the turn is final.
-                # Preflight compaction can re-anchor this index at a message
+                # Turn-start compaction can re-anchor this index at a message
                 # whose content was MERGED with the compaction summary
                 # (merge-summary-into-tail).  That is not an accident:
                 # ``reanchor_current_turn_user_idx`` falls back to the last
@@ -2196,7 +2196,7 @@ class AIAgent:
                     _ov_idx == _msg_idx or msg is pending_cli_message
                 )
                 if is_current_turn_user and msg.get("role") == "user":
-                    # Preflight compaction can re-anchor the override index at
+                    # Turn-start compaction can re-anchor the override index at
                     # a message whose content was MERGED with the compaction
                     # summary (merge-summary-into-tail). Overwriting that with
                     # the clean gateway text would silently drop the summary

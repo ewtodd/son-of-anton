@@ -107,9 +107,9 @@ class ContextEngine(ABC):
     context_length: int = 0
     compression_count: int = 0
 
-    # -- Compaction parameters (read by run_agent.py for preflight) --------
+    # -- Compaction parameters (read by the turn-start / post-response gates) --
     #
-    # These control the preflight compression check.  Subclasses may
+    # These control the automatic compaction check.  Subclasses may
     # override via __init__ or property; defaults are sensible for most
     # engines.
     #
@@ -327,22 +327,15 @@ class ContextEngine(ABC):
         """
         return None
 
-    # -- Optional: pre-flight check ----------------------------------------
+    # -- Optional: turn-start maintenance hook ------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
-        """Quick rough check before the API call (no real token count yet).
+        """Request a ``compress()`` pass at turn start while UNDER threshold.
 
-        Default returns False (skip pre-flight). Override if your engine
-        can do a cheap estimate.
-        """
-        return False
-
-    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
-        """Return True when preflight should trust recent real usage instead.
-
-        Built-in compression uses this to avoid re-compacting from known-noisy
-        rough estimates after a compressed request has already fit. Third-party
-        engines can ignore it safely.
+        Consulted once per turn, before the first model call, only when the
+        real-usage gate did not already fire (and no failure cooldown is
+        active). Lets engines that compact incrementally (chunked / LCM-style
+        maintenance) run below the token threshold. Default returns False.
         """
         return False
 

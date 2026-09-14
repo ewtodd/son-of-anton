@@ -555,6 +555,8 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Show what each compaction kept (opencode-style transcript entry).
+            self.agent.compaction_summary_callback = self._render_compaction_summary
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),

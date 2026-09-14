@@ -628,6 +628,9 @@ def init_agent(
     # instead of going directly to stdout where patch_stdout's StdoutProxy
     # would mangle the escape sequences.  None = use builtins.print.
     agent._print_fn = None
+    # ``(summary_text, stats)`` — the host shows what a compaction kept.
+    # Bound by the CLI/TUI; None keeps headless hosts (cron, gateway) quiet.
+    agent.compaction_summary_callback = None
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files

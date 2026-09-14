@@ -774,8 +774,8 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "progress_notices": False,    # opt-in (#52995): when True, routine compression
-                                      # progress statuses (compacting/preflight/pre-API/
-                                      # idle/retry) are delivered to chat gateway
+                                      # progress statuses (compacting/idle/retry)
+                                      # are delivered to chat gateway
                                       # platforms instead of being suppressed by the
                                       # gateway noise filter. Default False keeps
                                       # routine compression silent-by-design on chat

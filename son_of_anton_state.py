@@ -10018,7 +10018,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> int:
         """Backfill the ``api_content`` sidecar onto the newest ACTIVE user row.
 
-        In-place preflight compaction (:meth:`archive_and_compact`) inserts the
+        In-place turn-start compaction (:meth:`archive_and_compact`) inserts the
         current turn's user row BEFORE the turn prologue composes the
         prefetch/plugin sidecar, and the subsequent crash persist identity-skips
         every compacted dict — without this backfill the stamped sidecar would

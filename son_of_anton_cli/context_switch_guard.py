@@ -1,4 +1,4 @@
-"""Warn when an in-session model switch will trigger preflight compression on the next turn.
+"""Warn when an in-session model switch will trigger compaction on the next turn.
 
 Addresses part of #23767 ("user-facing guardrail when switching from a
 high-context provider to a substantially lower-context provider"). The other
@@ -30,9 +30,20 @@ def _threshold_tokens(context_length: int, threshold_percent: float) -> int:
 
 
 def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int]:
+    """Best available size of the next request, in tokens.
+
+    The provider's last reported prompt size is the figure the turn-start
+    gate actually compares (see ``resolve_turn_start_compaction_tokens``), so
+    prefer it; the character-count estimate is the fallback for sessions
+    that have no reading yet.
+    """
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
         return None
+
+    last = int(getattr(cc, "last_prompt_tokens", 0) or 0)
+    if last > 0:
+        return last
 
     if messages is not None:
         protect = int(getattr(cc, "protect_first_n", 3)) + int(
@@ -55,14 +66,11 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
         except Exception:
             pass
 
-    last = int(getattr(cc, "last_prompt_tokens", 0) or 0)
-    if last > 0:
-        return last
     session_prompt = int(getattr(agent, "session_prompt_tokens", 0) or 0)
     return session_prompt if session_prompt > 0 else None
 
 
-def merge_preflight_compression_warning(
+def merge_compaction_switch_warning(
     result: ModelSwitchResult,
     *,
     agent: Any = None,
@@ -73,7 +81,7 @@ def merge_preflight_compression_warning(
     configured_provider: str | None = None,
     configured_base_url: str | None = None,
 ) -> None:
-    """If the next user message will likely preflight-compress, append a warning."""
+    """If the next user message will compact the conversation, append a warning."""
     if not result.success or agent is None:
         return
     if not getattr(agent, "compression_enabled", True):
@@ -139,7 +147,7 @@ def merge_preflight_compression_warning(
         f"Session is ~{estimate:,} tokens; "
         f"{result.new_model} allows {new_ctx:,} "
         f"(auto-compress at ~{new_threshold:,}). "
-        f"Your next message will run preflight compression before the model replies."
+        f"Your next message will compact the conversation before the model replies."
     )
     _append_warning(result, "".join(parts))
 
@@ -191,7 +199,7 @@ def enrich_model_switch_warnings_for_gateway(
         except Exception:
             pass
 
-    merge_preflight_compression_warning(
+    merge_compaction_switch_warning(
         result,
         agent=agent,
         messages=messages,

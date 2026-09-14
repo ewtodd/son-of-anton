@@ -3169,7 +3169,7 @@ def estimate_tokens_rough(text: str) -> int:
     tokenizers, so count those codepoints as roughly one token each instead
     of applying the English-centric ~4 chars/token rule.
 
-    Perf: this runs on every message in every preflight/compaction walk,
+    Perf: this runs on every message in every estimate/compaction walk,
     including MB-scale tool outputs, so the common all-ASCII case must stay
     O(1).  ``str.isascii()`` is a flag check on CPython's compact unicode
     representation (no scan), and the CJK counting itself is a single
@@ -3214,7 +3214,7 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
 # --- Per-message token-estimate memo -------------------------------------
 #
 # ``estimate_messages_tokens_rough`` is called on the full history every
-# loop iteration (conversation_loop preflight), repeatedly during compaction
+# loop iteration (conversation_loop request sizing), repeatedly during compaction
 # telemetry, and inside an O(n^2) shrink loop in moa_loop. The per-message
 # helpers are pure functions of the message's value, so a memo keyed on a
 # fingerprint that uniquely determines the value is exactly equivalent.
@@ -3443,7 +3443,7 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
         return 0
 
     # Cache by list identity. Tools are rebuilt rarely (toolset changes),
-    # but token estimates are requested frequently (preflight, compaction).
+    # but token estimates are requested frequently (request sizing, compaction).
     key = id(tools)
     n = len(tools)
     first = _tool_name_for_cache(tools[0]) if n else ""

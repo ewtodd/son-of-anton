@@ -750,6 +750,10 @@ class TextualBackend(SonOfAntonCLI):
     # ------------------------------------------------------------------
     # Tool lifecycle seams
     # ------------------------------------------------------------------
+    def _render_compaction_summary(self, summary: str, stats: Optional[dict] = None) -> None:  # type: ignore[override]
+        """Compaction summary as a typed event; the app draws the divider + markdown."""
+        self.emit("compaction", text=summary or "", stats=dict(stats or {}))
+
     def _on_tool_gen_start(self, tool_name: str) -> None:
         if getattr(self, "_stream_box_opened", False):
             self._flush_stream()

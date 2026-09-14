@@ -1608,3 +1608,43 @@ def test_commit_reaches_the_agent_through_the_app(backend) -> None:
 
     asyncio.run(run())
 
+
+
+def test_backend_compaction_summary_is_a_typed_event(backend) -> None:
+    b, rec = backend
+    b._render_compaction_summary(
+        "## Objective\n- keep going",
+        {"before_messages": 40, "after_messages": 6, "before_tokens": 150_000, "after_tokens": 30_000},
+    )
+    events = [p for k, p in rec.events if k == "compaction"]
+    assert len(events) == 1
+    assert events[0]["text"].startswith("## Objective")
+    assert events[0]["stats"]["after_messages"] == 6
+    # the classic Rich panel path must not also fire into the feed
+    assert not [k for k, _ in rec.events if k == "rich"]
+
+
+def test_compaction_renders_as_a_divider_then_what_it_remembers() -> None:
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause(0.2)
+            app.post_message(
+                _tui.TuiEvent(
+                    "compaction",
+                    {"text": "## Objective\n- keep going", "stats": {"before_messages": 40, "after_messages": 6}},
+                )
+            )
+            await pilot.pause(0.6)
+            feed = app.query_one("#feed").children
+            kinds = [type(w).__name__ for w in feed]
+            assert kinds.count("PlainMarkdown") == 1, "the summary is a markdown block, not chrome"
+            notes = [w for w in feed if isinstance(w, _tui.NoteLine)]
+            assert any(w.text is not None and "6 of 40 messages kept" in w.text.plain for w in notes)
+            assert kinds.index("PlainMarkdown") < kinds.index("NoteLine", kinds.index("PlainMarkdown")), (
+                "divider, summary, then the stats line"
+            )
+
+    asyncio.run(run())

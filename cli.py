@@ -3318,6 +3318,24 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     return Markdown(plain)
 
 
+def _format_compaction_stats(stats: Optional[dict]) -> str:
+    """One dim line under the compaction summary: rows kept, token change."""
+    if not stats:
+        return ""
+    parts: list[str] = []
+    before_m = stats.get("before_messages")
+    after_m = stats.get("after_messages")
+    if isinstance(before_m, int) and isinstance(after_m, int) and before_m > 0:
+        parts.append(f"{after_m} of {before_m} messages kept")
+    before_t = stats.get("before_tokens")
+    after_t = stats.get("after_tokens")
+    if isinstance(before_t, int) and isinstance(after_t, int) and before_t > 0:
+        parts.append(f"~{before_t:,} → ~{after_t:,} tokens")
+    elif isinstance(after_t, int) and after_t > 0:
+        parts.append(f"~{after_t:,} tokens now")
+    return " · ".join(parts)
+
+
 def _post_stream_transform_output(response: str, result: dict | None) -> str:
     """Return text that still needs display after a streamed response transform.
 
@@ -8867,7 +8885,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if self.agent is not None:
             try:
-                from son_of_anton_cli.context_switch_guard import merge_preflight_compression_warning
+                from son_of_anton_cli.context_switch_guard import merge_compaction_switch_warning
 
                 # Prefer the fresh inventory list (same source as switch_model /
                 # TUI); fall back to the agent-init snapshot.
@@ -8876,7 +8894,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if custom_providers is not None
                     else getattr(self.agent, "_custom_providers", None)
                 )
-                merge_preflight_compression_warning(
+                merge_compaction_switch_warning(
                     result,
                     agent=self.agent,
                     messages=list(self.conversation_history or []),
@@ -8884,7 +8902,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     config_context_length=getattr(self.agent, "_config_context_length", None),
                 )
             except Exception as exc:
-                logger.debug("preflight-compression switch warning failed: %s", exc)
+                logger.debug("compaction switch warning failed: %s", exc)
 
         old_model = self.model
         # Snapshot the CLI-level credential/runtime fields BEFORE mutating them
@@ -9290,9 +9308,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if self.agent is not None:
             try:
-                from son_of_anton_cli.context_switch_guard import merge_preflight_compression_warning
+                from son_of_anton_cli.context_switch_guard import merge_compaction_switch_warning
 
-                merge_preflight_compression_warning(
+                merge_compaction_switch_warning(
                     result,
                     agent=self.agent,
                     messages=list(self.conversation_history or []),
@@ -9303,7 +9321,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     config_context_length=getattr(self.agent, "_config_context_length", None),
                 )
             except Exception as exc:
-                logger.debug("preflight-compression switch warning failed: %s", exc)
+                logger.debug("compaction switch warning failed: %s", exc)
 
         # Run the confirm + apply sequence off the main thread. The
         # expensive-model confirmation modal blocks the calling thread on a
@@ -10871,6 +10889,39 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
         self._flush_reasoning_preview(force=False)
+
+    def _render_compaction_summary(self, summary: str, stats: Optional[dict] = None) -> None:
+        """Show what the compacted context now remembers.
+
+        Bound to ``agent.compaction_summary_callback``. Mirrors opencode: a
+        "Compaction" divider, then the summary the model will carry forward,
+        so the user can see exactly what survived — rather than an opaque
+        "compaction complete" line. Under the Textual front-end the console
+        funnel routes these renderables into the transcript feed.
+        """
+        from rich.rule import Rule
+
+        stats = stats or {}
+        try:
+            accent = _accent_hex()
+        except Exception:
+            accent = "yellow"
+        console = ChatConsole()
+        console.print(Rule(title=f"[bold {accent}]Compaction", style=f"dim {accent}"))
+        console.print(Panel(
+            _render_final_assistant_content(
+                summary, mode=getattr(self, "final_response_markdown", "render")
+            ),
+            title=f"[bold {accent}]What I remember",
+            title_align="left",
+            border_style=f"dim {accent}",
+            box=rich_box.HORIZONTALS,
+            padding=(1, 0),
+            width=self._scrollback_box_width(),
+        ))
+        line = _format_compaction_stats(stats)
+        if line:
+            console.print(f"[dim]{_escape(line)}[/dim]")
 
     def _manual_compress(self, cmd_original: str = ""):
         """Manually trigger context compression on the current conversation.

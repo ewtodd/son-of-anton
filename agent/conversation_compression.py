@@ -104,6 +104,60 @@ COMPACTION_STATUS = (
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
 
+def extract_compaction_summary_text(
+    messages: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Return the body of the newest compaction summary carried by *messages*.
+
+    This is the text the model will see in place of the compacted turns —
+    what the conversation now "remembers" — with the transport scaffolding
+    stripped: the ``[CONTEXT COMPACTION — REFERENCE ONLY]`` handoff prefix,
+    the ``--- END OF CONTEXT SUMMARY ---`` marker, and (for a summary merged
+    into a surviving tail row) the preserved tail content ahead of the
+    delimiter. ``None`` when no summary is present.
+    """
+    if not messages:
+        return None
+    from agent.context_compressor import ContextCompressor
+
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        if ContextCompressor.classify_summary_content(message.get("content")) is None:
+            continue
+        # ``_message_text`` (below) flattens multimodal part lists to text.
+        body = ContextCompressor._strip_summary_prefix(_message_text(message))
+        return body or None
+    return None
+
+
+def _display_compaction_summary(
+    agent: Any,
+    before: Optional[List[Dict[str, Any]]],
+    after: List[Dict[str, Any]],
+    **stats: Any,
+) -> None:
+    """Hand the fresh summary to the host's ``compaction_summary_callback``.
+
+    opencode shows the compaction summary in the transcript so the user can
+    see exactly what survived; this is the same seam. The CLI/TUI bind the
+    callback; headless hosts (cron, gateway agents) leave it unset and only
+    the lifecycle status lines fire. A summary already present before this
+    pass (an earlier compaction's handoff surviving a rollback) is not
+    re-shown.
+    """
+    callback = getattr(agent, "compaction_summary_callback", None)
+    if not callable(callback):
+        return
+    summary = extract_compaction_summary_text(after)
+    if not summary or summary == extract_compaction_summary_text(before):
+        return
+    try:
+        callback(summary, dict(stats))
+    except Exception:
+        logger.debug("compaction_summary_callback failed", exc_info=True)
+
+
 def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
     status_callback = getattr(agent, "status_callback", None)
@@ -125,14 +179,6 @@ def _emit_compaction_done(agent: Any) -> None:
 # Failure notices (⚠ Compression aborted / empty transcript / codex compaction
 # failed) and manual /compress feedback (manual_compression_feedback.py) are
 # deliberate carve-outs from silence and must NOT be added here.
-PRE_API_COMPRESSION_STATUS_TEMPLATE = (
-    "📦 Pre-API compression: ~{tokens:,} tokens "
-    "near the context/output limit. Compacting before the next model call."
-)
-PREFLIGHT_COMPRESSION_STATUS_TEMPLATE = (
-    "📦 Preflight compression: ~{tokens:,} tokens "
-    ">= {threshold:,} threshold. This may take a moment."
-)
 IDLE_COMPACTION_STATUS_TEMPLATE = (
     "💤 Resumed after {idle_seconds}s idle — compacting "
     "~{tokens:,} tokens before continuing."
@@ -171,8 +217,6 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # same constants the emission sites use) through the gateway noise filter.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
     COMPACTION_STATUS,
-    PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
-    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
     IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=250000, attempt=1, cap=3),
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=30, after=12),
@@ -3872,7 +3916,6 @@ def compress_context(
             system_prompt=new_system_prompt or "",
             tools=agent.tools or None,
         )
-        agent.context_compressor.last_compression_rough_tokens = _compressed_est
         agent.context_compressor.last_prompt_tokens = -1
         agent.context_compressor.last_completion_tokens = 0
         agent.context_compressor.awaiting_real_usage_after_compression = True
@@ -3927,6 +3970,16 @@ def compress_context(
                 if split_status in {"failed_not_indexed", "aborted"}
                 else None
             ),
+        )
+        _display_compaction_summary(
+            agent,
+            messages_before_compression,
+            compressed,
+            before_messages=_pre_msg_count,
+            after_messages=len(compressed),
+            before_tokens=approx_tokens,
+            after_tokens=_compressed_est,
+            forced=bool(force),
         )
         return compressed, new_system_prompt
     finally:

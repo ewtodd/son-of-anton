@@ -206,6 +206,16 @@ def _provider_label(provider: dict) -> str:
     return str(p.get("label") or p.get("name") or p.get("slug") or "?")
 
 
+def _compaction_stats_line(stats: dict) -> str:
+    """The dim line under a compaction summary (same wording as the classic CLI)."""
+    try:
+        from cli import _format_compaction_stats
+
+        return _format_compaction_stats(stats)
+    except Exception:
+        return ""
+
+
 def _fmt_tokens(n: int) -> str:
     n = int(n or 0)
     if n >= 1_000_000:
@@ -1323,6 +1333,21 @@ if _TEXTUAL_AVAILABLE:
                 return
             self._reset_note_block()
             self._mount(NoteLine(renderable))
+
+        async def _ev_compaction(self, text: str = "", stats: Optional[dict] = None) -> None:
+            """opencode's compaction entry: a titled rule, then what the model now remembers."""
+            from rich.rule import Rule
+
+            if not (text or "").strip():
+                return
+            await self._close_assistant()
+            self._reset_note_block()
+            self._mount(NoteLine(Rule(title="Compaction", style="dim")))
+            self._mount(PlainMarkdown(text))
+            line = _compaction_stats_line(stats or {})
+            if line:
+                self._mount(NoteLine(Text(line, style="dim"), muted=True))
+            self._transcript_scroll()
 
         async def _ev_assistant_start(self) -> None:
             await self._close_assistant()
