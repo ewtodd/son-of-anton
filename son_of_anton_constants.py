@@ -1051,7 +1051,14 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
-def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
+def resolve_reasoning_config(
+    cfg: dict | None,
+    model: str = "",
+    *,
+    base_url: str | None = None,
+    provider: str | None = None,
+    custom_providers: list | None = None,
+) -> dict | None:
     """Resolve the effective reasoning config for *model* from a config dict.
 
     Single chokepoint for reasoning-effort resolution, shared by every
@@ -1060,12 +1067,25 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
 
     1. Per-model override from ``agent.reasoning_overrides``
        (spelling-tolerant — see :func:`resolve_per_model_reasoning_effort`)
-    2. Global ``agent.reasoning_effort`` — the raw value is passed through
+    2. Per-model effort declared on the custom-provider route:
+       ``custom_providers.<name>.models.<model>.reasoning_effort`` — the
+       same place users already declare ``context_length``. Without this,
+       an effort written next to ``context_length`` was silently ignored
+       (only the ``agent`` section was read) and the endpoint ran at its
+       own default.
+    3. ``model.reasoning_effort`` from the ``model`` section — applies to
+       the model that section describes (the configured default model).
+    4. Global ``agent.reasoning_effort`` — the raw value is passed through
        so a YAML boolean ``False`` (``reasoning_effort: false``/``off``/
        ``no``) means "thinking disabled", never silently re-enabled.
 
     Session-scoped overrides (gateway ``/reasoning --session``) are resolved
     by the caller BEFORE this function — they always win.
+
+    Capability clamping (an endpoint that rejects a level with HTTP 400) is
+    NOT done here — it is owned by the provider transports at send time,
+    which see the final level including session pins, ``--reasoning``
+    flags, and per-job cron pins that bypass this chokepoint.
 
     Args:
         cfg: A loaded config dict (any of the three loaders' shapes — only
@@ -1073,6 +1093,16 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
         model: The effective model for this surface/session. When empty,
                it is derived from the config's ``model`` section (string
                form, or a dict's ``default``/``model`` keys).
+        base_url: The route the model actually runs on. When None, the
+             config's ``model.base_url`` is used. Named custom providers
+             pin their endpoint in the provider entry (not ``model.base_url``),
+             so for custom-family providers an empty base_url is resolved
+             from the named entry — mirroring the credential path.
+        provider: The provider the model runs on. When None, the config's
+             ``model.provider`` is used.
+        custom_providers: Pre-resolved custom-provider entries (pass the
+             agent's ``_custom_providers`` snapshot when available to avoid
+             a re-normalization).
 
     Returns:
         The parsed reasoning config dict, or None when unset/unrecognized
@@ -1083,8 +1113,9 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     if not isinstance(agent_cfg, dict):
         agent_cfg = {}
 
+    model_cfg = cfg.get("model")
+    model_section_default = ""
     if not model:
-        model_cfg = cfg.get("model")
         if isinstance(model_cfg, str):
             model = model_cfg.strip()
         elif isinstance(model_cfg, dict):
@@ -1093,11 +1124,73 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
             ).strip()
         else:
             model = ""
+    if isinstance(model_cfg, dict):
+        model_section_default = str(
+            model_cfg.get("default") or model_cfg.get("model") or ""
+        ).strip()
+        # Callers may pin provider/base_url explicitly (mid-session switch,
+        # fallback, gateway session) — an explicit value always wins over
+        # the config's default-model section.
+        if provider is None:
+            provider = model_cfg.get("provider")
+        if base_url is None:
+            base_url = model_cfg.get("base_url")
 
     overrides = agent_cfg.get("reasoning_overrides") or {}
     per_model = resolve_per_model_reasoning_effort(model, overrides)
     if per_model is not None:
         return per_model
+
+    # Per-model effort declared on the custom-provider route (2). Only
+    # consulted for custom-family providers — other providers have a
+    # registered profile that owns their reasoning dialect.
+    if model and _is_custom_family_provider(provider):
+        decl = _custom_provider_reasoning_decl(
+            model,
+            base_url=base_url,
+            provider=provider,
+            custom_providers=custom_providers,
+            cfg=cfg,
+        )
+        decl_effort = decl.get("effort") if decl else None
+        if decl_effort:
+            parsed = parse_reasoning_effort(decl_effort)
+            if parsed is not None:
+                return parsed
+            import logging
+            logging.getLogger(__name__).warning(
+                "Unknown reasoning_effort '%s' for model %r in "
+                "custom_providers models — ignoring",
+                decl_effort,
+                model,
+            )
+
+    # model-section effort (3) — applies to the model that section
+    # describes. Skipped for custom-family providers (their per-route
+    # declaration at step 2 is the more specific place) and for a
+    # mid-session switch to a different model (that model keeps its own
+    # declaration or falls through to the global, never inheriting the
+    # configured default model's level).
+    if (
+        model
+        and isinstance(model_cfg, dict)
+        and not _is_custom_family_provider(provider)
+        and (not model_section_default or model.lower() == model_section_default.lower())
+    ):
+        model_effort = model_cfg.get("reasoning_effort")
+        if model_effort is not None:
+            # parse_reasoning_effort owns the full contract here:
+            # False → {"enabled": False} (thinking off), True → None
+            # (thinking on, provider default), strings → parsed or None.
+            parsed = parse_reasoning_effort(model_effort)
+            if parsed is not None:
+                return parsed
+            if isinstance(model_effort, str) and model_effort.strip():
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Unknown model.reasoning_effort '%s', using default (medium)",
+                    model_effort,
+                )
 
     # Global fallback — keep the raw value; coercing with ``or ""`` turns a
     # YAML boolean False into "", silently re-enabling thinking for users
@@ -1110,6 +1203,70 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
             "Unknown reasoning_effort '%s', using default (medium)", effort
         )
     return result
+
+
+#: Provider spellings that resolve to the generic ``custom`` profile — the
+#: open-ended OpenAI-compatible provider whose endpoint quirks (including
+#: the ``reasoning_effort`` wire vocabulary) are user-declared per route.
+_CUSTOM_FAMILY_PROVIDERS = frozenset(
+    {"custom", "ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"}
+)
+
+
+def _is_custom_family_provider(provider: str | None) -> bool:
+    p = str(provider or "").strip().lower()
+    return p in _CUSTOM_FAMILY_PROVIDERS or p.startswith("custom:")
+
+
+def _custom_provider_reasoning_decl(
+    model: str,
+    *,
+    base_url: str | None,
+    provider: str | None,
+    custom_providers: list | None,
+    cfg: dict,
+) -> dict | None:
+    """Look up the custom-route reasoning declaration for *model*.
+
+    Lazy-wraps ``son_of_anton_cli.config.get_custom_provider_reasoning_decl``
+    (this module must stay import-safe) and, for named custom providers,
+    resolves the route base_url from the provider entry itself — a named
+    custom provider pins its endpoint in the entry, not in
+    ``model.base_url``, exactly like its credential.
+    """
+    try:
+        from son_of_anton_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_reasoning_decl,
+        )
+    except Exception:
+        return None
+
+    route_base_url = str(base_url or "").strip()
+    if not route_base_url:
+        # Named custom providers pin their endpoint in the provider entry.
+        try:
+            from son_of_anton_cli.runtime_provider import (
+                _get_named_custom_provider,
+            )
+
+            entry = _get_named_custom_provider(str(provider or ""))
+            if isinstance(entry, dict):
+                route_base_url = str(entry.get("base_url") or "").strip()
+        except Exception:
+            pass
+
+    try:
+        if custom_providers is None:
+            custom_providers = get_compatible_custom_providers(cfg)
+        return get_custom_provider_reasoning_decl(
+            model,
+            route_base_url or None,
+            custom_providers=custom_providers,
+            config=cfg,
+        )
+    except Exception:
+        return None
 
 
 

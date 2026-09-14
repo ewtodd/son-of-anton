@@ -2852,7 +2852,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         from son_of_anton_cli.config import load_config as _sm_load_config
 
         _reasoning_cfg = _sm_load_config() or {}
-        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        agent.reasoning_config = resolve_reasoning_config(
+            _reasoning_cfg,
+            agent.model,
+            base_url=agent.base_url,
+            provider=agent.provider,
+            custom_providers=_sm_custom_providers,
+        )
         logger.info(
             "switch_model: reasoning_config resolved for %s: %s",
             agent.model, agent.reasoning_config,

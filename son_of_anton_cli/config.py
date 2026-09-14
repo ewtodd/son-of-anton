@@ -1610,6 +1610,80 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_reasoning_decl(
+    model: str,
+    base_url: Optional[str],
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the per-model reasoning declaration for a custom-provider route.
+
+    Mirrors :func:`get_custom_provider_context_length` (same route-identity
+    matching, same entry shape) and reads ``models.<model>.reasoning_effort``
+    (a single level) and/or ``models.<model>.reasoning_efforts`` (the wire
+    vocabulary the endpoint actually accepts).
+
+    Why this exists: ``custom`` is an open-ended provider that fronts
+    anything OpenAI-compatible, and those endpoints disagree on the
+    ``reasoning_effort`` vocabulary. A Qwen3-on-vLLM route served through
+    LiteLLM accepts exactly ``none/low/medium/xhigh`` and 400s on
+    ``high``/``max``/``minimal``/``ultra`` (verified live). The custom
+    provider profile therefore clamps the outgoing effort to the declared
+    set instead of the widest OpenAI-compat vocabulary, and
+    ``resolve_reasoning_config`` honours the per-model effort here — the
+    same place users already declare ``context_length`` — so a value the
+    user wrote next to ``context_length`` actually takes effect.
+
+    Returns ``{"effort": str, "efforts": tuple[str, ...] | None}`` — either
+    field absent when not declared (callers treat that as "no opinion").
+    """
+    out: Dict[str, Any] = {}
+    if not model:
+        return out
+    if custom_providers is None:
+        try:
+            if config is None:
+                config = load_config_readonly()
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return out
+    if not isinstance(custom_providers, list):
+        return out
+
+    target_url = normalize_route_base_url(base_url) if base_url else ""
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if not entry_url:
+            continue
+        # When the caller named a route, match it; otherwise accept the
+        # entry (the only one a single-custom-provider config has).
+        if target_url and entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        effort = model_cfg.get("reasoning_effort")
+        if effort is not None and not isinstance(effort, bool) and str(effort).strip():
+            out["effort"] = str(effort).strip()
+        efforts = model_cfg.get("reasoning_efforts")
+        if isinstance(efforts, (list, tuple)):
+            levels = [
+                str(level).strip().lower()
+                for level in efforts
+                if isinstance(level, (str, int)) and str(level).strip()
+            ]
+            levels = [level for level in levels if level]
+            if levels:
+                out["efforts"] = tuple(levels)
+        break
+    return out
+
+
 def get_custom_provider_model_capability(
     model: str,
     base_url: str,

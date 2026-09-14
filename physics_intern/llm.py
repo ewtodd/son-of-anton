@@ -141,6 +141,42 @@ _CONTEXT_ERROR_MARKERS = (
 )
 
 
+def _clamp_physics_reasoning_effort(effort: str, model: str, config) -> str:
+    """Clamp a physics reasoning effort to the route's declared vocabulary.
+
+    Physics sends the effort verbatim to every round, so an effort the
+    endpoint rejects (a Qwen3-on-vLLM route 400s on minimal/high/max/ultra)
+    would abort every iteration. When the route declares
+    ``custom_providers.<name>.models.<model>.reasoning_efforts``, clamp
+    against it (nearest-weaker). Otherwise — including the deepseek/openai
+    default endpoints — return *effort* unchanged to preserve behaviour.
+    """
+    if not model or not effort:
+        return effort
+    # Reuse the endpoint resolution chain for the route base_url only. The
+    # OpenAI client stores it as client.base_url (an httpx.URL).
+    try:
+        _client, _ = _resolve_endpoint(config)
+        base_url = str(getattr(_client, "base_url", "") or "").rstrip("/")
+    except Exception:
+        return effort
+    if not base_url:
+        return effort
+    try:
+        from son_of_anton_cli.config import get_custom_provider_reasoning_decl
+        decl = get_custom_provider_reasoning_decl(str(model), base_url) or {}
+    except Exception:
+        return effort
+    efforts = decl.get("efforts")
+    if not efforts:
+        return effort
+    try:
+        from agent.reasoning_effort import clamp_effort
+        return clamp_effort(effort, tuple(efforts)) or effort
+    except Exception:
+        return effort
+
+
 def _raise_if_context_error(exc: BaseException) -> None:
     """Reclassify a genuine context overflow, and only that.
 
@@ -179,9 +215,17 @@ def _create_with_retry(client, model, messages, max_tokens, config, tools=None):
             # "xhigh", which spent 80,000 characters reasoning and produced no
             # answer at all inside a 24k budget. Endpoints that do not take the
             # parameter ignore it.
+            #
+            # When the route declares its accepted ``reasoning_efforts``
+            # (custom_providers.<name>.models.<model>), clamp against it —
+            # a Qwen3-on-vLLM route accepts exactly none/low/medium/xhigh and
+            # 400s on minimal/high/max/ultra, and this layer sends the effort
+            # verbatim to every physics round.
             effort = str(getattr(config, "reasoning_effort", "") or "").strip()
             if effort:
-                kwargs["reasoning_effort"] = effort
+                effort = _clamp_physics_reasoning_effort(effort, model, config)
+                if effort:
+                    kwargs["reasoning_effort"] = effort
             if tools:
                 kwargs["tools"] = tools
             return client.chat.completions.create(**kwargs)

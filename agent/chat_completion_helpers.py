@@ -2537,7 +2537,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from son_of_anton_constants import resolve_reasoning_config
 
             agent.reasoning_config = resolve_reasoning_config(
-                load_config() or {}, agent.model
+                load_config() or {},
+                agent.model,
+                base_url=agent.base_url,
+                provider=agent.provider,
+                custom_providers=getattr(agent, "_custom_providers", None),
             )
             logger.info(
                 "Fallback %s: reasoning_config resolved: %s",

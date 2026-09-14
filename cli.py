@@ -4536,10 +4536,18 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
-        # Per-model override > global reasoning_effort — resolved through the
-        # shared chokepoint in son_of_anton_constants (Closes #21256).
+        # Per-model override > per-route custom declaration > model section >
+        # global reasoning_effort — resolved through the shared chokepoint
+        # in son_of_anton_constants (Closes #21256). base_url may still be
+        # None here for named custom providers; the chokepoint resolves the
+        # route from the provider entry when so.
         from son_of_anton_constants import resolve_reasoning_config
-        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+        self.reasoning_config = resolve_reasoning_config(
+            CLI_CONFIG,
+            self.model,
+            base_url=self.base_url,
+            provider=self.provider,
+        )
         # An explicit --reasoning wins over config for this run only (never
         # persisted). Kanban's dispatcher uses it to pin a task's thinking
         # depth without touching the worker profile's config.yaml. An
@@ -7897,8 +7905,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # was for the previous session only, not for every session spawned
         # afterwards.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+        # Re-resolve through the shared chokepoint so the same precedence
+        # (per-model override > per-route custom declaration > model section
+        # > global) applies after a /new as at startup — not just the global
+        # agent.reasoning_effort.
+        from son_of_anton_constants import resolve_reasoning_config as _resolve_rc
+        self.reasoning_config = _resolve_rc(
+            CLI_CONFIG,
+            getattr(self, "model", "") or "",
+            base_url=getattr(self, "base_url", None),
+            provider=getattr(self, "provider", None),
         )
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model --session, /fast, one-turn restores) do not carry

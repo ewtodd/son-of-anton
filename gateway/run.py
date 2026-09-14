@@ -8582,8 +8582,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Load reasoning effort from config.yaml, respecting per-model overrides.
 
         Thin wrapper over the shared chokepoint
-        :func:`son_of_anton_constants.resolve_reasoning_config` (per-model override >
-        global ``agent.reasoning_effort``; YAML boolean False = disabled).
+        :func:`son_of_anton_constants.resolve_reasoning_config` (per-model
+        override > per-route custom declaration > model section > global
+        ``agent.reasoning_effort``; YAML boolean False = disabled).
         Closes #21256.
 
         Args:

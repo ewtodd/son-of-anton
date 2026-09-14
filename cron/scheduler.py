@@ -444,7 +444,15 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return None
 
 
-def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
+def _resolve_job_reasoning_config(
+    job: dict,
+    cfg: dict,
+    model: str,
+    *,
+    base_url: str | None = None,
+    provider: str | None = None,
+    custom_providers: list | None = None,
+) -> dict | None:
     """Resolve the effective reasoning config for a cron run.
 
     Precedence: per-job ``reasoning_effort`` pin (validated at the store
@@ -459,8 +467,11 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
     falls back to config resolution — a bad pin must degrade the run's
     thinking level, never kill the tick.
 
-    Absent/None pin returns ``resolve_reasoning_config(cfg, model)``
-    byte-identical, preserving pre-feature behavior.
+    Absent/None pin returns ``resolve_reasoning_config(cfg, model, ...)``
+    byte-identical, preserving pre-feature behavior. ``base_url`` /
+    ``provider`` name the route the job actually runs on (from the resolved
+    runtime) so a per-route custom-provider reasoning declaration is
+    honoured.
     """
     from son_of_anton_constants import parse_reasoning_effort, resolve_reasoning_config
 
@@ -483,7 +494,13 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
             pinned,
             job.get("id", "?"),
         )
-    return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
+    return resolve_reasoning_config(
+        cfg if isinstance(cfg, dict) else {},
+        str(model),
+        base_url=base_url,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
 
 
 # Valid delivery platforms — used to validate user-supplied platform names
@@ -5358,7 +5375,11 @@ def run_job(
                 raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         reasoning_config = _resolve_job_reasoning_config(
-            job, _cfg if isinstance(_cfg, dict) else {}, str(model)
+            job,
+            _cfg if isinstance(_cfg, dict) else {},
+            str(model),
+            base_url=str(runtime.get("base_url") or "") or None,
+            provider=str(runtime.get("provider") or "") or None,
         )
 
         # Provider/model-drift fail-closed guard (#44585).
