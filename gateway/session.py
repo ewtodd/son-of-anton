@@ -2862,6 +2862,14 @@ class SessionStore:
                 return None
             return dict(entry.model_override) if entry.model_override else None
 
+    def entries_snapshot(self) -> Dict[str, "SessionEntry"]:
+        """Copy of the live session map (key → entry) for callers off the
+        message path, e.g. the active-hours reopen watcher looking up the
+        origin a held-message summary should be delivered to."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return dict(self._entries)
+
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
 

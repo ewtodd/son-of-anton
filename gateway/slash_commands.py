@@ -803,6 +803,12 @@ class GatewaySlashCommandsMixin:
         # the same owner — fail closed.
         return False
 
+    def _single_user_instance(self) -> bool:
+        """``gateway.single_user``: this account is one person, so session
+        browsing and /resume see the whole database (see gateway/single_user.py;
+        the runner clears the flag at startup when the allowlist disagrees)."""
+        return bool(getattr(getattr(self, "config", None), "single_user", False))
+
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin allowed to make a
         cross-origin /resume or /sessions listing.
@@ -835,6 +841,8 @@ class GatewaySlashCommandsMixin:
         the row PROVES the same owner; a row that lacks enough ownership data
         fails closed. An explicit admin ``--all`` override bypasses scoping.
         """
+        if self._single_user_instance():
+            return True
         if allow_override and self._resume_caller_is_admin(source):
             return True
         # Use the live origin only when it resolves to a real SessionSource; a
@@ -976,6 +984,8 @@ class GatewaySlashCommandsMixin:
         unless an admin passes ``--all``.
         """
         sid = str(row.get("id") or "")
+        if self._single_user_instance():
+            return True
         if allow_all and self._resume_caller_is_admin(source):
             return True
         return await self._resume_target_allowed(source, sid, allow_override=False)
@@ -3857,10 +3867,13 @@ class GatewaySlashCommandsMixin:
             name = name[1:-1].strip()
 
         async def _list_titled_sessions() -> list[dict]:
+            single_user = self._single_user_instance()
             user_source = source.platform.value if source.platform else None
-            widen = allow_all and self._resume_caller_is_admin(source)
+            widen = single_user or (allow_all and self._resume_caller_is_admin(source))
             sessions = await self._session_db.list_sessions_rich(
-                source=user_source,
+                # A single-user account browses every source (its own TUI
+                # sessions included), not just this platform's.
+                source=None if single_user else user_source,
                 session_key=None if widen else session_key,
                 limit=10,
             )
@@ -4006,7 +4019,11 @@ class GatewaySlashCommandsMixin:
         # user argument, so without this gate any caller could run
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
-        cross_origin = include_all and self._resume_caller_is_admin(source)
+        # A single-user account always browses the whole database; a shared
+        # instance needs `all` from a configured admin.
+        cross_origin = self._single_user_instance() or (
+            include_all and self._resume_caller_is_admin(source)
+        )
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,

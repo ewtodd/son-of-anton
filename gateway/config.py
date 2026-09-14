@@ -809,6 +809,15 @@ class GatewayConfig:
     # Wording for that reply. Empty = the default in active_hours.py.
     inactive_message: str = ""
 
+    # One person owns this instance — their own account's service. Session
+    # browsing and /resume then drop the per-chat origin scoping and see the
+    # whole account database, the view the terminal already has, so one
+    # conversation moves between TUI and messenger freely. The multi-tenant
+    # guards stay for shared instances: this is refused at startup unless
+    # every connected platform's allowlist names exactly one user (see
+    # gateway/single_user.py).
+    single_user: bool = False
+
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
@@ -983,6 +992,7 @@ class GatewayConfig:
             "filter_silence_narration": self.filter_silence_narration,
             "active_hours": list(self.active_hours) if self.active_hours else None,
             "inactive_message": self.inactive_message,
+            "single_user": self.single_user,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
@@ -1098,6 +1108,7 @@ class GatewayConfig:
             ),
             active_hours=parse_hour_window(data.get("active_hours"), None),
             inactive_message=str(data.get("inactive_message") or "").strip(),
+            single_user=_coerce_bool(data.get("single_user"), False),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
@@ -1276,7 +1287,7 @@ def load_gateway_config() -> GatewayConfig:
                     "filter_silence_narration"
                 ]
 
-            for _hours_key in ("active_hours", "inactive_message"):
+            for _hours_key in ("active_hours", "inactive_message", "single_user"):
                 if _hours_key in yaml_cfg:
                     gw_data[_hours_key] = yaml_cfg[_hours_key]
                 elif isinstance(gateway_section, dict) and _hours_key in gateway_section:

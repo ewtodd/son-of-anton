@@ -12052,6 +12052,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self.delivery_router.adapters = self.adapters
 
         self._running = True
+        self._enforce_single_user_allowlist()
+        self._start_active_hours_reopen_watch()
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
 
@@ -18475,6 +18477,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     agent_result.get("error", "processing incomplete"),
                 )
 
+            # A persisted /model override naming a model the provider no
+            # longer serves fails every turn; drop it on the provider's own
+            # "invalid model" error instead of replaying it forever.
+            if agent_failed_early and session_key:
+                try:
+                    await self._drop_dead_model_override(
+                        session_key, session_entry, _err_str_for_classify
+                    )
+                except Exception:
+                    logger.debug("dead model override check failed", exc_info=True)
+
             # When compaction is exhausted, the session is permanently too
             # large to process.  Auto-reset it so the next message starts
             # fresh instead of replaying the same oversized context in an
@@ -23157,6 +23170,161 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             session_key, override.get("model"), provider or "",
         )
 
+    def _enforce_single_user_allowlist(self) -> None:
+        """Honour ``gateway.single_user`` only when the allowlists prove it.
+
+        The flag lifts the per-chat scoping of /sessions and /resume (see
+        gateway/single_user.py). On a shared instance that would let any
+        allowed caller enumerate and attach to everyone's sessions, so it
+        is cleared here unless every connected adapter's allowlist names
+        exactly one user.
+        """
+        if not getattr(self.config, "single_user", False):
+            return
+        from gateway.single_user import allowlist_problem
+
+        problem = allowlist_problem(self.adapters or {})
+        if problem is None:
+            logger.info(
+                "gateway.single_user: this account is one person; /sessions "
+                "and /resume browse the whole session database"
+            )
+            return
+        logger.error(
+            "gateway.single_user ignored: %s. Set each platform's allowlist "
+            "to exactly the owner (Signal: SIGNAL_ALLOWED_USERS) to enable it.",
+            problem,
+        )
+        try:
+            self.config.single_user = False
+        except Exception:
+            object.__setattr__(self.config, "single_user", False)
+
+    def _start_active_hours_reopen_watch(self) -> None:
+        """Ask about held messages when the active-hours window opens.
+
+        The inactive notice promises "I'll ask about it when I'm back". The
+        inbound path only keeps that promise if someone writes again after
+        the window opens; this watcher keeps it on the clock.
+        """
+        if not getattr(self.config, "active_hours", None):
+            return
+        try:
+            self._active_hours_watch_task = asyncio.create_task(
+                self._watch_active_hours_reopen()
+            )
+        except RuntimeError:
+            logger.debug("active-hours reopen watch not started (no loop)")
+
+    async def _watch_active_hours_reopen(self, interval: float = 60.0) -> None:
+        from gateway.active_hours import is_active
+
+        was_open: Optional[bool] = None
+        while not self._shutdown_event.is_set():
+            window = getattr(self.config, "active_hours", None)
+            if not window:
+                return
+            open_now = is_active(window)
+            # A transition into the window, or a boot that lands inside it
+            # with messages still held from the closed stretch.
+            if open_now and was_open is not True:
+                try:
+                    offered = await self._offer_held_messages_on_reopen()
+                    if offered:
+                        logger.info(
+                            "Active hours %s open: offered held messages to %d chat(s)",
+                            window, offered,
+                        )
+                except Exception:
+                    logger.debug("held_messages: reopen offer failed", exc_info=True)
+            was_open = open_now
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _offer_held_messages_on_reopen(self) -> int:
+        """Send the held-messages summary to every chat that has some.
+
+        Same prompt the inbound path sends (``held_messages.summarize``), same
+        pending flag, so the user's yes/no is handled by the existing
+        confirmation flow. A session with no live origin is skipped — the
+        next inbound message still offers it the old way.
+        """
+        from gateway import held_messages as _held
+
+        sessions_dir = self.config.sessions_dir
+        keys = _held.session_keys_with_messages(sessions_dir)
+        if not keys:
+            return 0
+        entries = self.session_store.entries_snapshot()
+        offered = 0
+        for key in keys:
+            entry = entries.get(key)
+            origin = getattr(entry, "origin", None) if entry is not None else None
+            if origin is None:
+                continue
+            state = self._session_state(key)
+            if state.persistent.held_messages_pending:
+                continue
+            summary = _held.summarize(sessions_dir, key)
+            if not summary:
+                continue
+            state.persistent.held_messages_pending = True
+            await self._deliver_platform_notice(origin, summary)
+            offered += 1
+        return offered
+
+    async def _drop_dead_model_override(
+        self, session_key: str, session_entry, error_text: str
+    ) -> bool:
+        """Forget a persisted /model override whose model no longer exists.
+
+        A /model switch is persisted per chat and rehydrated on every boot.
+        When the route is later removed from the provider, every turn 400s
+        with "invalid model" and the loop's fallback only helps for that one
+        call — the next turn rehydrates the same dead name. Seen on the
+        markets instance (fourteen failures in two minutes). The provider's
+        own error is the authoritative signal, so on it the override is
+        dropped, the cached agent evicted, and the chat told to resend.
+        """
+        state = self._peek_session_state(session_key)
+        override = state.conversation.model_override if state is not None else None
+        if not override:
+            return False
+        text = (error_text or "").lower()
+        from agent.error_classifier import _MODEL_NOT_FOUND_PATTERNS
+
+        if not any(pattern in text for pattern in _MODEL_NOT_FOUND_PATTERNS):
+            return False
+        model = str(override.get("model") or "?")
+        state.conversation.model_override = None
+        try:
+            self.session_store.set_model_override(session_key, None)
+        except Exception:
+            logger.debug("failed to clear persisted model override", exc_info=True)
+        try:
+            self._evict_cached_agent(session_key)
+        except Exception:
+            logger.debug("agent eviction after dead override failed", exc_info=True)
+        logger.warning(
+            "Dropped /model override %r for session %s: the provider reports "
+            "the model no longer exists; back to the configured default",
+            model, session_key,
+        )
+        origin = getattr(session_entry, "origin", None)
+        if origin is not None:
+            try:
+                await self._deliver_platform_notice(
+                    origin,
+                    f"The model chosen with /model ({model}) no longer exists on "
+                    "its provider. Back to the configured default — send that "
+                    "message again.",
+                )
+            except Exception:
+                logger.debug("dead-override notice failed", exc_info=True)
+        return True
+
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
     ) -> tuple:
@@ -26958,10 +27126,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # managers can revive the process. Planned stop paths write a marker
     # before signalling us so they can exit cleanly instead.
     _signal_initiated_shutdown = False
+    # True when the unexpected signal came from the service manager itself
+    # (systemd stop / rebuild). See exit_status_after_signal().
+    _signal_from_service_manager = False
 
     # Set up signal handlers
     def shutdown_signal_handler(received_signal=None):
-        nonlocal _signal_initiated_shutdown
+        nonlocal _signal_initiated_shutdown, _signal_from_service_manager
         # Planned --replace takeover check: when a sibling gateway is
         # taking over via --replace, it wrote a marker naming this PID
         # before sending SIGTERM. If present, treat the signal as a
@@ -27019,6 +27190,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
+            _signal_from_service_manager = bool(
+                _shutdown_ctx and _shutdown_ctx.get("under_systemd")
+            )
             # Mirror onto the runner so _stop_impl can suppress the
             # gateway_state=stopped persist for unexpected signals
             # (container/s6 SIGTERM on restart, OOM, bare kill) — see
@@ -27313,12 +27487,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     #   - WSL2/container runtime sending unexpected signals
     # `son-of-anton gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
-    if _signal_initiated_shutdown and not runner._restart_requested:
+    if not exit_status_after_signal(
+        signal_initiated=_signal_initiated_shutdown,
+        restart_requested=bool(runner._restart_requested),
+        from_service_manager=_signal_from_service_manager,
+    ):
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "
-            "request) so systemd Restart=on-failure can revive the gateway."
+            "request) so a Restart=on-failure supervisor can revive the gateway."
         )
         return False  # → sys.exit(1) in the caller
+    if _signal_initiated_shutdown and _signal_from_service_manager:
+        logger.info(
+            "Exiting cleanly: the stop came from the service manager "
+            "(systemd stop or rebuild); its Restart= policy decides revival."
+        )
 
     # Older restart paths may reach here without ``runner.exit_code`` set.
     # Keep the historical non-zero fallback for service-managed restarts.
@@ -27330,6 +27513,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         raise SystemExit(75)
 
     return True
+
+
+def exit_status_after_signal(
+    *, signal_initiated: bool, restart_requested: bool, from_service_manager: bool
+) -> bool:
+    """Whether the process should exit 0 (True) after a signal-driven stop.
+
+    An unexpected SIGTERM from outside the service manager (a bare ``kill``,
+    a container runtime, an updater) exits non-zero so a
+    ``Restart=on-failure`` supervisor revives the gateway. A stop issued BY
+    the service manager — ``systemctl stop``, a NixOS rebuild switching the
+    unit — is the manager's own decision: exiting 1 there only records a
+    spurious "Failed with result 'exit-code'" on every rebuild while its
+    ``Restart=`` policy, not the exit code, decides what happens next.
+    """
+    if not signal_initiated or restart_requested:
+        return True
+    return from_service_manager
 
 
 def main():

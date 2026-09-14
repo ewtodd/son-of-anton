@@ -102,6 +102,12 @@ def has_messages(sessions_dir: Path, session_key: str) -> bool:
         return bool(_load(sessions_dir).get(session_key))
 
 
+def session_keys_with_messages(sessions_dir: Path) -> List[str]:
+    """Every session key holding at least one message, in file order."""
+    with _lock:
+        return [key for key, msgs in _load(sessions_dir).items() if msgs]
+
+
 def summarize(
     sessions_dir: Path, session_key: str, *, max_entries: int = 10
 ) -> Optional[str]:

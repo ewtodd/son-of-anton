@@ -2277,6 +2277,13 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Discord, Slack,
     # Signal, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # One person owns this instance. /sessions and /resume then see the
+        # whole account database — the terminal's view — instead of one
+        # chat's lane, so a conversation moves between TUI and messenger.
+        # Refused at startup unless every platform allowlist names exactly
+        # one user (gateway/single_user.py), so a shared instance cannot
+        # flip it by accident.
+        "single_user": False,
         # Optional named-profile allowlist for multiplex mode. None preserves
         # the historical serve-all behavior; [] serves only the default.
         "multiplex_profile_allowlist": None,
