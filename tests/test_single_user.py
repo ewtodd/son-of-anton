@@ -77,6 +77,20 @@ def test_one_named_user_across_every_platform_is_single_user() -> None:
     assert allowlist_problem({"signal": _signal({"+1555"}, {"+1555"})}) is None
 
 
+def test_signal_group_ids_are_routing_keys_not_users() -> None:
+    # A grouped single-owner instance routes by group id; those must not read
+    # as extra people or gateway.single_user is cleared on every boot.
+    adapter = _signal({"+1555"}, {"group:hikers", "group:lab"})
+    assert allowlist_problem({"signal": adapter}) is None
+
+
+def test_a_routing_only_allowlist_is_still_counted() -> None:
+    # An adapter with no user-identity attribute at all must not become
+    # trivially single-user: whatever list it does expose is verified.
+    adapter = types.SimpleNamespace(group_allow_from={"+1555", "+1666"})
+    assert "2 users" in allowlist_problem({"signal": adapter})
+
+
 def test_open_empty_or_plural_allowlists_are_refused() -> None:
     assert "open" in allowlist_problem({"signal": _signal({"*"})})
     assert "0 users" in allowlist_problem({"signal": _signal(set())})
