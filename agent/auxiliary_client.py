@@ -7080,6 +7080,23 @@ def _build_call_kwargs(
     # ``extra_body.reasoning``. Profiles are the source of truth for those wire
     # shapes. Providers without a reasoning-aware profile retain the generic
     # ``extra_body.reasoning`` fallback used by Codex-compatible adapters.
+    #
+    # Auxiliary tasks express their ask through ``extra_body.reasoning`` (see
+    # ``_get_task_extra_body``). Promote it to the canonical
+    # ``reasoning_config`` before the hooks run so the profile decides the wire
+    # shape instead of forwarding a nested aggregator field verbatim to a
+    # route that does not accept it (compaction's configured
+    # ``reasoning_effort: none`` was silently dropped this way). An explicit
+    # ``reasoning_config`` argument wins over the task block; the nested copy
+    # is removed below only when a profile actually handled it, preserving the
+    # exact request bytes for profile-less providers.
+    _task_reasoning: Optional[dict] = None
+    if reasoning_config is None and isinstance(extra_body, dict):
+        _extra_reasoning = extra_body.get("reasoning")
+        if isinstance(_extra_reasoning, dict):
+            _task_reasoning = _extra_reasoning
+            reasoning_config = _extra_reasoning
+
     effective_base = base_url or (
         _current_custom_base_url() if provider == "custom" else ""
     )
@@ -7124,12 +7141,19 @@ def _build_call_kwargs(
 
     kwargs.update(profile_top_level)
     merged_extra = dict(extra_body or {})
+    if profile_handles_reasoning:
+        # The profile owns the reasoning wire shape now. A caller-supplied
+        # aggregator-shaped block (aux task config) must not ride along as an
+        # unknown field on a strict endpoint. Profile-emitted entries merge
+        # below, so a profile that itself uses the nested shape keeps its own.
+        merged_extra.pop("reasoning", None)
     merged_extra.update(profile_body)
     merged_extra.update(profile_reasoning_extra)
     if (
         reasoning_config
         and isinstance(reasoning_config, dict)
         and not profile_handles_reasoning
+        and _task_reasoning is None
     ):
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
