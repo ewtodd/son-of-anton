@@ -1255,11 +1255,21 @@ def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",
     force_refresh: bool = False,
+    follow_upstream: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
 
     This is used for explicit custom endpoints where hardcoded global model-name
     defaults are unreliable. Results are cached in memory per base URL.
+
+    ``follow_upstream`` (default False) enables the LiteLLM-style enrichment:
+    when the endpoint's ``/models`` entries carry no context window (as a
+    LiteLLM proxy does — it strips upstream metadata), query the proxy's
+    ``/model_info`` and, for each upstream ``api_base`` it points at, fetch the
+    inference server's own ``/models`` (vLLM reports ``max_model_len``,
+    llama.cpp reports ``n_ctx``). This resolves the real context window without
+    any user-specified value. Off by default so callers that only want pricing
+    (e.g. usage accounting) don't pay for the extra requests.
     """
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
@@ -1414,6 +1424,9 @@ def fetch_endpoint_model_metadata(
                 except Exception:
                     pass
 
+            if follow_upstream:
+                _enrich_from_upstream(normalized, api_key, cache)
+
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
             return cache
@@ -1432,13 +1445,178 @@ def fetch_endpoint_model_metadata(
     return {}
 
 
+# Per-upstream /models results, keyed by upstream base URL. A proxy fans out to
+# a handful of inference servers; each is fetched at most once per refresh
+# window regardless of how many routed model IDs share it.
+_upstream_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+_upstream_model_metadata_cache_time: Dict[str, float] = {}
+_UPSTREAM_MODEL_CACHE_TTL = _ENDPOINT_MODEL_CACHE_TTL
+
+
+def _fetch_upstream_models(base_url: str, api_key: str, headers: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch ``/models`` from an upstream inference server.
+
+    Returns a mapping of model id -> metadata entry (same shape as the
+    endpoint cache). Empty when the server does not expose a window in its
+    model list; errors are swallowed (a dead upstream must not poison the
+    probe for the rest of the fleet).
+    """
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return {}
+    if normalized in _upstream_model_metadata_cache:
+        cached_at = _upstream_model_metadata_cache_time.get(normalized, 0)
+        if (time.time() - cached_at) < _UPSTREAM_MODEL_CACHE_TTL:
+            return _upstream_model_metadata_cache[normalized]
+    result: Dict[str, Dict[str, Any]] = {}
+    try:
+        response = requests.get(
+            normalized.rstrip("/") + "/models",
+            headers=headers,
+            timeout=(5, 10),
+            verify=_resolve_requests_verify(normalized),
+        )
+        if not response.ok:
+            return {}
+        payload = response.json()
+    except Exception as exc:
+        logger.debug("Upstream /models fetch failed for %s: %s", normalized, exc)
+        return {}
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+    for model in payload.get("data", []):
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id") or model.get("key")
+        if not model_id:
+            continue
+        entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+        context_length = _extract_context_length(model)
+        if context_length is not None:
+            entry["context_length"] = context_length
+        _add_model_aliases(result, model_id, entry)
+    _upstream_model_metadata_cache[normalized] = result
+    _upstream_model_metadata_cache_time[normalized] = time.time()
+    return result
+
+
+def _enrich_from_upstream(base_url: str, api_key: str, cache: Dict[str, Dict[str, Any]]) -> None:
+    """Fill in missing context windows by asking the endpoint's upstreams.
+
+    A routing proxy (LiteLLM and the like) serves an OpenAI-compatible
+    ``/models`` list whose entries carry no context metadata — the window
+    lives on the inference server the request is forwarded to. When the
+    proxy exposes ``/model_info`` (LiteLLM does), each entry names the
+    upstream via ``litellm_params.api_base`` and, when the proxy itself was
+    configured with ``max_input_tokens``, via ``model_info.max_input_tokens``.
+
+    This resolves the window without any user-specified value: the proxy's
+    configured value wins (it is the operator's declared cap), otherwise the
+    upstream server's own ``/models`` (vLLM's ``max_model_len``, llama.cpp's
+    ``n_ctx``) is used.
+    """
+    _ensure_requests()
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    if not root:
+        return
+    # LiteLLM serves the admin route as ``/model/info`` (and the
+    # v1-prefixed variant); try both. Underscore spellings are 404 — do
+    # not use them.
+    payload = None
+    last_exc: Optional[Exception] = None
+    for path in ("/model/info", "/v1/model/info"):
+        response = None
+        try:
+            response = requests.get(
+                root + path,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                timeout=5,
+                verify=_resolve_requests_verify(base_url),
+            )
+            if response.ok:
+                payload = response.json()
+                break
+            last_exc = RuntimeError(f"HTTP {response.status_code}")
+            if response.status_code == 404:
+                continue
+            break  # non-404 error: don't hammer the next path
+        except Exception as exc:
+            last_exc = exc
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            except Exception:
+                pass
+    if payload is None:
+        logger.debug("model_info endpoint unavailable at %s: %s", root, last_exc)
+        return
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        model_name = item.get("model_name")
+        if not isinstance(model_name, str) or not model_name:
+            continue
+        # 1. Value the proxy itself was configured with (operator's cap).
+        model_info = item.get("model_info")
+        if isinstance(model_info, dict):
+            configured = _extract_first_int(model_info, ("max_input_tokens",))
+            if configured is not None:
+                entry = cache.setdefault(model_name, {"name": model_name})
+                entry["context_length"] = configured
+                continue
+        # 2. Follow the upstream pointer to the inference server's own
+        #    /models, where the window actually lives.
+        litellm_params = item.get("litellm_params")
+        upstream = litellm_params.get("api_base") if isinstance(litellm_params, dict) else None
+        if not isinstance(upstream, str) or not upstream:
+            continue
+        upstream_models = _fetch_upstream_models(upstream, api_key, headers)
+        # 3. Match the upstream model: exact id, case-insensitive id, then
+        #    the provider-prefixed id (e.g. "openai/Qwen3.8-27B" vs routed
+        #    "qwen3.8-27b" — the proxy lowercases, the server does not).
+        upstream_entry = upstream_models.get(model_name)
+        if upstream_entry is None:
+            lowered = model_name.lower()
+            for key, value in upstream_models.items():
+                if key.lower() == lowered:
+                    upstream_entry = value
+                    break
+        if upstream_entry is None:
+            lowered = model_name.lower()
+            for key, value in upstream_models.items():
+                if "/" in key and key.split("/", 1)[1].lower() == lowered:
+                    upstream_entry = value
+                    break
+        if upstream_entry and "context_length" in upstream_entry:
+            entry = cache.setdefault(model_name, {"name": model_name})
+            entry["context_length"] = upstream_entry["context_length"]
+
+
 def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
 ) -> Optional[int]:
-    """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    """Resolve context length from an endpoint's live ``/models`` metadata.
+
+    ``follow_upstream`` is enabled here: for routing proxies whose ``/models``
+    list carries no window (LiteLLM), the probe follows each upstream
+    ``api_base`` to the inference server's own ``/models`` and reads the
+    window from there, so no user-specified ``context_length`` is needed.
+    """
+    endpoint_metadata = fetch_endpoint_model_metadata(
+        base_url, api_key=api_key, follow_upstream=True
+    )
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:
