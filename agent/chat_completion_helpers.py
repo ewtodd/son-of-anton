@@ -2754,12 +2754,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
-            # Merge the profile's canonical body even when routing is unset:
-            # profiles may always emit required metadata such as Portal tags.
+            # Merge the profile's canonical body and reasoning dialect even
+            # when routing is unset: profiles may always emit required
+            # metadata such as Portal tags, and the custom profile's reasoning
+            # control is a top-level reasoning_effort rather than the nested
+            # extra_body.reasoning set above. The summary call bypasses the
+            # transport, so mirror its profile hooks here or a custom route
+            # runs the wrap-up request without the session's reasoning config.
             provider_preferences = _provider_preferences_for_agent(agent)
             profile_extra_body = {}
+            profile_reasoning_extra = {}
+            profile_top_level = {}
+            profile_handles_reasoning = False
             try:
                 from providers import get_provider_profile
+                from providers.base import ProviderProfile
 
                 provider_profile = get_provider_profile(agent.provider)
                 if provider_profile is not None:
@@ -2769,12 +2778,39 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                         model=agent.model,
                         base_url=agent.base_url,
                         reasoning_config=agent.reasoning_config,
+                    ) or {}
+                    profile_reasoning_extra, profile_top_level = (
+                        provider_profile.build_api_kwargs_extras(
+                            reasoning_config=agent.reasoning_config,
+                            supports_reasoning=agent.reasoning_config is not None,
+                            model=agent.model,
+                            base_url=agent.base_url,
+                        )
+                    )
+                    profile_reasoning_extra = profile_reasoning_extra or {}
+                    profile_top_level = profile_top_level or {}
+                    from agent.auxiliary_client import (
+                        _contains_profile_reasoning_fields,
+                    )
+
+                    profile_handles_reasoning = (
+                        type(provider_profile).build_api_kwargs_extras
+                        is not ProviderProfile.build_api_kwargs_extras
+                        or _contains_profile_reasoning_fields(profile_extra_body)
+                        or _contains_profile_reasoning_fields(profile_reasoning_extra)
+                        or _contains_profile_reasoning_fields(profile_top_level)
                     )
             except Exception:
                 pass
 
+            summary_kwargs.update(profile_top_level)
+            if profile_handles_reasoning:
+                # The profile owns the reasoning wire shape; the generic
+                # nested form set above must not ride along.
+                summary_extra_body.pop("reasoning", None)
             if profile_extra_body:
                 summary_extra_body.update(profile_extra_body)
+            summary_extra_body.update(profile_reasoning_extra)
             if provider_preferences and "provider" not in profile_extra_body and (
                 (agent.provider or "").strip().lower() == "openrouter"
                 or agent._is_openrouter_url()
@@ -2805,17 +2841,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
 
-            else:
-                summary_client = agent._ensure_primary_openai_client(
-                    reason="iteration_limit_summary"
-                )
-                summary_response = _managed_summary_call(
-                    summary_kwargs,
-                    lambda request: summary_client.chat.completions.create(**request),
-                    retry_count=0,
-                )
-                _summary_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_summary_result.content or "").strip()
+            # The anthropic_messages branch that used to sit between these two
+            # was removed with the api_mode (801d46d5), leaving this else
+            # dangling on `if summary_extra_body`: a non-empty extra_body
+            # skipped the call entirely and the summary failed with an
+            # UnboundLocalError on final_response. The OpenAI-compatible call
+            # runs on every non-codex turn.
+            summary_client = agent._ensure_primary_openai_client(
+                reason="iteration_limit_summary"
+            )
+            summary_response = _managed_summary_call(
+                summary_kwargs,
+                lambda request: summary_client.chat.completions.create(**request),
+                retry_count=0,
+            )
+            _summary_result = agent._get_transport().normalize_response(summary_response)
+            final_response = (_summary_result.content or "").strip()
 
         if final_response:
             if "<think>" in final_response:
@@ -2848,6 +2889,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+                summary_kwargs.update(profile_top_level)
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
