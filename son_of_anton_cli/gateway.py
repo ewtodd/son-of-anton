@@ -1686,6 +1686,13 @@ def _profile_arg_for_target_user(son_of_anton_home: str, target_home_dir: str) -
         return _profile_arg(son_of_anton_home)
 
 
+# Systemd/launchd service identity for this SON_OF_ANTON_HOME (restored: the
+# service-name helpers below reference them; the unit templates embed
+# SERVICE_DESCRIPTION).
+_SERVICE_BASE = "son-of-anton-gateway"
+SERVICE_DESCRIPTION = "Son of Anton Agent Gateway - Messaging Platform Integration"
+
+
 def get_service_name() -> str:
     """Derive a systemd service name scoped to this SON_OF_ANTON_HOME.
 

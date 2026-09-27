@@ -1395,12 +1395,13 @@ def cmd_chat(args):
             "It looks like Son of Anton isn't configured yet -- no API keys or providers found."
         )
         print()
-        print("  Run:  son-of-anton setup")
+        print("  Run:  son-of-anton config   (or answer Y below to start the setup wizard)")
         print()
 
         from son_of_anton_cli.setup import (
             is_interactive_stdin,
             print_noninteractive_setup_guidance,
+            run_setup_wizard,
         )
 
         if not is_interactive_stdin():
@@ -1414,10 +1415,10 @@ def cmd_chat(args):
         except (EOFError, KeyboardInterrupt):
             reply = "n"
         if reply in {"", "y", "yes"}:
-            cmd_setup(args)
+            run_setup_wizard(args)
             return
         print()
-        print("You can run 'son-of-anton setup' at any time to configure.")
+        print("You can run 'son-of-anton config' at any time to configure.")
         sys.exit(1)
 
     # Start update check in background (runs while other init happens).
@@ -2830,80 +2831,6 @@ _LAZY_COMMAND_EXPORTS = {
     "son_of_anton_cli.sessions_cmd": (
         "cmd_sessions",
     ),
-    "son_of_anton_cli.update_cmd": (
-        "_add_upstream_remote",
-        "_atomic_replace_dir",
-        "_capture_active_lazy_features",
-        "_capture_active_tool_dependencies",
-        "_capture_head_sha",
-        "_assess_parked_branch_switch",
-        "_branch_head_label",
-        "_branch_head_suffix",
-        "_cmd_update_check",
-        "_cmd_update_impl",
-        "_count_commits_between",
-        "_discard_lockfile_churn",
-        "_discard_stashed_changes",
-        "_park_stashed_changes",
-        "_ensure_fhs_path_guard",
-        "_for_each_systemd_gateway_unit",
-        "_format_time_ago",
-        "_purge_stale_son_of_anton_modules",
-        "_gateway_prompt",
-        "_get_origin_url",
-        "_has_upstream_remote",
-        "_invalidate_update_cache",
-        "_is_fork",
-        "_log_only_write",
-        "_mark_skip_upstream_prompt",
-        "_npm_bin_exists",
-        "_npm_lockfile_changed",
-        "_npm_manifest_paths",
-        "_npm_manifests_digest",
-        "_print_curator_first_run_notice",
-        "_print_curator_recent_run_notice",
-        "_print_fts_optimize_available_notice",
-        "_print_parked_branch_skip_warning",
-        "_print_stash_cleanup_guidance",
-        "_print_update_completion",
-        "_record_npm_lockfile_hash",
-        "_refresh_active_lazy_features",
-        "_refresh_active_memory_provider_dependencies",
-        "_refresh_bootstrap_cache_scripts",
-        "_reload_updated_runtime_modules",
-        "_resolve_pre_update_backup_mode",
-        "_resolve_stash_selector",
-        "_restart_phase_failure_is_incomplete",
-        "_restore_active_tool_dependencies",
-        "_restore_stashed_changes",
-        "_run_logged_subprocess",
-        "_run_pre_update_backup",
-        "_service_unit_supports_graceful_sigusr1_restart",
-        "_should_skip_upstream_prompt",
-        "_stash_apply_failed_only_on_existing_untracked",
-        "_stash_local_changes_if_needed",
-        "_surviving_gateway_pids_after_failed_restart",
-        "_sync_fork_with_upstream",
-        "_sync_with_upstream_if_needed",
-        "_update_node_dependencies",
-        "_upgrade_pip_before_lazy_refresh",
-        "_validate_critical_files_syntax",
-        "_validate_critical_modules_import",
-        "_venv_core_imports_healthy",
-        "_warn_gateway_restart_phase_aborted",
-        "_warn_incomplete_gateway_fleet_restart",
-        "_write_lazy_refresh_incomplete_marker",
-        "_write_marker_file",
-        "_write_update_incomplete_marker",
-        "_UPDATE_RUNTIME_RELOAD_MODULES",
-        "_UPDATE_CRITICAL_FILES",
-        "_UPDATE_CRITICAL_MODULES",
-        "OFFICIAL_REPO_URLS",
-        "OFFICIAL_REPO_URL",
-        "SKIP_UPSTREAM_PROMPT_FILE",
-        "_PRE_UPDATE_SNAPSHOT_KEEP",
-        "_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE",
-    ),
 }
 
 _LAZY_COMMAND_ATTR_TO_MODULE = {
@@ -3229,12 +3156,6 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
-# Update pipeline lives in son_of_anton_cli/update_cmd.py (main.py decomposition,
-# mechanical move). Its names are re-exported lazily through the module-level
-# __getattr__ above (see _LAZY_COMMAND_EXPORTS) so argparse wiring and test
-# monkeypatches on son_of_anton_cli.main.<name> keep resolving unchanged without
-# paying the update_cmd import cost on every CLI invocation.
-
 # Stamp file recording the checkout fingerprint the bytecode cache was last
 # validated against. Lives next to the checkout (NOT in SON_OF_ANTON_HOME) because
 # __pycache__ is per-checkout state shared by every profile.
@@ -3303,183 +3224,6 @@ def _sweep_stale_bytecode_if_checkout_changed() -> None:
         _record_bytecode_fingerprint()
     except Exception as exc:
         logger.debug("Stale-bytecode launch sweep failed: %s", exc)
-
-
-def _nixos_build_env() -> dict[str, str] | None:
-    """Return extra env vars for native module builds on NixOS.
-
-    On NixOS, python3 is typically not on the system PATH (it lives in
-    the Nix store and only enters PATH inside a nix-shell or when
-    explicitly installed as a system package).  node-gyp uses Python to
-    compile native addons like ``node-pty`` and its ``find-python.js``
-    does a bare ``PATH`` lookup — which fails on NixOS.
-
-    Two-tier resolution:
-    1. Fast path — the son-of-anton venv's python3 (present in managed installs)
-    2. Fallback — resolves the absolute python3 path via ``nix-shell``
-
-    Returns an env dict suitable for ``subprocess.run(env=...)`` or
-    ``None`` when we are not on NixOS or python3 is already on PATH.
-    """
-    import re
-
-    try:
-        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if not re.search(r"^ID=nixos$", os_release, re.M):
-        return None
-
-    # python3 already on PATH — nothing to do
-    if shutil.which("python3"):
-        return None
-
-    # Resolve the absolute python3 path via nix-shell. Slower (~2–5 s for the
-    # nix-shell eval) but always works. The resolved path is a self-contained
-    # Nix store binary (all deps via RPATH) so it stays valid even after the
-    # nix-shell exits.
-    try:
-        result = subprocess.run(
-            ["nix-shell", "-p", "python3", "--run", "which python3"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=15,
-        )
-        if result.returncode == 0:
-            python3_path = result.stdout.strip()
-            if python3_path and Path(python3_path).exists():
-                return {**os.environ, "PYTHON": python3_path}
-    except Exception:
-        pass  # nix-shell not available — caller will get None
-
-    return None
-def _run_npm_install_deterministic(
-    npm: str,
-    cwd: Path,
-    *,
-    extra_args: tuple[str, ...] = (),
-    capture_output: bool = True,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess:
-    """Run a deterministic npm install that does not mutate ``package-lock.json``.
-
-    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present;
-    falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
-    sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
-    rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
-    the working tree dirty and causes the next ``son-of-anton update`` to stash the
-    lockfile — repeatedly.
-
-    ``--include=dev`` is forced on every invocation: the callers are frontend
-    builds (web UI / TUI / desktop workspaces), and those builds need the dev
-    toolchain (``tsc``, ``vite``, ``electron-builder`` — all
-    ``devDependencies``).  If the caller's environment has
-    ``NODE_ENV=production`` (or npm config ``omit=dev``) — which leaks in from
-    a shell profile, a container image, or the bundled TUI launcher that sets
-    ``NODE_ENV=production`` on its subprocess env — npm silently omits
-    devDependencies (exit 0, no error), so the build toolchain never installs
-    and the subsequent build dies with ``tsc: command not found`` (exit 127).
-    The flag overrides both the env var and npm config, unlike scrubbing
-    ``NODE_ENV`` from the environment which only fixes the env-leak case.
-
-    ``--no-save`` on the ``npm install`` fallback keeps it true to this
-    function's contract: never mutate ``package-lock.json``.  Without it, an
-    out-of-sync lockfile gets rewritten by the fallback, which drifts the
-    committed lockfile and makes every future ``npm ci`` fail — a
-    self-reinforcing cycle where web devDeps never install and a stale dist
-    is served on every update (PR #65595).
-    """
-    # unicode-animations' postinstall animates to /dev/tty (bypasses
-    # --silent/capture_output). It no-ops when CI is set — same as the TUI
-    # install path and nix/lib.nix npm ci hooks.
-    run_env = _npm_lifecycle_env(env)
-
-    def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-        return _run_npm_watching_for_engine_failure(
-            cmd,
-            cwd=cwd,
-            env=run_env,
-            capture_output=capture_output,
-        )
-
-    def _attempt(npm_exe: str) -> subprocess.CompletedProcess:
-        lockfile = cwd / "package-lock.json"
-        if lockfile.exists():
-            ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
-            if ci_result.returncode == 0:
-                return ci_result
-            # Fall through to `npm install` — lockfile may be out of sync on a
-            # WIP fork/branch, or `npm ci` may not be available on very old npm.
-        return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
-
-    result = _attempt(npm)
-    if result.returncode == 0:
-        return result
-
-    # An npm outside the root package.json's `engines.npm` range fails every
-    # command here identically (the `npm install` fallback included), so the
-    # failure is worth exactly one repair attempt. `maybe_repair_npm_engine`
-    # returns the npm to retry with — the same one after an in-place upgrade
-    # of a Son of Anton-managed install, or a freshly provisioned managed npm when
-    # the failing npm belongs to the user's own toolchain.
-    from son_of_anton_cli.npm_engine import maybe_repair_npm_engine
-
-    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
-    repaired_npm = maybe_repair_npm_engine(npm, combined)
-    if not repaired_npm:
-        return result
-    # The repaired npm may be a freshly provisioned managed one whose shebang
-    # and lifecycle scripts resolve `node` from PATH — put the managed tree
-    # first so they find the managed Node, not the mismatched system one.
-    from son_of_anton_constants import with_son_of_anton_node_path
-
-    run_env["PATH"] = with_son_of_anton_node_path(run_env)["PATH"]
-    return _attempt(repaired_npm)
-
-
-def _run_npm_watching_for_engine_failure(
-    cmd: list[str],
-    *,
-    cwd: Path,
-    env: dict[str, str],
-    capture_output: bool,
-) -> subprocess.CompletedProcess:
-    """Run *cmd*, always retaining stderr so ``EBADENGINE`` stays detectable.
-
-    ``capture_output=False`` callers stream npm's progress live and would
-    otherwise hand back a ``CompletedProcess`` with ``stderr=None``, leaving the
-    engine-failure recovery nothing to read. Tee stderr instead: each line is
-    forwarded to this process's stderr as it arrives (so live output is
-    unchanged) and accumulated for the caller.
-    """
-    if capture_output:
-        return subprocess.run(
-            cmd,
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-
-    captured: list[str] = []
-    with subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    ) as proc:
-        if proc.stderr is not None:
-            for line in proc.stderr:
-                captured.append(line)
-                sys.stderr.write(line)
-            sys.stderr.flush()
-        returncode = proc.wait()
-    return subprocess.CompletedProcess(cmd, returncode, None, "".join(captured))
-
 
 
 def _load_installable_optional_extras(group: str = "all") -> list[str]:
@@ -4070,8 +3814,6 @@ def _verify_console_scripts_installed(
     env: dict[str, str] | None = None,
 ) -> None:
     """Windows-only entry-point shim verification; no-op on Nix platforms.
-
-    Kept importable: ``update_cmd`` calls it after dependency installs.
     """
     return None
 

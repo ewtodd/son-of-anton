@@ -121,7 +121,6 @@ def build_models_payload(
     pricing: bool = False,
     capabilities: bool = False,
     featured: bool = False,
-    force_fresh_nous_tier: bool = False,
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
@@ -160,10 +159,6 @@ def build_models_payload(
       these; the rest of ``models`` stays reachable via search / show-all. Empty
       for single-lab providers (callers fall back to top-N). Derived live from
       models.dev — no allowlist.
-    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
-      selecting Portal-recommended Nous models and applying tier gating. Keep
-      this false for UI picker opens; explicit auth/model flows can opt in
-      when they need freshly-purchased credits to show up immediately.
     - ``refresh``: bust the per-provider model-id disk cache so every row
       re-fetches its live catalog. Set only for an explicit user-triggered
       "refresh models" action; normal picker opens leave it false to stay
@@ -191,7 +186,6 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
-        force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
         refresh=refresh,
         probe_custom_providers=probe_custom_providers,
@@ -263,7 +257,7 @@ def build_models_payload(
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+        _apply_pricing(rows)
     if capabilities:
         _apply_capabilities(rows)
     if featured:
@@ -749,21 +743,14 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
 
 def _apply_pricing(
     rows: list[dict],
-    *,
-    force_fresh_nous_tier: bool = False,
 ) -> None:
-    """Enrich each provider row with per-model pricing + Nous tier gating.
+    """Enrich each provider row with per-model pricing.
 
     Mutates ``rows`` in-place. For every row whose provider supports live
     pricing (openrouter / nous / novita) adds::
 
         row["pricing"] = {model_id: {"input": "$3.00", "output": "$15.00",
                                      "cache": "$0.30" | None, "free": bool}}
-
-    For Nous additionally adds::
-
-        row["free_tier"] = bool            # current account is free-tier
-        row["unavailable_models"] = [...]  # paid models a free user can't pick
 
     Prices are pre-formatted via ``_format_price_per_mtok`` so the GUI just
     renders strings — identical formatting to the CLI picker. All failures
@@ -775,8 +762,6 @@ def _apply_pricing(
         get_pricing_for_provider,
     )
 
-    # Resolve Nous free-tier once (cached in models.py for the TTL window).
-    nous_free_tier: Optional[bool] = None
 
     for row in rows:
         slug = str(row.get("slug", "")).lower()
@@ -832,23 +817,3 @@ def _apply_pricing(
 
         if formatted:
             row["pricing"] = formatted
-
-        if slug == "nous":
-            try:
-                if nous_free_tier is None:
-                    nous_free_tier = check_nous_free_tier(
-                        force_fresh=force_fresh_nous_tier
-                    )
-                row["free_tier"] = bool(nous_free_tier)
-                if nous_free_tier:
-                    _selectable, unavailable = partition_nous_models_by_tier(
-                        list(models), raw_pricing, free_tier=True
-                    )
-                    row["unavailable_models"] = unavailable
-                else:
-                    row["unavailable_models"] = []
-            except Exception:
-                # Tier detection failed — fail open (no gating) so the user
-                # is never blocked from picking a model.
-                row["free_tier"] = False
-                row["unavailable_models"] = []

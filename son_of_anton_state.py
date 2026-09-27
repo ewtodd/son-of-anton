@@ -3765,12 +3765,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     # merely conservative), then drop.
                     logger.warning(
                         "messages_fts_cjk triggers present but the "
-                        "cjk_unicode61 tokenizer is unavailable (%s) — "
+                        "cjk_unicode61 tokenizer is unavailable — "
                         "dropping the cjk triggers so message writes keep "
                         "working. CJK search falls back to trigram/LIKE; "
                         "run `son-of-anton sessions optimize-storage` on a host "
                         "with the extension to rebuild.",
-                        fts5_cjk_so_path(),
                     )
                     cursor.execute(
                         "INSERT INTO state_meta (key, value) VALUES (?, '1') "

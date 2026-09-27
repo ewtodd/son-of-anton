@@ -2811,10 +2811,7 @@ def _resolve_copilot_catalog_api_key() -> str:
 
     Without (2), users whose only Copilot credential is in the pool see
     the ``/model`` picker fall back to a stale hardcoded list because the
-    live catalog fetch silently 401s. To avoid wedging on a malformed pool
-    entry, each candidate is exchanged via ``exchange_copilot_token`` —
-    only entries that actually exchange successfully are returned, so a
-    later valid entry is reachable when an earlier one is unsupported.
+    live catalog fetch silently 401s.
     """
     try:
         from son_of_anton_cli.auth import resolve_api_key_provider_credentials
@@ -2829,21 +2826,16 @@ def _resolve_copilot_catalog_api_key() -> str:
     try:
         from son_of_anton_cli.auth import read_credential_pool
 
+        # The GitHub device-code exchange (exchange_copilot_token /
+        # validate_copilot_token) was removed with the Copilot ACP client
+        # (a9563978); fetch_github_model_catalog accepts the GitHub token
+        # directly, so pool entries are usable as-is.
         for entry in read_credential_pool("copilot"):
             if not isinstance(entry, dict):
                 continue
-            raw = str(entry.get("access_token") or "").strip()
-            if not raw:
-                continue
-            valid, _ = validate_copilot_token(raw)
-            if not valid:
-                continue
-            try:
-                api_token, _expires_at = exchange_copilot_token(raw)
-            except Exception:
-                continue
-            if api_token:
-                return api_token
+            raw = str(entry.get("access_token") or entry.get("api_key") or "").strip()
+            if raw:
+                return raw
     except Exception:
         pass
 
@@ -3019,7 +3011,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
-        return model_ids(force_refresh=force_refresh)
+        # The curated fetcher (fetch_openrouter_models/model_ids) was removed
+        # in 40a24437; query the live /v1/models catalog instead, which also
+        # seeds the reasoning-capability cache via fetch_models_with_pricing.
+        try:
+            live = fetch_api_models(_resolve_openrouter_api_key(), "https://openrouter.ai/api")
+            if live:
+                return live
+        except Exception:
+            pass
+        return []
     if normalized == "openai-codex":
         from son_of_anton_cli.codex_models import get_codex_model_ids
 
@@ -3059,34 +3060,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
     if normalized == "anthropic":
-        model_cfg = _get_model_config_dict()
-        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
-        if cfg_provider == "anthropic":
-            cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
-            cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
-        else:
-            cfg_base_url = ""
-            cfg_api_key = ""
-        live = _fetch_anthropic_models(
-            base_url=cfg_base_url or None,
-            api_key=cfg_api_key or None,
-        )
-        if live:
-            if cfg_base_url:
-                return live
-            # The live /v1/models dump lags newly-routed curated aliases
-            # (e.g. claude-fable-5, which is reachable on Anthropic before it
-            # is enumerated by the models endpoint). Surface curated entries
-            # first, then append any live-only models, so a fresh curated
-            # model never disappears just because the API hasn't listed it yet.
-            curated = list(_PROVIDER_MODELS.get("anthropic", []))
-            merged = list(curated)
-            merged_lower = {m.lower() for m in curated}
-            for m in live:
-                if m.lower() not in merged_lower:
-                    merged.append(m)
-                    merged_lower.add(m.lower())
-            return merged
+        # The native catalog fetcher (_fetch_anthropic_models) was removed with
+        # the Anthropic Messages wire (ba850a9e); the curated list is the only
+        # catalog left for this provider.
         return list(_PROVIDER_MODELS.get("anthropic", []))
     if normalized == "ai-gateway":
         live = _fetch_ai_gateway_models()
@@ -4163,7 +4139,6 @@ _COPILOT_MODEL_ALIASES = {
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
-    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",
@@ -5470,18 +5445,14 @@ def validate_requested_model(
                 ),
             }
 
-    # Native Anthropic provider: /v1/models requires x-api-key (or Bearer for
-    # OAuth) plus anthropic-version headers.  The generic OpenAI-style probe
-    # below uses plain Bearer auth and 401s against Anthropic, so dispatch to
-    # the native fetcher which handles both API keys and Claude-Code OAuth
-    # tokens.  (The api_mode=="anthropic_messages" branch below handles the
-    # Messages-API transport case separately.)
+    # Native Anthropic provider: the catalog fetcher (_fetch_anthropic_models)
+    # was removed with the Anthropic Messages wire (ba850a9e), so validate
+    # against the curated catalog (the same source provider_model_ids() now
+    # returns for this provider).  The api_mode=="anthropic_messages" branch
+    # below still probes live /v1/models for explicit Messages-API endpoints.
     if normalized == "anthropic":
-        anthropic_models = _fetch_anthropic_models(
-            base_url=base_url or None,
-            api_key=api_key or None,
-        )
-        if anthropic_models is not None:
+        anthropic_models = list(_PROVIDER_MODELS.get("anthropic", []))
+        if anthropic_models:
             if requested_for_lookup in set(anthropic_models):
                 return {
                     "accepted": True,
@@ -5515,8 +5486,8 @@ def validate_requested_model(
                     f"{suggestion_text}"
                 ),
             }
-        # _fetch_anthropic_models returned None — no token resolvable or
-        # network failure.  Fall through to the generic warning below.
+        # Curated catalog unavailable (empty?) — fall through to the generic
+        # warning below.
 
     # Anthropic Messages API: many proxies don't implement /v1/models.
     # Try probing with correct auth; if it fails, accept with a warning.

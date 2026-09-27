@@ -630,6 +630,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         _save_model_choice,
         deactivate_provider,
     )
+    from son_of_anton_cli.main import _prompt_api_key
     from son_of_anton_cli.config import (
         get_env_value,
         save_env_value,

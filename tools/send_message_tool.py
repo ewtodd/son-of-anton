@@ -351,13 +351,10 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
-            home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
-                platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
-            )
             return tool_error(
                 f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: son-of-anton config set {home_env} <channel_id>"
+                f"or set a home channel via: son-of-anton config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             )
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)

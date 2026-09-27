@@ -2484,7 +2484,6 @@ def list_authenticated_providers(
     user_providers: dict = None,
     custom_providers: list | None = None,
     *,
-    force_fresh_nous_tier: bool = False,
     max_models: int | None = None,
     current_model: str = "",
     refresh: bool = False,
@@ -3380,7 +3379,6 @@ def list_authenticated_providers(
                     "models": [],
                     "has_explicit_models": False,
                     "discover_models": discover,
-                    "api_mode": api_mode,
                     "extra_headers": entry_extra_headers,
                     # Part of group_key, so constant across the group. Needed
                     # in the render loop to key the model cache — api_mode

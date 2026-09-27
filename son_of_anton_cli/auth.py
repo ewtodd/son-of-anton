@@ -116,7 +116,6 @@ NOUS_DEVICE_CODE_SOURCE = "device_code"
 NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
-DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
@@ -646,18 +645,10 @@ def format_auth_error(error: Exception) -> str:
         return f"{error} Run `son-of-anton model` to re-authenticate."
 
     if error.code == "subscription_required":
-        if error.provider == "nous":
-            return _format_nous_entitlement_auth_error(error)
         return "No active paid subscription found. Please purchase/activate a subscription, then retry."
 
     if error.code == "insufficient_credits":
-        if error.provider == "nous":
-            return _format_nous_entitlement_auth_error(error)
         return "Subscription credits are exhausted. Top up/renew credits, then retry."
-
-    if error.code in {"subscription_expired", "no_usable_credits", "account_missing", "member_spend_cap_exceeded"}:
-        if error.provider == "nous":
-            return _format_nous_entitlement_auth_error(error)
 
     if error.code == "temporarily_unavailable":
         return f"{error} Please retry in a few seconds."
@@ -964,8 +955,6 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         or isinstance(raw.get("credential_pool"), dict)
     ):
         raw.setdefault("providers", {})
-        if isinstance(raw.get("providers"), dict):
-            _migrate_stale_nous_portal_url(raw["providers"])
         return raw
 
     # Migrate from PR's "systems" format if present
@@ -4394,89 +4383,6 @@ def _resolve_verify(
             return _default_verify()
         return ssl.create_default_context(cafile=ca_path)
     return _default_verify()
-
-
-# =============================================================================
-# OAuth Device Code Flow — generic, parameterized by provider
-# =============================================================================
-
-def _request_device_code(
-    client: httpx.Client,
-    portal_base_url: str,
-    client_id: str,
-    scope: Optional[str],
-) -> Dict[str, Any]:
-    """POST to the device code endpoint. Returns device_code, user_code, etc."""
-    response = client.post(
-        f"{portal_base_url}/api/oauth/device/code",
-        data={
-            "client_id": client_id,
-            **({"scope": scope} if scope else {}),
-        },
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    required_fields = [
-        "device_code", "user_code", "verification_uri",
-        "verification_uri_complete", "expires_in", "interval",
-    ]
-    missing = [f for f in required_fields if f not in data]
-    if missing:
-        raise ValueError(f"Device code response missing fields: {', '.join(missing)}")
-    return data
-
-
-def _poll_for_token(
-    client: httpx.Client,
-    portal_base_url: str,
-    client_id: str,
-    device_code: str,
-    expires_in: int,
-    poll_interval: int,
-) -> Dict[str, Any]:
-    """Poll the token endpoint until the user approves or the code expires."""
-    deadline = time.monotonic() + max(1, expires_in)
-    current_interval = max(1, min(poll_interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
-
-    while time.monotonic() < deadline:
-        response = client.post(
-            f"{portal_base_url}/api/oauth/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "client_id": client_id,
-                "device_code": device_code,
-            },
-        )
-
-        if response.status_code == 200:
-            payload = response.json()
-            if "access_token" not in payload:
-                raise ValueError("Token response did not include access_token")
-            return payload
-
-        try:
-            error_payload = response.json()
-        except Exception:
-            response.raise_for_status()
-            raise RuntimeError("Token endpoint returned a non-JSON error response")
-
-        error_code = error_payload.get("error", "")
-        if error_code == "authorization_pending":
-            time.sleep(current_interval)
-            continue
-        if error_code == "slow_down":
-            current_interval = min(current_interval + 1, 30)
-            time.sleep(current_interval)
-            continue
-
-        description = error_payload.get("error_description") or "Unknown authentication error"
-        raise RuntimeError(f"{error_code}: {description}")
-
-    # Enriched at the SOURCE so every caller inherits the guidance:
-    # the CLI login (_nous_device_code_login) and the dashboard/desktop
-    # poller (web_server._nous_poller, which surfaces str(e) to the UI).
-    raise TimeoutError(_nous_device_auth_timeout_message(portal_base_url))
 
 
 def _is_terminal_xai_oauth_refresh_error(exc: Exception) -> bool:

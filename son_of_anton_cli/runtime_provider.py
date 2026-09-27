@@ -1284,13 +1284,7 @@ def _resolve_explicit_runtime(
                     base_url = normalize_actual_base_url(base_url)
 
         api_mode = "chat_completions"
-        if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(
-                model_cfg,
-                api_key,
-                target_model=target_model,
-            )
-        elif provider == "xai":
+        if provider == "xai":
             api_mode = "codex_responses"
         elif provider == "actual":
             api_mode = "codex_responses"
@@ -1598,13 +1592,7 @@ def resolve_runtime_provider(
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)
         api_mode = "chat_completions"
-        if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(
-                model_cfg,
-                creds.get("api_key", ""),
-                target_model=target_model,
-            )
-        elif provider == "xai":
+        if provider == "xai":
             api_mode = "codex_responses"
         elif provider == "actual":
             api_mode = "codex_responses"

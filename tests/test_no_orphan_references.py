@@ -159,6 +159,7 @@ _REMOVED_SYMBOLS = (
     "_close_cached_request_anthropic_client",
     "_try_refresh_anthropic_client_credentials",
     "_sync_anthropic_entry_from_credentials_file",
+    "_try_anthropic",
     # Nous Portal
     "_sync_nous_entry_from_auth_store",
     "_nous_invoke_jwt_is_usable",

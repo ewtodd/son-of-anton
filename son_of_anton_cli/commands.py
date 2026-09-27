@@ -602,6 +602,10 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
+# Platform slash-command name cap (Discord/Slack/Telegram all cap at 32 chars).
+_CMD_NAME_LIMIT = 32
+
+
 def _clamp_command_names(
     entries: list[tuple[str, ...]],
     reserved: set[str],

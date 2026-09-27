@@ -598,6 +598,7 @@ class CLIAgentSetupMixin:
         whose tip is small. Generic guard failures fail OPEN (resume
         proceeds) — only a genuine over-limit result blocks.
         """
+        from cli import logger
         if not self._session_db:
             return None
         from son_of_anton_state import (

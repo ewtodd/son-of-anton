@@ -445,7 +445,7 @@ def run_agent_loop(
     system: str,
     user_content: str,
     config,
-    tool_executor: ToolExecutor,
+    tool_executor: Any,
     tools: list[dict],
     max_rounds: int = 10,
     agent_name: str = "",

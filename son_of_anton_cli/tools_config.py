@@ -2009,9 +2009,6 @@ def _configure_tool_category_for_reconfig(
         provider = providers[0]
         print()
         print(color(f"  --- {icon} {name} ({provider['name']}) ---", Colors.CYAN))
-        if hidden_nous_message:
-            for line in hidden_nous_message.splitlines():
-                _print_warning(f"  {line}")
         _reconfigure_provider(provider, config, force_fresh=force_fresh)
     else:
         print()
@@ -2083,8 +2080,6 @@ def _reconfigure_provider(
         if provider.get("post_setup"):
             _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
-        if managed_feature:
-            _print_info("  Requests for this tool will be billed to your Nous subscription.")
 
     for var in env_vars:
         existing = get_env_value(var["key"])
@@ -2211,14 +2206,10 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            auto_configured = apply_nous_managed_defaults(
-                config,
-                enabled_toolsets=new_enabled,
-                force_fresh=True,
-            )
-            for ts_key in sorted(auto_configured):
-                label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
-                print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
+            # No toolset is auto-configured from a managed subscription
+            # (the Nous billing surface was excised); every selected tool with
+            # provider options goes through the interactive flow below.
+            auto_configured: set[str] = set()
 
             # Walk through ALL selected tools that have provider options or
             # need API keys.  This ensures providers are shown even when

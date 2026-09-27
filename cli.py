@@ -8426,14 +8426,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # process_loop), fall back to direct curses call.
         in_main_thread = threading.current_thread() is threading.main_thread()
 
-        if False:  # placeholder
-            try:
-                _pick()
-            finally:
-                self._status_bar_visible = was_visible
-                self._app.invalidate()
-        else:
-            _pick()
+        _pick()
 
         return result[0]
 
@@ -8470,22 +8463,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._invalidate()
             return None
 
-        if False:  # placeholder
-            try:
-                _ask()
-            except Exception:
-                # WSL / Warp / certain terminal emulators silently drop the
-                # scheduled coroutine.  Fall back to a direct input() so the
-                # user's keystrokes don't leak into the agent buffer.
-                try:
-                    _ask()
-                except Exception:
-                    pass
-            finally:
-                self._status_bar_visible = was_visible
-                self._app.invalidate()
-        else:
-            _ask()
+        _ask()
         return result[0]
 
     def _prompt_text_input_modal(

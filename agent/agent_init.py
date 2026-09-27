@@ -27,7 +27,10 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.rate_limit_tracker import RateLimitState
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compactor import ContextCompactor
