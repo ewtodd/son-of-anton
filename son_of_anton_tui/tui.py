@@ -1066,6 +1066,8 @@ if _TEXTUAL_AVAILABLE:
                     yield Static("", id="ctx-cwd", classes="muted", markup=False)
                     yield Static("mode", classes="label")
                     yield Static("", id="ctx-mode", classes="kv", markup=False)
+                    yield Static("reasoning", classes="label")
+                    yield Static("", id="ctx-reasoning", classes="kv muted", markup=False)
                     yield Static("context", classes="label")
                     yield Static("", id="ctx-bar", classes="kv")
                     yield Static("", id="ctx-tokens", classes="kv muted")
@@ -1556,6 +1558,9 @@ if _TEXTUAL_AVAILABLE:
                     )
                     if provider:
                         meta.append(f"  {provider}", style="dim")
+                effort = snap.get("reasoning_label") or "medium"
+                meta.append("  ·  ", style="dim")
+                meta.append(f"reasoning {effort}", style="dim")
             try:
                 self.query_one("#prompt-meta-left", Static).update(meta)
                 self.query_one("#prompt-meta-right", Static).update(
@@ -1581,6 +1586,9 @@ if _TEXTUAL_AVAILABLE:
             self.query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
             self.query_one("#ctx-cwd", Static).update(cwd)
             self.query_one("#ctx-mode", Static).update(backend.permission_mode())
+            self.query_one("#ctx-reasoning", Static).update(
+                snap.get("reasoning_label") or "medium (default)"
+            )
             pct = snap.get("context_percent")
             if pct is None:
                 self.query_one("#ctx-bar", Static).update(Text("▱▱▱▱▱▱▱▱▱▱  —", style="dim"))

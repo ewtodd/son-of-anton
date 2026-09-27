@@ -5114,7 +5114,21 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Focus view badge (/focus). Persistent indicator so the reduced
             # output mode is never invisible. Display-only.
             "focus_label": "",
+            "reasoning_label": "",
         }
+
+        try:
+            # The effective reasoning effort for this session. Agent wins:
+            # a --reasoning flag or a mid-session /reasoning sets it there.
+            rc = getattr(self.agent, "reasoning_config", None) or getattr(self, "reasoning_config", None)
+            if rc is None:
+                snapshot["reasoning_label"] = "medium (default)"
+            elif rc.get("enabled") is False:
+                snapshot["reasoning_label"] = "off"
+            else:
+                snapshot["reasoning_label"] = rc.get("effort", "medium")
+        except Exception:
+            pass
 
         try:
             from son_of_anton_cli.focus_view import focus_statusbar_segment
