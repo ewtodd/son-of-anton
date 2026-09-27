@@ -35,6 +35,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -47,10 +48,19 @@ _ALIASES: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 
-# Repo-root ``plugins/model-providers/`` — populated at discovery time.
-_BUNDLED_PLUGINS_DIR = (
-    Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
-)
+def _bundled_plugins_dir() -> Path:
+    """Bundled ``plugins/model-providers/`` directory.
+
+    The Nix wrapper ships ``plugins/`` outside the sealed venv and exports
+    ``SON_OF_ANTON_BUNDLED_PLUGINS``. Without that override the sibling-path
+    guess resolves inside site-packages, which has no ``plugins/``, and every
+    bundled provider profile (``custom`` included) is silently lost. Mirrors
+    ``son_of_anton_cli.plugins.get_bundled_plugins_dir``.
+    """
+    env_override = os.environ.get("SON_OF_ANTON_BUNDLED_PLUGINS")
+    if env_override:
+        return Path(env_override) / "model-providers"
+    return Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -301,8 +311,9 @@ def _discover_providers() -> None:
     _discover_entry_point_providers()
 
     # 1. Bundled plugins — shipped with son-of-anton.
-    if _BUNDLED_PLUGINS_DIR.is_dir():
-        for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
+    bundled_dir = _bundled_plugins_dir()
+    if bundled_dir.is_dir():
+        for child in sorted(bundled_dir.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
             _import_plugin_dir(child, "bundled")

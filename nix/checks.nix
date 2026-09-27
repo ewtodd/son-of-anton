@@ -298,6 +298,8 @@ import plugins.platforms.slack.adapter
 import gateway.platforms.signal
 import physics_intern.run
 import physics_intern.autophysicist.runner
+import providers
+assert providers.get_provider_profile('custom') is not None, 'bundled provider profile (custom) missing'
 print('imports ok')
 " || (echo "FAIL: core modules do not import from the sealed venv"; exit 1)
           echo "PASS: core modules import from the sealed venv"
