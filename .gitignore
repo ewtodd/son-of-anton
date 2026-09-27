@@ -63,6 +63,7 @@ privvy*
 images/
 __pycache__/
 son_of_anton_agent.egg-info/
+son_of_anton.egg-info/
 wandb/
 testlogs
 playwright-report/
