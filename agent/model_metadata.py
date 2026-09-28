@@ -1426,6 +1426,11 @@ def fetch_endpoint_model_metadata(
 
             if follow_upstream:
                 _enrich_from_upstream(normalized, api_key, cache)
+                # Operator-declared routing table (Bifrost and other gateways
+                # that strip both the window and LiteLLM's /model_info).
+                _enrich_from_upstream_map(
+                    cache, api_key, headers, _upstream_map_from_config()
+                )
 
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
@@ -1501,6 +1506,113 @@ def _fetch_upstream_models(base_url: str, api_key: str, headers: Dict[str, str])
     _upstream_model_metadata_cache[normalized] = result
     _upstream_model_metadata_cache_time[normalized] = time.time()
     return result
+
+
+def _match_upstream_window(
+    model_name: str,
+    upstream_base: str,
+    api_key: str,
+    headers: Dict[str, str],
+) -> Optional[int]:
+    """Fetch an upstream's ``/models`` and match a window for ``model_name``.
+
+    Candidate names are the routed id and its bare suffix (the gateway prefix
+    is the routing key, not part of what the upstream serves — Bifrost's
+    ``"vllm/Qwen3.8-27B"`` vs vLLM's ``"Qwen3.8-27B"``). Each is matched by
+    exact id, then case-insensitive id (the gateway lowercases, the inference
+    server does not), then the provider-prefixed id in either direction. Returns
+    None when the upstream has no matching entry or no window — a dead or short
+    upstream must not poison the caller's probe.
+    """
+    upstream_models = _fetch_upstream_models(upstream_base, api_key, headers)
+    if not upstream_models:
+        return None
+    candidates = [model_name]
+    if "/" in model_name:
+        candidates.append(model_name.split("/", 1)[1])
+    for name in candidates:
+        lowered = name.lower()
+        upstream_entry = upstream_models.get(name)
+        if upstream_entry is None:
+            for key, value in upstream_models.items():
+                if key.lower() == lowered:
+                    upstream_entry = value
+                    break
+        if upstream_entry is None:
+            for key, value in upstream_models.items():
+                if "/" in key and key.split("/", 1)[1].lower() == lowered:
+                    upstream_entry = value
+                    break
+        if upstream_entry is None:
+            for key, value in upstream_models.items():
+                if "/" in name and name.split("/", 1)[1].lower() == key.lower():
+                    upstream_entry = value
+                    break
+        if upstream_entry and "context_length" in upstream_entry:
+            return upstream_entry["context_length"]
+    return None
+
+
+def _upstream_map_from_config() -> Dict[str, str]:
+    """Read ``model.upstream_map`` from the user config, if present.
+
+    A gateway (Bifrost, an in-house LiteLLM with a non-standard admin API, a
+    corporate proxy) may serve an OpenAI-compatible ``/models`` list whose
+    entries carry no window AND no upstream routing table (LiteLLM's
+    ``/model_info`` exposes one; most gateways don't). The operator declares
+    the routing table in config: ``model.upstream_map`` maps a gateway model
+    id or id-prefix to the inference server's own base URL. This is the
+    general form of the LiteLLM enrichment — the same "follow the upstream
+    to read its window" logic, with the operator supplying the map instead of
+    the gateway self-describing it.
+
+    Reads the real config (cached, read-only) and never blocks on the network.
+    Returns {} when unset or malformed, so the probe degrades to its LiteLLM/
+    default behavior.
+    """
+    try:
+        from son_of_anton_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model")
+    except Exception:
+        return {}
+    if not isinstance(model_cfg, dict):
+        return {}
+    mapping = model_cfg.get("upstream_map")
+    if not isinstance(mapping, dict):
+        return {}
+    clean: Dict[str, str] = {}
+    for key, value in mapping.items():
+        if isinstance(key, str) and isinstance(value, str) and value.strip():
+            clean[key.strip()] = value.strip()
+    return clean
+
+
+def _upstream_for_model(upstream_map: Dict[str, str], model_name: str) -> Optional[str]:
+    """Resolve the upstream base URL for ``model_name`` from ``upstream_map``.
+
+    Tries the full id, the bare suffix (the part after the gateway's routing
+    prefix — "vllm/Qwen3.8-27B" -> "Qwen3.8-27B"), and finally the map keys
+    as prefixes of the full id (so "vllm/" matches "vllm/Qwen3.8-27B").
+    Returns None when no map entry applies.
+    """
+    if not upstream_map or not model_name:
+        return None
+    lowered = model_name.lower()
+    for key, url in upstream_map.items():
+        k = key.lower()
+        if k == lowered:
+            return url
+    if "/" in model_name:
+        bare = model_name.split("/", 1)[1].lower()
+        for key, url in upstream_map.items():
+            if key.lower() == bare:
+                return url
+    for key, url in upstream_map.items():
+        k = key.lower()
+        if k in lowered:
+            return url
+    return None
 
 
 def _enrich_from_upstream(base_url: str, api_key: str, cache: Dict[str, Dict[str, Any]]) -> None:
@@ -1580,26 +1692,48 @@ def _enrich_from_upstream(base_url: str, api_key: str, cache: Dict[str, Dict[str
         upstream = litellm_params.get("api_base") if isinstance(litellm_params, dict) else None
         if not isinstance(upstream, str) or not upstream:
             continue
-        upstream_models = _fetch_upstream_models(upstream, api_key, headers)
         # 3. Match the upstream model: exact id, case-insensitive id, then
         #    the provider-prefixed id (e.g. "openai/Qwen3.8-27B" vs routed
         #    "qwen3.8-27b" — the proxy lowercases, the server does not).
-        upstream_entry = upstream_models.get(model_name)
-        if upstream_entry is None:
-            lowered = model_name.lower()
-            for key, value in upstream_models.items():
-                if key.lower() == lowered:
-                    upstream_entry = value
-                    break
-        if upstream_entry is None:
-            lowered = model_name.lower()
-            for key, value in upstream_models.items():
-                if "/" in key and key.split("/", 1)[1].lower() == lowered:
-                    upstream_entry = value
-                    break
-        if upstream_entry and "context_length" in upstream_entry:
+        window = _match_upstream_window(model_name, upstream, api_key, headers)
+        if window is not None:
             entry = cache.setdefault(model_name, {"name": model_name})
-            entry["context_length"] = upstream_entry["context_length"]
+            entry["context_length"] = window
+
+
+def _enrich_from_upstream_map(
+    cache: Dict[str, Dict[str, Any]],
+    api_key: str,
+    headers: Dict[str, str],
+    upstream_map: Dict[str, str],
+) -> None:
+    """Fill in missing context windows for models the endpoint does not
+    self-describe, using the operator-declared ``model.upstream_map``.
+
+    This is the general form of the LiteLLM enrichment. A gateway (Bifrost,
+    a corporate proxy, an in-house LiteLLM without the ``/model_info``
+    admin API) can serve an OpenAI-compatible ``/models`` list whose entries
+    carry no context window AND no upstream routing table. The operator
+    declares the routing table in config — ``model.upstream_map`` maps a
+    gateway model id or id-prefix to the inference server's own base URL —
+    and this reads the window straight from that server's ``/models``
+    (vLLM reports ``max_model_len``, llama.cpp reports ``n_ctx``).
+
+    Only touches cache entries that still have no ``context_length``: a value
+    the gateway itself reported wins over the upstream's, so this is strictly
+    additive and never downgrades a model that already self-describes.
+    """
+    if not upstream_map:
+        return
+    for model_name, entry in cache.items():
+        if "context_length" in entry:
+            continue
+        upstream = _upstream_for_model(upstream_map, model_name)
+        if not upstream:
+            continue
+        window = _match_upstream_window(model_name, upstream, api_key, headers)
+        if window is not None:
+            entry["context_length"] = window
 
 
 def _resolve_endpoint_context_length(
