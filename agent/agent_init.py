@@ -1763,6 +1763,13 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Per-session JSONL journal (session.journal, default True). Mirrors
+    # persisted message rows to $SON_OF_ANTON_HOME/journals/ as they land.
+    _session_section = _agent_cfg.get("session", {})
+    if not isinstance(_session_section, dict):
+        _session_section = {}
+    agent._session_journal_enabled = bool(_session_section.get("journal", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

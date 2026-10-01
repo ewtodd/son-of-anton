@@ -34,13 +34,11 @@ DEFAULT_CONFIG = {
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
     "session": {
-        # Per-terminal `son-of-anton -c`: each CLI session drops a breadcrumb file
-        # under $SON_OF_ANTON_HOME/terminal-sessions/<terminal-id>, and a bare
-        # -c/--continue resumes THIS terminal's session (tmux pane, kitty
-        # window, wezterm pane, plain tty, ...) instead of the globally
-        # most-recent one. Set false to restore the old latest-session
-        # behavior everywhere.
-        "terminal_continue": True,
+        # Per-session JSONL journal under $SON_OF_ANTON_HOME/journals/: written
+        # as messages are persisted, holding the reasoning and tool detail the
+        # transcript clips — a plain greppable file for you and the model.
+        # Set false to stop writing journals.
+        "journal": True,
     },
     "agent": {
         # Unlimited by default. The agent turn cap caused more problems than

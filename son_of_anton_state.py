@@ -26,6 +26,7 @@ import queue
 import random
 import re
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -292,6 +293,43 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
         f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
         [prefix, *cwd_params],
     )
+
+
+def detect_git_metadata(cwd: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(branch, repo_root)`` for *cwd*, or ``(None, None)``.
+
+    Best-effort and bounded: used at session creation to fill the git columns
+    the session picker and cwd-scoped ``-c`` read. A non-repo directory, a
+    missing git binary, or a slow command degrades to NULLs.
+    """
+    if not cwd:
+        return None, None
+
+    def _run(*args: str):
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+
+    branch: Optional[str] = None
+    repo_root: Optional[str] = None
+    try:
+        result = _run("rev-parse", "--show-toplevel")
+        if result.returncode == 0 and result.stdout.strip():
+            repo_root = os.path.abspath(result.stdout.strip())
+        result = _run("rev-parse", "--abbrev-ref", "HEAD")
+        if result.returncode == 0:
+            name = result.stdout.strip()
+            if name and name != "HEAD":
+                branch = name
+    except Exception:
+        return None, None
+    return branch, repo_root
 
 
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:

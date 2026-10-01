@@ -1092,6 +1092,33 @@ def _resolve_workspace_key() -> Optional[str]:
         return None
 
 
+def _resolve_workspace_session(source: str = "cli") -> Optional[str]:
+    """Most recently-used session in the *current* workspace, or ``None``.
+
+    Workspace-scoped only — no global fallback. Bare ``-c`` uses this so a
+    session from another directory is never resumed by accident; a miss means
+    the caller starts a fresh session.
+    """
+    db = None
+    try:
+        from son_of_anton_state import SessionDB
+
+        db = SessionDB()
+        ws_key = _resolve_workspace_key()
+        if not ws_key:
+            return None
+        sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+        return sessions[0]["id"] if sessions else None
+    except Exception:
+        return None
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """Look up the most recently-used session ID for a source.
 
@@ -1219,9 +1246,9 @@ def _resolve_continue_arg(args) -> None:
       (exit 1) so programmatic callers see the error even under quiet mode
       (#86794); with ``--create-if-missing``, create a fresh titled session
       and resume into it instead.
-    - bare ``-c``: continue this terminal's breadcrumb session if valid,
-      else the most recent session (workspace-scoped MRU, then global
-      fallback).
+    - bare ``-c``: continue the most recent session in the current workspace
+      (git repo root, else cwd). No global fallback — a workspace with no
+      previous session starts fresh with a warning.
     """
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -1255,11 +1282,11 @@ def _resolve_continue_arg(args) -> None:
                 )
                 sys.exit(1)
         else:
-            # -c with no argument — prefer this terminal's own breadcrumb
-            # (written at session start / rotation) so side-by-side terminals
-            # each continue their own conversation. Falls back to the
-            # most-recent session when there is no valid breadcrumb, or when
-            # session.terminal_continue is false in config.yaml.
+            # -c with no argument — the most recent session in THIS workspace
+            # (git repo root, else cwd). Deliberately no terminal-breadcrumb or
+            # global fallback: resuming another directory's conversation from a
+            # bare -c is never what the user meant. A workspace with no
+            # previous session starts a fresh one, with a warning.
             if getattr(args, "create_if_missing", False):
                 # --create-if-missing only makes sense with a named session;
                 # with a bare -c there is nothing to create, so surface the
@@ -1269,22 +1296,17 @@ def _resolve_continue_arg(args) -> None:
                     "`-c <name> --create-if-missing`",
                     file=sys.stderr,
                 )
-            try:
-                from son_of_anton_cli.terminal_breadcrumbs import resolve_breadcrumb_session
-
-                _crumb_id = resolve_breadcrumb_session()
-            except Exception:
-                _crumb_id = None
-            if _crumb_id:
-                args.resume = _crumb_id
+            last_id = _resolve_workspace_session(source="cli")
+            if last_id:
+                args.resume = last_id
             else:
-                # No valid breadcrumb — continue the most recent session
-                last_id = _resolve_last_session(source="cli")
-                if last_id:
-                    args.resume = last_id
-                else:
-                    print("No previous CLI session found to continue.")
-                    sys.exit(1)
+                workspace = _resolve_workspace_key() or os.getcwd()
+                print(
+                    f"Warning: no previous session in this workspace "
+                    f"({workspace}) — starting a new one. "
+                    f"Use 'son-of-anton -c <name>' to resume a session by name.",
+                    file=sys.stderr,
+                )
 
 
 def cmd_chat(args):

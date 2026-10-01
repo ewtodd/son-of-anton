@@ -17,55 +17,6 @@ An always-on agent you can talk to from a terminal or from Signal.
 It has two
 modes: the normal agent loop, and a physics research loop.
 <!---->
-## Provenance
-<!---->
-Son of Anton is a hard fork of
-[Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
-v0.20.5 (2026.8.19, upstream commit `fcbd1076a9`), stripped down to a smaller
-daemon. Hermes's learning loop (skills, memory, session search, cron) is kept.
-
-The Autophysicist mode began as a port of
-[huggingface/physics-intern](https://github.com/huggingface/physics-intern)
-(commit `5553bb6`) and has since taken its own path. physics-intern was built
-for theoretical physics, where a sub-agent derives a result and there is
-nothing to look up; this one is built for experimental data, where the work is
-calibrating a detector and training a classifier on recorded waveforms, and the
-dominant failure is guessing at a library API. What that changed: computations
-run under a separate scientific interpreter inside a bubblewrap sandbox with
-the lab's data mounted read-only; the Manager can read its own workspace and
-look up literature; sub-agents can pull documentation; the reasoning and coding
-roles can run on different models; and each iteration is reviewed from outside
-by a critic. physics-intern also shipped a nine-agent research pipeline
-(surveyor, planner, orchestrator, researcher, computer, reviewer, critic,
-adjudicator, formatter); it was ported and then removed as redundant, once the
-Autophysicist carried its own critic, its own sub-agent dispatch, and its own
-verdict-free review. The debt is real and gladly acknowledged — the
-architecture is no longer theirs. Both upstream projects are MIT licensed and
-so is this fork.
-<!---->
-It replaces the archived [temple](https://github.com/ewtodd/temple) harness.
-The daemon design and permission modes come from there.
-<!---->
-The terminal interface is modeled on
-[opencode](https://github.com/sst/opencode), whose TUI is the nicest-looking
-one in this category and, being open source, could be read rather than guessed
-at. The layout is a deliberate port of its session route: the transcript column
-beside a 42-column sidebar, the left rail on messages and the prompt, the
-two-column tool icons, the identity row under the prompt, and the "system"
-theme that asks the terminal for its own background and generates its surfaces
-from it, so the interface belongs to whatever theme you already run. The code
-is reproduced entirely (Python and Textual, against a different agent loop); the design is
-theirs. opencode is MIT licensed. See `TUI_AESTHETICS.md` for the mapping,
-file by file.
-<!---->
-<!---->
-## AI Full Disclosure
-<!---->
-This software is developed with strong assistance from AI, with humans leading the ideas, testing, and debugging.
-This project is not my day job, so it is developed with as little actual coding from me as possible.
-If you are not happy with AI-developed code, this software is not for you.
-(This statement inspired by that of [antirez/ds4](https://github.com/antirez/ds4).)
-<!---->
 ## What it does
 <!---->
 All chat runs one loop — the hermes loop: terminal, files, web, skills,
@@ -95,12 +46,18 @@ One gateway process also runs cron.
   Some things stay blocked even under yolo.
 - `/model NAME` pins a model for the session; `/model auto` drops the pin and
   falls back to the configured default.
+- Sessions are scoped to where you are: bare `-c` continues the most recent
+  conversation in the current directory. See [Sessions](#sessions).
+- Memory is scoped too: shared facts are visible everywhere, personal context
+  stays on the messaging surfaces, and the terminal keeps its own notes. See
+  [Memory](#memory).
 <!---->
 ## Running it
 <!---->
 ```bash
 nix build      # sealed uv2nix venv, wrapper in result/bin/
 nix run .# --  # start the agent (Textual interface)
+nix run .# -- -c   # continue this directory's most recent session
 ```
 <!---->
 It reads `~/.son-of-anton/config.yaml` for settings and `~/.son-of-anton/.env`
@@ -121,6 +78,59 @@ physics:
   model: qwen3.8-27b-coding
   base_url: http://127.0.0.1:8080/v1
 ```
+<!---->
+## Sessions
+<!---->
+The CLI and the gateway share one `state.db`, so there is a single conversation
+store rather than a sync problem. A session row records where it started
+(`cwd`), the git repo root and branch when it is inside one, its model and
+title, and when it was last active.
+<!---->
+Bare `son-of-anton -c` continues the most recent session **in the current
+workspace** — the git repo root when you are in a repository, otherwise the
+directory itself. It deliberately never resumes another directory's
+conversation: no match starts a fresh session, with a warning. `-c <name>` (or
+a session id) is the escape hatch for anything else, and `--resume latest`
+takes the global most-recently-used session. Resuming restores the session's
+working directory.
+<!---->
+### The journal
+<!---->
+`session.journal` (default on) mirrors every message row, as it is persisted,
+to `~/.son-of-anton/journals/<session-id>.jsonl`: a header line, then one JSON
+object per message with the role, content, tool name and calls, and reasoning.
+It is a plain file you or the model can grep without a query interface; it is
+never read back into a context, and the session DB remains the source of truth.
+Large tool outputs are previewed in context and spilled in full to
+`~/.son-of-anton/cache/spillover/`; the journal records the row as persisted.
+The idea — a durable journal written as the turn runs, beside the transcript —
+comes from [goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw).
+<!---->
+## Memory
+<!---->
+Two built-in stores persist across sessions: `MEMORY.md` (the agent's notes —
+environment facts, conventions, lessons) and `USER.md` (who the user is). They
+are injected into the system prompt when a session starts and frozen for the
+life of that session, so mid-session writes never invalidate the prompt cache.
+<!---->
+Both stores are scoped:
+<!---->
+| Scope | Files | Visible from |
+|---|---|---|
+| `shared` | `MEMORY.md`, `USER.md` | every session |
+| `cli` | `MEMORY.cli.md`, `USER.cli.md` | CLI and TUI sessions |
+| `gateway` | `MEMORY.gateway.md`, `USER.gateway.md` | Signal, Discord, Slack |
+<!---->
+The active scope follows the surface — cli → `cli`, messaging → `gateway`,
+anything else (cron, sub-agents, unknown front-ends) → `shared`. `memory.scope`
+pins it for a non-standard surface, and the `memory` tool takes an optional
+`scope`, so one surface can file a fact for another. A coding session therefore
+carries deploy, repo and work conventions without personal context; the gateway
+carries shared plus personal. Each store has its own `memory.memory_char_limit`
+and `memory.user_char_limit` budget, writes can require approval
+(`memory.write_approval`), and an external provider can be layered on top
+(`memory.provider`). The files live in `~/.son-of-anton/memories/`; the agent
+edits them through the `memory` tool, and you can edit them directly.
 <!---->
 ## Physics runs
 <!---->
@@ -562,9 +572,10 @@ git:
   author_email: 12345+some-bot@users.noreply.github.com
 ```
 <!---->
-On the command line, `son-of-anton problem create` builds a physics problem spec
-and `son-of-anton problem run` runs one; `son-of-anton completion <shell>` prints
-a completion script.
+On the command line, `son-of-anton -c [name]` continues this directory's most
+recent session (see [Sessions](#sessions)); `son-of-anton problem create` builds
+a physics problem spec and `son-of-anton problem run` runs one;
+`son-of-anton completion <shell>` prints a completion script.
 <!---->
 `/help` lists the rest.
 <!---->
@@ -583,10 +594,56 @@ file the same size, made within the same second as the last one, can leave
 CPython using the old `.pyc`, because invalidation is on mtime plus size. Clear
 `__pycache__` between runs.
 <!---->
+## Provenance
+<!---->
+Son of Anton is a hard fork of
+[Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
+v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon. The
+learning loop — skills, memory, session search, cron — is upstream's.
+<!---->
+The Autophysicist mode began as a port of
+[huggingface/physics-intern](https://github.com/huggingface/physics-intern)
+(commit `5553bb6`) and has since taken its own path. physics-intern was built
+for theoretical physics, where a sub-agent derives a result and there is
+nothing to look up; this one is built for experimental data, where the work is
+calibrating a detector and training a classifier on recorded waveforms, and the
+dominant failure is guessing at a library API. Physics runs now execute under a
+separate scientific interpreter inside a bubblewrap sandbox with the lab's data
+mounted read-only; the Manager can read its own workspace and look up
+literature; sub-agents can pull documentation; the reasoning and coding roles
+can run on different models; and every iteration is reviewed from outside by a
+critic. physics-intern's nine-agent research pipeline (surveyor, planner,
+orchestrator, researcher, computer, reviewer, critic, adjudicator, formatter)
+was ported and then removed as redundant, once the Autophysicist carried its own
+critic, its own sub-agent dispatch, and its own verdict-free review. The
+architecture is no longer theirs.
+<!---->
+The daemon design and permission modes come from the archived
+[temple](https://github.com/ewtodd/temple) harness. The terminal interface is
+modeled on [opencode](https://github.com/sst/opencode): the transcript column
+beside a 42-column sidebar, the left rail on messages and the prompt, the
+two-column tool icons, the identity row under the prompt, and the "system"
+theme that asks the terminal for its own background and generates its surfaces
+from it. The code is a from-scratch Textual port (Python, against this agent
+loop); the design is theirs — see `TUI_AESTHETICS.md` for the file-by-file
+mapping.
+<!---->
+The session journal follows the idea in
+[goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw), which writes a
+journal beside each archived transcript so reasoning and untruncated tool
+output survive a rollover.
+<!---->
+## AI Full Disclosure
+<!---->
+This software is developed with strong assistance from AI, with humans leading
+the ideas, testing, and debugging. This project is not my day job, so it is
+developed with as little actual coding from me as possible. If you are not
+happy with AI-developed code, this software is not for you. (This statement
+inspired by that of [antirez/ds4](https://github.com/antirez/ds4).)
+<!---->
 ## License
 <!---->
 MIT.
-Hermes Agent and PhysicsIntern are the work of Nous Research and
-HuggingFace; see the upstream repositories for their contributor lists.
-opencode, whose interface design the TUI follows, is the work of SST and is
-also MIT licensed.
+Hermes Agent and physics-intern are the work of Nous Research and HuggingFace;
+letsClaw is the work of goluckyryan; opencode is the work of SST. See the
+upstream repositories for their contributor lists.

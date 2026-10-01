@@ -628,6 +628,7 @@ class AIAgent:
                     _init_model_config["yolo_mode"] = True
             except Exception:
                 pass
+            _launch_cwd = _launch_cwd_for_session(source)
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
@@ -636,9 +637,31 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
-                cwd=_launch_cwd_for_session(source),
+                cwd=_launch_cwd,
                 profile_name=_profile_for_session,
             )
+            self._session_journal_header = {
+                "source": source,
+                "cwd": _launch_cwd,
+                "model": self.model,
+            }
+            # Backfill the git columns for the session picker and for
+            # cwd-scoped `-c`: the row records the launch cwd, and the git
+            # fields stay NULL unless resolved here. Best-effort — a session
+            # must still be created when git is absent or slow.
+            try:
+                from son_of_anton_state import detect_git_metadata
+
+                _branch, _repo_root = detect_git_metadata(_launch_cwd)
+                if _branch or _repo_root:
+                    self._session_db.update_session_cwd(
+                        self.session_id,
+                        _launch_cwd,
+                        git_branch=_branch,
+                        git_repo_root=_repo_root,
+                    )
+            except Exception:
+                pass
             self._session_db_created = True
         except Exception as e:
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
@@ -2332,6 +2355,21 @@ class AIAgent:
                 )
                 for _written in _batch_msgs:
                     _written[_DB_PERSISTED_MARKER] = True
+                # Mirror the committed rows into the session's JSONL journal.
+                # Same increment as the DB write, so a resumed session and a
+                # grepping human see the same order. Failure is swallowed
+                # inside the journal (the DB row is the source of truth).
+                if getattr(self, "_session_journal_enabled", False):
+                    try:
+                        from agent.session_journal import append_session_journal
+
+                        append_session_journal(
+                            self.session_id,
+                            _batch_rows,
+                            session_header=getattr(self, "_session_journal_header", None),
+                        )
+                    except Exception:
+                        logger.debug("Session journal mirror failed", exc_info=True)
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.
