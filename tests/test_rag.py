@@ -176,6 +176,66 @@ def test_compose_user_api_content_includes_rag_block() -> None:
     assert "<recalled-notes>x</recalled-notes>" in composed
 
 
+def test_notes_tree_is_discovered_by_scope(monkeypatch) -> None:
+    """notes/<scope>/... is indexed with no config entry; drop-ins are picked up."""
+    monkeypatch.setattr(rag, "embed_texts", _fake_embed)
+    notes = get_son_of_anton_home() / "notes"
+    (notes / "cli").mkdir(parents=True)
+    (notes / "gateway").mkdir(parents=True)
+    (notes / "cli" / "work.md").write_text("alpha workstation note", encoding="utf-8")
+    (notes / "gateway" / "personal.md").write_text("alpha personal note", encoding="utf-8")
+
+    config = _config()
+    stats = rag.sync_index(config)
+    assert stats["ok"] and stats["added"] >= 2
+
+    cli_hits = rag.search("alpha", config=config, scope="cli", top_k=5)
+    assert any("workstation" in hit["text"] for hit in cli_hits)
+    assert all("personal" not in hit["text"] for hit in cli_hits)
+    gateway_hits = rag.search("alpha", config=config, scope="gateway", top_k=5)
+    assert any("personal" in hit["text"] for hit in gateway_hits)
+
+    (notes / "cli" / "more.md").write_text("gamma extra note", encoding="utf-8")
+    assert rag.sync_index(config)["added"] >= 1
+
+
+def test_notes_tree_follows_directory_symlinks(monkeypatch, tmp_path) -> None:
+    """The legacy food/horror logs stay in place and are reached by symlink."""
+    monkeypatch.setattr(rag, "embed_texts", _fake_embed)
+    target = tmp_path / "food-diary"
+    target.mkdir()
+    (target / "log.md").write_text("gamma food log", encoding="utf-8")
+    gateway = get_son_of_anton_home() / "notes" / "gateway"
+    gateway.mkdir(parents=True)
+    (gateway / "food-diary").symlink_to(target, target_is_directory=True)
+
+    config = _config()
+    rag.sync_index(config)
+    hits = rag.search("gamma", config=config, scope="gateway", top_k=5)
+    assert any("food log" in hit["text"] for hit in hits)
+
+
+def test_removed_source_stops_being_searchable(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(rag, "embed_texts", _fake_embed)
+    note = tmp_path / "notes.md"
+    note.write_text("alpha removable note", encoding="utf-8")
+
+    with_source = _config(sources=[{"path": str(note), "scope": "shared"}])
+    rag.sync_index(with_source)
+    assert any(
+        hit["source"] == "note"
+        for hit in rag.search("alpha", config=with_source, scope="cli")
+    )
+
+    without_source = _config(sources=[])
+    rag.sync_index(without_source)
+    assert [
+        hit
+        for hit in rag.search("alpha", config=without_source, scope="cli")
+        if hit["source"] == "note"
+    ] == []
+
+
 def test_normalized_section_is_accepted_by_sync_and_search(monkeypatch) -> None:
     """The CLI and per-turn retrieval pass ``get_rag_config()``'s output back in."""
     monkeypatch.setattr(rag, "embed_texts", _fake_embed)

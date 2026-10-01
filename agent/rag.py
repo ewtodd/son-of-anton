@@ -62,8 +62,50 @@ def get_rag_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "top_k": int(section.get("top_k", 5)),
         "min_score": float(section.get("min_score", 0.0)),
         "sources": section.get("sources") if isinstance(section.get("sources"), list) else [],
+        "notes_dir": str(section.get("notes_dir") or "").strip(),
         "index_dir": str(section.get("index_dir") or "").strip(),
     }
+
+
+# Note files discovered under ``notes_dir``: ``notes/<scope>/<anything>.md``
+# is indexed with that scope, so adding a note is a file drop, not a config
+# edit. Explicit ``sources`` entries stay for files that live elsewhere.
+_NOTE_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
+_NOTE_SCOPES = frozenset({"shared", "cli", "gateway"})
+
+
+def notes_dir(config: Optional[Dict[str, Any]] = None) -> Path:
+    cfg = coerce_rag_config(config)
+    configured = cfg.get("notes_dir")
+    if configured:
+        return Path(configured).expanduser()
+    return get_son_of_anton_home() / "notes"
+
+
+def iter_note_files(root: Path):
+    """Yield ``(path, scope)`` for note files under *root*.
+
+    The first directory segment names the scope (``notes/cli/...``,
+    ``notes/gateway/...``); anything else, including files at the root, is
+    ``shared``. Directory symlinks are followed (the legacy food/horror logs)
+    with a realpath guard against loops.
+    """
+    seen_dirs = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in seen_dirs:
+            dirnames[:] = []
+            continue
+        seen_dirs.add(real)
+        try:
+            relative = Path(dirpath).relative_to(root)
+        except ValueError:
+            relative = Path("")
+        top = relative.parts[0] if relative.parts else ""
+        scope = top if top in _NOTE_SCOPES else "shared"
+        for name in sorted(filenames):
+            if Path(name).suffix.lower() in _NOTE_SUFFIXES:
+                yield Path(dirpath) / name, scope
 
 
 def coerce_rag_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -386,7 +428,15 @@ def sync_index(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if journals_dir.is_dir():
         for path in sorted(journals_dir.glob("*.jsonl")):
             added += _index_journal(path, manifest, directory, config, path.name)
+    # A journal that no longer exists stops being searchable: prune its
+    # manifest entry so the current-generation filter drops its chunks.
+    manifest["journals"] = {
+        name: entry
+        for name, entry in manifest["journals"].items()
+        if (journals_dir / name).exists()
+    }
 
+    configured_sources = set()
     for source in config.get("sources") or []:
         if isinstance(source, str):
             source = {"path": source, "scope": "shared"}
@@ -398,9 +448,24 @@ def sync_index(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         scope = str(source.get("scope") or "shared").strip().lower()
         if scope not in {"shared", "cli", "gateway"}:
             scope = "shared"
-        added += _index_source(
-            Path(raw_path).expanduser(), manifest, directory, config, scope
-        )
+        expanded = Path(raw_path).expanduser()
+        configured_sources.add(str(expanded))
+        added += _index_source(expanded, manifest, directory, config, scope)
+    # Discovered notes: notes/<scope>/... needs no config entry at all.
+    discovered_sources = set()
+    root = notes_dir(config)
+    if root.is_dir():
+        for note_path, note_scope in iter_note_files(root):
+            discovered_sources.add(str(note_path))
+            added += _index_source(note_path, manifest, directory, config, note_scope)
+    # Same switch for note files: a source dropped from the config (or from
+    # the notes tree) must stop being searchable — its chunks are append-only,
+    # the manifest is the gate.
+    manifest["sources"] = {
+        name: entry
+        for name, entry in manifest["sources"].items()
+        if name in configured_sources or name in discovered_sources
+    }
 
     _write_manifest(directory, manifest)
     return {

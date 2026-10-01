@@ -1529,8 +1529,12 @@ DEFAULT_CONFIG = {
             "model": "bge-m3",
             "top_k": 5,
             "min_score": 0.0,
-            # Extra note files to index, each {path: ..., scope: shared|cli|gateway}.
+            # Extra note files outside the notes tree, each
+            # {path: ..., scope: shared|cli|gateway}.
             "sources": [],
+            # Automatically indexed notes tree: notes/<scope>/**/*.md,
+            # scope = the first directory name. Empty = $SON_OF_ANTON_HOME/notes.
+            "notes_dir": "",
             # Default: $SON_OF_ANTON_HOME/rag
             "index_dir": "",
         },

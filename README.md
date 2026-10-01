@@ -139,9 +139,9 @@ edits them through the `memory` tool, and you can edit them directly.
 ### Retrieval (optional)
 <!---->
 Set `memory.rag.enabled` to build a local vector index of session journals
-plus any note files in `memory.rag.sources`. Embeddings come from an
-OpenAI-compatible `/v1/embeddings` endpoint (`base_url`, `model`,
-`api_key_env`) — for example Bifrost in front of the bge-m3 llama.cpp server:
+plus your notes. Embeddings come from an OpenAI-compatible `/v1/embeddings`
+endpoint (`base_url`, `model`, `api_key_env`) — for example Bifrost in front
+of the bge-m3 llama.cpp server:
 
 ```yaml
 memory:
@@ -151,9 +151,14 @@ memory:
     model: bge-m3
     api_key_env: BIFROST_SOA_VK
     top_k: 5
-    sources:
-      - { path: ~/.son-of-anton/long-term-notes.md, scope: cli }
 ```
+
+Notes need no file list. Drop a markdown file under
+`~/.son-of-anton/notes/<scope>/` — `shared`, `cli`, or `gateway` — and it is
+discovered and indexed with that scope; a directory symlink works too, so
+logs kept elsewhere can appear in the tree without moving. (`notes_dir`
+overrides the location; `memory.rag.sources` is only for files that must
+stay outside it.)
 
 `son-of-anton rag index` embeds new journal lines (incremental by byte offset)
 and changed note files; add `--rebuild` to re-embed from scratch, and run it
