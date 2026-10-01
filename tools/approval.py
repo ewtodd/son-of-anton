@@ -3513,6 +3513,16 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
         f"{approval_data.get('description', '')}: "
         f"{str(approval_data.get('command', ''))[:120]}"
     )
+    # The chat to notify: an explicit key wins, else the session key the
+    # subprocess bridge carried in from the surface that spawned this coder.
+    chat_key = os.environ.get("SON_OF_ANTON_APPROVAL_CHAT_KEY", "").strip()
+    if not chat_key:
+        try:
+            from gateway.session_context import get_session_env
+
+            chat_key = str(get_session_env("SON_OF_ANTON_SESSION_KEY", "") or "").strip()
+        except Exception:
+            chat_key = os.environ.get("SON_OF_ANTON_SESSION_KEY", "").strip()
     record = wa.stage_write(
         wa.EXEC,
         {
@@ -3528,7 +3538,7 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
         summary=summary,
         origin=wa.current_origin(),
         expires_at=time.time() + max(int(timeout), 0),
-        chat_key=os.environ.get("SON_OF_ANTON_APPROVAL_CHAT_KEY", ""),
+        chat_key=chat_key,
     )
 
     _fire_approval_hook(

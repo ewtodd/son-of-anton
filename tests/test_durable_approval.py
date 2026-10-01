@@ -77,3 +77,34 @@ def test_durable_request_is_consumed_exactly_once(monkeypatch) -> None:
         "rm -rf /tmp/durable-approval-consumed", "local"
     )
     assert wa.list_pending(wa.EXEC) == []
+
+
+def test_chat_key_falls_back_to_the_bridged_session_key(monkeypatch) -> None:
+    """No explicit key: use the SON_OF_ANTON_SESSION_KEY the bridge carried in."""
+    monkeypatch.setenv("SON_OF_ANTON_SESSION_KEY", "agent:main:signal:group:G")
+    monkeypatch.setattr(approval, "_DURABLE_APPROVAL_POLL_SECONDS", 0.02)
+    seen = {}
+
+    def _capture_and_deny() -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            pending = [r for r in wa.list_pending(wa.EXEC) if not r.get("decision")]
+            if pending:
+                seen["chat_key"] = pending[0].get("chat_key")
+                wa.decide_pending(wa.EXEC, pending[0]["id"], "deny", decided_by="test")
+                return
+            time.sleep(0.02)
+
+    worker = threading.Thread(target=_capture_and_deny, daemon=True)
+    worker.start()
+    approval._await_durable_decision(
+        "session-key",
+        {
+            "command": "rm -rf /tmp/durable-key",
+            "description": "dangerous rm",
+            "pattern_key": "rm -rf",
+            "pattern_keys": ["rm -rf"],
+        },
+    )
+    worker.join(timeout=5)
+    assert seen["chat_key"] == "agent:main:signal:group:G"
