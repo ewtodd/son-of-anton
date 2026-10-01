@@ -59,12 +59,19 @@ Ordered by importance. Each item is independently scoped.
 4. **RAG search is a pure-Python cosine scan.** Fine for hundreds of chunks.
    If the journals grow into the tens of thousands, add a keyword/FTS
    prefilter or a candidate cap before ranking.
-5. **RAG refresh is manual.** `son-of-anton rag index` is run (or cronned) per
-   instance; there is no in-process auto-index.
-6. **Deep-Nous prose residue.** The gateway relay's enroll docstring still
+5. **RAG refresh should self-register.** When `memory.rag.enabled` is set, a
+   `rag index` cron job should be created automatically (idempotently, per
+   instance) instead of requiring `son-of-anton cron create` by hand. Until
+   then, run `son-of-anton rag index` manually or cron it yourself.
+6. **Cron jobs must always run the current default model.** A job currently
+   snapshots model/provider at creation and drift-checks it later, so changing
+   the default model makes jobs fail (`drift_skip`) or run a stale model.
+   Unless a job explicitly pins a model, each run should resolve the live
+   configured default.
+7. **Deep-Nous prose residue.** The gateway relay's enroll docstring still
    names `resolve_nous_access_token()` (never called), and `doctor.py` carries
    an inert removed-provider probe. Cosmetic.
-7. **TUI gaps from the REPL.** Prompt image attachments and an `/agents`
+8. **TUI gaps from the REPL.** Prompt image attachments and an `/agents`
    viewer were never carried over.
 
 ## Operational notes
