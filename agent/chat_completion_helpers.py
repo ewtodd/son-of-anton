@@ -2981,6 +2981,20 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
 
 
+def _text_stream_end_is_drop(content_parts: list, usage_received: bool) -> bool:
+    """Classify a text-only stream that ended with no ``finish_reason``.
+
+    ``stream_options={"include_usage": True}`` makes the provider emit a
+    usage-only chunk AFTER the finish_reason chunk, so a received usage chunk
+    proves the generation completed. Some OpenAI-compatible proxies forward
+    the usage chunk but drop the separate finish_reason chunk; calling that a
+    mid-stream drop re-sends the turn and makes the model repeat its own
+    closing lines. A connection cut mid-stream never delivers the terminal
+    usage chunk, so its absence still routes to the drop recovery.
+    """
+    return bool(content_parts) and not usage_received
+
+
 def _build_partial_stream_stub(
     role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None,
@@ -3886,26 +3900,34 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 dropped_tool_names=_dropped_names or None,
             )
 
-        # Text-only stream drop: the upstream closed the connection (or the
-        # SSE stream simply ended) with no finish_reason after delivering
-        # text content but no tool calls.  Without this guard the partial
-        # text is silently stamped finish_reason="stop" and the turn ends as
-        # if complete — the model's intended next step is lost (#32086).
-        _text_only_dropped_no_finish = (
+        # Text-only stream end with no finish_reason: either the upstream
+        # dropped mid-stream (the #32086 case this guard exists for), or a
+        # proxy swallowed only the finish_reason chunk after a completed
+        # generation. The terminal usage chunk tells them apart — a drop
+        # cannot deliver it. Accepting the completed case as "stop" avoids
+        # the continuation re-send that makes the model repeat its own
+        # closing lines (and then build on the reworded tail).
+        _text_only_no_finish = (
             finish_reason is None
             and content_parts
             and not tool_calls_acc
         )
-        if _text_only_dropped_no_finish:
-            logger.warning(
-                "Stream ended with no finish_reason after delivering text "
-                "with no tool calls; treating as a mid-stream drop."
-            )
-            return _build_partial_stream_stub(
-                role, full_content,
-                "".join(reasoning_parts) or None,
-                model_name, usage_obj,
-            )
+        if _text_only_no_finish:
+            if not _text_stream_end_is_drop(content_parts, usage_obj is not None):
+                logger.info(
+                    "Stream delivered usage with no finish_reason after text "
+                    "(no tool calls); accepting as a completed response."
+                )
+            else:
+                logger.warning(
+                    "Stream ended with no finish_reason after delivering text "
+                    "with no tool calls; treating as a mid-stream drop."
+                )
+                return _build_partial_stream_stub(
+                    role, full_content,
+                    "".join(reasoning_parts) or None,
+                    model_name, usage_obj,
+                )
 
         effective_finish_reason = finish_reason or "stop"
         if has_truncated_tool_args:
