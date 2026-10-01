@@ -525,7 +525,7 @@ configured as `custom_providers` in config.yaml — not as registry entries.
 
 Two parallel surfaces:
 
-- **`skills/`** — bundled skills, loadable by default (18 across 4 categories, laid out
+- **`skills/`** — bundled skills, loadable by default (19 across 4 categories, laid out
   `skills/<category>/<skill>/SKILL.md`).
 - **`optional-skills/`** — no longer shipped in the tree. Niche/official-but-inactive
   skills come from the Skills Hub's `OptionalSkillSource` (fetched from the
