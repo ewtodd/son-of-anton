@@ -329,8 +329,26 @@ def cmd_sessions(args, sessions_parser=None):
     if action == "list":
         from son_of_anton_state import workspace_key as _ws_key
 
+        # --here: exact workspace match for the directory this command runs in
+        # (git repo root, else cwd). Pushed into SQL as a cwd-prefix filter so
+        # the LIMIT applies to this workspace's sessions, then re-checked
+        # exactly below.
+        _here_key = None
+        if getattr(args, "here", False):
+            from son_of_anton_state import detect_git_metadata
+
+            _branch, _repo_root = detect_git_metadata(os.getcwd())
+            _here_key = (_repo_root or os.getcwd()).rstrip("/\\")
+
         sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
+            source=args.source,
+            exclude_sources=_exclude,
+            limit=args.limit,
+            cwd_prefix=_here_key,
+            # JSON consumers (the relay's continue/new prompt) want the most
+            # recently active session in the workspace, not the most recently
+            # started one.
+            order_by_last_active=bool(getattr(args, "json", False)),
         )
 
         # Workspace filter: match a session by its workspace key (git repo
@@ -346,6 +364,37 @@ def cmd_sessions(args, sessions_parser=None):
                 )
 
             sessions = [s for s in sessions if _in_workspace(s)]
+
+        if _here_key is not None:
+            _here_needle = _here_key.lower()
+            sessions = [
+                s
+                for s in sessions
+                if (_ws_key(s) or "").rstrip("/\\").lower() == _here_needle
+            ]
+
+        if getattr(args, "json", False):
+            _json_rows = []
+            for s in sessions:
+                _last_active = s.get("last_active")
+                _json_rows.append(
+                    {
+                        "id": s.get("id"),
+                        "source": s.get("source"),
+                        "title": s.get("title"),
+                        "preview": s.get("preview"),
+                        "model": s.get("model"),
+                        "started_at": s.get("started_at"),
+                        "last_active": _last_active,
+                        "last_active_relative": _relative_time(_last_active),
+                        "message_count": s.get("message_count"),
+                        "cwd": s.get("cwd"),
+                        "workspace": _ws_key(s) or "",
+                        "git_branch": s.get("git_branch"),
+                    }
+                )
+            print(_json.dumps(_json_rows, ensure_ascii=False, default=str))
+            return
 
         if not sessions:
             print("No sessions found.")

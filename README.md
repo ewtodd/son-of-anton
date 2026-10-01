@@ -94,6 +94,10 @@ a session id) is the escape hatch for anything else, and `--resume latest`
 takes the global most-recently-used session. Resuming restores the session's
 working directory.
 <!---->
+For scripts and the gateway relay, `son-of-anton sessions list --json --here`
+prints this workspace's sessions, most recently active first, with id, title,
+preview, cwd, branch and message count.
+<!---->
 ### The journal
 <!---->
 `session.journal` (default on) mirrors every message row, as it is persisted,

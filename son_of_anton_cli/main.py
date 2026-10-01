@@ -5059,6 +5059,17 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "--here",
+        action="store_true",
+        help="Only sessions in the workspace containing the current directory "
+        "(git repo root, else cwd; exact match).",
+    )
+    sessions_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON (most recently active first).",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
