@@ -1514,6 +1514,26 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Retrieval-augmented recall (optional). Indexes session journals and
+        # configured note files with an OpenAI-compatible embeddings endpoint
+        # and injects the closest chunks into each turn's API copy. The system
+        # prompt and the stored transcript stay untouched, so the prompt cache
+        # is preserved. Build/refresh the index with `son-of-anton rag index`.
+        "rag": {
+            "enabled": False,
+            # e.g. http://10.0.0.6:4002/v1 (Bifrost) or any OpenAI-compatible
+            # /v1/embeddings endpoint.
+            "base_url": "",
+            "api_key": "",
+            "api_key_env": "BIFROST_SOA_VK",
+            "model": "bge-m3",
+            "top_k": 5,
+            "min_score": 0.0,
+            # Extra note files to index, each {path: ..., scope: shared|cli|gateway}.
+            "sources": [],
+            # Default: $SON_OF_ANTON_HOME/rag
+            "index_dir": "",
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

@@ -284,6 +284,7 @@ from son_of_anton_cli.subcommands.status import build_status_parser
 from son_of_anton_cli.subcommands.pause import build_pause_parser
 from son_of_anton_cli.subcommands.config import build_config_parser
 from son_of_anton_cli.subcommands.skills import build_skills_parser
+from son_of_anton_cli.subcommands.rag import build_rag_parser
 from son_of_anton_cli.subcommands.mcp import build_mcp_parser
 from son_of_anton_cli.subcommands.problem import build_problem_parser
 from son_of_anton_cli.subcommands.completion import build_completion_parser
@@ -4713,6 +4714,36 @@ def _try_fast_chat_launch() -> bool:
     return True
 
 
+def cmd_rag(args):
+    """``son-of-anton rag index`` — build or refresh the retrieval index."""
+    action = getattr(args, "rag_action", None)
+    if action != "index":
+        print("Usage: son-of-anton rag index [--rebuild]")
+        return 0
+
+    from agent.rag import get_rag_config, index_dir, sync_index
+
+    config = get_rag_config()
+    if getattr(args, "rebuild", False):
+        directory = index_dir(config)
+        for name in ("manifest.json", "chunks.jsonl", "vectors.f32"):
+            try:
+                (directory / name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    result = sync_index(config)
+    if not result.get("ok"):
+        print(f"RAG index: {result.get('error')}")
+        return 1
+    print(
+        f"RAG index: added {result['added']} chunk(s) — "
+        f"{result['journals']} journal(s), {result['sources']} source file(s)"
+    )
+    print(f"  {result['index_dir']}")
+    return 0
+
+
 def cmd_skills(args):
     # Route 'config' action to skills_config module
     if getattr(args, "skills_action", None) == "config":
@@ -4978,6 +5009,11 @@ def main():
     # skills command  (parser built in son_of_anton_cli/subcommands/skills.py)
     # =========================================================================
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+
+    # =========================================================================
+    # rag command  (retrieval index management)
+    # =========================================================================
+    build_rag_parser(subparsers, cmd_rag=cmd_rag)
 
     # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.

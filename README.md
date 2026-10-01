@@ -136,6 +136,33 @@ and `memory.user_char_limit` budget, writes can require approval
 (`memory.provider`). The files live in `~/.son-of-anton/memories/`; the agent
 edits them through the `memory` tool, and you can edit them directly.
 <!---->
+### Retrieval (optional)
+<!---->
+Set `memory.rag.enabled` to build a local vector index of session journals
+plus any note files in `memory.rag.sources`. Embeddings come from an
+OpenAI-compatible `/v1/embeddings` endpoint (`base_url`, `model`,
+`api_key_env`) — for example Bifrost in front of the bge-m3 llama.cpp server:
+
+```yaml
+memory:
+  rag:
+    enabled: true
+    base_url: http://10.0.0.6:4002/v1
+    model: bge-m3
+    api_key_env: BIFROST_SOA_VK
+    top_k: 5
+    sources:
+      - { path: ~/.son-of-anton/long-term-notes.md, scope: cli }
+```
+
+`son-of-anton rag index` embeds new journal lines (incremental by byte offset)
+and changed note files; add `--rebuild` to re-embed from scratch, and run it
+from cron to keep the index fresh. Retrieval happens per user turn: the
+closest chunks for the session's scope are appended to that turn's API copy
+only — never to the stored transcript or the frozen system prompt — so the
+prompt cache is preserved. Journals, including the reasoning and tool detail
+the transcript clips, are the main corpus.
+<!---->
 ## Physics runs
 <!---->
 The physics mode executes code the model wrote.

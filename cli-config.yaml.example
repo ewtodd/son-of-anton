@@ -77,6 +77,17 @@ memory:
   # slack -> gateway, anything else -> shared). Pin it for non-standard
   # front-ends. "shared" is always visible; "cli"/"gateway" are per-surface.
   scope: ""
+  # Retrieval-augmented recall (optional): embed session journals + note
+  # files through an OpenAI-compatible /v1/embeddings endpoint and inject the
+  # closest chunks into each turn's API copy. Build with `son-of-anton rag index`.
+  rag:
+    enabled: false
+    base_url: ""             # e.g. http://10.0.0.6:4002/v1 (Bifrost)
+    model: "bge-m3"
+    api_key_env: "BIFROST_SOA_VK"
+    top_k: 5
+    min_score: 0.0
+    sources: []              # [{path: ~/notes.md, scope: shared|cli|gateway}]
 
 # =============================================================================
 # Cron (scheduled jobs)

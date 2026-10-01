@@ -51,12 +51,14 @@ def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
     plugin_user_context: str,
+    rag_context: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Sources: memory-manager prefetch + ``pre_llm_call`` plugin context with
-    target="user_message" (the default). Both are appended to the *API copy*
-    of the user message only — the stored content stays clean.
+    Sources: memory-manager prefetch, retrieval-augmented recall, and
+    ``pre_llm_call`` plugin context with target="user_message" (the default).
+    All are appended to the *API copy* of the user message only — the stored
+    content stays clean.
 
     This is the single source of that composition. The prologue stamps the
     result onto the live message as ``api_content`` (persisted alongside the
@@ -75,6 +77,8 @@ def compose_user_api_content(
         fenced = build_memory_context_block(ext_prefetch_cache)
         if fenced:
             injections.append(fenced)
+    if rag_context:
+        injections.append(rag_context)
     if plugin_user_context:
         injections.append(plugin_user_context)
     if not injections:
@@ -1225,6 +1229,21 @@ def build_turn_context(
             except Exception:
                 pass
 
+    # Retrieval-augmented recall: search the local index for the active
+    # session's scope and inject the closest chunks into this turn's API copy.
+    # Same cache contract as the memory prefetch — the stored user content is
+    # untouched; the composed bytes are stamped as api_content so a replay
+    # sends exactly what this turn sent.
+    agent._turn_rag_context = ""
+    try:
+        from agent.rag import retrieve_for_turn as _rag_retrieve
+
+        _rag_query = original_user_message if isinstance(original_user_message, str) else ""
+        if _rag_query and not is_trivial_prompt(_rag_query):
+            agent._turn_rag_context = _rag_retrieve(agent, _rag_query) or ""
+    except Exception:
+        agent._turn_rag_context = ""
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
@@ -1249,7 +1268,10 @@ def build_turn_context(
     ):
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
-            _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+            _turn_user_msg.get("content", ""),
+            ext_prefetch_cache,
+            plugin_user_context,
+            getattr(agent, "_turn_rag_context", ""),
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
