@@ -66,8 +66,25 @@ def get_rag_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     }
 
 
+def coerce_rag_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Accept either a full config or an already-normalized rag section.
+
+    ``get_rag_config()`` returns the normalized section; callers that pass it
+    straight back (the CLI, per-turn retrieval) must not have it re-read as a
+    full config — that silently produced empty defaults and a
+    "base_url is not configured" error on an enabled, configured deployment.
+    """
+    if config is None:
+        return get_rag_config()
+    if not isinstance(config, dict):
+        return get_rag_config()
+    if isinstance(config.get("memory"), dict):
+        return get_rag_config(config)
+    return get_rag_config({"memory": {"rag": config}})
+
+
 def index_dir(config: Optional[Dict[str, Any]] = None) -> Path:
-    cfg = get_rag_config(config) if config is None else config
+    cfg = coerce_rag_config(config)
     configured = cfg.get("index_dir")
     if configured:
         return Path(configured).expanduser()
@@ -356,7 +373,7 @@ def _index_source(
 
 def sync_index(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Bring the index up to date. Returns stats; raises on embedding failure."""
-    config = get_rag_config(config)
+    config = coerce_rag_config(config)
     if not config.get("base_url"):
         return {"ok": False, "error": "memory.rag.base_url is not configured"}
     directory = index_dir(config)
@@ -448,7 +465,7 @@ def search(
     min_score: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """Return the closest indexed chunks visible from *scope*."""
-    config = get_rag_config(config)
+    config = coerce_rag_config(config)
     if not query.strip():
         return []
     chunks, flat, dim = _load_index(config)

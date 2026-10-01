@@ -176,6 +176,21 @@ def test_compose_user_api_content_includes_rag_block() -> None:
     assert "<recalled-notes>x</recalled-notes>" in composed
 
 
+def test_normalized_section_is_accepted_by_sync_and_search(monkeypatch) -> None:
+    """The CLI and per-turn retrieval pass ``get_rag_config()``'s output back in."""
+    monkeypatch.setattr(rag, "embed_texts", _fake_embed)
+    _write_journal(
+        "20261001_000007_gggggg",
+        [{"type": "message", "role": "user", "content": "alpha section fact", "ts": 2.0}],
+    )
+    section = rag.get_rag_config(_config())
+    assert section["base_url"] == "http://embeddings.invalid/v1"
+
+    stats = rag.sync_index(section)
+    assert stats["ok"] and stats["added"] >= 1
+    assert rag.search("alpha", config=section, scope="shared", top_k=3)
+
+
 def test_rag_parser_registers_index_command() -> None:
     import argparse
 
