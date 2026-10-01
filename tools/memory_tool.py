@@ -71,6 +71,54 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Built-in memory scopes. The session's scope is active; "shared" is visible
+# from every session regardless of front-end. Scope is what keeps a coding
+# TUI session from carrying the user's personal/health/media context.
+MEMORY_SCOPES: Tuple[str, ...] = ("shared", "cli", "gateway")
+
+# agent.platform values that map to the gateway (messaging) scope. Only the
+# surfaces this fork ships: signal is built-in; discord/slack are plugins.
+_GATEWAY_PLATFORMS = frozenset({"signal", "discord", "slack"})
+
+
+def _memory_filename(target: str, scope: str) -> str:
+    """Return the on-disk filename for a (target, scope) pair.
+
+    The shared store keeps the historical unsuffixed names so existing
+    installs keep working; every other scope gets a ``.<scope>`` suffix.
+    """
+    stem = "USER" if target == "user" else "MEMORY"
+    if scope == "shared":
+        return f"{stem}.md"
+    return f"{stem}.{scope}.md"
+
+
+def resolve_memory_scope(
+    platform: object,
+    config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Map a session's platform to its built-in memory scope.
+
+    Explicit ``memory.scope`` in config wins (operators pin known surfaces,
+    e.g. a cron worker that should read the workstation notes). Otherwise
+    cli gets the workstation scope, messaging platforms get the personal
+    gateway scope, and anything else (cron, delegates, unknown front-ends)
+    sees only the shared store.
+    """
+    section = get_builtin_memory_config(config)
+    override = section.get("scope")
+    if isinstance(override, str):
+        normalized = override.strip().lower()
+        if normalized in MEMORY_SCOPES:
+            return normalized
+    name = str(platform or "").strip().lower()
+    if name in {"cli", "tui"}:
+        return "cli"
+    if name in _GATEWAY_PLATFORMS:
+        return "gateway"
+    return "shared"
+
+
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
@@ -174,7 +222,13 @@ class MemoryStore:
         *,
         memory_enabled: bool = True,
         user_profile_enabled: bool = True,
+        scope: str = "shared",
     ):
+        if scope not in MEMORY_SCOPES:
+            raise ValueError(
+                f"Unknown memory scope {scope!r}; expected one of {MEMORY_SCOPES}."
+            )
+        self.scope = scope
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -238,8 +292,10 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        memory_path = self._path_for("memory")
+        user_path = self._path_for("user")
+        self.memory_entries = self._read_file(memory_path)
+        self.user_entries = self._read_file(user_path)
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -248,8 +304,8 @@ class MemoryStore:
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.
-        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
-        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, memory_path.name)
+        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, user_path.name)
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
@@ -319,12 +375,8 @@ class MemoryStore:
                 pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
-        if target == "user":
-            return mem_dir / "USER.md"
-        return mem_dir / "MEMORY.md"
+    def _path_for(self, target: str) -> Path:
+        return get_memory_dir() / _memory_filename(target, self.scope)
 
     def _reload_target(self, target: str, *, skip_drift: bool = False):
         """Re-read entries from disk into in-memory state.
@@ -746,9 +798,11 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"{MEMORY_BLOCK_HEADERS['user']} [{pct}% — {current:,}/{limit:,} chars]"
+            scope_suffix = "" if self.scope == "shared" else f" [scope: {self.scope}]"
+            header = f"{MEMORY_BLOCK_HEADERS['user']}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
         else:
-            header = f"{MEMORY_BLOCK_HEADERS['memory']} [{pct}% — {current:,}/{limit:,} chars]"
+            scope_suffix = "" if self.scope == "shared" else f" [scope: {self.scope}]"
+            header = f"{MEMORY_BLOCK_HEADERS['memory']}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -891,8 +945,84 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
-def load_on_disk_store() -> "MemoryStore":
-    """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+class ScopedMemoryStore:
+    """Scope-aware facade over one MemoryStore per built-in scope.
+
+    ``active_scope`` is the session's scope; rendering and default writes use
+    it together with the always-visible shared store. An explicit ``scope``
+    selects any store, which is how one surface files a fact for another
+    (e.g. the TUI saving a personal detail to the gateway store).
+    """
+
+    def __init__(
+        self,
+        active_scope: str = "shared",
+        *,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        memory_enabled: bool = True,
+        user_profile_enabled: bool = True,
+    ):
+        self.active_scope = active_scope if active_scope in MEMORY_SCOPES else "shared"
+        self._stores = {
+            scope: MemoryStore(
+                memory_char_limit=memory_char_limit,
+                user_char_limit=user_char_limit,
+                memory_enabled=memory_enabled,
+                user_profile_enabled=user_profile_enabled,
+                scope=scope,
+            )
+            for scope in MEMORY_SCOPES
+        }
+
+    @property
+    def active(self) -> MemoryStore:
+        return self._stores[self.active_scope]
+
+    def visible_stores(self) -> List[MemoryStore]:
+        """Stores whose entries render in this session (shared first)."""
+        stores = [self._stores["shared"]]
+        if self.active_scope != "shared":
+            stores.append(self.active)
+        return stores
+
+    def for_scope(self, scope: Optional[str]) -> MemoryStore:
+        """Resolve a tool-supplied scope; None/''/'current' picks the active one."""
+        if scope is None:
+            return self.active
+        name = str(scope).strip().lower()
+        if name in {"", "current", "session"}:
+            return self.active
+        store = self._stores.get(name)
+        if store is None:
+            raise KeyError(scope)
+        return store
+
+    def load_from_disk(self) -> None:
+        for store in self._stores.values():
+            store.load_from_disk()
+
+    def target_enabled(self, target: str) -> bool:
+        return any(store.target_enabled(target) for store in self.visible_stores())
+
+    def reset_consolidation_failures(self) -> None:
+        for store in self._stores.values():
+            store.reset_consolidation_failures()
+
+    def format_for_system_prompt(self, target: str) -> Optional[str]:
+        blocks = [
+            store.format_for_system_prompt(target)
+            for store in self.visible_stores()
+        ]
+        blocks = [block for block in blocks if block]
+        return "\n\n".join(blocks) if blocks else None
+
+
+def load_on_disk_store() -> "ScopedMemoryStore":
+    """Build a fresh on-disk :class:`ScopedMemoryStore`, honoring configured char limits.
+
+    Approved writes route to the store named by the staged payload's
+    ``scope`` (the active scope is ``shared`` when there is no live agent).
 
     Use this from any context that has no live agent (the messaging gateway, the
     Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
@@ -919,7 +1049,8 @@ def load_on_disk_store() -> "MemoryStore":
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
 
-    store = MemoryStore(
+    store = ScopedMemoryStore(
+        active_scope="shared",
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
         memory_enabled=memory_enabled,
@@ -930,7 +1061,8 @@ def load_on_disk_store() -> "MemoryStore":
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str],
+                      scope: Optional[str] = None) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
@@ -949,6 +1081,8 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
 
     # Build a small inline summary/detail for the foreground approval prompt.
     label = "user profile" if target == "user" else "memory"
+    if scope and scope != "shared":
+        label = f"{label} ({scope})"
     if action == "add":
         summary = f"add to {label}"
         detail = content or ""
@@ -974,6 +1108,8 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
+    if scope:
+        payload["scope"] = scope
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
@@ -986,7 +1122,8 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]],
+                            scope: Optional[str] = None) -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -999,6 +1136,8 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return None
 
     label = "user profile" if target == "user" else "memory"
+    if scope and scope != "shared":
+        label = f"{label} ({scope})"
     summary = f"apply {len(operations)} op(s) to {label}"
     detail_lines = []
     for op in operations:
@@ -1022,6 +1161,8 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return tool_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
+    if scope:
+        payload["scope"] = scope
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
@@ -1073,7 +1214,8 @@ def memory_tool(
     old_text: str = None,
     new_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
-    store: Optional[MemoryStore] = None,
+    scope: str = None,
+    store: Optional[Any] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -1090,10 +1232,29 @@ def memory_tool(
     which silently left ``content`` empty and errored. Coalescing here removes
     that trap.
 
+    ``scope`` selects one of the scoped stores when the agent has a
+    :class:`ScopedMemoryStore` (``shared``, ``cli``, or ``gateway``);
+    omitted/null/``current`` writes to the session's active scope.
+
     Returns JSON string with results.
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+
+    # Scoped facade: resolve the destination store once, before the gate, so
+    # an unknown scope fails loudly instead of staging an unroutable write.
+    resolved_scope: Optional[str] = None
+    if isinstance(store, ScopedMemoryStore):
+        try:
+            concrete = store.for_scope(scope)
+        except KeyError:
+            return tool_error(
+                f"Unknown memory scope '{scope}'. Use one of: {', '.join(MEMORY_SCOPES)}.",
+                success=False,
+            )
+        resolved_scope = concrete.scope
+    else:
+        concrete = store
 
     # Accept new_text as an alias for content (single-op path). See docstring.
     if content is None and new_text is not None:
@@ -1105,7 +1266,7 @@ def memory_tool(
     if target is None:
         target = "memory"
 
-    target_error = _memory_target_error(store, target)
+    target_error = _memory_target_error(concrete, target)
     if target_error is not None:
         return json.dumps(target_error)
 
@@ -1113,10 +1274,10 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(target, operations, resolved_scope)
         if gate_result is not None:
             return gate_result
-        result = store.apply_batch(target, operations)
+        result = concrete.apply_batch(target, operations)
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
@@ -1131,25 +1292,25 @@ def memory_tool(
             # -- we can't guess which entry. Return the current inventory plus a
             # retry instruction so the model can reissue with old_text set,
             # instead of hitting a dead-end error. (issues #43412, #49466)
-            return _missing_old_text_error(store, target, "replace")
+            return _missing_old_text_error(concrete, target, "replace")
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
-        return _missing_old_text_error(store, target, "remove")
+        return _missing_old_text_error(concrete, target, "remove")
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(action, target, content, old_text, resolved_scope)
     if gate_result is not None:
         return gate_result
 
     if action == "add":
-        result = store.add(target, content)
+        result = concrete.add(target, content)
 
     elif action == "replace":
-        result = store.replace(target, old_text, content)
+        result = concrete.replace(target, old_text, content)
 
     elif action == "remove":
-        result = store.remove(target, old_text)
+        result = concrete.remove(target, old_text)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
@@ -1217,27 +1378,40 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
     }
 
 
-def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+def apply_memory_pending(payload: Dict[str, Any], store: "ScopedMemoryStore") -> Dict[str, Any]:
     """Replay a staged memory write directly against the store, bypassing the
     write gate. Called by the /memory approve handler.
 
+    A staged payload's ``scope`` selects its destination store; legacy
+    payloads without one land in the active scope.
+
     Returns the store's result dict.
     """
+    if isinstance(store, ScopedMemoryStore):
+        try:
+            concrete = store.for_scope(payload.get("scope"))
+        except KeyError:
+            return {
+                "success": False,
+                "error": f"Unknown staged memory scope '{payload.get('scope')}'.",
+            }
+    else:
+        concrete = store
     action = payload.get("action")
     target = payload.get("target", "memory")
-    target_error = _memory_target_error(store, target)
+    target_error = _memory_target_error(concrete, target)
     if target_error is not None:
         return target_error
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
+        return concrete.apply_batch(target, payload.get("operations") or [])
     if action == "add":
-        return store.add(target, content)
+        return concrete.add(target, content)
     if action == "replace":
-        return store.replace(target, old_text, content)
+        return concrete.replace(target, old_text, content)
     if action == "remove":
-        return store.remove(target, old_text)
+        return concrete.remove(target, old_text)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
@@ -1262,6 +1436,11 @@ MEMORY_SCHEMA = {
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "SCOPES: every session reads the shared store plus its own scope. 'shared' is visible "
+        "everywhere (deploy/repo/work conventions). 'cli' is the terminal/workstation. "
+        "'gateway' is the messaging surfaces (personal context: health, media, chat style), "
+        "and is NOT injected into the terminal scope. Omit scope to write to the current "
+        "session's scope; pass scope='shared' for a fact that must apply on every surface.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
@@ -1278,6 +1457,17 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "enum": ["memory", "user"],
                 "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["current", "shared", "cli", "gateway"],
+                "description": (
+                    "Where the write lands. Omit or 'current' = this session's scope "
+                    "('cli' for the terminal, 'gateway' for messaging). 'shared' is "
+                    "visible from every session — use it for deploy/repo/work conventions. "
+                    "'cli' = workstation/coding notes. 'gateway' = personal context "
+                    "(health, media, chat style), never shown in the terminal scope."
+                )
             },
             "content": {
                 "type": "string",
@@ -1366,6 +1556,7 @@ registry.register(
         old_text=args.get("old_text"),
         new_text=args.get("new_text"),
         operations=args.get("operations"),
+        scope=args.get("scope"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",

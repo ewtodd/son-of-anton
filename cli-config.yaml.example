@@ -73,6 +73,10 @@ compaction:
 memory:
   memory_enabled: true
   provider: ""               # honcho | mem0 | supermemory | ... (empty = off)
+  # Built-in memory scope: "" = auto by surface (cli -> cli, signal/discord/
+  # slack -> gateway, anything else -> shared). Pin it for non-standard
+  # front-ends. "shared" is always visible; "cli"/"gateway" are per-surface.
+  scope: ""
 
 # =============================================================================
 # Cron (scheduled jobs)

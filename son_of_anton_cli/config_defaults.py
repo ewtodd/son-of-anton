@@ -1487,6 +1487,11 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Built-in memory scope override. Empty = auto by session platform:
+        # "cli" -> cli, signal/discord/slack -> gateway, everything else ->
+        # shared. Pin it when a non-standard front-end should see a scope
+        # (e.g. a cron worker that needs the workstation notes).
+        "scope": "",
         # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
         # (the source of unprompted "wrong assumption" saves users reported).

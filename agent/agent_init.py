@@ -1571,6 +1571,7 @@ def init_agent(
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None
+    agent._memory_scope = "shared"
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 10
@@ -1601,8 +1602,13 @@ def init_agent(
             )
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
-                from tools.memory_tool import MemoryStore
-                agent._memory_store = MemoryStore(
+                from tools.memory_tool import ScopedMemoryStore, resolve_memory_scope
+
+                agent._memory_scope = resolve_memory_scope(
+                    getattr(agent, "platform", ""), _agent_cfg
+                )
+                agent._memory_store = ScopedMemoryStore(
+                    active_scope=agent._memory_scope,
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                     memory_enabled=agent._memory_enabled,
