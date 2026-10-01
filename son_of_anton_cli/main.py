@@ -4409,6 +4409,31 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
 )
 
 
+def _first_positional_index(argv: list) -> int | None:
+    """Index of the first non-flag, non-flag-value token in *argv*, or None.
+
+    Handles ``--`` (everything after it is positional) and ``--flag=value``
+    (its value is inline, so the token is skipped whole).
+    """
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            return i + 1 if i + 1 < len(argv) else None
+        if tok.startswith("-"):
+            # ``--flag=value`` carries its value inline — single token.
+            if "=" in tok:
+                i += 1
+                continue
+            if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
+                i += 2
+                continue
+            i += 1
+            continue
+        return i
+    return None
+
+
 def _first_positional_argv() -> str | None:
     """Return the first non-flag, non-flag-value token in ``sys.argv[1:]``.
 
@@ -4422,26 +4447,29 @@ def _first_positional_argv() -> str | None:
     a positional, which at worst forces a one-time plugin discovery).
     """
     argv = sys.argv[1:]
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if tok == "--":
-            # Everything after ``--`` is positional.
-            if i + 1 < len(argv):
-                return argv[i + 1]
-            return None
-        if tok.startswith("-"):
-            # ``--flag=value`` carries its value inline — single token.
-            if "=" in tok:
-                i += 1
-                continue
-            if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
-                i += 2
-                continue
-            i += 1
-            continue
-        return tok
-    return None
+    idx = _first_positional_index(argv)
+    return argv[idx] if idx is not None else None
+
+
+def _rewrite_bare_prompt(argv: list, known_commands) -> list:
+    """Route a leading bare prompt to ``chat -q``.
+
+    ``son-of-anton "hello"`` and ``son-of-anton chat -q hello`` are the same
+    single-query mode, but the parser only declares the latter: subparsers
+    make the first positional a required command choice. A first positional
+    that is not a registered subcommand (built-in or plugin) is treated as
+    the prompt, together with any immediately following non-flag tokens, so
+    unquoted multi-word prompts work too. Flags before it stay before the
+    injected ``chat``; flags after it belong to the chat subparser.
+    """
+    idx = _first_positional_index(argv)
+    if idx is None or argv[idx] in known_commands:
+        return argv
+    end = idx
+    while end + 1 < len(argv) and not argv[end + 1].startswith("-"):
+        end += 1
+    prompt = " ".join(argv[idx:end + 1])
+    return argv[:idx] + ["chat", "-q", prompt] + argv[end + 1:]
 
 
 def _plugin_cli_discovery_needed() -> bool:
@@ -5536,6 +5564,15 @@ def main():
     # e.g. ``son-of-anton -c Pokemon Agent Dev`` → ``son-of-anton -c 'Pokemon Agent Dev'``
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
 
+    _known_cmds = (
+        set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
+    )
+    # ``son-of-anton "prompt"`` → ``chat -q "prompt"``. Runs after the session
+    # name coalescing so ``-c auth notes`` is not mistaken for a prompt, and
+    # after the plugin subparsers are registered so a plugin command name is
+    # never swallowed as prompt text.
+    _processed_argv = _rewrite_bare_prompt(_processed_argv, _known_cmds)
+
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route
     # subcommand tokens when the parent parser has nargs='?' optional
@@ -5548,9 +5585,6 @@ def main():
     # session name for --continue), fall back to the default behaviour.
     import io as _io
 
-    _known_cmds = (
-        set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
-    )
     _has_cmd_token = any(
         t in _known_cmds for t in _processed_argv if not t.startswith("-")
     )
