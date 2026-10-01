@@ -3422,6 +3422,155 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _apply_approval_decision(
+    session_key: str,
+    pattern_key: str,
+    description: str,
+    decision: dict,
+) -> dict:
+    """Map a resolved approval decision to the shared tool-result shape.
+
+    Shared by the gateway round-trip and the durable relay path so both
+    surfaces produce byte-identical approved/BLOCKED results.
+    """
+    if decision.get("notify_failed"):
+        return {
+            "approved": False,
+            "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+    resolved = decision.get("resolved", False)
+    choice = decision.get("choice")
+    deny_reason = decision.get("reason")
+
+    if not resolved or choice is None or choice == "deny":
+        if not resolved:
+            reason = "timed out without user response"
+            timeout_addendum = " Silence is not consent."
+        else:
+            reason = "denied by user"
+            timeout_addendum = ""
+        reason_addendum = ""
+        if resolved and deny_reason:
+            reason_addendum = f' Reason given by the user: "{deny_reason}".'
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Action {reason}.{reason_addendum} The user "
+                f"has NOT consented to this action. Do NOT retry it, "
+                f"do NOT rephrase it, and do NOT attempt the same "
+                f"outcome via a different path.{timeout_addendum}"
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "user_consent": False,
+        }
+
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+    return {"approved": True, "message": None, "user_approved": True}
+
+
+def _durable_approvals_enabled() -> bool:
+    """True when this process relays approvals out-of-band (headless coder).
+
+    The relay that spawns the coder sets this, so the dangerous-command gate
+    stages a durable request and blocks for an answer instead of auto-denying
+    under ``approvals.single_query_mode`` or handing ``approval_required``
+    back to a turn with no visible user.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        if is_truthy_value(get_session_env("SON_OF_ANTON_DURABLE_APPROVALS", "")):
+            return True
+    except Exception:
+        pass
+    return env_var_enabled("SON_OF_ANTON_DURABLE_APPROVALS")
+
+
+_DURABLE_APPROVAL_POLL_SECONDS = 0.5
+
+
+def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
+    """Stage a durable approval request and block until it is answered.
+
+    Mirrors :func:`_await_gateway_decision`'s contract — returns
+    ``{"resolved": bool, "choice": str|None}`` — but the pending record is
+    the notification, so a chat relay in another process can answer it.
+    Every failure path resolves to a refusal and the record is consumed
+    exactly once (first decision wins; expiry fails closed).
+    """
+    from tools import write_approval as wa
+
+    timeout = _get_approval_timeout()
+    summary = (
+        f"{approval_data.get('description', '')}: "
+        f"{str(approval_data.get('command', ''))[:120]}"
+    )
+    record = wa.stage_write(
+        wa.EXEC,
+        {
+            "action": "exec_approval",
+            "session_id": session_key,
+            "pattern_key": approval_data.get("pattern_key", ""),
+            "pattern_keys": list(approval_data.get("pattern_keys") or []),
+            "command": approval_data.get("command", ""),
+            "description": approval_data.get("description", ""),
+            "allow_session": bool(approval_data.get("allow_session", True)),
+            "allow_permanent": bool(approval_data.get("allow_permanent", True)),
+        },
+        summary=summary,
+        origin=wa.current_origin(),
+        expires_at=time.time() + max(int(timeout), 0),
+        chat_key=os.environ.get("SON_OF_ANTON_APPROVAL_CHAT_KEY", ""),
+    )
+
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=approval_data.get("command", ""),
+        description=approval_data.get("description", ""),
+        pattern_key=approval_data.get("pattern_key", ""),
+        pattern_keys=list(approval_data.get("pattern_keys") or []),
+        session_key=session_key,
+        surface="durable",
+    )
+
+    deadline = time.monotonic() + max(int(timeout), 0)
+    decision: dict = {"resolved": False, "choice": None}
+    try:
+        while True:
+            current = wa.get_pending(wa.EXEC, record["id"])
+            if current is None:
+                break
+            choice = current.get("decision")
+            if choice:
+                decision = {"resolved": True, "choice": choice}
+                break
+            if wa.pending_expired(current) or time.monotonic() >= deadline:
+                break
+            time.sleep(_DURABLE_APPROVAL_POLL_SECONDS)
+    finally:
+        # Consume the request so a late second answer cannot replay it.
+        wa.discard_pending(wa.EXEC, record["id"])
+        _fire_approval_hook(
+            "post_approval_response",
+            command=approval_data.get("command", ""),
+            description=approval_data.get("description", ""),
+            pattern_key=approval_data.get("pattern_key", ""),
+            pattern_keys=list(approval_data.get("pattern_keys") or []),
+            session_key=session_key,
+            surface="durable",
+            choice=decision.get("choice") or "timeout",
+        )
+    return decision
+
+
 def _run_approval_gate(
     *,
     pattern_key: str,
@@ -3485,6 +3634,27 @@ def _run_approval_gate(
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
+
+    # Durable relay approvals: a headless coder (Signal-launched) has no
+    # notifier and no TTY, but a human is reachable through the relay chat.
+    # Must run before the single-query auto-deny below: the coder's `-q`
+    # marker would otherwise refuse every dangerous command this mode exists
+    # to carry.
+    if _durable_approvals_enabled():
+        from agent.redact import redact_sensitive_text
+
+        approval_data = {
+            "command": redact_sensitive_text(display_target),
+            "pattern_key": pattern_key,
+            "pattern_keys": [pattern_key],
+            "description": redact_sensitive_text(description),
+            "allow_permanent": True,
+            "allow_session": True,
+        }
+        decision = _await_durable_decision(session_key, approval_data)
+        return _apply_approval_decision(
+            session_key, pattern_key, description, decision
+        )
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
 
@@ -3580,47 +3750,9 @@ def _run_approval_gate(
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
-            if decision.get("notify_failed"):
-                return {
-                    "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
-                    "pattern_key": pattern_key,
-                    "description": description,
-                }
-            resolved = decision["resolved"]
-            choice = decision["choice"]
-            deny_reason = decision.get("reason")
-
-            if not resolved or choice is None or choice == "deny":
-                if not resolved:
-                    reason = "timed out without user response"
-                    timeout_addendum = " Silence is not consent."
-                else:
-                    reason = "denied by user"
-                    timeout_addendum = ""
-                reason_addendum = ""
-                if resolved and deny_reason:
-                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
-                return {
-                    "approved": False,
-                    "message": (
-                        f"BLOCKED: Action {reason}.{reason_addendum} The user "
-                        f"has NOT consented to this action. Do NOT retry it, "
-                        f"do NOT rephrase it, and do NOT attempt the same "
-                        f"outcome via a different path.{timeout_addendum}"
-                    ),
-                    "pattern_key": pattern_key,
-                    "description": description,
-                    "user_consent": False,
-                }
-
-            if choice == "session":
-                approve_session(session_key, pattern_key)
-            elif choice == "always":
-                approve_session(session_key, pattern_key)
-                approve_permanent(pattern_key)
-                save_permanent_allowlist(_permanent_approved)
-            return {"approved": True, "message": None}
+            return _apply_approval_decision(
+                session_key, pattern_key, description, decision
+            )
 
         # No notify callback: interactive CLI with a panel callback should
         # still prompt locally instead of queuing a pending approval nobody
@@ -4396,11 +4528,21 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("SON_OF_ANTON_EXEC_ASK")
 
+    # Durable relay approvals: a headless coder has no inline approver, but a
+    # human IS reachable through the relay chat. Treat the process like a
+    # gateway surface with no local notifier so the flow reaches the
+    # human-decision fallback (which stages a durable request) instead of
+    # auto-approving or hitting the single-query auto-deny below.
+    if _durable_approvals_enabled():
+        is_cli = False
+        is_gateway = True
+        is_ask = False
+
     # Single-query (-q) sessions export SON_OF_ANTON_INTERACTIVE=1 but have no user
     # to answer approval prompts — an unanswered prompt just waits the full
     # timeout then fails closed. Treat them as a deterministic non-interactive
     # context governed by approvals.single_query_mode (mirrors cron below).
-    if _is_single_query_approval_context():
+    if _is_single_query_approval_context() and not _durable_approvals_enabled():
         is_cli = False
         is_gateway = False
         # SON_OF_ANTON_EXEC_ASK routes through the gateway decision loop (no human
@@ -4884,6 +5026,14 @@ def check_all_command_guards(command: str, env_type: str,
             }
             if smart_denied_for_owner:
                 pending_data.update(smart_denied=True, allow_permanent=False)
+            # Durable relay mode: stage a request the relay chat can answer
+            # instead of returning approval_required to a turn with no
+            # visible user.
+            if _durable_approvals_enabled():
+                decision = _await_durable_decision(session_key, pending_data)
+                return _apply_approval_decision(
+                    session_key, primary_key, _disp_combined_desc, decision
+                )
             submit_pending(session_key, pending_data)
             result = {
                 "approved": False,
@@ -5027,9 +5177,18 @@ def check_execute_code_guard(code: str, env_type: str,
     is_cli = _is_interactive_cli()
     approval_callback = _resolve_cli_approval_callback()
 
+    # Durable relay approvals: a headless coder has no inline approver, but a
+    # human IS reachable through the relay chat. Route this like a gateway
+    # surface with no local notifier so the fallback stages a durable request
+    # instead of the single-query auto-deny refusing every script.
+    if _durable_approvals_enabled():
+        is_cli = False
+        is_gateway = True
+        is_ask = False
+
     # Single-query (-q): no user is present to approve arbitrary code. Mirrors
     # the cron branch below so the -q escape-hatch no longer auto-approves.
-    if _is_single_query_approval_context():
+    if _is_single_query_approval_context() and not _durable_approvals_enabled():
         if _get_single_query_approval_mode() == "deny":
             return {
                 "approved": False,
@@ -5309,6 +5468,17 @@ def check_execute_code_guard(code: str, env_type: str,
         }
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)
+        # Durable relay mode: stage a request the relay chat can answer
+        # instead of returning approval_required to a turn with no visible
+        # user.
+        if _durable_approvals_enabled():
+            decision = _await_durable_decision(session_key, pending_data)
+            result = _apply_approval_decision(
+                session_key, pattern_key, description, decision
+            )
+            if result.get("approved"):
+                _reset_denials(session_key)
+            return result
         submit_pending(session_key, pending_data)
         result = {
             "approved": False,

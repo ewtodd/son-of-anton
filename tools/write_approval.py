@@ -47,17 +47,27 @@ import logging
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from son_of_anton_constants import get_son_of_anton_home
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - fcntl is always present on supported platforms
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
 # Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
-_SUBSYSTEMS = (MEMORY, SKILLS)
+# Dangerous-command approvals for a headless process: the pending record is
+# the request (written by the blocked process), decide_pending is the answer
+# (written by whatever chat is relaying it), and the blocked process polls.
+EXEC = "exec"
+_SUBSYSTEMS = (MEMORY, SKILLS, EXEC)
 
 # Config key (per subsystem). A single boolean: the approval gate is OFF by
 # default (writes flow freely, the pre-gate behaviour), and ON means stage /
@@ -112,18 +122,26 @@ def _pending_dir(subsystem: str) -> Path:
 
 
 def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str) -> Dict[str, Any]:
+                *, summary: str, origin: str,
+                expires_at: Optional[float] = None,
+                chat_key: str = "") -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
 
     Args:
-        subsystem: ``memory`` or ``skills``.
+        subsystem: ``memory``, ``skills``, or ``exec``.
         payload: the exact kwargs needed to replay the write when approved
             (e.g. ``{"action": "add", "target": "user", "content": "..."}``
             for memory, or the full ``skill_manage`` kwargs for skills).
+            For ``exec`` it carries the command/pattern data the approver
+            needs; the blocked process applies the allowance itself.
         summary: a one-line human-readable description shown in pending lists.
             For skills this is the LLM/heuristic gist; for memory it can be the
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
+        expires_at: optional epoch deadline. Past it the request is dead and
+            the blocked process fails closed.
+        chat_key: optional session/chat key that asked for the request, so a
+            relay can route the prompt back to the right conversation.
 
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
     logs and still returns a record (the write is simply lost, which is the
@@ -139,6 +157,10 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "created_at": time.time(),
         "payload": payload,
     }
+    if expires_at is not None:
+        record["expires_at"] = float(expires_at)
+    if chat_key:
+        record["chat_key"] = str(chat_key)
     try:
         d = _pending_dir(subsystem)
         d.mkdir(parents=True, exist_ok=True)
@@ -198,6 +220,95 @@ def pending_count(subsystem: str) -> int:
         return sum(1 for _ in d.glob("*.json"))
     except Exception:
         return 0
+
+
+@contextmanager
+def _record_lock(path: Path):
+    """Serialize read-modify-write on one pending record across processes.
+
+    A durable exec approval's decision must not be overwritable by a second
+    approver: lock the record, re-read, and only write when still undecided.
+    """
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = None
+    try:
+        handle = open(lock_path, "a+", encoding="utf-8")
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if handle is not None:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+
+def _write_record(subsystem: str, record: Dict[str, Any]) -> bool:
+    """Atomically rewrite an existing pending record."""
+    try:
+        path = _pending_dir(subsystem) / f"{record['id']}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logger.error("Failed to update pending %s/%s: %s", subsystem, record.get("id"), e)
+        return False
+
+
+def decide_pending(subsystem: str, pending_id: str, choice: str,
+                   *, decided_by: str = "") -> Optional[Dict[str, Any]]:
+    """Record the user's decision on a pending request. First decision wins.
+
+    Returns the updated record, or None when the request no longer exists.
+    A second decision is ignored (the existing record is returned unchanged),
+    so two chats or a retried tap can never overwrite the first answer.
+    """
+    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    with _record_lock(path):
+        record = get_pending(subsystem, pending_id)
+        if record is None:
+            return None
+        if record.get("decision"):
+            return record
+        record["decision"] = str(choice or "").strip().lower()
+        record["decided_at"] = time.time()
+        record["decided_by"] = str(decided_by or "")
+        _write_record(subsystem, record)
+        return record
+
+
+def mark_pending_notified(subsystem: str, pending_id: str) -> bool:
+    """Stamp ``notified_at`` once, so a watcher does not re-send a prompt."""
+    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    with _record_lock(path):
+        record = get_pending(subsystem, pending_id)
+        if record is None or record.get("notified_at"):
+            return False
+        record["notified_at"] = time.time()
+        return _write_record(subsystem, record)
+
+
+def pending_expired(record: Dict[str, Any], *, now: Optional[float] = None) -> bool:
+    """True when a durable request has outlived its timeout."""
+    expires_at = record.get("expires_at")
+    if not isinstance(expires_at, (int, float)) or expires_at <= 0:
+        return False
+    return (now if now is not None else time.time()) >= float(expires_at)
+
+
+def prune_expired_pending(subsystem: str) -> int:
+    """Delete expired pending records; returns how many were removed."""
+    removed = 0
+    for record in list_pending(subsystem):
+        if pending_expired(record) and discard_pending(subsystem, record.get("id", "")):
+            removed += 1
+    return removed
 
 
 # ---------------------------------------------------------------------------
