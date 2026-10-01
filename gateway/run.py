@@ -2639,6 +2639,33 @@ class _GatewayModelContext:
     context_source: str
 
 
+def _format_durable_approval(record: dict) -> str:
+    """Render a pending headless-coder approval for its relay chat.
+
+    The command text is what the coder will actually run (already redacted
+    when staged); the id addresses the pending record for /approve//deny.
+    """
+    record = record if isinstance(record, dict) else {}
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    command = str(payload.get("command") or "").strip()
+    description = str(payload.get("description") or "dangerous command").strip()
+    pending_id = str(record.get("id") or "")
+    lines = [
+        "⚠️ Approval needed for a headless coding session.",
+        description,
+        "",
+        "```",
+        command,
+        "```",
+        "",
+        f"Reply `/approve {pending_id}` (once), "
+        f"`/approve {pending_id} session`, "
+        f"`/approve {pending_id} always`, "
+        f"or `/deny {pending_id}`.",
+    ]
+    return "\n".join(lines)
+
+
 def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModelContext:
     """Resolve the configured gateway route and its effective context window.
 
@@ -12219,6 +12246,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # originating chats while the session is idle.
         self._spawn_supervised(self._loop_wakeup_watcher, "loop_wakeup_watcher")
 
+        # Start the durable-approval watcher — delivers exec approvals staged
+        # by headless coder sessions (spawned from a chat) back into the chat
+        # that spawned them, so the answer can come from /approve <id>.
+        self._spawn_supervised(self._durable_approval_watcher, "durable_approval_watcher")
+
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" SON_OF_ANTON_SCALE_TO_ZERO stamp), messaging is
         # relay-only/absent, and a wakeUrl is registered (decisions.md D1/D11/
@@ -12607,6 +12639,85 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not getattr(result, "success", True):
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
+
+    async def _durable_approval_watcher(self, interval: float = 5.0) -> None:
+        """Deliver pending headless-coder approvals to their relay chats.
+
+        A coder spawned from a chat stages an exec request and blocks; this
+        sweep notices the record, sends the prompt into the chat that spawned
+        it, and stamps ``notified_at`` so the prompt is sent once. The answer
+        comes back through ``/approve <id>`` / ``/deny <id>``.
+        """
+        await asyncio.sleep(3)  # let adapters connect
+        while self._running:
+            try:
+                await self._deliver_durable_approvals()
+            except Exception as exc:
+                logger.debug("Durable approval sweep failed: %s", exc)
+            await asyncio.sleep(interval)
+
+    async def _deliver_durable_approvals(self) -> int:
+        """One sweep. Returns how many prompts were delivered."""
+        from tools import write_approval as wa
+
+        try:
+            wa.prune_expired_pending(wa.EXEC)
+        except Exception:
+            pass
+        records = [r for r in wa.list_pending(wa.EXEC) if not r.get("notified_at")]
+        if not records:
+            return 0
+        try:
+            await self.async_session_store._ensure_loaded()
+        except Exception:
+            pass
+        delivered = 0
+        for record in records:
+            if record.get("decision"):
+                continue
+            chat_key = str(record.get("chat_key") or "").strip()
+            if not chat_key:
+                continue
+            source = self._get_cached_session_source(chat_key)
+            if source is None:
+                try:
+                    entry = self.session_store._entries.get(chat_key)
+                except Exception:
+                    entry = None
+                source = getattr(entry, "origin", None)
+            if source is None:
+                continue  # not routable right now; retry next sweep
+            adapter = self._adapter_for_source(source)
+            if adapter is None:
+                continue
+            metadata = None
+            try:
+                metadata = self._thread_metadata_for_target(
+                    source.platform,
+                    source.chat_id,
+                    getattr(source, "thread_id", None),
+                    chat_type=getattr(source, "chat_type", None),
+                    adapter=adapter,
+                )
+            except Exception:
+                metadata = None
+            try:
+                await adapter.send(
+                    source.chat_id,
+                    _format_durable_approval(record),
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Durable approval %s delivery to %s failed: %s",
+                    record.get("id"), chat_key, exc,
+                )
+                continue
+            wa.mark_pending_notified(wa.EXEC, str(record.get("id") or ""))
+            delivered += 1
+        if delivered:
+            logger.info("Durable approvals: delivered %d prompt(s)", delivered)
+        return delivered
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.

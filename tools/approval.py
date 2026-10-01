@@ -3550,7 +3550,11 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
                 break
             choice = current.get("decision")
             if choice:
-                decision = {"resolved": True, "choice": choice}
+                decision = {
+                    "resolved": True,
+                    "choice": choice,
+                    "reason": current.get("decision_reason") or None,
+                }
                 break
             if wa.pending_expired(current) or time.monotonic() >= deadline:
                 break

@@ -262,7 +262,7 @@ def _write_record(subsystem: str, record: Dict[str, Any]) -> bool:
 
 
 def decide_pending(subsystem: str, pending_id: str, choice: str,
-                   *, decided_by: str = "") -> Optional[Dict[str, Any]]:
+                   *, decided_by: str = "", reason: str = "") -> Optional[Dict[str, Any]]:
     """Record the user's decision on a pending request. First decision wins.
 
     Returns the updated record, or None when the request no longer exists.
@@ -279,6 +279,8 @@ def decide_pending(subsystem: str, pending_id: str, choice: str,
         record["decision"] = str(choice or "").strip().lower()
         record["decided_at"] = time.time()
         record["decided_by"] = str(decided_by or "")
+        if reason:
+            record["decision_reason"] = str(reason)[:280]
         _write_record(subsystem, record)
         return record
 

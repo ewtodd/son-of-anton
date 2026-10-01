@@ -4507,6 +4507,59 @@ class GatewaySlashCommandsMixin:
         lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
         return "\n".join(lines)
 
+    @staticmethod
+    def _durable_approval_id(tokens) -> Optional[str]:
+        """Return the first token shaped like a pending-record id, or None."""
+        for token in tokens:
+            cleaned = str(token).strip().lower()
+            if len(cleaned) == 8 and all(c in "0123456789abcdef" for c in cleaned):
+                return cleaned
+        return None
+
+    @staticmethod
+    def _decide_durable_approval(session_key: str, tokens: list, *, deny: bool) -> Optional[str]:
+        """Resolve ``/approve <id>`` / ``/deny <id>`` against a durable record.
+
+        Only the chat that staged the request may answer it: the record's
+        ``chat_key`` must equal this chat's session key. Returns None when the
+        arguments address no durable request for this chat, so the in-process
+        approval handling runs instead.
+        """
+        from tools import write_approval as wa
+
+        pending_id = GatewaySlashCommandsMixin._durable_approval_id(tokens)
+        if not pending_id:
+            return None
+        record = wa.get_pending(wa.EXEC, pending_id)
+        if record is None:
+            return None
+        if str(record.get("chat_key") or "").strip() != session_key:
+            return None
+        if record.get("decision"):
+            return "That approval was already answered — the coding session has moved on."
+        lowered = [str(t).lower() for t in tokens]
+        if deny:
+            reason_tokens = [
+                t for t in tokens if str(t).lower() not in {pending_id, "all"}
+            ]
+            wa.decide_pending(
+                wa.EXEC, pending_id, "deny", decided_by=session_key,
+                reason=" ".join(reason_tokens),
+            )
+            return "Denied. The coding session has been told not to retry it."
+        if any(t in {"session", "ses"} for t in lowered):
+            choice = "session"
+        elif any(t in {"always", "permanent", "permanently"} for t in lowered):
+            choice = "always"
+        else:
+            choice = "once"
+        wa.decide_pending(wa.EXEC, pending_id, choice, decided_by=session_key)
+        return {
+            "once": "Approved once. The coding session will continue.",
+            "session": "Approved for this session. The coding session will continue.",
+            "always": "Approved permanently. The coding session will continue.",
+        }[choice]
+
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
 
@@ -4529,6 +4582,14 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        durable = self._decide_durable_approval(
+            session_key,
+            event.get_command_args().strip().lower().split(),
+            deny=False,
+        )
+        if durable is not None:
+            return durable
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
@@ -4578,6 +4639,14 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        durable = self._decide_durable_approval(
+            session_key,
+            event.get_command_args().strip().split(),
+            deny=True,
+        )
+        if durable is not None:
+            return durable
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
