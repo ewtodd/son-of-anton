@@ -22995,6 +22995,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return cls._empty_honcho_cache_busting_config()
 
     @classmethod
+    def _custom_provider_context_windows(cls, config: dict) -> list:
+        """Flatten per-model context windows declared by custom providers.
+
+        ``custom_providers[].models.<id>.context_length`` (list or keyed-dict
+        form, plus the newer ``providers`` schema) is baked into AIAgent and
+        its context compactor at construction, but it is nested — it cannot be
+        expressed as a ``(section, key)`` pair like ``model.context_length``.
+        The flattened ``(section, provider, model, window)`` list feeds the
+        cached-agent signature so editing one window rebuilds the agent on the
+        next turn, while unrelated custom-provider edits (headers, timeouts)
+        do not bust the prompt cache.
+        """
+        windows: List[tuple] = []
+        if not isinstance(config, dict):
+            return windows
+        for section in ("custom_providers", "providers"):
+            entries = config.get(section)
+            if isinstance(entries, dict):
+                providers = entries.items()
+            elif isinstance(entries, list):
+                providers = enumerate(entries)
+            else:
+                continue
+            for provider_key, entry in providers:
+                if not isinstance(entry, dict):
+                    continue
+                models = entry.get("models")
+                if isinstance(models, dict):
+                    model_entries = models.items()
+                elif isinstance(models, list):
+                    model_entries = [
+                        (item.get("id") or item.get("name") or "", item)
+                        for item in models
+                        if isinstance(item, dict)
+                    ]
+                else:
+                    continue
+                for model_id, model_config in model_entries:
+                    if not isinstance(model_config, dict):
+                        continue
+                    window = model_config.get("context_length")
+                    if window is None:
+                        continue
+                    windows.append(
+                        (section, str(provider_key), str(model_id), str(window))
+                    )
+        windows.sort()
+        return windows
+
+    @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Pull values that must bust the cached agent.
 
@@ -23035,6 +23085,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         else:
             out.update(cls._empty_honcho_cache_busting_config())
 
+        # Per-model custom-provider windows are nested, so they cannot ride in
+        # _CACHE_BUSTING_CONFIG_KEYS; flatten them into the same flat dict.
+        out["custom_providers.context_windows"] = (
+            cls._custom_provider_context_windows(cfg)
+        )
+
         return out
 
     @staticmethod
@@ -23058,8 +23114,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ``cache_keys`` is an optional flat dict of additional config values
         that should invalidate the cache when they change.  Callers pass
         the output of ``_extract_cache_busting_config(user_config)`` so
-        edits to model.context_length / compaction.* in config.yaml are
-        picked up on the next gateway message without a manual restart.
+        edits to model.context_length, compaction.*, or a per-model
+        custom-provider context_length in config.yaml are picked up on the
+        next gateway message without a manual restart.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
         carried by the current message's gateway source.  They participate
