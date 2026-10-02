@@ -80,6 +80,29 @@ Ordered by importance. Each item is independently scoped.
    an inert removed-provider probe. Cosmetic.
 8. **TUI gaps from the REPL.** Prompt image attachments and an `/agents`
    viewer were never carried over.
+9. **Physics sub-agents vanish when they exhaust their round cap.** In the
+   YAP alpha/gamma calibration run (`workspace-soa/runs/20261002_153415_*`),
+   7 of 9 dispatches came back empty. Root cause: a sub-agent with lookup
+   tools runs through `run_agent_loop(..., max_rounds=6)`
+   (`autophysicist/subagent.py:210`); when it spends all 6 rounds calling
+   context7 / analysis_utilities lookups and never emits a final plain-text
+   answer, `run_agent_loop` (`llm.py:607`) returns `text=""` on the
+   `max_rounds` fallback (the normal exit path returns `message.content`).
+   `dispatch_subagent` then finds no code block and reports
+   `execution_status="no_code"`, so the Manager sees "the model wrote no
+   code" and misdiagnoses it as a prompting problem (it spent iteration 2
+   "confirming" a dispatch rule that was never the cause). Every *substantive*
+   task that needs several doc lookups before writing a script dies this way;
+   only trivial ≤1-lookup tasks survive. Fix: in `run_agent_loop`, track the
+   last non-empty `message.content` and return it on the `max_rounds`
+   fallback; propagate `stop_reason` so `dispatch_subagent` can set a distinct
+   `execution_status="max_rounds"` and tell the Manager to re-dispatch tighter
+   (or with more rounds) rather than "it returned nothing". Optionally raise
+   `max_rounds=6` → 8–10. Secondary run issues noted for follow-up: 0 durable
+   output across 2 iterations (no RESULTS.txt / features / calib), critic is
+   ~298s per iteration, `df_cache` capped at 50k events vs 1.8M–13.4M real,
+   waveform polarity (+1 vs −1) never settled by an artifact, and pure files
+   carry two `Data_R` trees while `load_tree_data` reads only the first.
 
 ## Operational notes
 
