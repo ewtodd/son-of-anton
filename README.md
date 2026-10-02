@@ -381,6 +381,32 @@ to score it against, and `FORMAL_EVAL.md` says so rather than claiming a pass.
 A path that *looks* like a spec but cannot be read warns rather than silently
 becoming the problem statement.
 <!---->
+## Cron
+<!---->
+A gateway process runs the cron scheduler; `son-of-anton cron <verb>` (or
+`/cron`) manages jobs, and the agent can schedule through the `cronjob` tool.
+<!---->
+Jobs without an explicit `--provider` / `--model` pin follow the global default,
+re-resolved from `config.yaml` on every run. By default a **model-drift guard**
+fails those unpinned jobs closed: if the global default has changed since the job
+was created, the run is skipped (no inference call) and a one-time alert tells
+you to pin the axis. That protects an unattended job from silently inheriting a
+*paid* default — the guard exists because of a real overage, not a style choice.
+<!---->
+If your models are served locally and there is no spend to protect against, the
+guard is just friction. Turn it off and unpinned jobs track the live default
+model/provider at run time instead of `drift_skip`-ing:
+<!---->
+```yaml
+cron:
+  model_drift_guard: false
+```
+<!---->
+Pinned jobs and `cron.model` / `cron.model_provider` fleet defaults are never
+affected — the guard only applies to axes that are unpinned, snapshotted at
+creation, and now resolve to a different value. See
+`tests/test_cron_model_drift_guard.py`.
+<!---->
 ## One service per account
 <!---->
 The NixOS module runs a separate gateway for each account, as a system service,

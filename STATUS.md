@@ -1,6 +1,6 @@
 # Son of Anton — Status
 
-_Last updated 2026-10-01. History lives in git; this file is only current
+_Last updated 2026-10-02. History lives in git; this file is only current
 state, known future work, and the operational facts a fresh session needs._
 
 ## What this is
@@ -53,9 +53,13 @@ Ordered by importance. Each item is independently scoped.
 2. **One coder per workspace is not enforced.** Only the `relay-coding`
    skill's instruction prevents two concurrent coders in the same directory.
    If that becomes a real failure mode, add a workspace-keyed lease.
-3. **`session_search` is not scope-filtered.** Memory is scoped; session
-   search still returns every surface's sessions. Add the active-scope filter
-   with an explicit "search everything" escape.
+3. **`session_search` is not scope-filtered.** _Resolved._ The tool gained a
+   `sources` filter (comma-separated, e.g. `sources="cli"`) threaded through
+   the browse, discovery, and title-match paths into
+   `list_sessions_rich(sources=)` / `search_messages(source_filter=)`. Omitting
+   it is the explicit "search everything" escape. The state layer already
+   supported both filters, so this was surfacing, not new query machinery.
+   Tests in `tests/test_session_search_sources.py`.
 4. **RAG search is a pure-Python cosine scan.** Fine for hundreds of chunks.
    If the journals grow into the tens of thousands, add a keyword/FTS
    prefilter or a candidate cap before ranking.
@@ -63,11 +67,14 @@ Ordered by importance. Each item is independently scoped.
    `rag index` cron job should be created automatically (idempotently, per
    instance) instead of requiring `son-of-anton cron create` by hand. Until
    then, run `son-of-anton rag index` manually or cron it yourself.
-6. **Cron jobs must always run the current default model.** A job currently
-   snapshots model/provider at creation and drift-checks it later, so changing
-   the default model makes jobs fail (`drift_skip`) or run a stale model.
-   Unless a job explicitly pins a model, each run should resolve the live
-   configured default.
+6. **Cron jobs must always run the current default model.** _Resolved (opt-out)._
+   The model is already re-resolved from config on every tick; what blocked
+   changing it was the fail-closed #44585 drift guard, which skips an *unpinned*
+   job when the global default moves (real overage, so the default stays on).
+   The intended escape — `cron.model_drift_guard: false` — is now documented in
+   the README ("Cron") and covered by `tests/test_cron_model_drift_guard.py`;
+   this instance has it off (local models, no spend), so unpinned jobs track the
+   live default.
 7. **Deep-Nous prose residue.** The gateway relay's enroll docstring still
    names `resolve_nous_access_token()` (never called), and `doctor.py` carries
    an inert removed-provider probe. Cosmetic.
@@ -79,7 +86,7 @@ Ordered by importance. Each item is independently scoped.
 - Repo `git@github.com:ewtodd/son-of-anton.git`, branch `main`. Sole
   authorship, no `Co-authored-by` trailers; the bot commit identity is in the
   repo git config.
-- Tests: `nix develop -c scripts/run_tests.sh` (712 tests, 65 files, ~35s).
+- Tests: `nix develop -c scripts/run_tests.sh` (727 tests, 67 files, ~36s).
   Pre-commit (`nix develop -c pre-commit install`) runs ruff plus that suite.
 - Deployment: `/etc/nixos` host `e-desktop`, flake input `son-of-anton`
   following `main`; bump the input and reactivate. Bifrost on oracle fronts
