@@ -427,7 +427,10 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(
+    db, limit: int, current_session_id: str = None, link_profile: str = None,
+    sources: Optional[List[str]] = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         # list_sessions_rich (include_children=False) already applies the
@@ -440,6 +443,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
         sessions = db.list_sessions_rich(
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            sources=list(sources) if sources else None,
             order_by_last_active=True,
         )  # fetch extra so we can skip current / compaction roots
 
@@ -630,6 +634,7 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    sources: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -657,6 +662,8 @@ def _title_match_result(
         logging.debug("get_session failed for title match %s", session_id, exc_info=True)
         session_meta = {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+        return None
+    if sources and session_meta.get("source") not in sources:
         return None
 
     try:
@@ -706,17 +713,20 @@ def _discover(
     detail: str,
     current_session_id: str = None,
     link_profile: str = None,
+    sources: Optional[List[str]] = None,
 ) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     role_list = role_filter if role_filter else ["user", "assistant"]
+    source_filter = list(sources) if sources else None
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, sources=source_filter)
 
     try:
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            source_filter=source_filter,
             limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
             # distinct sessions AND so interactive matches buried under a wall
             # of cron rows are still in hand for the demotion pass below.
@@ -894,6 +904,8 @@ def _session_search_impl(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    # Source filter (discovery + browse): restrict to named session sources
+    sources: str = None,
     *,
     _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
@@ -973,9 +985,19 @@ def _session_search_impl(
             limit = 3
     limit = max(1, min(limit, 10))
 
+    # Parse the source filter (comma-separated), applied to both the browse
+    # and discovery shapes so a workstation session can stop a gateway
+    # session's history from surfacing in recall (STATUS.md: per-surface
+    # session search scoping).
+    source_list: Optional[List[str]] = None
+    if isinstance(sources, str) and sources.strip():
+        source_list = [s.strip() for s in sources.split(",") if s.strip()]
+
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(
+            db, limit, current_session_id, link_profile=profile, sources=source_list
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -1004,6 +1026,7 @@ def _session_search_impl(
         detail=detail_norm,
         current_session_id=current_session_id,
         link_profile=profile,
+        sources=source_list,
     )
 
 
@@ -1023,6 +1046,8 @@ def session_search(
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
+    # Source filter (discovery + browse): restrict to named session sources
+    sources: str = None,
 ) -> str:
     """Run session search and close databases opened by this invocation."""
     owned_dbs: List[Any] = []
@@ -1051,6 +1076,7 @@ def session_search(
             sort=sort,
             profile=profile,
             detail=detail,
+            sources=sources,
             _owned_dbs=owned_dbs,
         )
     finally:
@@ -1235,6 +1261,15 @@ SESSION_SEARCH_SCHEMA = {
                     "Omit to use the current profile."
                 ),
             },
+            "sources": {
+                "type": "string",
+                "description": (
+                    "Optional. Comma-separated session sources to restrict discovery and "
+                    "browse to (e.g. 'cli' for workstation sessions, 'signal', 'discord', "
+                    "'slack' for messaging, 'cron'). Keeps one surface's history from "
+                    "polluting another's recall. Omit to search across all sources."
+                ),
+            },
         },
         "required": [],
     },
@@ -1258,6 +1293,7 @@ registry.register(
         sort=args.get("sort"),
         detail=args.get("detail", "adaptive"),
         profile=args.get("profile"),
+        sources=args.get("sources"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
     ),
