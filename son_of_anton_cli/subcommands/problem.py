@@ -81,6 +81,18 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         ),
     )
     run.add_argument(
+        "--token-budget",
+        type=int,
+        default=None,
+        dest="token_budget",
+        help=(
+            "Token budget per iteration (default 64000). "
+            "Overrides physics.token_budget. Raise it for problems that "
+            "require the manager to reason over large datasets in a "
+            "single iteration."
+        ),
+    )
+    run.add_argument(
         "--workspace",
         default=None,
         help=(

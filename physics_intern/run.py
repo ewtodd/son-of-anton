@@ -59,12 +59,23 @@ def resolve_script_timeout(explicit: int | None) -> int:
     return _resolve_limit(explicit, "script_timeout", 60)
 
 
+def resolve_token_budget(explicit: int | None) -> int:
+    """Token budget per iteration.
+
+    The default of 64000 suits short symbolic problems. On experimental data
+    with multi-GB waveforms the manager needs more room to reason about the
+    full dataset in a single iteration.
+    """
+    return _resolve_limit(explicit, "token_budget", 64000)
+
+
 def run_problem(
     message: str,
     *,
     mode: str = "physics",
     max_iterations: int | None = None,
     script_timeout: int | None = None,
+    token_budget: int | None = None,
     workspace_root: Path | str | None = None,
     spec: ProblemSpec | None = None,
 ) -> Path:
@@ -86,6 +97,7 @@ def run_problem(
         problem_name=spec.name,
         max_iterations=resolve_max_iterations(max_iterations, 50),
         sandbox_timeout=resolve_script_timeout(script_timeout),
+        token_budget=resolve_token_budget(token_budget),
         workspace_root=workspace_root,
     )
 

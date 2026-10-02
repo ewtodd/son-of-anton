@@ -4326,6 +4326,7 @@ def cmd_problem(args, parser=None):
             mode="physics",
             max_iterations=getattr(args, "max_iterations", None),
             script_timeout=getattr(args, "script_timeout", None),
+            token_budget=getattr(args, "token_budget", None),
             workspace_root=getattr(args, "workspace", None),
         )
         print(render_report(workspace, "physics"))
