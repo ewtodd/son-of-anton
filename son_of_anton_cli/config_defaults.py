@@ -2028,6 +2028,13 @@ DEFAULT_CONFIG = {
         # fnmatch globs matched against the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
+        # Path prefixes exempt from the sensitive-system-path write guard.
+        # Each entry is an absolute path prefix; when the resolved or
+        # normalized target of a write_file/patch call starts with any of
+        # these prefixes, the blanket /etc/, /boot/, etc. refuse is skipped
+        # for that path. Lets a nixos-managed host whitelist /etc/nixos/
+        # without weakening the guard for the rest of /etc/.
+        "sensitive_path_exceptions": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

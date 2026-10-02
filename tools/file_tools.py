@@ -600,6 +600,31 @@ def _get_son_of_anton_config_resolved() -> str | None:
     return _son_of_anton_config_resolved
 
 
+def _sensitive_path_exceptions() -> list[str]:
+    """Return the list of path-prefix exceptions for the sensitive-path guard.
+
+    Config key (config.yaml)::
+
+        security:
+          sensitive_path_exceptions: []   # default: no exceptions
+
+    Each entry is a path prefix (e.g. ``/etc/nixos/``). When the resolved
+    or normalized target path starts with any of these prefixes, the
+    sensitive-path refuse is skipped for that write. This lets a nixos-managed
+    host whitelist its declarative config tree without weakening the blanket
+    ``/etc/`` guard for everything else.
+    """
+    try:
+        from son_of_anton_cli.config import load_config, cfg_get
+        cfg = load_config()
+        exc = cfg_get(cfg, "security", "sensitive_path_exceptions", default=[])
+    except Exception:
+        return []
+    if not isinstance(exc, list):
+        return []
+    return [str(p) for p in exc if p]
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -607,6 +632,12 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    # Exception list: if the path matches a user-configured prefix, allow it.
+    exceptions = _sensitive_path_exceptions()
+    if exceptions:
+        for exc_prefix in exceptions:
+            if resolved.startswith(exc_prefix) or normalized.startswith(exc_prefix):
+                return None
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
