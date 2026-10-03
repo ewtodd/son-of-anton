@@ -638,7 +638,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 f"  [bold]/skills install {url} --name <your-name>[/]\n"
                 f"  [bold]son-of-anton skills install {url} --name <your-name>[/]\n\n"
                 "[dim]Or ask the SKILL.md's author to add a `name:` field to "
-                "its YAML frontmatter.[/]\n"
+                "its TOML frontmatter.[/]\n"
             )
             return
         else:
@@ -1528,7 +1528,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         return
 
     # Validate the skill
-    import yaml
+    import tomllib
     skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
     skill_md = skill_md.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
     fm = {}
@@ -1537,8 +1537,8 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         match = re.search(r'\n---\s*\n', skill_md[3:])
         if match:
             try:
-                fm = yaml.safe_load(skill_md[3:match.start() + 3]) or {}
-            except yaml.YAMLError:
+                fm = tomllib.loads(skill_md[3:match.start() + 3]) or {}
+            except tomllib.TOMLDecodeError:
                 pass
 
     name = fm.get("name", path.name)

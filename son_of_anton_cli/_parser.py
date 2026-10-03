@@ -128,7 +128,7 @@ def build_top_level_parser():
         default=None,
         help=(
             "Provider override for this invocation (e.g. openai-api, custom). "
-            "Applies to -z/--oneshot. The persistent provider lives in config.yaml "
+            "Applies to -z/--oneshot. The persistent provider lives in config.toml "
             "under model.provider — use `son-of-anton setup` or edit the file to change it."
         ),
     )
@@ -140,7 +140,7 @@ def build_top_level_parser():
         help=(
             "Reasoning effort for this invocation: none, minimal, low, medium, "
             "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
-            "config.yaml for this run only; the persistent level lives there "
+            "config.toml for this run only; the persistent level lives there "
             "(or per-model under agent.reasoning_overrides)."
         ),
     )
@@ -201,9 +201,9 @@ def build_top_level_parser():
         action="store_true",
         default=False,
         help=(
-            "Auto-approve any unseen shell hooks declared in config.yaml "
+            "Auto-approve any unseen shell hooks declared in config.toml "
             "without a TTY prompt.  Equivalent to SON_OF_ANTON_ACCEPT_HOOKS=1 or "
-            "hooks_auto_accept: true in config.yaml.  Use on CI / headless "
+            "hooks_auto_accept: true in config.toml.  Use on CI / headless "
             "runs that can't prompt."
         ),
     )
@@ -234,7 +234,7 @@ def build_top_level_parser():
         "--ignore-user-config",
         action="store_true",
         default=False,
-        help="Ignore ~/.son-of-anton/config.yaml and fall back to built-in defaults (credentials in .env are still loaded)",
+        help="Ignore ~/.son-of-anton/config.toml and fall back to built-in defaults (credentials in .env are still loaded)",
     )
     _inherited_flag(
         parser,
@@ -321,12 +321,12 @@ def build_top_level_parser():
     _inherited_flag(
         chat_parser,
         "--provider",
-        # No `choices=` here: user-defined providers from config.yaml `providers:`
+        # No `choices=` here: user-defined providers from config.toml `providers:`
         # are also valid values, and runtime resolution (resolve_runtime_provider)
         # handles validation/error reporting consistently with the top-level
         # `--provider` flag.
         default=argparse.SUPPRESS,
-        help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
+        help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.toml.",
     )
     chat_parser.add_argument(
         "-v",
@@ -401,9 +401,9 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help=(
-            "Auto-approve any unseen shell hooks declared in config.yaml "
+            "Auto-approve any unseen shell hooks declared in config.toml "
             "without a TTY prompt (see also SON_OF_ANTON_ACCEPT_HOOKS env var and "
-            "hooks_auto_accept: in config.yaml)."
+            "hooks_auto_accept: in config.toml)."
         ),
     )
     chat_parser.add_argument(
@@ -430,7 +430,7 @@ def build_top_level_parser():
             "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
             "implicit provider stale timeouts are capped to the remaining "
             "budget so one hung call can't consume the run. Unset = off. "
-            "Also configurable as agent.run_budget_seconds in config.yaml. "
+            "Also configurable as agent.run_budget_seconds in config.toml. "
             "Intended for one-shot/eval invocations with a hard ceiling."
         ),
     )
@@ -453,7 +453,7 @@ def build_top_level_parser():
         "--ignore-user-config",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Ignore ~/.son-of-anton/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.",
+        help="Ignore ~/.son-of-anton/config.toml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.",
     )
     _inherited_flag(
         chat_parser,

@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional, Tuple
 from utils import is_truthy_value
 
 # mtime-keyed memo of the /personality completion source. load_cli_config()
-# does a full YAML parse + deep merge of the built-in defaults on every call,
+# does a full TOML parse + deep merge of the built-in defaults on every call,
 # and the completer runs on every keystroke of /personality. The personalities
 # list only changes when the config file changes on disk, so keying on
 # path+mtime keeps the memo freshness-correct (same pattern as load_env and
@@ -473,7 +473,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
 def _resolve_config_gates() -> set[str]:
     """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
 
-    Reads ``config.yaml`` and walks the dot-separated key path for each
+    Reads ``config.toml`` and walks the dot-separated key path for each
     config-gated command.  Returns an empty set on any error so callers
     degrade gracefully.
     """

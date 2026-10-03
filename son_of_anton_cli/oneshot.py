@@ -146,7 +146,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
         sys.stderr.write(f"son-of-anton -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
     if disabled:
         sys.stderr.write(
-            "son-of-anton -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
+            "son-of-anton -z: ignoring disabled MCP servers (set enabled: true in config.toml to use): "
             f"{', '.join(disabled)}\n"
         )
 
@@ -212,8 +212,8 @@ def run_oneshot(
     Args:
         prompt: The user message to send.
         model: Optional model override. Falls back to SON_OF_ANTON_INFERENCE_MODEL
-            env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to config.yaml's
+            env var, then config.toml's model.default / model.model.
+        provider: Optional provider override. Falls back to config.toml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
         skills: Optional repeated/comma-separated skill identifiers to preload.
@@ -405,7 +405,7 @@ def _run_agent(
         # path and the configured provider is already correct).
         explicit_model = (model or "").strip() or env_model
         if explicit_model:
-            # First check DIRECT_ALIASES populated from config.yaml `model_aliases:`.
+            # First check DIRECT_ALIASES populated from config.toml `model_aliases:`.
             # These map a user-defined alias to (model, provider, base_url) for
             # endpoints not in any catalog (local servers, custom proxies, etc.).
             try:

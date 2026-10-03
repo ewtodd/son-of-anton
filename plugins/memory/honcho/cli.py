@@ -865,15 +865,15 @@ def cmd_setup(args) -> None:
     _write_config(cfg)
     print(f"\n  Config written to {write_path}")
 
-    # --- Auto-enable Honcho as memory provider in config.yaml ---
+    # --- Auto-enable Honcho as memory provider in config.toml ---
     try:
         from son_of_anton_cli.config import load_config, save_config
         son_of_anton_config = load_config()
         son_of_anton_config.setdefault("memory", {})["provider"] = "honcho"
         save_config(son_of_anton_config)
-        print("  Memory provider set to 'honcho' in config.yaml")
+        print("  Memory provider set to 'honcho' in config.toml")
     except Exception as e:
-        print(f"  Could not auto-enable in config.yaml: {e}")
+        print(f"  Could not auto-enable in config.toml: {e}")
         print("  Run: son_of_anton config set memory.provider honcho")
 
     # --- Test connection ---

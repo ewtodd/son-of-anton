@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml read-only, returning None on any error.
+    """Load config.toml read-only, returning None on any error.
 
     Uses ``load_config_readonly()``: every consumer in this module only reads
     (``get_pool_strategy``, ``_iter_custom_providers``, the model-config seed),
@@ -464,7 +464,7 @@ def _iter_custom_providers(config: Optional[dict] = None):
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
-    """Look up the custom_providers list in config.yaml and return 'custom:<name>' for a matching base_url.
+    """Look up the custom_providers list in config.toml and return 'custom:<name>' for a matching base_url.
 
     When provider_name is given, prefer matching by name first (solving the case where
     multiple custom providers share the same base_url but have different API keys).

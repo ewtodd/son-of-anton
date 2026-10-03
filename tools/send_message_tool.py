@@ -330,7 +330,7 @@ def _handle_send(args):
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.son-of-anton/config.yaml or environment variables.")
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.son-of-anton/config.toml or environment variables.")
 
     from gateway.platforms.base import BasePlatformAdapter
 

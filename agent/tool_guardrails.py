@@ -112,7 +112,7 @@ class ToolCallGuardrailConfig:
 
     Warnings are enabled by default and never prevent tool execution. Hard stops
     are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    the user enables circuit-breaker behavior in config.toml.
     """
 
     warnings_enabled: bool = True
@@ -129,7 +129,7 @@ class ToolCallGuardrailConfig:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
-        """Build config from the `tool_loop_guardrails` config.yaml section."""
+        """Build config from the `tool_loop_guardrails` config.toml section."""
         if not isinstance(data, Mapping):
             return cls()
 

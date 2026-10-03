@@ -2,7 +2,7 @@
 Configuration management for Son of Anton Agent.
 
 Config files are stored in ~/.son-of-anton/ for easy access:
-- ~/.son-of-anton/config.yaml  - All settings (model, toolsets, terminal, etc.)
+- ~/.son-of-anton/config.toml  - All settings (model, toolsets, terminal, etc.)
 - ~/.son-of-anton/.env         - API keys and secrets
 
 This module provides:
@@ -38,24 +38,24 @@ from son_of_anton_cli.secret_prompt import masked_secret_prompt
 logger = logging.getLogger(__name__)
 
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
-# so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
+# so concurrent CLI/gateway loads of a broken config.toml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
-    """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
+    """Preserve a corrupted ``config.toml`` by copying it to a timestamped ``.bak``.
 
-    When the YAML can't be parsed, ``load_config()`` silently falls back to
+    When the TOML can't be parsed, ``load_config()`` silently falls back to
     ``DEFAULT_CONFIG`` and the user's broken file stays on disk untouched.
     That file is still the user's only copy of their intended overrides — if
     they re-run the setup wizard or ``son-of-anton config set`` (which rewrites
-    ``config.yaml``), the broken-but-recoverable content is gone for good.
+    ``config.toml``), the broken-but-recoverable content is gone for good.
 
-    This snapshots the corrupted file to ``config.yaml.corrupt.<ts>.bak`` so
+    This snapshots the corrupted file to ``config.toml.corrupt.<ts>.bak`` so
     the user can diff/repair it. Unlike Gemini CLI's policy-file recovery
     (which resets the live file to a clean state), we deliberately leave
-    ``config.yaml`` in place: son-of-anton never silently mutates the user's config,
+    ``config.toml`` in place: son-of-anton never silently mutates the user's config,
     and leaving it means a hand-fixed file is re-read on the next load. The
     backup is best-effort — any failure (permissions, symlink, disk full) is
     swallowed so config loading is never blocked by backup problems.
@@ -69,7 +69,7 @@ def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
             return None
         st = config_path.stat()
         if st.st_size == 0:
-            # Empty file isn't worth preserving and yaml.safe_load returns {}
+            # Empty file isn't worth preserving and a TOML parse returns {}
             # for it anyway (so it wouldn't reach here), but guard regardless.
             return None
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -100,9 +100,9 @@ def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
 def _warn_config_parse_failure(
     config_path: Path, exc: Exception, *, fallback: str = "defaults"
 ) -> None:
-    """Surface a config.yaml parse failure to user, log, and stderr.
+    """Surface a config.toml parse failure to user, log, and stderr.
 
-    A YAML parse error in ``~/.son-of-anton/config.yaml`` causes ``load_config()``
+    A TOML parse error in ``~/.son-of-anton/config.toml`` causes ``load_config()``
     to silently fall back to ``DEFAULT_CONFIG``, which means every user
     override (auxiliary providers, fallback chain, model overrides, etc.)
     is dropped. Before this helper that was a one-line ``print(...)`` that
@@ -114,7 +114,7 @@ def _warn_config_parse_failure(
     mtime/size), so users editing the config see the next failure. On the
     first warning for a given broken file we also snapshot it to a
     timestamped ``.bak`` (best-effort) so the user's recoverable content
-    survives any later rewrite of ``config.yaml`` by the setup wizard or
+    survives any later rewrite of ``config.toml`` by the setup wizard or
     ``son-of-anton config set``.
 
     ``fallback`` selects the message wording: ``"defaults"`` (fresh process,
@@ -137,14 +137,14 @@ def _warn_config_parse_failure(
         msg = (
             f"Failed to parse {config_path}: {exc}. "
             f"Keeping the previously loaded config for this process — "
-            f"edits to config.yaml are being IGNORED until the YAML is fixed."
+            f"edits to config.toml are being IGNORED until the TOML is fixed."
         )
     else:
         msg = (
             f"Failed to parse {config_path}: {exc}. "
             f"Falling back to default config — every user override "
             f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
-            f"Fix the YAML and restart."
+            f"Fix the TOML and restart."
         )
     if backup_path is not None:
         msg += f" A copy of the corrupted file was saved to {backup_path}."
@@ -183,7 +183,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # * ``SON_OF_ANTON_HOME`` / ``SON_OF_ANTON_PROFILE`` / ``SON_OF_ANTON_CONFIG`` /
 #   ``SON_OF_ANTON_ENV`` — Son of Anton runtime location flags. Writing these into
 #   ``.env`` would relocate state in ways the user did not request from
-#   the env writer. ``config.yaml`` is the supported surface for these.
+#   the env writer. ``config.toml`` is the supported surface for these.
 #
 # IMPORTANT: ``SON_OF_ANTON_*`` overall is NOT blocked. Many legitimate
 # integration credentials follow that prefix (SON_OF_ANTON_LANGFUSE_PUBLIC_KEY,
@@ -235,14 +235,14 @@ def _reject_denylisted_env_var(key: str) -> None:
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # (path, mtime_ns, size) -> cached expanded config dict.
 # load_config() returns a deepcopy of the cached value when the file
-# hasn't changed since the last load, skipping yaml.safe_load +
+# hasn't changed since the last load, skipping the TOML parse +
 # _deep_merge + _normalize_* + _expand_env_vars (~13 ms/call).
-# save_config() + migrate_config() write via atomic_yaml_write which
+# save_config() + migrate_config() write via atomic_toml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
 # Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
 # merged_value, env_ref_snapshot) — the managed-file signature is folded in so
-# editing the managed-scope config.yaml invalidates the cache (see
+# editing the managed-scope config.toml invalidates the cache (see
 # managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
 # changes value (late .env load, in-process rotation — #58514).
 _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
@@ -270,7 +270,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     # SON_OF_ANTON_TOOL_PROGRESS_MODE is deprecated (replaced by display.tool_progress
-    # in config.yaml) but STILL READ at runtime by the gateway as a back-compat
+    # in config.toml) but STILL READ at runtime by the gateway as a back-compat
     # fallback, so it must stay known to reload/compat paths. The boolean
     # SON_OF_ANTON_TOOL_PROGRESS variant is fully unsupported since the v12 config
     # support floor retired its only consumer (the v3→4 migration): it is no
@@ -298,7 +298,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "COPILOT_CLI_PATH",
     "COPILOT_ACP_BASE_URL",
 })
-import yaml
 
 from son_of_anton_cli.colors import Colors, color
 from son_of_anton_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
@@ -552,11 +551,11 @@ def managed_error(action: str = "modify configuration"):
 
 # Re-export from son_of_anton_constants — canonical definition lives there.
 from son_of_anton_constants import get_son_of_anton_home, get_process_son_of_anton_home  # noqa: F811,E402
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, dump_toml, fast_toml_load
 
 def get_config_path() -> Path:
     """Get the main config file path."""
-    return get_son_of_anton_home() / "config.yaml"
+    return get_son_of_anton_home() / "config.toml"
 
 def get_env_path() -> Path:
     """Get the .env file path (for API keys)."""
@@ -824,7 +823,7 @@ def clear_model_endpoint_credentials(
     ``model.api_key`` is valid only for explicit custom endpoint assignments.
     Built-in providers resolve credentials from env vars, auth.json, or the
     credential pool. When switching away from a custom endpoint, leaving these
-    fields behind keeps secrets in config.yaml and can contaminate later custom
+    fields behind keeps secrets in config.toml and can contaminate later custom
     resolution paths.
     """
     if not isinstance(model_cfg, dict):
@@ -953,8 +952,10 @@ def _format_config_get_value(value, *, as_json: bool) -> str:
         return "true" if value else "false"
     if value is None:
         return "null"
-    if isinstance(value, (dict, list)):
-        return yaml.safe_dump(value, sort_keys=False).rstrip()
+    if isinstance(value, dict):
+        return dump_toml(value).rstrip()
+    if isinstance(value, list):
+        return json.dumps(value, ensure_ascii=False)
     return str(value)
 
 
@@ -987,11 +988,11 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
 
 
 def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
-    """Return skill-declared config vars that are missing or empty in config.yaml.
+    """Return skill-declared config vars that are missing or empty in config.toml.
 
     Scans all enabled skills for ``metadata.son-of-anton.config`` entries, then checks
     which ones are absent or empty under ``skills.config.<key>`` in the user's
-    config.yaml.  Returns a list of dicts suitable for prompting.
+    config.toml.  Returns a list of dicts suitable for prompting.
     """
     try:
         from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
@@ -1097,7 +1098,7 @@ def _normalize_custom_provider_entry(
     # providers_dict_to_custom_providers) pass live sub-dicts from
     # load_config_readonly()'s shared cache, and mutating those both
     # violates the cache's no-mutation contract and leaks duplicated
-    # alias keys back into config.yaml through any later
+    # alias keys back into config.toml through any later
     # save_config(load_config()) round-trip.
     entry = dict(entry)
 
@@ -1359,7 +1360,7 @@ def get_compatible_custom_providers(
     ``custom_providers`` remains the on-disk legacy format, while ``providers``
     is the newer keyed schema.  Runtime and picker flows still need a single
     list-shaped view, but we should not materialise that compatibility layer
-    back into config.yaml because it duplicates entries in UIs.
+    back into config.toml because it duplicates entries in UIs.
     """
     if config is None:
         config = load_config()
@@ -1747,7 +1748,7 @@ def _coerce_config_version(value: Any) -> int:
 
 
 def _raw_config_has_explicit_version() -> bool:
-    """True when config.yaml exists, parses, and carries a ``_config_version`` key.
+    """True when config.toml exists, parses, and carries a ``_config_version`` key.
 
     Distinguishes an ANCIENT config (explicit old version → refused by the
     v12 support floor) from a fresh minimal/hand-written/cloned config with
@@ -1759,7 +1760,7 @@ def _raw_config_has_explicit_version() -> bool:
         return False
     try:
         with open(config_path, encoding="utf-8") as f:
-            raw = fast_safe_load(f) or {}
+            raw = fast_toml_load(f) or {}
     except Exception:
         return False
     return isinstance(raw, dict) and "_config_version" in raw
@@ -1784,9 +1785,9 @@ def check_config_version() -> Tuple[int, int]:
 
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = fast_safe_load(f) or {}
+            config = fast_toml_load(f) or {}
     except Exception as e:
-        # Invalid YAML needs a parse warning, not an automatic schema rewrite
+        # Invalid TOML needs a parse warning, not an automatic schema rewrite
         # that could replace the user's broken file with defaults.
         _warn_config_parse_failure(config_path, e)
         return latest, latest
@@ -1801,7 +1802,7 @@ def check_config_version() -> Tuple[int, int]:
 # Config structure validation
 # =============================================================================
 
-# Fields that are valid at root level of config.yaml.
+# Fields that are valid at root level of config.toml.
 # DEFAULT_CONFIG is the single source of truth for documented roots; keep this
 # set derived so new defaults (skills, security, browser, …) are accepted
 # automatically. A few optional/legacy roots are valid on disk but intentionally
@@ -1810,7 +1811,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "custom_providers",  # legacy list form; modern equivalent is providers: {}
     "fallback_model",    # optional single dict or chain list; omitted when disabled
     "mcp_servers",       # MCP server definitions written by setup/tools flows
-    # Roots read from the raw user YAML (or written by our own flows) that are
+    # Roots read from the raw user TOML (or written by our own flows) that are
     # intentionally absent from DEFAULT_CONFIG:
     "plugins",           # plugin enable/disable lists (son_of_anton_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (son_of_anton_cli/setup.py)
@@ -1855,9 +1856,9 @@ class ConfigIssue:
 
 
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
-    """Validate config.yaml structure and return a list of detected issues.
+    """Validate config.toml structure and return a list of detected issues.
 
-    Catches common YAML formatting mistakes that produce confusing runtime
+    Catches common TOML formatting mistakes that produce confusing runtime
     errors (like "Unknown provider") instead of clear diagnostics.
 
     Can be called with a pre-loaded config dict, or will load from disk.
@@ -1866,7 +1867,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
         try:
             config = load_config()
         except Exception:
-            return [ConfigIssue("error", "Could not load config.yaml", "Run 'son-of-anton setup' to create a valid config")]
+            return [ConfigIssue("error", "Could not load config.toml", "Run 'son-of-anton setup' to create a valid config")]
 
     issues: List[ConfigIssue] = []
 
@@ -1953,7 +1954,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
         issues.append(ConfigIssue(
             "error",
             "fallback_model appears inside custom_providers instead of at root level",
-            "Move fallback_model to the top level of config.yaml (no indentation)",
+            "Move fallback_model to the top level of config.toml (no indentation)",
         ))
 
     # ── model section: should exist when custom_providers is configured ──
@@ -1973,7 +1974,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     # Only provider-like fields (base_url, api_key, …) are flagged. Arbitrary
     # unknown top-level keys are deliberately NOT warned about: top-level
     # scalars are bridged into os.environ (gateway/run.py, son-of-anton send) so
-    # users can feed skills and external apps env-style keys from config.yaml
+    # users can feed skills and external apps env-style keys from config.toml
     # — a closed-world allowlist can never enumerate those.
     for key in config:
         if key.startswith("_"):
@@ -2002,7 +2003,7 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     if not issues:
         return
 
-    lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
+    lines = ["\033[33m⚠ Config issues detected in config.toml:\033[0m"]
     for ci in issues:
         marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
         lines.append(f"  {marker} {ci.message}")
@@ -2011,10 +2012,10 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
 
 
 def warn_deprecated_cwd_env_vars() -> None:
-    """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.yaml.
+    """Warn if MESSAGING_CWD or TERMINAL_CWD is set in .env instead of config.toml.
 
     These env vars are deprecated — the canonical setting is terminal.cwd
-    in config.yaml.  Read the file rather than ``os.environ`` because runtime
+    in config.toml.  Read the file rather than ``os.environ`` because runtime
     config bridges and session restoration legitimately set ``TERMINAL_CWD``.
     Prints a migration hint to stderr.
     """
@@ -2043,7 +2044,7 @@ def warn_deprecated_cwd_env_vars() -> None:
         hint_path = display_son_of_anton_home()
         lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
         lines.append(
-            "  \033[2mMove to config.yaml instead:  "
+            "  \033[2mMove to config.toml instead:  "
             "terminal:\\n    cwd: /your/project/path\033[0m"
         )
         lines.append(
@@ -2299,7 +2300,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         _persist_migration(config)
 
     # ── Skill-declared config vars ──────────────────────────────────────
-    # Skills can declare config.yaml settings they need via
+    # Skills can declare config.toml settings they need via
     # metadata.son-of-anton.config in their SKILL.md frontmatter.
     # Prompt for any that are missing/empty.
     missing_skill_config = get_missing_skill_config_vars()
@@ -2370,8 +2371,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
     recurses, so a user who overrides only one nested subkey will keep the
     sibling defaults intact.
 
-    An empty section key in config.yaml (``terminal:`` with no value) parses
-    as YAML ``None``; treating that as an override would replace the entire
+    An empty section key in config.toml (``terminal:`` with no value) parses
+    as TOML ``None``; treating that as an override would replace the entire
     default dict with ``None`` and crash every downstream consumer that
     expects a mapping (#58277). A ``None`` override of a dict default is
     ignored — same as the key being absent.
@@ -2423,7 +2424,7 @@ def _env_expand_match(m: re.Match) -> str:
     * ``${VAR}`` — legacy bare name, resolved via ``os.environ``.
     * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
       ``env:`` prefix is stripped.  Before this, the prefixed form worked in
-      MCP config but stayed a literal string in config.yaml — a confusing
+      MCP config but stayed a literal string in config.toml — a confusing
       half-support.
 
     Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``, ...)
@@ -2453,7 +2454,7 @@ def _env_expand_match(m: re.Match) -> str:
         # "bitwarden:FOO".
         logger.warning(
             "Config ref %r uses source %r which is not resolvable in "
-            "config.yaml — external secret sources inject env vars at "
+            "config.toml — external secret sources inject env vars at "
             "startup, so reference the variable as ${env:NAME} instead",
             raw, inner.split(":", 1)[0],
         )
@@ -2543,7 +2544,7 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     ``load_config()`` expands env refs for runtime use. When a caller later
     persists that config after modifying some unrelated setting, keep the
     original on-disk template instead of writing the expanded plaintext
-    secret back to ``config.yaml``.
+    secret back to ``config.toml``.
 
     Prefer preserving the raw template when ``current`` still matches either
     the value previously returned by ``load_config()`` for this config path or
@@ -2639,7 +2640,7 @@ def _strip_default_values(
     survive a ``save_config`` round-trip.
 
     Nested dicts whose every child is stripped are removed entirely so
-    default-only subtrees (e.g. ``gateway``) never bloat ``config.yaml``
+    default-only subtrees (e.g. ``gateway``) never bloat ``config.toml``
     when the user has nothing to say about them.
     """
     preserve_keys = {("_config_version",)} | set(preserve_keys or ())
@@ -2722,7 +2723,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     backends) — while display paths (``son-of-anton status``/``dump``) read ``name``
     and *showed* the model, making the failure silent. Normalizing here (the
     single load/save chokepoint) means every reader, present and future, sees a
-    populated ``default`` and the stale alias is migrated out of config.yaml on
+    populated ``default`` and the stale alias is migrated out of config.toml on
     the next save. Precedence: ``default`` > ``model`` > ``name`` (never
     overrides an explicit ``default``, so existing configs are unaffected).
     """
@@ -2744,7 +2745,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     # A model dict needs canonicalization if its id lives under a non-canonical
     # key (``model``/``name``) — either because ``default`` is empty (we must
     # promote the alias) or because ``default`` is set but a stale alias still
-    # lingers (we must drop it so config.yaml ends up canonical).
+    # lingers (we must drop it so config.toml ends up canonical).
     model_needs_canon = isinstance(model_in, dict) and (
         model_in.get("model") or model_in.get("name")
     )
@@ -2801,7 +2802,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         if alias:
             model["default"] = alias
     if model.get("default"):
-        # Drop the now-redundant aliases so config.yaml ends up canonical.
+        # Drop the now-redundant aliases so config.toml ends up canonical.
         model.pop("model", None)
         model.pop("name", None)
 
@@ -2814,7 +2815,7 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     Only injects the schema default when the user actually set max_turns
     somewhere (root level or under ``agent``).  A bare ``load_config()``
     call that passes the result straight to ``save_config()`` should not
-    materialise ``agent.max_turns`` in config.yaml when the user never set
+    materialise ``agent.max_turns`` in config.toml when the user never set
     it — that makes the default sticky and blocks future schema changes.
     """
     config = dict(config)
@@ -2858,7 +2859,7 @@ def is_provider_enabled(provider_cfg: Optional[Dict[str, Any]]) -> bool:
     flag = provider_cfg.get("enabled", True)
     if isinstance(flag, bool):
         return flag
-    # YAML can produce strings for "true"/"false" depending on quoting.
+    # TOML can produce strings for "true"/"false" depending on quoting.
     if isinstance(flag, str):
         return flag.strip().lower() not in {"false", "0", "no", "off"}
     return bool(flag)
@@ -2894,7 +2895,7 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
       - ``"none"`` / ``"null"`` / ``"unlimited"`` / ``"infinite"`` /
         ``"infinity"`` / ``"inf"`` / ``"∞"`` / ``"-1"`` / ``"0"``
         (case-insensitive, whitespace-tolerant) → :data:`TURN_LIMIT_UNLIMITED`.
-      - YAML ``None`` / ``null`` / absent value → ``default`` (which is itself
+      - TOML ``None`` / ``null`` / absent value → ``default`` (which is itself
         :data:`TURN_LIMIT_UNLIMITED` — max_turns is unlimited by default).
       - Anything unparseable → ``default`` (with a debug log).
 
@@ -2904,7 +2905,7 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
 
     This is the single normalization point for the turn-limit value type.
     Config-reading sites (cli.py, gateway/run.py, cron/scheduler.py) call this
-    instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.yaml
+    instead of bare ``int(...)``, so ``agent.max_turns: none`` in config.toml
     becomes a first-class supported spelling of "unlimited". max_turns is
     unlimited unless the user sets an explicit positive integer cap.
     """
@@ -2955,7 +2956,7 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
       3. ``cfg is None`` (callers sometimes pass ``load_config() or None``).
 
     Named ``cfg_get`` rather than ``cfg_path`` to avoid shadowing the
-    ubiquitous ``cfg_path = _son_of_anton_home / "config.yaml"`` local variable
+    ubiquitous ``cfg_path = _son_of_anton_home / "config.toml"`` local variable
     that appears in gateway/run.py, cron/scheduler.py, main.py, etc.
 
     Explicit ``None`` values are returned as-is (matches ``dict.get(key,
@@ -2992,7 +2993,7 @@ from son_of_anton_cli.personality import NEUTRAL_PERSONALITY_NAMES as _NEUTRAL_P
 
 
 def _prompt_text(value: Any) -> str:
-    """Normalize config prompt values from YAML before handing them to AIAgent.
+    """Normalize config prompt values from TOML before handing them to AIAgent.
 
     Delegates to :mod:`son_of_anton_cli.personality` — the single owner of
     personality/overlay semantics. Kept as a re-export for existing importers.
@@ -3010,7 +3011,7 @@ def render_personality_prompt(value: Any) -> str:
 
 
 def resolve_ephemeral_system_prompt_from_config(cfg: Optional[Dict[str, Any]]) -> str:
-    """Resolve the session overlay from config.yaml.
+    """Resolve the session overlay from config.toml.
 
     ``display.personality`` is the selected named personality and wins when set.
     Otherwise fall back to the user-owned ``agent.system_prompt``. Callers should
@@ -3024,9 +3025,9 @@ def resolve_ephemeral_system_prompt_from_config(cfg: Optional[Dict[str, Any]]) -
 
 
 def read_raw_config() -> Dict[str, Any]:
-    """Read ~/.son-of-anton/config.yaml as-is, without merging defaults or migrating.
+    """Read ~/.son-of-anton/config.toml as-is, without merging defaults or migrating.
 
-    Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
+    Returns the raw TOML dict, or ``{}`` if the file doesn't exist or can't
     be parsed.  Use this for lightweight config reads where you just need a
     single value and don't want the overhead of ``load_config()``'s deep-merge
     + migration pipeline.
@@ -3050,7 +3051,7 @@ def read_raw_config() -> Dict[str, Any]:
 
         try:
             with open(config_path, encoding="utf-8") as f:
-                data = fast_safe_load(f) or {}
+                data = fast_toml_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
@@ -3062,7 +3063,7 @@ def read_raw_config() -> Dict[str, Any]:
 
 
 def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Read a user ``config.yaml`` EXACTLY as written on disk.
+    """Read a user ``config.toml`` EXACTLY as written on disk.
 
     No DEFAULT_CONFIG merge, no managed-scope overlay, no ``${ENV_VAR}``
     expansion, no migration, no root-model normalization, no caching.
@@ -3086,15 +3087,15 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
         ``managed_scope.apply_managed_overlay`` + ``_expand_env_vars``
         inline, which they do.
 
-    Semantics (deliberately mirrors the bare ``open()+yaml.safe_load()``
+    Semantics (deliberately mirrors the bare ``open()+TOML parse``
     pattern this replaces, so migrated sites keep their exact failure
     behavior):
 
       * missing file → ``{}``
-      * unparseable YAML / other I/O errors → raises (callers that want
+      * unparseable TOML / other I/O errors → raises (callers that want
         fail-open already wrap in try/except; callers with last-known-good
         or warn semantics rely on the exception)
-      * non-dict YAML root → ``{}``
+      * non-dict TOML root → ``{}``
 
     ``config_path`` defaults to :func:`get_config_path` (profile-aware).
     Pass an explicit path when the caller resolves its own home (gateway
@@ -3104,7 +3105,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
         config_path = get_config_path()
     try:
         with open(config_path, encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+            data = fast_toml_load(f) or {}
     except FileNotFoundError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -3123,7 +3124,7 @@ def read_raw_config_readonly() -> Dict[str, Any]:
     was paying a full config deepcopy each time.
 
     Same (mtime_ns, size) freshness key as ``read_raw_config()`` — an edited
-    config.yaml is picked up on the next call.
+    config.toml is picked up on the next call.
     """
     with _CONFIG_LOCK:
         try:
@@ -3140,7 +3141,7 @@ def read_raw_config_readonly() -> Dict[str, Any]:
 
         try:
             with open(config_path, encoding="utf-8") as f:
-                data = fast_safe_load(f) or {}
+                data = fast_toml_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
@@ -3156,7 +3157,7 @@ def read_raw_config_readonly() -> Dict[str, Any]:
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
-    """Refuse to replace an existing config.yaml that cannot be read."""
+    """Refuse to replace an existing config.toml that cannot be read."""
     if config_path is None:
         config_path = get_config_path()
     try:
@@ -3165,7 +3166,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         return
     except OSError as exc:
         raise RuntimeError(
-            f"Refusing to overwrite {config_path}: existing config.yaml cannot be accessed "
+            f"Refusing to overwrite {config_path}: existing config.toml cannot be accessed "
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
 
@@ -3174,18 +3175,18 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             f.read(1)
     except OSError as exc:
         raise RuntimeError(
-            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
+            f"Refusing to overwrite {config_path}: existing config.toml cannot be read "
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
 
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
-    """Fail-closed atomic write for ``config.yaml``.
+    """Fail-closed atomic write for ``config.toml``.
 
     The single chokepoint every config-update path should use instead of
     calling :func:`utils.atomic_yaml_write` directly. It runs
     :func:`require_readable_config_before_write` first, so a full-file
-    replacement can never silently clobber an existing ``config.yaml`` that
+    replacement can never silently clobber an existing ``config.toml`` that
     degraded to an empty dict on read (permission error, broken mount,
     transient I/O). New-file creation still works when the path is absent.
 
@@ -3196,17 +3197,17 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     write through this helper enforces the invariant in one place rather than
     relying on each of ~15 independent write sites to remember the guard.
 
-    ``kwargs`` are forwarded verbatim to ``atomic_yaml_write``
+    ``kwargs`` are forwarded verbatim to ``atomic_toml_write``
     (``sort_keys``, ``default_flow_style``, ``extra_content``, ...).
     """
-    from utils import atomic_yaml_write
+    from utils import atomic_toml_write
 
     require_readable_config_before_write(config_path)
-    atomic_yaml_write(config_path, data, **kwargs)
+    atomic_toml_write(config_path, data, **kwargs)
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from ~/.son-of-anton/config.yaml.
+    """Load configuration from ~/.son-of-anton/config.toml.
 
     Cached on the config file's (mtime_ns, size). Returns a deepcopy of
     the cached value when unchanged, since most call sites mutate the
@@ -3346,7 +3347,7 @@ def apply_terminal_config_to_env(
         return target
 
     # A caller-supplied config is its own source of explicit keys.  For the
-    # normal merged-config path, only keys present in raw config.yaml may
+    # normal merged-config path, only keys present in raw config.toml may
     # override existing env values; keys inherited from DEFAULT_CONFIG are
     # backfill-only.
     explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
@@ -3364,7 +3365,7 @@ def apply_terminal_config_to_env(
     # launch dir (os.getcwd()), matching cli.py's bridge and the documented
     # CLI behavior. A configured terminal.cwd is a gateway/daemon concept
     # (messaging mode) and must NOT redirect interactive sessions or their
-    # children into it — otherwise a home-manager-written config.yaml pins
+    # children into it — otherwise a home-manager-written config.toml pins
     # every local TUI/CLI to the account's home regardless of spawn dir.
     local_backend = (str(terminal_backend or "").strip().lower() in {"", "local"})
 
@@ -3400,12 +3401,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             user_sig = None
 
         # Managed scope: fold the managed config file's (mtime, size) into the
-        # cache signature so editing /etc/son-of-anton/config.yaml invalidates the
+        # cache signature so editing /etc/son-of-anton/config.toml invalidates the
         # cached merged result. (0, 0) means "no managed config file".
         from son_of_anton_cli import managed_scope
 
         managed_dir = managed_scope.get_managed_dir()
-        managed_cfg_path = (managed_dir / "config.yaml") if managed_dir else None
+        managed_cfg_path = (managed_dir / "config.toml") if managed_dir else None
         try:
             mst = managed_cfg_path.stat() if managed_cfg_path else None
             managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
@@ -3442,7 +3443,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         if user_sig is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+                    user_config = fast_toml_load(f) or {}
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -3459,8 +3460,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 # one). Falling through to DEFAULT_CONFIG here drops EVERY user
                 # override — including security-critical ``approvals.deny``
                 # rules, which are supposed to block commands even under yolo.
-                # A long-running gateway whose user mid-edits config.yaml into
-                # broken YAML would silently lose those rules on the next load.
+                # A long-running gateway whose user mid-edits config.toml into
+                # broken TOML would silently lose those rules on the next load.
                 # Within a running process we still have the last successfully
                 # loaded config — keep serving it until the file is fixed.
                 # Fresh processes with no last-known-good keep the existing
@@ -3627,18 +3628,18 @@ def save_config(
     preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
     merge_existing: bool = False,
 ):
-    """Save configuration to ~/.son-of-anton/config.yaml.\n
+    """Save configuration to ~/.son-of-anton/config.toml.\n
 
     Default values from ``DEFAULT_CONFIG`` are not written to disk unless
     the user explicitly set them (i.e. the path exists in the raw config
-    before any normalisation).  This prevents config.yaml from being
+    before any normalisation).  This prevents config.toml from being
     contaminated with schema defaults on every save, which makes future
     default changes invisible to users.
 
     When ``merge_existing`` is True, the on-disk raw config is deep-merged
     under *config* before writing so partial callers (migration steps via
     ``_persist_migration``) cannot drop unrelated sections the caller omitted.
-    Full-document replacement callers (raw YAML editor, callers that
+    Full-document replacement callers (raw TOML editor, callers that
     already deep-merge) must leave this False so intentional deletions survive.
     """
     with _CONFIG_LOCK:
@@ -3661,7 +3662,7 @@ def save_config(
                     f"(managed by your administrator): {', '.join(sorted(_stripped))}",
                     file=sys.stderr,
                 )
-        from utils import atomic_yaml_write
+        from utils import atomic_toml_write
 
         ensure_son_of_anton_home()
         config_path = get_config_path()
@@ -3726,7 +3727,7 @@ def save_config(
         if not fb_is_valid:
             parts.append(_FALLBACK_COMMENT)
 
-        atomic_yaml_write(
+        atomic_toml_write(
             config_path,
             normalized,
             extra_content="".join(parts) if parts else None,
@@ -4186,7 +4187,7 @@ def save_anthropic_api_key(value: str, save_fn=None):
 
 def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
     # Route through the unified credential lifecycle so a rotation via the
-    # secret-capture path also refreshes any config.yaml mirror of the old
+    # secret-capture path also refreshes any config.toml mirror of the old
     # value and lifts a prior env-source suppression (#62269 fix family).
     from son_of_anton_cli.credential_lifecycle import save_provider_env_credential
 
@@ -4352,7 +4353,7 @@ def show_config():
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
     # Managed scope: surface that some settings are administrator-pinned so the
-    # user understands why their config.yaml value may not be the effective one.
+    # user understands why their config.toml value may not be the effective one.
     from son_of_anton_cli import managed_scope
 
     _managed_keys = managed_scope.managed_config_keys()
@@ -4411,7 +4412,7 @@ def show_config():
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
     print(f"  Max turns:    {_cfg_max_turns}")
     # Warn on stale SON_OF_ANTON_MAX_ITERATIONS ghost in .env that disagrees with
-    # config.yaml (issue #17534). Read the .env FILE directly so we catch the
+    # config.toml (issue #17534). Read the .env FILE directly so we catch the
     # ghost even when the gateway bridge already overrode os.environ.
     try:
         _env_ghost = load_env().get("SON_OF_ANTON_MAX_ITERATIONS")
@@ -4595,7 +4596,7 @@ def cron_model_drift_guard_enabled(
 ) -> bool:
     """Return whether cron must fail closed on unpinned inference drift.
 
-    Only the literal YAML boolean ``false`` disables this spend-safety guard.
+    Only the literal TOML boolean ``false`` disables this spend-safety guard.
     Missing, malformed, or non-boolean values stay fail-closed. When *config*
     is omitted, load the active merged configuration so CLI warnings honor the
     same user/managed setting as the scheduler.
@@ -4977,7 +4978,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     # ── Underscore-prefixed keys are internal/test markers ───────────
     # A leading underscore on the top-level segment (e.g. ``_test.shim_marker``)
     # signals an intentionally non-schema, internal key. Test harnesses and
-    # tooling use these to write a deterministic marker into config.yaml
+    # tooling use these to write a deterministic marker into config.toml
     # without polluting the user-facing schema (a shim test writes
     # ``_test.shim_marker`` to probe file ownership).
     # Python's own convention treats a leading underscore as "private"; we
@@ -5047,16 +5048,17 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
 
 
 def _looks_structured_value(value: str) -> bool:
-    """Return True when *value* plausibly encodes a YAML/JSON list or mapping.
+    """Return True when *value* plausibly encodes a TOML/JSON list or mapping.
 
     Used by :func:`set_config_value` to decide whether to attempt a
-    ``yaml.safe_load`` structured parse. Deliberately conservative so plain
+    structured TOML parse. Deliberately conservative so plain
     scalars are never mangled:
 
-    - Flow style: the value starts with ``[`` or ``{`` (JSON is a YAML
-      subset, so both ``'["a","b"]'`` and ``'{a: 1}'`` qualify).
+    - Flow style: the value starts with ``[`` or ``{`` (JSON is close enough
+      to TOML inline syntax that both ``'["a","b"]'`` and ``'{a = 1}'``
+      qualify).
     - Block style: the value spans multiple lines AND at least one line is
-      shaped like a YAML sequence item (``- item``) or mapping entry
+      shaped like a TOML sequence item (``- item``) or mapping entry
       (``key: value``).
 
     A bare leading ``-`` is NOT a trigger on its own: ``-5``, ``--flag`` and
@@ -5101,7 +5103,7 @@ def _coerce_float(value: str):
     except (TypeError, ValueError):
         return None
     # Reject NaN/inf spellings — they are almost never intended config values
-    # and round-trip confusingly through YAML.
+    # and round-trip confusingly through TOML.
     if f != f or f in (float("inf"), float("-inf")):
         return None
     return f
@@ -5143,12 +5145,12 @@ def set_config_value(key: str, value: str, force: bool = False):
     # the user — the next load would override it anyway. Hard-reject and name the
     # source. Distinct from is_managed() above (the package-manager write-lock).
     # Env-shaped keys (API keys / tokens) route to save_env_value below, which has
-    # its own managed-env-key guard; this catches the config.yaml keys.
+    # its own managed-env-key guard; this catches the config.toml keys.
     from son_of_anton_cli import managed_scope
 
     if managed_scope.is_key_managed(key):
         managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+        src = (managed_dir / "config.toml") if managed_dir else "the managed scope"
         print(
             f"Cannot set '{key}': it is managed by your administrator ({src}) "
             f"and cannot be changed. Contact your administrator to modify it.",
@@ -5157,7 +5159,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         sys.exit(1)
     # Check if it's an API key (goes to .env)
     if _is_env_config_key(key):
-        # Unified lifecycle: also rotates any config.yaml mirror of the old
+        # Unified lifecycle: also rotates any config.toml mirror of the old
         # value so a stale higher-precedence copy can't win (#62269).
         from son_of_anton_cli.credential_lifecycle import save_provider_env_credential
 
@@ -5174,7 +5176,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # "did you mean" hint, without blocking legitimate unknown keys.
     is_known, suggestion = _validate_config_key(key)
 
-    # Otherwise it goes to config.yaml
+    # Otherwise it goes to config.toml
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
     config_path = get_config_path()
@@ -5183,11 +5185,11 @@ def set_config_value(key: str, value: str, force: bool = False):
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
+                user_config = fast_toml_load(f) or {}
         except Exception as exc:
             print(
                 f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
+                f"  The file contains a TOML syntax error. Fix the error\n"
                 f"  in your config file first, then retry.\n"
                 f"  (son-of-anton config edit will open it in your editor.)",
                 file=sys.stderr,
@@ -5200,7 +5202,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # inline navigation here silently overwrote lists with dicts.
 
     # Preserve values for string-typed settings.  In particular, enum members
-    # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
+    # such as approvals.mode="off" must not become TOML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
     if not isinstance(_default_value_for_key(key), str):
@@ -5211,7 +5213,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         elif _lower in {'false', 'no', 'off'}:
             coerced_value = False
         elif _lower in {'null', 'none', '~'}:
-            # YAML null / "off" state. Many DEFAULT_CONFIG leaves default to
+            # TOML null / "off" state. Many DEFAULT_CONFIG leaves default to
             # None and are documented as "null/absent = off"; without this,
             # ``config set X null`` stored the truthy string "null" and the
             # feature could never be cleared via set (CFG-05).
@@ -5226,7 +5228,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         elif _looks_structured_value(value):
             # List/mapping literals -- e.g.
             #   son-of-anton config set platform_toolsets.line '["file","web"]'
-            # or a multi-line YAML block:
+            # or a multi-line TOML block:
             #   son-of-anton config set custom_providers '- name: foo
             #     base_url: https://...'
             # Without this, such values were stored as a raw STRING, and every
@@ -5237,9 +5239,13 @@ def set_config_value(key: str, value: str, force: bool = False):
             # setting whose value merely starts with '[' or '{' is left intact
             # (preserves the guard added in e4ea0a0ed).  The trigger is
             # deliberately conservative (see _looks_structured_value): plain
-            # scalars like '-5' or '--flag' never reach the YAML parser.
+            # scalars like '-5' or '--flag' never reach the TOML parser.
             try:
-                parsed = yaml.safe_load(value)
+                # Parse the CLI token as a TOML value expression so arrays and
+                # inline tables keep working after the YAML removal.
+                import tomllib
+
+                parsed = tomllib.loads("value = " + value).get("value")
                 if isinstance(parsed, (list, dict)):
                     coerced_value = parsed
                 else:
@@ -5248,11 +5254,11 @@ def set_config_value(key: str, value: str, force: bool = False):
                         f"parsed as {type(parsed).__name__}; storing as string.",
                         file=sys.stderr,
                     )
-            except yaml.YAMLError:
+            except Exception:
                 print(
                     f"Warning: value for '{key}' looks like a list/mapping but is "
-                    f"not valid YAML/JSON; storing as string. Most isinstance-gated "
-                    f"readers will ignore a string here.",
+                    f"not a valid TOML value expression; storing as string. Most "
+                    f"isinstance-gated readers will ignore a string here.",
                     file=sys.stderr,
                 )
 
@@ -5336,11 +5342,11 @@ def set_config_value(key: str, value: str, force: bool = False):
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_son_of_anton_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    from utils import atomic_toml_write
+    atomic_toml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
-    # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
+    # config.toml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     env_var = terminal_config_env_var_for_key(key)
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
@@ -5352,14 +5358,14 @@ def set_config_value(key: str, value: str, force: bool = False):
     # their signature.
     if key == "display.skin" and isinstance(value, str) and value:
         try:
-            skin_file = get_son_of_anton_home() / "skins" / f"{value}.yaml"
+            skin_file = get_son_of_anton_home() / "skins" / f"{value}.toml"
             if skin_file.exists():
                 skin_file.touch()
         except Exception:
             pass  # best-effort: the config write above already succeeded
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped
-    # — e.g. `son-of-anton config set model.api_key cfut_...` routes to config.yaml
+    # — e.g. `son-of-anton config set model.api_key cfut_...` routes to config.toml
     # (lowercase, so it misses the .env api_keys list above) and would otherwise
     # print the raw secret to the terminal.
     _leaf_key = key.rsplit(".", 1)[-1].lower()
@@ -5415,7 +5421,7 @@ def unset_config_value(key: str):
 
     if managed_scope.is_key_managed(key):
         managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+        src = (managed_dir / "config.toml") if managed_dir else "the managed scope"
         print(
             f"Cannot unset '{key}': it is managed by your administrator ({src}) "
             f"and cannot be changed. Contact your administrator to modify it.",
@@ -5441,11 +5447,11 @@ def unset_config_value(key: str):
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
+                user_config = fast_toml_load(f) or {}
         except Exception as exc:
             print(
                 f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
+                f"  The file contains a TOML syntax error. Fix the error\n"
                 f"  in your config file first, then retry.\n"
                 f"  (son-of-anton config edit will open it in your editor.)",
                 file=sys.stderr,
@@ -5464,8 +5470,8 @@ def unset_config_value(key: str):
         sys.exit(1)
 
     ensure_son_of_anton_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    from utils import atomic_toml_write
+    atomic_toml_write(config_path, user_config, sort_keys=False)
     print(f"✓ Unset {key} from {config_path}")
 
 
@@ -5683,7 +5689,7 @@ _inject_profile_env_vars()
 
 
 # ── Platform-plugin env var injection ────────────────────────────────────────
-# Bundled platform plugins under ``plugins/platforms/*/plugin.yaml`` declare
+# Bundled platform plugins under ``plugins/platforms/*/plugin.toml`` declare
 # their required env vars via ``requires_env``.  This mirror of
 # ``_inject_profile_env_vars`` surfaces them in ``son-of-anton config`` UI so users
 # can configure plugin platforms without the core repo ever needing
@@ -5709,15 +5715,13 @@ def _inject_platform_plugin_env_vars() -> None:
     """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
 
     Called once at module load time. Idempotent — repeated calls are no-ops.
-    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+    Failures are swallowed so a malformed plugin.toml can't break CLI import.
     """
     global _platform_plugin_env_vars_injected
     if _platform_plugin_env_vars_injected:
         return
     _platform_plugin_env_vars_injected = True
     try:
-        import yaml  # type: ignore
-
         # Resolve the bundled plugins dir from this file's location so the
         # injector works regardless of CWD.
         repo_root = Path(__file__).resolve().parents[1]
@@ -5727,14 +5731,14 @@ def _inject_platform_plugin_env_vars() -> None:
         for child in platforms_dir.iterdir():
             if not child.is_dir():
                 continue
-            manifest_path = child / "plugin.yaml"
+            manifest_path = child / "plugin.toml"
             if not manifest_path.exists():
-                manifest_path = child / "plugin.yml"
+                manifest_path = child / "plugin.toml"
             if not manifest_path.exists():
                 continue
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = fast_safe_load(f) or {}
+                    manifest = fast_toml_load(f) or {}
             except Exception:
                 continue
             label = manifest.get("label") or manifest.get("name") or child.name

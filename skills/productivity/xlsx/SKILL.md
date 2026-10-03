@@ -1,15 +1,17 @@
 ---
-name: xlsx
-description: Create, read, edit Excel .xlsx workbooks and CSVs.
-version: 1.1.0
-author: Nous Research
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [excel, spreadsheet, xlsx, csv, openpyxl, productivity]
-    category: productivity
-    related_skills: [docx, pdf, powerpoint]
+name = "xlsx"
+description = "Create, read, edit Excel .xlsx workbooks and CSVs."
+version = "1.1.0"
+author = "Nous Research"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["excel", "spreadsheet", "xlsx", "csv", "openpyxl", "productivity"]
+category = "productivity"
+related_skills = ["docx", "pdf", "powerpoint"]
 ---
 
 # Xlsx Skill

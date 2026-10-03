@@ -699,38 +699,6 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
-def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
-    """In-process YAML syntax check.  Returns (ok, error_message).
-
-    Skipped gracefully if PyYAML isn't installed — YAML parsing is optional.
-
-    Deliberately a *syntax-only* scan (``yaml.parse``), not ``safe_load``:
-    loading rejects perfectly valid YAML that merely isn't a single plain
-    document — multi-document streams (``---``-separated Kubernetes
-    manifests raise ``ComposerError``) and application-defined tags
-    (CloudFormation ``!Sub``/``!Ref``, Ansible ``!vault`` raise
-    ``ConstructorError``).  Those are content conventions for whatever
-    consumes the file, not syntax errors, and this linter's verdict is
-    used as a fail-closed WRITE gate in ``write_file`` — a false positive
-    here refuses a legitimate write outright.  ``yaml.parse`` still
-    catches real scanner/parser failures (unclosed quotes, bad
-    indentation, tab-mangled block maps).
-    """
-    try:
-        import yaml as _yaml
-    except ImportError:
-        # PyYAML not available — skip silently, caller treats as no linter.
-        return True, "__SKIP__"
-    try:
-        for _event in _yaml.parse(content):
-            pass
-        return True, ""
-    except _yaml.YAMLError as e:
-        return False, f"YAMLError: {e}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"{type(e).__name__}: {e}"
-
-
 def _lint_toml_inproc(content: str) -> tuple[bool, str]:
     """In-process TOML syntax check (stdlib tomllib, Python 3.11+)."""
     import tomllib as _toml
@@ -768,14 +736,12 @@ def _lint_python_inproc(content: str) -> tuple[bool, str]:
 LINTERS_INPROC = {
     '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
-    '.yaml': _lint_yaml_inproc,
-    '.yml': _lint_yaml_inproc,
     '.toml': _lint_toml_inproc,
 }
 
 # Subset of LINTERS_INPROC that the pre-write fail-closed gate in
 # ``write_file`` (see below) refuses on, rather than merely reporting.
-# Deliberately excludes ``.py``: unlike JSON/YAML/TOML (atomic structured
+# Deliberately excludes ``.py``: unlike JSON/TOML (atomic structured
 # data blobs where "doesn't parse" always means "corrupt"), ``.py`` is
 # used throughout this codebase's own test fixtures as a generic
 # stand-in extension for arbitrary non-Python text content (e.g.
@@ -786,7 +752,7 @@ LINTERS_INPROC = {
 # established, exercised pattern as an error and break it. Python source
 # keeps the existing (unchanged) post-write lint-delta *report* — still
 # visible to the caller, just not a write-blocking refusal.
-_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
+_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.toml'})
 
 # Max limits for read operations
 MAX_LINES = 2000
@@ -819,7 +785,7 @@ def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
     cannot leak into sed ranges like ``0,-1p``.
 
     The upper bound on ``limit`` comes from ``tool_output.max_lines`` in
-    config.yaml (defaults to the module-level ``MAX_LINES`` constant).
+    config.toml (defaults to the module-level ``MAX_LINES`` constant).
     """
     from tools.tool_output_limits import get_max_lines
     max_lines = get_max_lines()
@@ -1686,7 +1652,7 @@ class ShellFileOperations(FileOperations):
                 # Exact match (shouldn't happen, but guard)
                 if lf == lower_name:
                     score = 100
-                # Same base name, different extension (e.g. config.yml vs config.yaml)
+                # Same base name, different extension (e.g. config.yml vs config.toml)
                 elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
                     score = 90
                 # Target is prefix of candidate or vice-versa
@@ -1893,7 +1859,7 @@ class ShellFileOperations(FileOperations):
 
         Before anything touches disk, a fail-closed syntax gate runs
         against the CANDIDATE content: if ``path``'s extension is in
-        ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/YAML/TOML — structured data
+        ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/TOML/TOML — structured data
         formats where a parse failure always means corruption) and the
         candidate content doesn't parse, the write is refused outright.
         No temp file, no rename, nothing on disk changes.
@@ -1958,7 +1924,7 @@ class ShellFileOperations(FileOperations):
         # writing first and reporting the damage afterward.
         #
         # Scope: only extensions in ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/
-        # YAML/TOML). ``.py`` deliberately keeps its pre-existing,
+        # TOML/TOML). ``.py`` deliberately keeps its pre-existing,
         # non-blocking lint-delta *report* instead of a hard refusal — see
         # ``_FAIL_CLOSED_INPROC_EXTS``'s docstring above for why. Extensions
         # with no in-process linter at all (including ones only covered by
@@ -2336,7 +2302,7 @@ class ShellFileOperations(FileOperations):
         """
         Run syntax check on a file after editing.
 
-        Prefers the in-process linter for structured formats (JSON, YAML,
+        Prefers the in-process linter for structured formats (JSON, TOML,
         TOML) when possible — those parse via the Python stdlib in
         microseconds and don't require a subprocess.  Falls back to the
         shell linter table for compiled/type-checked languages

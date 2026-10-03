@@ -44,8 +44,6 @@ dependencies = [
   "httpx[socks]==0.28.1",
   "rich==14.3.3",
   "tenacity==9.1.4",
-  "pyyaml==6.0.3",
-  "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
@@ -144,7 +142,7 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 # Web search backends — each only loaded when the user picks it as their
-# search provider (configured via `son-of-anton tools` or config.yaml).
+# search provider (configured via `son-of-anton tools` or config.toml).
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
@@ -306,7 +304,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "son_of_anton_cli", "son_of_anton_cli.*", "gateway", "gateway.*", "cron", "cron.*", "physics_intern", "physics_intern.*", "plugins", "plugins.*", "providers", "providers.*", "son_of_anton_tui", "son_of_anton_tui.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "son_of_anton_cli", "son_of_anton_cli.*", "gateway", "gateway.*", "cron", "cron.*", "autophysicist", "autophysicist.*", "plugins", "plugins.*", "providers", "providers.*", "son_of_anton_tui", "son_of_anton_tui.*"]
 
 [tool.setuptools.package-data]
 son_of_anton_cli = ["observability/schemas/*.json", "data/*.json"]
@@ -315,8 +313,8 @@ son_of_anton_cli = ["observability/schemas/*.json", "data/*.json"]
 # list is not a build error — it is a FileNotFoundError in a sealed install
 # only, at the moment that agent first runs. That has now happened twice.
 # tests/test_physics_package_data.py enforces the match.
-physics_intern = ["config.default.yaml", "*.yaml", "autophysicist/*.md"]
-# gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
+autophysicist = ["config.default.toml", "*.toml", "*.md"]
+# gateway/assets/ ships status_phrases.toml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram
 # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
@@ -325,7 +323,7 @@ gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml"]
+plugins = ["**/plugin.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

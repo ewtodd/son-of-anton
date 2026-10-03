@@ -1,0 +1,20 @@
+name = "yap_psd"
+problem = "Quantify pulse-shape discrimination in a YAP:Ce scintillator.\n\nA digitizer records pulse waveforms from two particle populations:\ngamma-like pulses with a fast decay constant (tau_fast = 40 ns) and\nneutron-like pulses with a slow component (tau_slow = 180 ns, carrying\n20% of the amplitude). 5000 pulses of each type were recorded, 200\nsamples each, with 4% Gaussian noise per sample.\n\nThe standard discriminator is the tail-to-total ratio: the charge\nintegrated over the late part of the pulse divided by the total charge.\n\nTask:\n1. Generate the two synthetic pulse populations (waveforms.csv: one\n   pulse per row, and labels.csv with the true class of each pulse;\n   write ROOT TTrees instead if ROOT is available).\n2. Compute the tail-to-total ratio for every pulse (tail = last 100\n   samples, total = all 200 samples).\n3. Write to RESULTS.txt, one `key = value` line each:\n   gamma_mean_ratio, neutron_mean_ratio, ratio_separation\n   where ratio_separation = neutron_mean_ratio - gamma_mean_ratio.\nVerify the separation is positive and significant, then record the\nfinal values in RESULTS.txt.\n"
+
+[[checks]]
+id = "gamma_mean_ratio"
+key = "gamma_mean_ratio"
+expected = 0.02
+tolerance = 0.05
+
+[[checks]]
+id = "neutron_mean_ratio"
+key = "neutron_mean_ratio"
+expected = 0.1
+tolerance = 0.05
+
+[[checks]]
+id = "separation"
+key = "ratio_separation"
+expected = 0.08
+tolerance = 0.04

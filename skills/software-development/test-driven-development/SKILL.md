@@ -1,14 +1,16 @@
 ---
-name: test-driven-development
-description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
-version: 1.1.0
-author: Son of Anton Agent (adapted from obra/superpowers)
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [testing, tdd, development, quality, red-green-refactor]
-    related_skills: [systematic-debugging, plan, subagent-driven-development]
+name = "test-driven-development"
+description = "TDD: enforce RED-GREEN-REFACTOR, tests before code."
+version = "1.1.0"
+author = "Son of Anton Agent (adapted from obra/superpowers)"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["testing", "tdd", "development", "quality", "red-green-refactor"]
+related_skills = ["systematic-debugging", "plan", "subagent-driven-development"]
 ---
 
 # Test-Driven Development (TDD)

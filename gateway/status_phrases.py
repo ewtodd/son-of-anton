@@ -4,19 +4,18 @@ These helpers deliberately avoid relaying raw model scratch text.  They turn
 Son of Anton' long-running gateway status surface into short status lines suitable
 for chat surfaces.
 
-Built-in defaults live in ``gateway/assets/status_phrases.yaml``. Users can add
+Built-in defaults live in ``gateway/assets/status_phrases.toml``. Users can add
 portable, profile-relative phrase catalogs under ``SON_OF_ANTON_HOME`` either by using
 conventional paths::
 
-    ~/.son-of-anton/status_phrases.yaml
-    ~/.son-of-anton/status_phrases/*.yaml
+    ~/.son-of-anton/status_phrases.toml
+    ~/.son-of-anton/status_phrases/*.toml
 
 or by pointing config at a relative file/directory::
 
-    display:
-      status_phrases:
-        path: status_phrases/signal.yaml  # relative to SON_OF_ANTON_HOME
-        mode: append                        # append (default) or replace
+    [display.status_phrases]
+    path = "status_phrases/signal.toml"  # relative to SON_OF_ANTON_HOME
+    mode = "append"                       # append (default) or replace
 
 Absolute paths and ``..`` escapes are ignored on purpose so config stays
 profile-portable and does not accidentally read arbitrary files.
@@ -28,11 +27,10 @@ reasoning text are never interpolated into the returned phrase.
 from __future__ import annotations
 
 import random as _random
+import tomllib
 from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from son_of_anton_constants import get_son_of_anton_home
 
@@ -42,7 +40,7 @@ from son_of_anton_constants import get_son_of_anton_home
 _STATUS_SURFACES = ("status", "generic")
 _MAX_CUSTOM_PHRASES_PER_SURFACE = 80
 _MAX_PHRASE_CHARS = 160
-_CONVENTIONAL_RELATIVE_PATHS = ("status_phrases.yaml", "status_phrases")
+_CONVENTIONAL_RELATIVE_PATHS = ("status_phrases.toml", "status_phrases")
 
 _FALLBACK_PHRASES: dict[str, list[str]] = {
     "status": ["still on it", "still working through it", "waiting for the result"],
@@ -77,7 +75,7 @@ def _merge_phrase_mapping(catalog: dict[str, list[str]], section: Mapping[str, A
 
 def _merge_phrase_file(catalog: dict[str, list[str]], path: Path, *, inherited_mode: str | None = None) -> None:
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        loaded = tomllib.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return
     if isinstance(loaded, Mapping):
@@ -101,12 +99,12 @@ def _relative_path_under(base_dir: Path, raw_path: Any) -> Path | None:
 
 
 def _iter_phrase_files(path: Path) -> list[Path]:
-    if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}:
+    if path.is_file() and path.suffix.lower() == ".toml":
         return [path]
     if path.is_dir():
         return sorted(
             child for child in path.iterdir()
-            if child.is_file() and child.suffix.lower() in {".yaml", ".yml"}
+            if child.is_file() and child.suffix.lower() == ".toml"
         )
     return []
 
@@ -131,7 +129,7 @@ def _merge_phrase_paths(
 
 def _load_builtin_catalog() -> dict[str, list[str]]:
     catalog = {surface: list(phrases) for surface, phrases in _FALLBACK_PHRASES.items()}
-    catalog_path = Path(__file__).resolve().parent / "assets" / "status_phrases.yaml"
+    catalog_path = Path(__file__).resolve().parent / "assets" / "status_phrases.toml"
     _merge_phrase_file(catalog, catalog_path, inherited_mode="replace")
     return catalog
 

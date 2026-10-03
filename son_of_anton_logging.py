@@ -241,13 +241,13 @@ def setup_logging(
     log_level
         Minimum level for the ``agent.log`` file handler.  Accepts any
         standard Python level name (``"DEBUG"``, ``"INFO"``, ``"WARNING"``).
-        Defaults to ``"INFO"`` or the value from config.yaml ``logging.level``.
+        Defaults to ``"INFO"`` or the value from config.toml ``logging.level``.
     max_size_mb
         Maximum size of each log file in megabytes before rotation.
-        Defaults to 5 or the value from config.yaml ``logging.max_size_mb``.
+        Defaults to 5 or the value from config.toml ``logging.max_size_mb``.
     backup_count
         Number of rotated backup files to keep.
-        Defaults to 3 or the value from config.yaml ``logging.backup_count``.
+        Defaults to 3 or the value from config.toml ``logging.backup_count``.
     mode
         Caller context: ``"cli"``, ``"gateway"``, ``"gui"``, ``"cron"``.
         When ``"gateway"``, an additional ``gateway.log`` file is created
@@ -723,29 +723,29 @@ def _add_rotating_handler(
 
 
 def _read_logging_config():
-    """Best-effort read of ``logging.*`` from config.yaml.
+    """Best-effort read of ``logging.*`` from config.toml.
 
     Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
     """
     try:
         # Prefer the shared (mtime, size)-keyed raw-config cache so this read
         # reuses the parse son_of_anton_cli.main's early bridge already did (one
-        # config.yaml parse per process instead of 3-4). Fall back to a
+        # config.toml parse per process instead of 3-4). Fall back to a
         # direct parse when son_of_anton_cli.config isn't importable (bare
         # son_of_anton_logging consumers).
         try:
             from son_of_anton_cli.config import read_raw_config as _rrc
             cfg = _rrc() or {}
         except Exception:
-            from utils import fast_safe_load
+            from utils import fast_toml_load
             config_path = get_config_path()
             if not config_path.exists():
                 return (None, None, None)
             with open(config_path, "r", encoding="utf-8") as f:
-                cfg = fast_safe_load(f) or {}
+                cfg = fast_toml_load(f) or {}
         if cfg:
             # Managed scope: an administrator can pin logging.* too. Overlay via
-            # the shared helper (fail-open) since this reads config.yaml directly.
+            # the shared helper (fail-open) since this reads config.toml directly.
             try:
                 from son_of_anton_cli import managed_scope
                 cfg = managed_scope.apply_managed_overlay(cfg)

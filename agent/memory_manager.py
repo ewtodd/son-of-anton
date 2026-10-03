@@ -419,7 +419,7 @@ class MemoryManager:
                     "Rejected memory provider '%s' — external provider '%s' is "
                     "already registered. Only one external memory provider is "
                     "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.",
+                    "in config.toml.",
                     provider.name, existing,
                 )
                 return

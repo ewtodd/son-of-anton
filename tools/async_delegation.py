@@ -848,7 +848,7 @@ def dispatch_async_delegation(
                     f"running). Wait for one to finish (its result will re-enter "
                     f"the chat), or run this task synchronously "
                     f"(background=false). Raise delegation.max_concurrent_children in "
-                    f"config.yaml to allow more concurrent background subagents."
+                    f"config.toml to allow more concurrent background subagents."
                 ),
             }
         _records[delegation_id] = record
@@ -1091,7 +1091,7 @@ def dispatch_async_delegation_batch(
                     f"Async delegation capacity reached ({max_async_children} "
                     f"running). Wait for one to finish (its result will re-enter "
                     f"the chat), or raise delegation.max_concurrent_children in "
-                    f"config.yaml to allow more concurrent background units."
+                    f"config.toml to allow more concurrent background units."
                 ),
             }
         _records[delegation_id] = record

@@ -1,7 +1,7 @@
 """
 Shell-script hooks bridge.
 
-Reads the ``hooks:`` block from ``cli-config.yaml``, prompts the user for
+Reads the ``hooks:`` block from ``cli-config.toml``, prompts the user for
 consent on first use of each ``(event, command)`` pair, and registers
 callbacks on the existing plugin hook manager so every existing
 ``invoke_hook()`` site dispatches to the configured shell scripts — with
@@ -212,7 +212,7 @@ class ShellHookSpec:
     compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        # Strip whitespace introduced by YAML quirks (e.g. multi-line string
+        # Strip whitespace introduced by TOML quirks (e.g. multi-line string
         # folding) — a matcher of " terminal" would otherwise silently fail
         # to match "terminal" without any diagnostic.
         if isinstance(self.matcher, str):
@@ -343,7 +343,7 @@ def re_register_config_hooks() -> None:
 
     ``PluginManager.discover_and_load(force=True)`` unloads via the ownership
     ledger and clears the manager's ``_hooks`` dict, which silently drops
-    shell hooks that were registered from ``config.yaml`` at startup (they
+    shell hooks that were registered from ``config.toml`` at startup (they
     are config-owned, not plugin-owned, so the ledger cannot restore them).
     Clear the idempotence set and re-run ``register_from_config()`` so hooks
     are wired again (#60036 / PR #60267; tracking #64178 — salvaged from
@@ -1059,7 +1059,7 @@ def _resolve_effective_accept(
     Precedence (any truthy source flips us on):
       1. ``--accept-hooks`` flag (CLI) / explicit argument
       2. ``SON_OF_ANTON_ACCEPT_HOOKS`` env var
-      3. ``hooks_auto_accept: true`` in ``cli-config.yaml``
+      3. ``hooks_auto_accept: true`` in ``cli-config.toml``
     """
     if accept_hooks_arg:
         return True

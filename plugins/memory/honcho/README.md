@@ -68,7 +68,7 @@ message.
 **Off by default** — the rewrite adds one auxiliary-model call per dialectic
 cycle (not per pass). Select a fast, inexpensive model under `son-of-anton model`
 -> auxiliary models -> **Memory query rewrite**; its request timeout is
-`auxiliary.memory_query_rewrite.timeout` in config.yaml (default 8s). The
+`auxiliary.memory_query_rewrite.timeout` in config.toml (default 8s). The
 task and module (`plugins/memory/query_rewrite.py`) are provider-agnostic —
 any memory provider can reuse them. `dialecticCadence` still controls how
 often the cycle runs.

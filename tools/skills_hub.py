@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
-import yaml
+import tomllib
 
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
@@ -1180,18 +1180,18 @@ class GitHubSource(SkillSource):
 
     @staticmethod
     def _parse_frontmatter_quick(content: str) -> dict:
-        """Parse YAML frontmatter from SKILL.md content."""
+        """Parse TOML frontmatter from SKILL.md content."""
         content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
         if not content.startswith("---"):
             return {}
         match = re.search(r'\n---\s*\n', content[3:])
         if not match:
             return {}
-        yaml_text = content[3:match.start() + 3]
+        toml_text = content[3:match.start() + 3]
         try:
-            parsed = yaml.safe_load(yaml_text)
+            parsed = tomllib.loads(toml_text)
             return parsed if isinstance(parsed, dict) else {}
-        except yaml.YAMLError:
+        except tomllib.TOMLDecodeError:
             return {}
 
 
@@ -1434,7 +1434,7 @@ class UrlSource(SkillSource):
     below references/templates/scripts/assets are fetched. Other repository
     files are never copied.
 
-    The skill name is read from the ``name:`` field in the SKILL.md YAML
+    The skill name is read from the ``name:`` field in the SKILL.md TOML
     frontmatter (with a URL-slug fallback). Trust level is always
     ``community`` and the same security scan runs as for every other source.
     """
@@ -3651,18 +3651,18 @@ class OptionalSkillSource(SkillSource):
 
     @staticmethod
     def _parse_frontmatter(content: str) -> dict:
-        """Parse YAML frontmatter from SKILL.md content."""
+        """Parse TOML frontmatter from SKILL.md content."""
         content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
         if not content.startswith("---"):
             return {}
         match = re.search(r'\n---\s*\n', content[3:])
         if not match:
             return {}
-        yaml_text = content[3:match.start() + 3]
+        toml_text = content[3:match.start() + 3]
         try:
-            parsed = yaml.safe_load(yaml_text)
+            parsed = tomllib.loads(toml_text)
             return parsed if isinstance(parsed, dict) else {}
-        except yaml.YAMLError:
+        except tomllib.TOMLDecodeError:
             return {}
 
 

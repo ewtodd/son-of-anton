@@ -31,7 +31,7 @@ Network hardening:
 - **Corrupt-cache rejection**: a disk cache that fails to parse, is not a
   dict, or is empty is ignored with a warning rather than served as
   ``{}`` and silently breaking provider/model resolution.
-- **Mirror URL override**: ``models_dev.url`` in config.yaml lets
+- **Mirror URL override**: ``models_dev.url`` in config.toml lets
   deployments point at a mirror (e.g. a self-hosted copy) without code
   changes.
 
@@ -279,7 +279,7 @@ def _clear_etag() -> None:
 
 
 def _get_models_dev_url() -> str:
-    """Resolve the models.dev API URL, honoring a config.yaml override.
+    """Resolve the models.dev API URL, honoring a config.toml override.
 
     The ``models_dev.url`` config key lets deployments point at a mirror
     (e.g. a self-hosted copy behind a corporate proxy) without code changes.
@@ -856,7 +856,7 @@ class ModelCapabilities:
 
 
 # --------------------------------------------------------------------------- #
-# Per-model metadata overrides (config.yaml → model_overrides)               #
+# Per-model metadata overrides (config.toml → model_overrides)               #
 # --------------------------------------------------------------------------- #
 #
 # Canonical override schema (the ONLY key space consumers accept):
@@ -874,7 +874,7 @@ class ModelCapabilities:
 #      catalog-known model of a provider.
 #
 # Provider keys accept the Son of Anton provider id (as used elsewhere in
-# config.yaml) or the models.dev provider id. Model ids match exactly,
+# config.toml) or the models.dev provider id. Model ids match exactly,
 # then case-insensitively (mirroring catalog lookup).
 
 _OVERRIDE_WARNED_KEYS: set = set()

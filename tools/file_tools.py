@@ -58,7 +58,7 @@ def _expand_tilde(path: str) -> str:
 # this in a single read are a context-window hazard — the model should use
 # offset+limit to read the relevant section.
 #
-# Configurable via config.yaml:  file_read_max_chars: 200000
+# Configurable via config.toml:  file_read_max_chars: 200000
 # ---------------------------------------------------------------------------
 _DEFAULT_MAX_READ_CHARS = 100_000
 _max_read_chars_cached: int | None = None
@@ -67,7 +67,7 @@ _max_read_chars_cached: int | None = None
 def _get_max_read_chars() -> int:
     """Return the configured max characters per file read.
 
-    Reads ``file_read_max_chars`` from config.yaml on first call, caches
+    Reads ``file_read_max_chars`` from config.toml on first call, caches
     the result for the lifetime of the process.  Falls back to the
     built-in default if the config is missing or invalid.
     """
@@ -594,7 +594,7 @@ def _get_son_of_anton_config_resolved() -> str | None:
         _son_of_anton_config_resolved = str(get_config_path().resolve())
     except Exception:
         try:
-            _son_of_anton_config_resolved = str(Path(_expand_tilde("~/.son-of-anton/config.yaml")).resolve())
+            _son_of_anton_config_resolved = str(Path(_expand_tilde("~/.son-of-anton/config.toml")).resolve())
         except Exception:
             _son_of_anton_config_resolved = None
     return _son_of_anton_config_resolved
@@ -603,7 +603,7 @@ def _get_son_of_anton_config_resolved() -> str | None:
 def _sensitive_path_exceptions() -> list[str]:
     """Return the list of path-prefix exceptions for the sensitive-path guard.
 
-    Config key (config.yaml)::
+    Config key (config.toml)::
 
         security:
           sensitive_path_exceptions: []   # default: no exceptions
@@ -656,7 +656,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         return (
             f"Refusing to write to Son of Anton config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.son-of-anton/config.yaml directly or use 'son-of-anton config' instead."
+            "Edit ~/.son-of-anton/config.toml directly or use 'son-of-anton config' instead."
         )
     return None
 
@@ -715,7 +715,7 @@ def _protected_instruction_config() -> tuple[bool, list[str]]:
     patterns; config read failures keep the gate ON (fail-safe for a
     security boundary).
 
-    Config keys (config.yaml)::
+    Config keys (config.toml)::
 
         security:
           protected_instruction_files: true       # default
@@ -760,7 +760,7 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         resolved = os.path.realpath(normalized)
 
     # The authoritative ~/.son-of-anton home is governed by its own guards
-    # (config.yaml hard-block, cross-profile guard, write_approval); this
+    # (config.toml hard-block, cross-profile guard, write_approval); this
     # gate targets PROJECT-LOCAL instruction files only. Checked before the
     # ``.son-of-anton`` component rule below, which would otherwise match the
     # home directory itself.
@@ -778,7 +778,7 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         for pattern in extra_patterns:
             if fnmatch.fnmatch(base_lower, pattern.lower()):
                 return base
-        # Project-local .son-of-anton config dirs (e.g. <repo>/.son-of-anton/config.yaml)
+        # Project-local .son-of-anton config dirs (e.g. <repo>/.son-of-anton/config.toml)
         # are loaded as project context and steer behavior the same way.
         # Scope: the file's IMMEDIATE parent must be ``.son-of-anton`` — matching
         # any ancestor named .son-of-anton would gate every write inside a

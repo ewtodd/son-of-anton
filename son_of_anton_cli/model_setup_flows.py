@@ -88,7 +88,7 @@ def _prune_replaced_custom_model_config_credentials(
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
 
-    Automatically saves the endpoint to ``custom_providers`` in config.yaml
+    Automatically saves the endpoint to ``custom_providers`` in config.toml
     so it appears in the provider menu on subsequent runs.
     """
     from son_of_anton_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
@@ -254,7 +254,7 @@ def _model_flow_custom(config):
             print(f"Invalid context length: {context_length_str} — will auto-detect.")
             context_length = None
 
-    # The key goes to .env and config.yaml only references it (#69449). Keyed
+    # The key goes to .env and config.toml only references it (#69449). Keyed
     # on host:port so two servers on one machine keep separate credentials.
     custom_key_env = ""
     if effective_key:
@@ -329,7 +329,7 @@ def _model_flow_custom(config):
 
 
 def _model_flow_named_custom(config, provider_info):
-    """Handle a named custom provider from config.yaml custom_providers list.
+    """Handle a named custom provider from config.toml custom_providers list.
 
     Probes the endpoint's model catalog to let the user pick a model, using
     native ``/api/tags`` for endpoints conservatively identified as Ollama.
@@ -599,7 +599,7 @@ def _model_flow_named_custom(config, provider_info):
                 # key from ``key_env`` directly, and writing the resolved
                 # secret (or even a synthesized template) would silently
                 # downgrade credential hygiene on entries that intentionally
-                # keep plaintext out of ``config.yaml``. See issue #15803.
+                # keep plaintext out of ``config.toml``. See issue #15803.
                 original_api_key_ref = str(
                     provider_info.get("api_key_ref", "") or ""
                 ).strip()
@@ -658,8 +658,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         return
 
     # Optional base URL override.
-    # Precedence: env var → config.yaml model.base_url → registry default.
-    # Reading config.yaml prevents silently overwriting a saved remote URL
+    # Precedence: env var → config.toml model.base_url → registry default.
+    # Reading config.toml prevents silently overwriting a saved remote URL
     # (e.g. a remote LM Studio endpoint) with localhost when the user just
     # presses Enter at the prompt below.
     current_base = ""

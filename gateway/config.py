@@ -41,7 +41,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
 def _normalize_transport_token(value: Any) -> str:
     """Normalize a streaming transport/mode value to a canonical token.
 
-    Handles the YAML 1.1 boolean quirk where bare ``on`` / ``off`` parse to
+    Handles the TOML 1.1 boolean quirk where bare ``on`` / ``off`` parse to
     Python ``True`` / ``False`` (see ``gateway/display_config.py`` ``_normalise``).
     Without this, ``mode: off`` arrives as boolean ``False`` and stringifying it
     yields ``"false"`` instead of the advertised ``"off"``, so streaming would be
@@ -292,8 +292,8 @@ class Platform(Enum):
                         child.is_dir()
                         and (child / "__init__.py").exists()
                         and (
-                            (child / "plugin.yaml").exists()
-                            or (child / "plugin.yml").exists()
+                            (child / "plugin.toml").exists()
+                            or (child / "plugin.toml").exists()
                         )
                     ):
                         names.add(child.name.lower())
@@ -431,7 +431,7 @@ class SessionResetPolicy:
     - "none": Never auto-reset (context managed only by compaction)
 
     Default is "none" — sessions never auto-reset unless the user opts in
-    via the `session_reset` section in config.yaml (or gateway.json
+    via the `session_reset` section in config.toml (or gateway.json
     overrides). Changed July 2026 from "both" (24h idle + daily 4am), which
     surprised users who expected their conversations to persist.
     """
@@ -460,7 +460,7 @@ class SessionResetPolicy:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
         data = _coerce_dict(data)
-        # Handle both missing keys and explicit null values (YAML null → None)
+        # Handle both missing keys and explicit null values (TOML null → None)
         mode = data.get("mode")
         at_hour = data.get("at_hour")
         idle_minutes = data.get("idle_minutes")
@@ -598,7 +598,7 @@ class PlatformConfig:
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
-        # and extra so YAML ``discord: gateway_restart_notification: false``
+        # and extra so TOML ``discord: gateway_restart_notification: false``
         # works without needing a separate platforms: block.
         extra = _coerce_dict(data.get("extra", {}))
         _grn = data.get("gateway_restart_notification")
@@ -709,7 +709,7 @@ class StreamingConfig:
         # once streaming is on. Only the ``mode`` alias flips ``enabled``.
         raw_transport = data.get("transport")
         raw_mode = data.get("mode")
-        # Normalize both through the same helper so YAML's bare ``off``/``on``
+        # Normalize both through the same helper so TOML's bare ``off``/``on``
         # (parsed as bool False/True) become canonical tokens rather than
         # ``"false"``/``"true"``.
         picked = raw_transport if raw_transport is not None else raw_mode
@@ -787,7 +787,7 @@ class GatewayConfig:
     # routing index. The primary copy lives in state.db (gateway_routing
     # table, #9006). Default True for backward compatibility with external
     # tooling and downgrade safety; set gateway.write_sessions_json: false in
-    # config.yaml to stop producing the file.
+    # config.toml to stop producing the file.
     write_sessions_json: bool = True
     
     # Delivery settings
@@ -835,7 +835,7 @@ class GatewayConfig:
     # probes the gateway loop with call_soon_threadsafe; after consecutive
     # missed probes it dumps all-thread stacks and hard-exits with the
     # service-restart code so the supervisor can revive the process. On by
-    # default; set gateway.loop_watchdog: false in config.yaml to disable.
+    # default; set gateway.loop_watchdog: false in config.toml to disable.
     loop_watchdog: bool = True
 
     # Unauthorized DM policy
@@ -1150,34 +1150,34 @@ def load_gateway_config() -> GatewayConfig:
 
     Priority (highest to lowest):
     1. Environment variables
-    2. ~/.son-of-anton/config.yaml (primary user-facing config)
-    3. ~/.son-of-anton/gateway.json (legacy — provides defaults under config.yaml)
+    2. ~/.son-of-anton/config.toml (primary user-facing config)
+    3. ~/.son-of-anton/gateway.json (legacy — provides defaults under config.toml)
     4. Built-in defaults
     """
     _home = get_son_of_anton_home()
     gw_data: dict = {}
 
     # Legacy fallback: gateway.json provides the base layer.
-    # config.yaml keys always win when both specify the same setting.
+    # config.toml keys always win when both specify the same setting.
     gateway_json_path = _home / "gateway.json"
     if gateway_json_path.exists():
         try:
             with open(gateway_json_path, "r", encoding="utf-8") as f:
                 gw_data = json.load(f) or {}
             logger.info(
-                "Loaded legacy %s — consider moving settings to config.yaml",
+                "Loaded legacy %s — consider moving settings to config.toml",
                 gateway_json_path,
             )
         except Exception as e:
             logger.warning("Failed to load %s: %s", gateway_json_path, e)
 
-    # Primary source: config.yaml
+    # Primary source: config.toml
     try:
-        import yaml
-        config_yaml_path = _home / "config.yaml"
-        if config_yaml_path.exists():
-            with open(config_yaml_path, encoding="utf-8") as f:
-                yaml_cfg = yaml.safe_load(f) or {}
+        import tomllib
+        config_toml_path = _home / "config.toml"
+        if config_toml_path.exists():
+            with open(config_toml_path, encoding="utf-8") as f:
+                toml_cfg = tomllib.loads(f.read()) or {}
 
             # Managed scope: overlay administrator-pinned values so the gateway
             # honors them too. This loader builds its own dict instead of going
@@ -1185,7 +1185,7 @@ def load_gateway_config() -> GatewayConfig:
             # session_reset / quick_commands / stt / model would be ignored by
             # the messaging gateway. Fail-open via the shared helper.
             from son_of_anton_cli import managed_scope
-            yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+            toml_cfg = managed_scope.apply_managed_overlay(toml_cfg)
 
             # Shared nested-fallback source: settings meant to be top-level
             # keys are also accepted when a user nests them under `gateway:`
@@ -1193,21 +1193,21 @@ def load_gateway_config() -> GatewayConfig:
             # produces that shape). Every key below mirrors the precedent
             # already established for gateway.multiplex_profiles/streaming/
             # write_sessions_json: top-level wins, nested gateway.* falls back.
-            gateway_section = yaml_cfg.get("gateway")
+            gateway_section = toml_cfg.get("gateway")
 
-            # Map config.yaml keys → GatewayConfig.from_dict() schema.
+            # Map config.toml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             # Precedence contract: key-presence at the TOP LEVEL wins; the
             # nested gateway.* form is consulted only when the top-level key
             # is absent (not merely falsy/mistyped), so a present-but-empty
             # top-level value is never silently replaced by the nested one.
-            sr = yaml_cfg.get("session_reset")
-            if "session_reset" not in yaml_cfg and isinstance(gateway_section, dict):
+            sr = toml_cfg.get("session_reset")
+            if "session_reset" not in toml_cfg and isinstance(gateway_section, dict):
                 sr = gateway_section.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
 
-            qc = yaml_cfg.get("quick_commands")
+            qc = toml_cfg.get("quick_commands")
             if qc is None and isinstance(gateway_section, dict):
                 qc = gateway_section.get("quick_commands")
             if qc is not None:
@@ -1215,30 +1215,30 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["quick_commands"] = qc
                 else:
                     logger.warning(
-                        "Ignoring invalid quick_commands in config.yaml "
+                        "Ignoring invalid quick_commands in config.toml "
                         "(expected mapping, got %s)",
                         type(qc).__name__,
                     )
 
-            stt_cfg = yaml_cfg.get("stt")
-            if "stt" not in yaml_cfg and isinstance(gateway_section, dict):
+            stt_cfg = toml_cfg.get("stt")
+            if "stt" not in toml_cfg and isinstance(gateway_section, dict):
                 stt_cfg = gateway_section.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
-            if "stt_echo_transcripts" in yaml_cfg:
-                gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
+            if "stt_echo_transcripts" in toml_cfg:
+                gw_data["stt_echo_transcripts"] = toml_cfg["stt_echo_transcripts"]
             elif isinstance(gateway_section, dict) and "stt_echo_transcripts" in gateway_section:
                 gw_data["stt_echo_transcripts"] = gateway_section["stt_echo_transcripts"]
 
-            gateway_cfg = yaml_cfg.get("gateway")
+            gateway_cfg = toml_cfg.get("gateway")
 
-            if "group_sessions_per_user" in yaml_cfg:
-                gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
+            if "group_sessions_per_user" in toml_cfg:
+                gw_data["group_sessions_per_user"] = toml_cfg["group_sessions_per_user"]
             elif isinstance(gateway_section, dict) and "group_sessions_per_user" in gateway_section:
                 gw_data["group_sessions_per_user"] = gateway_section["group_sessions_per_user"]
 
-            if "thread_sessions_per_user" in yaml_cfg:
-                gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+            if "thread_sessions_per_user" in toml_cfg:
+                gw_data["thread_sessions_per_user"] = toml_cfg["thread_sessions_per_user"]
             elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
                 gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
 
@@ -1250,10 +1250,10 @@ def load_gateway_config() -> GatewayConfig:
                         "systemd_watchdog_seconds"
                     ]
 
-            if "max_concurrent_sessions" in yaml_cfg:
-                gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
+            if "max_concurrent_sessions" in toml_cfg:
+                gw_data["max_concurrent_sessions"] = toml_cfg["max_concurrent_sessions"]
 
-            streaming_cfg = yaml_cfg.get("streaming")
+            streaming_cfg = toml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict) and isinstance(gateway_section, dict):
                 # Fall back to nested gateway.streaming written by
                 # ``son-of-anton config set gateway.streaming.*``
@@ -1261,25 +1261,25 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
-            if "reset_triggers" in yaml_cfg:
-                gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
+            if "reset_triggers" in toml_cfg:
+                gw_data["reset_triggers"] = toml_cfg["reset_triggers"]
             elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:
                 gw_data["reset_triggers"] = gateway_section["reset_triggers"]
 
-            if "always_log_local" in yaml_cfg:
-                gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+            if "always_log_local" in toml_cfg:
+                gw_data["always_log_local"] = toml_cfg["always_log_local"]
             elif isinstance(gateway_section, dict) and "always_log_local" in gateway_section:
                 gw_data["always_log_local"] = gateway_section["always_log_local"]
 
             # write_sessions_json: top-level wins; nested gateway.* fallback
             # (matches the gateway.streaming precedence pattern).
-            if "write_sessions_json" in yaml_cfg:
-                gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
+            if "write_sessions_json" in toml_cfg:
+                gw_data["write_sessions_json"] = toml_cfg["write_sessions_json"]
             elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
                 gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
 
-            if "filter_silence_narration" in yaml_cfg:
-                gw_data["filter_silence_narration"] = yaml_cfg[
+            if "filter_silence_narration" in toml_cfg:
+                gw_data["filter_silence_narration"] = toml_cfg[
                     "filter_silence_narration"
                 ]
             elif isinstance(gateway_section, dict) and "filter_silence_narration" in gateway_section:
@@ -1288,14 +1288,14 @@ def load_gateway_config() -> GatewayConfig:
                 ]
 
             for _hours_key in ("active_hours", "inactive_message", "single_user"):
-                if _hours_key in yaml_cfg:
-                    gw_data[_hours_key] = yaml_cfg[_hours_key]
+                if _hours_key in toml_cfg:
+                    gw_data[_hours_key] = toml_cfg[_hours_key]
                 elif isinstance(gateway_section, dict) and _hours_key in gateway_section:
                     gw_data[_hours_key] = gateway_section[_hours_key]
 
-            if "unauthorized_dm_behavior" in yaml_cfg:
+            if "unauthorized_dm_behavior" in toml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
-                    yaml_cfg.get("unauthorized_dm_behavior"),
+                    toml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
             elif isinstance(gateway_section, dict) and "unauthorized_dm_behavior" in gateway_section:
@@ -1333,7 +1333,7 @@ def load_gateway_config() -> GatewayConfig:
                     platforms_data[plat_name] = merged
 
             _merge_platform_map(gateway_platforms)
-            _merge_platform_map(yaml_cfg.get("platforms"))
+            _merge_platform_map(toml_cfg.get("platforms"))
 
             # Also merge platform configs placed directly under ``gateway.*``
             # (e.g. ``gateway.discord``) so subsections are discovered the
@@ -1379,21 +1379,21 @@ def load_gateway_config() -> GatewayConfig:
             for plat in _shared_loop_targets:
                 if plat == Platform.LOCAL:
                     continue
-                platform_cfg = yaml_cfg.get(plat.value)
+                platform_cfg = toml_cfg.get(plat.value)
                 _cfg_toplevel = isinstance(platform_cfg, dict)
                 # Fall back to the platform's block under ``platforms`` /
                 # ``gateway.platforms`` so shared-key bridging (allow_from,
                 # require_mention, free_response_channels, …) still runs when
                 # the user configured the platform only under those nested paths
                 # and not via a top-level block.  Mirrors the identical fallback
-                # already applied to the apply_yaml_config_fn dispatch below
+                # already applied to the apply_toml_config_fn dispatch below
                 # (#44f3e51).
                 # Note: ``enabled`` is only written to plat_data from a
                 # top-level block (``_cfg_toplevel``); for nested-only configs
                 # ``_merge_platform_map`` already merged it with the correct
                 # precedence, so re-applying it here would overwrite that.
                 if not _cfg_toplevel:
-                    for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                    for _src in (gateway_platforms, toml_cfg.get("platforms")):
                         if isinstance(_src, dict):
                             _candidate = _src.get(plat.value)
                             if isinstance(_candidate, dict):
@@ -1485,23 +1485,23 @@ def load_gateway_config() -> GatewayConfig:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
-            # Plugin-owned YAML→env config bridges (#24836).  See
-            # ``PlatformEntry.apply_yaml_config_fn`` for the hook contract.
+            # Plugin-owned TOML→env config bridges (#24836).  See
+            # ``PlatformEntry.apply_toml_config_fn`` for the hook contract.
             # Order: shared-key loop (above) → this dispatch → legacy hardcoded
             # blocks (below; no-op when a hook already set their env var) →
             # ``_apply_env_overrides()`` after ``GatewayConfig.from_dict``.
             if _pr is not None:
                 for entry in _pr.all_entries():
-                    if entry.apply_yaml_config_fn is None:
+                    if entry.apply_toml_config_fn is None:
                         continue
-                    platform_cfg = yaml_cfg.get(entry.name)
+                    platform_cfg = toml_cfg.get(entry.name)
                     # Fall back to the platform's block under ``platforms`` /
                     # ``gateway.platforms`` so adapter hooks still run when the
                     # user configured the platform only under those nested paths
                     # (e.g. ``platforms.discord.extra.allow_from``) and not via a
                     # top-level ``discord:`` block.
                     if not isinstance(platform_cfg, dict):
-                        for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                        for _src in (gateway_platforms, toml_cfg.get("platforms")):
                             if isinstance(_src, dict):
                                 _candidate = _src.get(entry.name)
                                 if isinstance(_candidate, dict):
@@ -1510,10 +1510,10 @@ def load_gateway_config() -> GatewayConfig:
                     if not isinstance(platform_cfg, dict):
                         continue
                     try:
-                        seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+                        seeded = entry.apply_toml_config_fn(toml_cfg, platform_cfg)
                     except Exception as e:
                         logger.debug(
-                            "apply_yaml_config_fn for %s raised: %s",
+                            "apply_toml_config_fn for %s raised: %s",
                             entry.name, e,
                         )
                         continue
@@ -1523,21 +1523,21 @@ def load_gateway_config() -> GatewayConfig:
                     extra.update(seeded)
 
             # Slack settings → env vars: migrated to the slack plugin's
-            # ``apply_yaml_config_fn`` hook (see plugins/platforms/slack/
-            # adapter.py::_apply_yaml_config), dispatched in the
-            # ``apply_yaml_config_fn`` loop above. #41112 / #3823.
+            # ``apply_toml_config_fn`` hook (see plugins/platforms/slack/
+            # adapter.py::_apply_toml_config), dispatched in the
+            # ``apply_toml_config_fn`` loop above. #41112 / #3823.
 
             # Signal settings → env vars (env vars take precedence)
-            signal_cfg = yaml_cfg.get("signal", {})
+            signal_cfg = toml_cfg.get("signal", {})
             if isinstance(signal_cfg, dict):
                 if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
                     os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 
     except Exception as e:
         logger.warning(
-            "Failed to process config.yaml — falling back to .env / gateway.json values. "
+            "Failed to process config.toml — falling back to .env / gateway.json values. "
             "Check %s for syntax errors. Error: %s",
-            _home / "config.yaml",
+            _home / "config.toml",
             e,
         )
 
@@ -1660,7 +1660,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     slack_token = getenv("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
-            # No yaml config for Slack — env-only setup, enable it
+            # No config block for Slack — env-only setup, enable it
             config.platforms[Platform.SLACK] = PlatformConfig()
             config.platforms[Platform.SLACK].enabled = True
         else:
@@ -1676,7 +1676,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # turn an env-token setup into a disabled platform. Only an
                 # explicit slack.enabled/platforms.slack.enabled false should.
                 slack_config.enabled = True
-        # If yaml config exists, respect its enabled flag (don't override
+        # If a config block exists, respect its enabled flag (don't override
         # explicit enabled: false). Token is still stored so skills that
         # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
@@ -1759,7 +1759,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 logger.debug("unknown platform name %r: %s", entry.name, e)
                 continue
             existing_cfg = config.platforms.get(platform)
-            # Respect an explicit ``enabled: false`` (YAML / gateway.json /
+            # Respect an explicit ``enabled: false`` (TOML / gateway.json /
             # dashboard PUT).  ``_enabled_explicit`` is set in
             # load_gateway_config() (via _merge_platform_map / the shared-key
             # loop) when the user wrote ``enabled`` for this platform; if they
@@ -1790,7 +1790,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     seed_for_probe = None
 
             # Only consult is_connected for platforms that are NOT already
-            # explicitly configured in YAML / env (existing_cfg with
+            # explicitly configured in TOML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
             # env-var bridge enabled it — keep that decision).
             if existing_cfg is None or not existing_cfg.enabled:
@@ -1889,7 +1889,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a
     # connector relay URL is configured via GATEWAY_RELAY_URL (env) or
-    # gateway.relay_url (config.yaml). The adapter is registered into the
+    # gateway.relay_url (config.toml). The adapter is registered into the
     # platform_registry at gateway startup (gateway.relay.register_relay_adapter)
     # and dials OUT to the connector — so, like Discord/Slack, it has no public
     # inbound port and just needs Platform.RELAY present+enabled in
@@ -1897,11 +1897,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
     # extra["relay_url"], so mirror the URL into extra here.
     relay_url_env = getenv("GATEWAY_RELAY_URL", "").strip()
-    relay_url_yaml = ""
+    relay_url_config = ""
     existing_relay = config.platforms.get(Platform.RELAY)
     if existing_relay is not None:
-        relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip()
-    relay_url_val = relay_url_env or relay_url_yaml
+        relay_url_config = str(existing_relay.extra.get("relay_url") or "").strip()
+    relay_url_val = relay_url_env or relay_url_config
     if relay_url_val:
         relay_config = _enable_from_env(Platform.RELAY)
         relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
@@ -1912,16 +1912,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # second, unmanaged ingress path (duplicate deliveries, split sessions,
     # and a live socket that disarms scale-to-zero), so the env stamp disables
     # all other messaging platforms — including ones explicitly enabled in
-    # config.yaml. Non-messaging surfaces (local — the same exclusion set as
+    # config.toml. Non-messaging surfaces (local — the same exclusion set as
     # the scale-to-zero arm gate) are untouched.
     # Deployments that configure relay only via gateway.relay_url in
-    # config.yaml keep the old additive behavior (relay beside direct
+    # config.toml keep the old additive behavior (relay beside direct
     # adapters).
     #
     # Opt-out: GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true keeps direct
     # adapters running beside the relay for deployments that intentionally
     # mix both ingress paths. Like the trigger, it is a deploy-stamp env var,
-    # not a config.yaml setting. Both reads go through the profile-scope-aware
+    # not a config.toml setting. Both reads go through the profile-scope-aware
     # getenv so multiplexed profiles see their own values, not the process
     # globals.
     allow_direct = is_truthy_value(

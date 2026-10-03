@@ -15,7 +15,7 @@ Config keys this provider responds to::
       search_backend: "xai"           # explicit per-capability
       backend: "xai"                  # shared fallback
 
-Optional knobs (under ``web.xai`` in ``config.yaml``)::
+Optional knobs (under ``web.xai`` in ``config.toml``)::
 
     web:
       xai:
@@ -62,7 +62,7 @@ _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 
 def _load_xai_web_config() -> Dict[str, Any]:
-    """Read ``web.xai`` from config.yaml (returns {} on miss)."""
+    """Read ``web.xai`` from config.toml (returns {} on miss)."""
     try:
         from son_of_anton_cli.config import load_config
 

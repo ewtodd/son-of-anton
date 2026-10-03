@@ -99,34 +99,22 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     return False
 
 
-# ── Lazy YAML loader ─────────────────────────────────────────────────────
+def toml_load(content: str):
+    """Parse a TOML document (used for frontmatter and sidecar files)."""
+    import tomllib
 
-_yaml_load_fn = None
-
-
-def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
-    global _yaml_load_fn
-    if _yaml_load_fn is None:
-        import yaml
-
-        loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-
-        def _load(value: str):
-            return yaml.load(value, Loader=loader)
-
-        _yaml_load_fn = _load
-    return _yaml_load_fn(content)
+    return tomllib.loads(content)
 
 
 # ── Frontmatter parsing ──────────────────────────────────────────────────
 
 
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
-    """Parse YAML frontmatter from a markdown string.
+    """Parse TOML frontmatter from a markdown string.
 
-    Uses yaml with CSafeLoader for full YAML support (nested metadata, lists)
-    with a fallback to simple key:value splitting for robustness.
+    The fence stays ``---``; the text between fences is TOML. Malformed
+    frontmatter falls back to a plain ``key = value`` line scan so one bad
+    skill never breaks discovery.
 
     A single leading UTF-8 BOM (U+FEFF) is stripped before parsing. Windows
     GUI editors (Notepad, PowerShell ``>``) prepend one when saving a SKILL.md
@@ -153,20 +141,20 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     if not end_match:
         return frontmatter, body
 
-    yaml_content = content[3 : end_match.start() + 3]
+    toml_content = content[3 : end_match.start() + 3]
     body = content[end_match.end() + 3 :]
 
     try:
-        parsed = yaml_load(yaml_content)
+        parsed = toml_load(toml_content)
         if isinstance(parsed, dict):
             frontmatter = parsed
     except Exception:
-        # Fallback: simple key:value parsing for malformed YAML
-        for line in yaml_content.strip().split("\n"):
-            if ":" not in line:
+        # Fallback: simple key = value parsing for malformed TOML
+        for line in toml_content.strip().split("\n"):
+            if "=" not in line:
                 continue
-            key, value = line.split(":", 1)
-            frontmatter[key.strip()] = value.strip()
+            key, value = line.split("=", 1)
+            frontmatter[key.strip()] = value.strip().strip('"')
 
     return frontmatter, body
 
@@ -193,7 +181,7 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     """Return True when the skill is compatible with the current OS.
 
     Skills declare platform requirements via a top-level ``platforms`` list
-    in their YAML frontmatter::
+    in their TOML frontmatter::
 
         platforms: [macos]          # macOS only
         platforms: [macos, linux]   # macOS and Linux
@@ -221,7 +209,7 @@ _KNOWN_ENVIRONMENTS = frozenset()
 def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     """Return True when the skill is relevant to the current runtime environment.
 
-    Skills may declare an ``environments`` list in their YAML frontmatter.
+    Skills may declare an ``environments`` list in their TOML frontmatter.
     If the field is absent or empty the skill is relevant in **all**
     environments (backward-compatible default). With the Docker/s6
     environments gone, no known tag matches and every declared environment
@@ -261,7 +249,7 @@ def _raw_config_cache_clear() -> None:
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with a shared mtime+size keyed cache.
+    """Read config.toml with a shared mtime+size keyed cache.
 
     This module intentionally avoids importing ``son_of_anton_cli.config`` on the
     skill prompt/build path. A tiny local cache gives the same repeated-read
@@ -282,7 +270,7 @@ def _load_raw_config() -> Dict[str, Any]:
             return cached
 
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        parsed = toml_load(config_path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.debug("Could not read skill config %s: %s", config_path, e)
         return {}
@@ -296,7 +284,7 @@ def _load_raw_config() -> Dict[str, Any]:
 
 
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
-    """Read disabled skill names from config.yaml.
+    """Read disabled skill names from config.toml.
 
     Args:
         platform: Explicit platform name (e.g. ``"telegram"``).  When
@@ -366,8 +354,8 @@ def _normalize_string_set(values) -> Set[str]:
 # ── External skills directories ──────────────────────────────────────────
 
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
-# mtime_ns so a config.yaml edit mid-run is picked up automatically;
-# otherwise every call would re-read + re-YAML-parse the 15KB config,
+# mtime_ns so a config.toml edit mid-run is picked up automatically;
+# otherwise every call would re-read + re-TOML-parse the 15KB config,
 # which becomes the dominant cost of ``son-of-anton`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
@@ -381,14 +369,14 @@ def _external_dirs_cache_clear() -> None:
 
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """Read ``skills.external_dirs`` from config.toml and return validated paths.
 
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.son-of-anton/skills/`` are silently skipped.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
+    Cached in-process, keyed on ``config.toml`` mtime — the function is
+    called once per skill during banner / tool-registry scans, and TOML
     parsing a non-trivial config dominates ``son-of-anton`` cold-start time
     when the cache is absent.
     """
@@ -397,7 +385,7 @@ def get_external_skills_dirs() -> List[Path]:
         return []
 
     # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
+    # the full TOML parse, so the fast path is nearly free.
     try:
         stat = config_path.stat()
         cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
@@ -495,7 +483,7 @@ def get_all_skills_dirs() -> List[Path]:
 # demand procedure documents an agent will follow — auto-sourcing them from any
 # cloned repo is a prompt-injection vector. Project skills therefore only load
 # when the project root is listed in ``skills.trusted_project_dirs`` in
-# config.yaml (Codex-style per-path trust). Untrusted dirs are still
+# config.toml (Codex-style per-path trust). Untrusted dirs are still
 # *discoverable* via get_untrusted_project_skills_root() so the CLI can print
 # a one-line "run `son_of_anton skills trust`" notice.
 #
@@ -857,7 +845,7 @@ def is_external_skill_path(path) -> bool:
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
     metadata = frontmatter.get("metadata")
-    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
+    # Handle cases where metadata is not a dict (e.g., a string from malformed TOML)
     if not isinstance(metadata, dict):
         metadata = {}
     son_of_anton = metadata.get("son-of-anton") or {}
@@ -877,7 +865,7 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract config variable declarations from parsed frontmatter.
 
-    Skills declare config.yaml settings they need via::
+    Skills declare config.toml settings they need via::
 
         metadata:
           son_of_anton:
@@ -973,7 +961,7 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
 
 
 # Storage prefix: all skill config vars are stored under skills.config.*
-# in config.yaml.  Skill authors declare logical keys (e.g. "wiki.path");
+# in config.toml.  Skill authors declare logical keys (e.g. "wiki.path");
 # the system adds this prefix for storage and strips it for display.
 SKILL_CONFIG_PREFIX = "skills.config"
 
@@ -993,9 +981,9 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
 def resolve_skill_config_values(
     config_vars: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Resolve current values for skill config vars from config.yaml.
+    """Resolve current values for skill config vars from config.toml.
 
-    Skill config is stored under ``skills.config.<key>`` in config.yaml.
+    Skill config is stored under ``skills.config.<key>`` in config.toml.
     Returns a dict mapping **logical** keys (as declared by skills) to their
     current values (or the declared default if the key isn't set).
     Path values are expanded via ``os.path.expanduser``.

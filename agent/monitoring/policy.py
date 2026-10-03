@@ -20,7 +20,7 @@ def ensure_install_id(config: Dict[str, Any]) -> str:
 
     The id must survive gateway restarts (it becomes ``service.instance.id``
     on exported signals), so a freshly minted UUID is written back to
-    config.yaml immediately. The write is fail-open: if persisting fails
+    config.toml immediately. The write is fail-open: if persisting fails
     (read-only home, managed scope), the ephemeral id is still returned and
     a new one is minted next start.
 

@@ -1,6 +1,6 @@
 # Son of Anton — Status
 
-_Last updated 2026-10-02. History lives in git; this file is only current
+_Last updated 2026-10-03. History lives in git; this file is only current
 state, known future work, and the operational facts a fresh session needs._
 
 ## What this is
@@ -40,6 +40,21 @@ All of the following is merged to `main` and deployed on e-desktop:
 - **Streams.** A terminal usage chunk proves completion, so a provider that
   drops the `finish_reason` chunk no longer triggers a duplicate "continue"
   turn.
+- **TOML-only, and the physics package renamed.** Every user-authored format is
+  TOML: `config.toml`, `cli-config.toml`, managed config, `skins/*.toml`,
+  `problems/*/problem.toml`, `plugin.toml` manifests, SKILL.md frontmatter
+  (still `---` fenced, TOML body), `locales/*.toml`, and status phrases.
+  Reading is stdlib `tomllib`; writing goes through the serializer in
+  `utils.py` (no comment preservation — a TOML edit rewrites the document).
+  The physics mode lives in `autophysicist/` (was `physics_intern/`), with the
+  former `physics_intern/autophysicist/` loop flattened to the package root.
+  The `pyyaml`/`ruamel.yaml` pins are gone from `pyproject.toml` and the
+  YAML write linter in `tools/file_operations.py` is removed, so first-party
+  code imports no YAML library. `uv.lock` still carries `pyyaml` as a
+  transitive dependency of `uvicorn[standard]`.
+- **Third-party YAML is only recognized, never parsed.** LSP/media detection
+  still recognize `.yaml`/`.yml` for external projects, but nothing in Son of
+  Anton parses them.
 
 ## Known future work
 
@@ -102,14 +117,14 @@ Ordered by importance. Each item is independently scoped.
    output across 2 iterations (no RESULTS.txt / features / calib), critic is
    ~298s per iteration, `df_cache` capped at 50k events vs 1.8M–13.4M real,
    waveform polarity (+1 vs −1) never settled by an artifact, and pure files
-   carry two `Data_R` trees while `load_tree_data` reads only the first.
+    carry two `Data_R` trees while `load_tree_data` reads only the first.
 
 ## Operational notes
 
 - Repo `git@github.com:ewtodd/son-of-anton.git`, branch `main`. Sole
   authorship, no `Co-authored-by` trailers; the bot commit identity is in the
   repo git config.
-- Tests: `nix develop -c scripts/run_tests.sh` (727 tests, 67 files, ~36s).
+- Tests: `nix develop -c scripts/run_tests.sh` (735 tests, 68 files, ~35s).
   Pre-commit (`nix develop -c pre-commit install`) runs ruff plus that suite.
 - Deployment: `/etc/nixos` host `e-desktop`, flake input `son-of-anton`
   following `main`; bump the input and reactivate. Bifrost on oracle fronts

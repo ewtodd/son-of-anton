@@ -21,7 +21,7 @@ shed LRU transcripts through the existing soft-eviction path, which rebuilds
 from the persisted session on the next turn (#80764).
 
 Everything here is pure or read-only so it can be tested without a gateway.
-Config lives under ``agent.agent_cache`` in ``config.yaml``.
+Config lives under ``agent.agent_cache`` in ``config.toml``.
 """
 
 from __future__ import annotations
@@ -207,7 +207,7 @@ def resolve_agent_cache_bounds(config: Any) -> AgentCacheBounds:
         and protect_recent == 0
     ):
         # 0 means "shed anything" — distinct from unset. The isinstance
-        # guards keep `protect_recent: false` (a YAML-typo bool, False == 0)
+        # guards keep `protect_recent: false` (a TOML-typo bool, False == 0)
         # on the default instead of silently disabling MRU protection.
         protect_parsed = 0
 

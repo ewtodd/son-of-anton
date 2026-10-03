@@ -49,7 +49,7 @@ Security model:
   installed via this path. A typo in feature name doesn't get the user
   install-anything semantics.
 * **Opt-out.** Setting ``security.allow_lazy_installs: false`` in
-  ``config.yaml`` disables runtime installs in BOTH modes. Users in
+  ``config.toml`` disables runtime installs in BOTH modes. Users in
   restricted networks or strict security postures can pin themselves to
   whatever was installed at setup time.
 * **Offline detection.** If the install fails (offline, mirror down,
@@ -263,7 +263,7 @@ class _InstallResult:
 # agent venv and into a writable directory on a durable volume. Set by the
 # Docker image to /opt/data/lazy-packages. This is an internal bridge var,
 # not user-facing config: the user-facing knob remains
-# security.allow_lazy_installs in config.yaml. When unset, lazy installs go
+# security.allow_lazy_installs in config.toml. When unset, lazy installs go
 # into the active venv as before.
 _LAZY_TARGET_ENV = "SON_OF_ANTON_LAZY_INSTALL_TARGET"
 
@@ -393,7 +393,7 @@ def _allow_lazy_installs() -> bool:
 
     Resolution order:
 
-    1. ``security.allow_lazy_installs: false`` in config.yaml is an absolute
+    1. ``security.allow_lazy_installs: false`` in config.toml is an absolute
        opt-out — it disables installs in BOTH venv-scoped and durable-target
        modes. This is the user-facing kill switch.
     2. ``SON_OF_ANTON_DISABLE_LAZY_INSTALLS=1`` seals the *agent venv* (set by the

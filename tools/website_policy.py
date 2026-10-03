@@ -1,6 +1,6 @@
 """Website access policy helpers for URL-capable tools.
 
-This module loads a user-managed website blocklist from ~/.son-of-anton/config.yaml
+This module loads a user-managed website blocklist from ~/.son-of-anton/config.toml
 and optional shared list files. It is intentionally lightweight so web/browser
 tools can enforce URL policy without pulling in the heavier CLI config stack.
 
@@ -28,8 +28,8 @@ _DEFAULT_WEBSITE_BLOCKLIST = {
     "shared_files": [],
 }
 
-# Cache: parsed policy + timestamp.  Avoids re-reading config.yaml on every
-# URL check (a multi-URL extract with 50 pages would otherwise mean 51 YAML parses).
+# Cache: parsed policy + timestamp.  Avoids re-reading config.toml on every
+# URL check (a multi-URL extract with 50 pages would otherwise mean 51 TOML parses).
 _CACHE_TTL_SECONDS = 30.0
 _cache_lock = threading.Lock()
 _cached_policy: Optional[Dict[str, Any]] = None
@@ -38,7 +38,7 @@ _cached_policy_time: float = 0.0
 
 
 def _get_default_config_path() -> Path:
-    return get_son_of_anton_home() / "config.yaml"
+    return get_son_of_anton_home() / "config.toml"
 
 
 class WebsitePolicyError(Exception):
@@ -96,16 +96,12 @@ def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
 
     try:
-        import yaml
-    except ImportError:
-        logger.debug("PyYAML not installed — website blocklist disabled")
-        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+        import tomllib
 
-    try:
         with open(config_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
-    except yaml.YAMLError as exc:
-        raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
+            config = tomllib.loads(f.read()) or {}
+    except tomllib.TOMLDecodeError as exc:
+        raise WebsitePolicyError(f"Invalid config TOML at {config_path}: {exc}") from exc
     except OSError as exc:
         raise WebsitePolicyError(f"Failed to read config file {config_path}: {exc}") from exc
     if not isinstance(config, dict):
@@ -132,7 +128,7 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     """Load and return the parsed website blocklist policy.
 
     Results are cached for ``_CACHE_TTL_SECONDS`` to avoid re-reading
-    config.yaml on every URL check.  Pass an explicit ``config_path``
+    config.toml on every URL check.  Pass an explicit ``config_path``
     to bypass the cache (used by tests).
     """
     global _cached_policy, _cached_policy_path, _cached_policy_time
@@ -241,7 +237,7 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
     ``config_path`` explicitly (tests) to get strict error propagation.
     """
     # Fast path: if no explicit config_path and the cached policy is disabled
-    # or empty, skip all work (no YAML read, no host extraction).
+    # or empty, skip all work (no TOML read, no host extraction).
     if config_path is None:
         with _cache_lock:
             if _cached_policy is not None and not _cached_policy.get("enabled"):

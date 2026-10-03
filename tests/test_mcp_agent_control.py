@@ -114,8 +114,8 @@ def test_status_reports_the_pause_and_its_reason(instance_home, tools) -> None:
 
 def test_status_reports_the_window_the_instance_answers_in(instance_home, tools) -> None:
     """So the caller can tell "paused by me" from "asleep on its own"."""
-    (instance_home / "config.yaml").write_text(
-        "gateway:\n  active_hours: [20, 7]\n", encoding="utf-8"
+    (instance_home / "config.toml").write_text(
+        "[gateway]\nactive_hours = [20, 7]\n", encoding="utf-8"
     )
     assert _call(tools, "agent_status")["active_hours"] == [20, 7]
 

@@ -836,7 +836,7 @@ def _display_toolset_name(toolset_name: str) -> str:
 # The banner's tool panel needs the full tool registry (get_tool_definitions:
 # tools/*.py discovery + every check_fn), which costs ~0.5-0.9s cold and is
 # the single largest chunk of CLI time-to-banner. The tool list shown in the
-# banner is a pure function of (config.yaml, .env, code checkout, enabled
+# banner is a pure function of (config.toml, .env, code checkout, enabled
 # toolsets), so we snapshot the rendered inputs to disk after each launch
 # and replay them on the next one when the fingerprint matches. The agent's
 # REAL tool list is still computed fresh at first message (agent init) —

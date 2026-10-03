@@ -22,7 +22,7 @@ Usage:
 The fork ships no imperative installation surface. There is no `setup`,
 `update`, `uninstall`, `login`/`logout`, `doctor` or `gateway install`: the
 deployment is declared by the NixOS or Home Manager module, `systemctl` runs
-the service, and `settings` in that module owns config.yaml. Commands that
+the service, and `settings` in that module owns config.toml. Commands that
 mutated an install were carried over from upstream, already refused under
 managed mode, and are gone.
 """
@@ -330,29 +330,29 @@ load_son_of_anton_dotenv(
     load_external_secrets=sys.argv[1:2] != ["update"],
 )
 
-# Bridge security.redact_secrets from config.yaml → SON_OF_ANTON_REDACT_SECRETS env
+# Bridge security.redact_secrets from config.toml → SON_OF_ANTON_REDACT_SECRETS env
 # var BEFORE son_of_anton_logging imports agent.redact (which snapshots the flag at
-# module-import time). Without this, config.yaml's toggle is ignored because
+# module-import time). Without this, config.toml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
-# exactly once. Env var in .env still wins — this is config.yaml fallback only.
+# exactly once. Env var in .env still wins — this is config.toml fallback only.
 #
 # We also read network.force_ipv4 from the same yaml load to avoid two
-# separate config.yaml reads (saves ~17ms on every CLI startup — the second
+# separate config.toml reads (saves ~17ms on every CLI startup — the second
 # `load_config()` was doing a full deep-merge for one boolean lookup).
 _FORCE_IPV4_EARLY = False
 try:
     # Reuse read_raw_config()'s (mtime, size)-keyed cache instead of a bespoke
-    # yaml.load — the SAME parse then serves son_of_anton_logging's
+    # TOML parse — the SAME parse then serves son_of_anton_logging's
     # _read_logging_config and any later raw reads in this process, collapsing
-    # 3-4 config.yaml parses per invocation into one.
+    # 3-4 config.toml parses per invocation into one.
     from son_of_anton_cli.config import read_raw_config as _read_raw_early
 
-    _cfg_path = get_son_of_anton_home() / "config.yaml"
+    _cfg_path = get_son_of_anton_home() / "config.toml"
     if _cfg_path.exists():
         _early_cfg_raw = _read_raw_early() or {}
         # Managed scope: overlay administrator-pinned values so a managed
         # security.redact_secrets / network.force_ipv4 wins here too. This early
-        # bridge reads config.yaml directly (before load_config is usable), so
+        # bridge reads config.toml directly (before load_config is usable), so
         # without the overlay a managed redact_secrets toggle would be ignored.
         # Fail-open via the shared helper.
         try:
@@ -552,7 +552,7 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Cheap local checks first: auth.json and config.yaml are on-disk lookups,
+    # Cheap local checks first: auth.json and config.toml are on-disk lookups,
     # while the PROVIDER_REGISTRY sweep below spawns subprocesses (gh) and can
     # take 15-20s — long enough that desktop setup.status calls time out.
 
@@ -571,7 +571,7 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check config.yaml — if model is a dict with an explicit provider set,
+    # Check config.toml — if model is a dict with an explicit provider set,
     # the user has gone through setup (fresh installs have model as a plain
     # string).  Also covers custom endpoints that store api_key/base_url in
     # config rather than .env.
@@ -676,7 +676,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
             sys.stderr.write(
                 "To acknowledge data-training tiers for unattended runs, set "
                 "security.allow_data_training_tiers_noninteractive to true "
-                "in config.yaml.\n"
+                "in config.toml.\n"
             )
         sys.stderr.write(
             "Refusing this startup model override in non-interactive mode. "
@@ -1511,7 +1511,7 @@ def cmd_chat(args):
         os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
 
     # --ignore-user-config: make load_cli_config() / load_config() skip the
-    # user's ~/.son-of-anton/config.yaml and return built-in defaults. Set BEFORE
+    # user's ~/.son-of-anton/config.toml and return built-in defaults. Set BEFORE
     # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
     # import time). Credentials in .env are still loaded — this flag only
     # ignores behavioral/config settings.
@@ -1677,7 +1677,7 @@ def select_provider_and_model(args=None):
     current_model = current_model or "(not set)"
 
     # Read effective provider the same way the CLI does at startup:
-    # config.yaml model.provider > env var > auto-detect
+    # config.toml model.provider > env var > auto-detect
     config_provider = None
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
@@ -1814,7 +1814,7 @@ def select_provider_and_model(args=None):
     def _norm_base_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
 
-    # Add user-defined custom providers from config.yaml
+    # Add user-defined custom providers from config.toml
     _custom_provider_map = _named_custom_provider_map(
         config
     )  # key → {name, base_url, api_key}
@@ -2022,7 +2022,7 @@ def select_provider_and_model(args=None):
         if provider_info is None:
             print(
                 "Warning: the selected saved custom provider is no longer available. "
-                "It may have been removed from config.yaml. No change."
+                "It may have been removed from config.toml. No change."
             )
             return
         _model_flow_named_custom(config, provider_info)
@@ -2080,7 +2080,7 @@ def _clear_stale_openai_base_url():
 #
 # Son of Anton uses lightweight "auxiliary" models for side tasks (vision analysis,
 # context compaction, web extraction, session search, etc.). Each task has
-# its own provider+model pair in config.yaml under `auxiliary.<task>`.
+# its own provider+model pair in config.toml under `auxiliary.<task>`.
 #
 # The UI lives behind "Configure auxiliary models..." at the bottom of the
 # `son-of-anton model` provider picker. It does NOT re-run credential setup — it
@@ -2102,7 +2102,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
 ]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation.
-# Routing lives under top-level `delegation.*` in config.yaml (NOT
+# Routing lives under top-level `delegation.*` in config.toml (NOT
 # `auxiliary.delegation`) because delegate_task spawns full child agents via
 # tools/delegate_tool.py::_resolve_delegation_credentials(), which reads the
 # delegation section directly. "auto" here means "inherit the parent agent's
@@ -2185,7 +2185,7 @@ def _save_aux_choice(
     base_url: str = "",
     api_key: str = "",
 ) -> None:
-    """Persist an auxiliary task's provider/model to config.yaml.
+    """Persist an auxiliary task's provider/model to config.toml.
 
     Only writes the four routing fields — timeout, download_timeout, and any
     other task-specific settings are preserved untouched. The main model
@@ -2698,7 +2698,7 @@ def _save_custom_provider(
     base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
     key_env=""
 ):
-    """Save a custom endpoint to custom_providers in config.yaml.
+    """Save a custom endpoint to custom_providers in config.toml.
 
     Deduplicates by base_url — if the URL already exists, updates the
     model name, context_length, and api_mode but doesn't add a duplicate entry.
@@ -2765,13 +2765,13 @@ def _save_custom_provider(
     providers.append(entry)
     cfg["custom_providers"] = providers
     save_config(cfg)
-    print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
+    print(f'  💾 Saved to custom providers as "{name}" (edit in config.toml)')
 
 
 
 
 def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
+    """Let the user remove a saved custom provider from config.toml."""
     from son_of_anton_cli.config import load_config, save_config
 
     cfg = load_config()
@@ -4314,12 +4314,12 @@ def cmd_problem(args, parser=None):
     action = getattr(args, "problem_action", None)
 
     if action == "create":
-        from physics_intern.spec_builder import run as run_spec_builder
+        from autophysicist.spec_builder import run as run_spec_builder
 
         return run_spec_builder(args, parser)
 
     if action == "run":
-        from physics_intern.run import render_report, run_problem
+        from autophysicist.run import render_report, run_problem
 
         workspace = run_problem(
             args.spec,
@@ -4763,7 +4763,7 @@ def cmd_skills(args):
 def _cmd_skills_trust(args):
     """``son-of-anton skills trust [path]`` / ``son-of-anton skills untrust [path]``.
 
-    Manages ``skills.trusted_project_dirs`` in config.yaml. With no path,
+    Manages ``skills.trusted_project_dirs`` in config.toml. With no path,
     operates on the project root enclosing the current directory (nearest
     ancestor with ``.git``).
     """
@@ -4903,7 +4903,7 @@ def _guard_son_of_anton_home_access() -> None:
 
     A stale/cross-user home (plain ``su`` without ``-`` carries
     ``SON_OF_ANTON_HOME`` from the other account) makes every home path
-    PermissionError: .env, config.yaml, .managed, plugins/, sessions. We
+    PermissionError: .env, config.toml, .managed, plugins/, sessions. We
     cannot run in another account's 0700 home, so instead of a raw
     traceback from whichever module hits the wall first, one message
     naming the actual problem and the fix. ``--help`` / ``--version`` stay

@@ -49,8 +49,8 @@ def _platform_gate_env(name: str, default: str = "") -> str:
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
-    Handles both list inputs (YAML sequences) and comma-separated string
-    inputs (env vars or scalar YAML values).  A scalar string is split on
+    Handles both list inputs (TOML sequences) and comma-separated string
+    inputs (env vars or scalar TOML values).  A scalar string is split on
     commas so ``allow_from: "123,456"`` yields ``{"123", "456"}``, not
     ``{"1", "2", "3", ",", ...}``.
     """
@@ -467,7 +467,7 @@ class GatewayAuthorizationMixin:
                     return True
             # Some adapters gate access via config.extra.allow_from /
             # group_allow_from at intake but do not override enforces_own_access_policy.
-            # Check their allowlist here so config.yaml-configured allow_from works
+            # Check their allowlist here so config.toml-configured allow_from works
             # without requiring a separate {PLATFORM}_ALLOWED_USERS env var.
             adapter = self._adapter_for_source(source)
             if adapter is not None:

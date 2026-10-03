@@ -1038,7 +1038,7 @@ SERVERS: List[ServerDef] = [
         extensions=(".yaml", ".yml"),
         resolve_root=_root_yaml,
         build_spawn=_spawn_yaml_ls,
-        description="YAML — yaml-language-server",
+        description="TOML — yaml-language-server",
     ),
     ServerDef(
         server_id="lua-language-server",

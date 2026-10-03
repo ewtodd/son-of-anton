@@ -92,7 +92,7 @@ _DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
 
 
 def _coerce_id_list(raw: Any) -> FrozenSet[str]:
-    """Normalize a YAML-loaded admin/user list into a frozenset of strings.
+    """Normalize a TOML-loaded admin/user list into a frozenset of strings.
 
     Accepts ``None``, list, tuple, or comma-separated string. Stringifies
     each entry and strips whitespace; empty entries are dropped.
@@ -117,7 +117,7 @@ def _coerce_id_list(raw: Any) -> FrozenSet[str]:
 def _coerce_command_list(raw: Any) -> FrozenSet[str]:
     """Normalize a slash command allowlist.
 
-    Strips leading slashes so YAML can read either ``["help", "status"]``
+    Strips leading slashes so TOML can read either ``["help", "status"]``
     or ``["/help", "/status"]``. Lowercase canonicalization matches how
     ``resolve_command()`` stores names.
     """

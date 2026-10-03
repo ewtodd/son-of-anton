@@ -1,4 +1,4 @@
-"""A per-model `context_length` in config.yaml has to reach every caller.
+"""A per-model `context_length` in config.toml has to reach every caller.
 
 `custom_providers.<p>.models.<m>.context_length` was honoured only when the
 caller threaded the provider list through as an argument. One of the three call
@@ -62,7 +62,7 @@ def test_the_override_applies_when_the_caller_does_not(configured) -> None:
             "big-context-model", base_url=BASE_URL, provider="custom"
         )
         == 1_048_576
-    ), "fell through to the catalog default despite config.yaml declaring it"
+    ), "fell through to the catalog default despite config.toml declaring it"
 
 
 def test_each_model_gets_its_own_value(configured) -> None:

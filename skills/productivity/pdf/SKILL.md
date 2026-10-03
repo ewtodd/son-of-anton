@@ -1,15 +1,17 @@
 ---
-name: pdf
-description: Create, read, merge, fill, and secure PDF files.
-version: 1.0.0
-author: Nous Research
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [pdf, documents, forms, reportlab, pypdf, pdfplumber]
-    category: productivity
-    related_skills: [docx, xlsx, powerpoint, ocr-and-documents]
+name = "pdf"
+description = "Create, read, merge, fill, and secure PDF files."
+version = "1.0.0"
+author = "Nous Research"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["pdf", "documents", "forms", "reportlab", "pypdf", "pdfplumber"]
+category = "productivity"
+related_skills = ["docx", "xlsx", "powerpoint", "ocr-and-documents"]
 ---
 
 # PDF Skill

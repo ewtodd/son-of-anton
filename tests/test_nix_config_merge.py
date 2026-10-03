@@ -1,4 +1,4 @@
-"""The activation-time config.yaml merge can retract a key.
+"""The activation-time config.toml merge can retract a key.
 
 The bug this covers: the merge was two-way — on-disk as base, Nix settings
 layered on top — so it could add and overwrite but never remove. A key Nix
@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
-import yaml
+
+from utils import dump_toml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MERGE_PY = REPO_ROOT / "nix" / "config_merge.py"
@@ -34,7 +36,7 @@ def run_merge(merge_module, tmp_path, nix_settings, *, adopt=False, dry_run=Fals
     """Invoke the merge the way activation does, returning the resulting config."""
     nix_json = tmp_path / "nix.json"
     nix_json.write_text(json.dumps(nix_settings))
-    config_path = tmp_path / "config.yaml"
+    config_path = tmp_path / "config.toml"
     state_path = tmp_path / ".nix-managed.json"
 
     argv = [str(nix_json), str(config_path), "--state", str(state_path)]
@@ -52,11 +54,11 @@ def run_merge(merge_module, tmp_path, nix_settings, *, adopt=False, dry_run=Fals
     finally:
         sys.argv = saved
 
-    return yaml.safe_load(config_path.read_text()) or {}
+    return tomllib.loads(config_path.read_text()) or {}
 
 
 def write_config(tmp_path, data):
-    (tmp_path / "config.yaml").write_text(yaml.dump(data, sort_keys=False))
+    (tmp_path / "config.toml").write_text(dump_toml(data))
 
 
 def test_nix_keys_are_applied(merge_module, tmp_path) -> None:
@@ -104,7 +106,7 @@ def test_a_value_edited_after_nix_wrote_it_survives_retirement(
     merge_module, tmp_path
 ) -> None:
     run_merge(merge_module, tmp_path, {"gateway": {"model": "qwen", "extra": "nix"}})
-    config = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    config = tomllib.loads((tmp_path / "config.toml").read_text())
     config["gateway"]["extra"] = "changed at runtime"
     write_config(tmp_path, config)
 
@@ -152,7 +154,7 @@ def test_adopt_prunes_everything_nix_does_not_declare(merge_module, tmp_path) ->
 def test_dry_run_writes_nothing(merge_module, tmp_path) -> None:
     write_config(tmp_path, {"model": {"default": "old"}})
     run_merge(merge_module, tmp_path, {"model": {"default": "qwen"}}, dry_run=True)
-    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    on_disk = tomllib.loads((tmp_path / "config.toml").read_text())
     assert on_disk["model"]["default"] == "old"
     assert not (tmp_path / ".nix-managed.json").exists()
 

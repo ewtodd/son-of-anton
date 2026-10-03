@@ -65,7 +65,7 @@ def _ensure_croniter() -> bool:
 # store under its own SON_OF_ANTON_HOME, and a profile-scoped gateway runs that
 # profile's jobs under that same SON_OF_ANTON_HOME — so a job authored in profile
 # `coder` lives in `~/.son-of-anton/profiles/coder/cron/jobs.json` and executes with
-# `coder`'s `.env`, `config.yaml`, and skills. We deliberately anchor on
+# `coder`'s `.env`, `config.toml`, and skills. We deliberately anchor on
 # `get_son_of_anton_home()` (the active profile home), NOT `get_default_son_of_anton_root()`
 # (the shared root). Anchoring at the root would funnel every profile's jobs
 # into one shared `jobs.json` and run them under whatever SON_OF_ANTON_HOME the
@@ -1626,7 +1626,7 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
     Mirrors the unpinned-model resolution in ``cron/scheduler.py`` ``run_job``:
-    read ``config.yaml`` ``model.default`` (or the ``model`` alias / bare string
+    read ``config.toml`` ``model.default`` (or the ``model`` alias / bare string
     form), applying the managed-scope overlay and env expansion. Used by
     ``create_job`` to snapshot the default model for unpinned jobs so a later
     swap of the global default is detected at fire time (#44585).
@@ -1637,7 +1637,7 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     try:
         from son_of_anton_cli.config import _expand_env_vars, read_user_config_raw
 
-        cfg_path = get_son_of_anton_home() / "config.yaml"
+        cfg_path = get_son_of_anton_home() / "config.toml"
         if not cfg_path.exists():
             return None
         cfg = read_user_config_raw(cfg_path)
@@ -1681,7 +1681,7 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     Spelling-only validation at the storage choke point: the SAME parser
     every other effort surface uses (``son_of_anton_constants.parse_reasoning_effort``)
     decides validity, so the cron knob can never be stricter or looser than
-    its config.yaml sibling. Capability (whether the resolved model supports
+    its config.toml sibling. Capability (whether the resolved model supports
     the level) is intentionally NOT checked here — the model is not knowable
     at create time (unpinned jobs, auth fallback), and the provider
     transports already clamp/omit at send time.

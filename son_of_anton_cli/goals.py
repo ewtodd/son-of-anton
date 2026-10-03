@@ -2020,7 +2020,7 @@ class GoalManager:
             state.status = "paused"
             state.paused_reason = (
                 f"judge API unreachable {state.consecutive_transport_failures} turns in a row "
-                f"(check auxiliary.goal_judge provider/key in config.yaml)"
+                f"(check auxiliary.goal_judge provider/key in config.toml)"
             )
             save_goal(self.session_id, state)
             return {
@@ -2032,7 +2032,7 @@ class GoalManager:
                 "message": (
                     f"⏸ Goal paused — judge API returned errors "
                     f"({state.consecutive_transport_failures} turns). "
-                    "Check the goal_judge provider/key in ~/.son-of-anton/config.yaml:\n"
+                    "Check the goal_judge provider/key in ~/.son-of-anton/config.toml:\n"
                     "  auxiliary:\n"
                     "    goal_judge:\n"
                     "      provider: custom\n"
@@ -2062,7 +2062,7 @@ class GoalManager:
                 "message": (
                     f"⏸ Goal paused — the judge model ({state.consecutive_parse_failures} turns) "
                     "isn't returning the required JSON verdict. Route the judge to a stricter "
-                    "model in ~/.son-of-anton/config.yaml:\n"
+                    "model in ~/.son-of-anton/config.toml:\n"
                     "  auxiliary:\n"
                     "    goal_judge:\n"
                     "      provider: openrouter\n"

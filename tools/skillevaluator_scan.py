@@ -30,7 +30,7 @@ The scanner binary is optional::
     uv tool install --python 3.13 \
         "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
 
-Enable/disable via ``skills.tier1_advisory`` in config.yaml (default: on;
+Enable/disable via ``skills.tier1_advisory`` in config.toml (default: on;
 a no-op unless the binary is installed).
 """
 

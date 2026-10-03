@@ -133,7 +133,7 @@ def restore_registration(
 
 
 def _read_config_key(*path: str) -> Optional[str]:
-    """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""
+    """Resolve a dotted config key from ``config.toml``. Returns None on miss."""
     try:
         from son_of_anton_cli.config import load_config_readonly
 
@@ -314,7 +314,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
 
 
 def _keyless_tier_enabled() -> bool:
-    """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
+    """Read ``web.keyless_fallback`` from config.toml (default: enabled)."""
     try:
         from son_of_anton_cli.config import load_config
 
@@ -339,7 +339,7 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
     follow-up: pi314's disabled-plugin symptom).
 
     Pass ``capability`` ("search" | "extract") to resolve the configured
-    name straight from ``config.yaml`` (``web.<capability>_backend`` →
+    name straight from ``config.toml`` (``web.<capability>_backend`` →
     ``web.backend``). This is more reliable than the resolved backend the
     dispatcher fell back to, since a disabled provider fails the
     ``_is_backend_available`` gate and the dispatcher silently drops to
@@ -388,7 +388,7 @@ def get_active_search_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web search provider.
 
     Reads ``web.search_backend`` (preferred) or ``web.backend`` (shared
-    fallback) from config.yaml; falls back per the module docstring.
+    fallback) from config.toml; falls back per the module docstring.
     """
     explicit = _read_config_key("web", "search_backend") or _read_config_key("web", "backend")
     return _resolve(explicit, capability="search")
@@ -398,7 +398,7 @@ def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web extract provider.
 
     Reads ``web.extract_backend`` (preferred) or ``web.backend`` (shared
-    fallback) from config.yaml; falls back per the module docstring.
+    fallback) from config.toml; falls back per the module docstring.
     """
     explicit = _read_config_key("web", "extract_backend") or _read_config_key("web", "backend")
     return _resolve(explicit, capability="extract")

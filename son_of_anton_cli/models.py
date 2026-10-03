@@ -677,7 +677,7 @@ def _extract_model_name(entry: Any) -> Optional[str]:
 # this list:  son-of-anton model, /model, list_authenticated_providers.
 #
 # Fields:
-#   slug        — internal provider ID (used in config.yaml, --provider flag)
+#   slug        — internal provider ID (used in config.toml, --provider flag)
 #   label       — short display name
 #   tui_desc    — longer description for the `son-of-anton model` interactive picker
 # ---------------------------------------------------------------------------
@@ -689,7 +689,7 @@ class ProviderEntry(NamedTuple):
 
 # The fork's provider surface: OpenAI-compatible API-key providers. Local /
 # self-hosted endpoints (llama-swap, ollama, vllm, ...) arrive as custom
-# providers via config.yaml and the providers/ plugin registry below.
+# providers via config.toml and the providers/ plugin registry below.
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
 ]
@@ -2000,13 +2000,13 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 
 def _get_custom_base_url() -> str:
-    """Get the custom endpoint base_url from config.yaml."""
+    """Get the custom endpoint base_url from config.toml."""
     model_cfg = _get_model_config_dict()
     return str(model_cfg.get("base_url", "")).strip()
 
 
 def _get_provider_config_dict(provider: str) -> dict[str, Any]:
-    """Return config.yaml providers.<provider>, or an empty dict."""
+    """Return config.toml providers.<provider>, or an empty dict."""
     key = str(provider or "").strip()
     if not key:
         return {}
@@ -2936,7 +2936,7 @@ def _openai_discovery_base_url(provider: str) -> str:
 
     Mirrors the runtime precedence so discovery probes the SAME endpoint
     inference uses: ``$OPENAI_BASE_URL`` (explicit env override) →
-    ``model.base_url`` from config.yaml when the configured provider matches
+    ``model.base_url`` from config.toml when the configured provider matches
     → the canonical default. Previously this read the env var only, so a
     config-set data-residency host (``us.api.openai.com``) was ignored and
     the catalog kept coming from ``api.openai.com``.
@@ -3349,7 +3349,7 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # Effective configured endpoint: config.yaml's model.base_url changes the
+    # Effective configured endpoint: config.toml's model.base_url changes the
     # endpoint discovery probes (data-residency hosts) without touching any
     # env var, so it must change the fingerprint too or `son-of-anton config set
     # model.base_url ...` keeps serving the previous endpoint's cached

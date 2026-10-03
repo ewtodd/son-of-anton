@@ -1,8 +1,8 @@
 """Managed scope — IT-pushed, user-immutable config & env layer.
 
 A system-level directory (default ``/etc/son-of-anton``, root-owned and not
-user-writable) supplies ``config.yaml`` and ``.env`` values that WIN over the
-user's ``~/.son-of-anton/config.yaml`` and ``~/.son-of-anton/.env`` on a per-leaf-key basis.
+user-writable) supplies ``config.toml`` and ``.env`` values that WIN over the
+user's ``~/.son-of-anton/config.toml`` and ``~/.son-of-anton/.env`` on a per-leaf-key basis.
 
 This is DISTINCT from ``son_of_anton_cli.config.is_managed()`` / ``SON_OF_ANTON_MANAGED``,
 which is a coarse package-manager write-lock (declarative-distro / formula
@@ -24,7 +24,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-import yaml
+import tomllib
 
 logger = logging.getLogger(__name__)
 
@@ -113,14 +113,14 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
 
 
 def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+    """Parsed managed config.toml, or {} when absent/malformed (fail-open)."""
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
     parsed = _cached_read(
-        managed_dir / "config.yaml",
+        managed_dir / "config.toml",
         _CONFIG_CACHE,
-        lambda f: yaml.safe_load(f) or {},
+        lambda f: tomllib.loads(f.read()) or {},
     )
     return parsed if isinstance(parsed, dict) else {}
 

@@ -6,7 +6,7 @@ implementing the ContextEngine ABC.
 
 Context engines are separate from the general plugin system — they live
 in the repo and are always available without user installation.  Only ONE
-can be active at a time, selected via ``context.engine`` in config.yaml.
+can be active at a time, selected via ``context.engine`` in config.toml.
 The default engine is ``"compactor"`` (the built-in ContextCompactor).
 
 Usage:
@@ -37,7 +37,7 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
     """Scan plugins/context_engine/ for available engines.
 
     Returns list of (name, description, is_available) tuples.
-    Does NOT import the engines — just reads plugin.yaml for metadata
+    Does NOT import the engines — just reads plugin.toml for metadata
     and does a lightweight availability check.
     """
     results = []
@@ -51,14 +51,14 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
         if not init_file.exists():
             continue
 
-        # Read description from plugin.yaml if available
+        # Read description from plugin.toml if available
         desc = ""
-        yaml_file = child / "plugin.yaml"
-        if yaml_file.exists():
+        manifest_file = child / "plugin.toml"
+        if manifest_file.exists():
             try:
-                import yaml
-                with open(yaml_file, encoding="utf-8-sig") as f:
-                    meta = yaml.safe_load(f) or {}
+                import tomllib
+                with open(manifest_file, encoding="utf-8-sig") as f:
+                    meta = tomllib.loads(f.read()) or {}
                 desc = meta.get("description", "")
             except Exception:
                 pass

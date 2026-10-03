@@ -32,7 +32,7 @@ def _now() -> datetime:
 # interrupted by a restart is only auto-resumed — and only returned by
 # ``get_or_create_session`` — while it stays within this window of when
 # ``resume_pending`` was marked.  ``gateway/run.py`` bridges
-# ``config.yaml`` ``agent.gateway_auto_continue_freshness`` into
+# ``config.toml`` ``agent.gateway_auto_continue_freshness`` into
 # ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` at startup.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
@@ -42,7 +42,7 @@ def auto_continue_freshness_window() -> float:
 
     Single source of truth for both the resume scheduler (``gateway/run.py``)
     and the routing-time zombie gate in ``get_or_create_session``.  Reads
-    ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
+    ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.toml``
     ``agent.gateway_auto_continue_freshness`` at gateway startup) and falls
     back to the module default when unset or malformed.  A non-positive value
     disables the freshness gate (restores the pre-fix "always fresh" behaviour
@@ -353,7 +353,7 @@ def _slack_tools_loaded() -> bool:
          registry (tools/mcp_tool.get_registered_mcp_server_names()), whose
          name suggests Slack. This is the real, availability-filtered
          signal (post-connection, post include/exclude filtering) rather
-         than just what's listed in config.yaml -- a configured-but-
+         than just what's listed in config.toml -- a configured-but-
          unconnected or zero-tool MCP server must not claim capability.
          Named MCP servers are process-wide (one gateway connects each MCP
          server once, not per-session), so this check is intentionally NOT
@@ -1616,7 +1616,7 @@ class SessionStore:
                 "sessions (CLI, TUI, and gateway) live in ~/.son-of-anton/state.db "
                 "and are shown by `son-of-anton sessions list` and `/sessions`. "
                 "Disable this file with `gateway.write_sessions_json: false` "
-                "in config.yaml."
+                "in config.toml."
             ),
             **data,
         }

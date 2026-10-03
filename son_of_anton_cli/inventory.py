@@ -579,7 +579,7 @@ def _append_unconfigured_rows(
     """Build fallback rows for canonical providers missing from ``rows``.
 
     Most missing canonical providers become empty setup skeletons. The one
-    exception is the *current* configured provider: if config.yaml still points
+    exception is the *current* configured provider: if config.toml still points
     at it but credentials are presently unavailable, keep a visible row carrying
     the saved model so GUI pickers don't silently snap to some other provider.
     """

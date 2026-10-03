@@ -60,23 +60,25 @@ nix run .# --  # start the agent (Textual interface)
 nix run .# -- -c   # continue this directory's most recent session
 ```
 <!---->
-It reads `~/.son-of-anton/config.yaml` for settings and `~/.son-of-anton/.env`
+It reads `~/.son-of-anton/config.toml` for settings and `~/.son-of-anton/.env`
 for secrets.
 A local model endpoint is configured like any other
 OpenAI-compatible provider:
 <!---->
-```yaml
-model:
-  default: qwen3.8-27b-coding   # what the CLI opens with
-  provider: custom
-gateway:
-  model: gemma-4-26b            # what the gateway answers with, if different
-custom_providers:
-  custom:
-    base_url: http://127.0.0.1:8080/v1
-physics:
-  model: qwen3.8-27b-coding
-  base_url: http://127.0.0.1:8080/v1
+```toml
+[model]
+default = "qwen3.8-27b-coding"   # what the CLI opens with
+provider = "custom"
+
+[gateway]
+model = "gemma-4-26b"            # what the gateway answers with, if different
+
+[custom_providers.custom]
+base_url = "http://127.0.0.1:8080/v1"
+
+[physics]
+model = "qwen3.8-27b-coding"
+base_url = "http://127.0.0.1:8080/v1"
 ```
 <!---->
 ## Sessions
@@ -143,14 +145,13 @@ plus your notes. Embeddings come from an OpenAI-compatible `/v1/embeddings`
 endpoint (`base_url`, `model`, `api_key_env`) — for example Bifrost in front
 of the bge-m3 llama.cpp server:
 
-```yaml
-memory:
-  rag:
-    enabled: true
-    base_url: http://10.0.0.6:4002/v1
-    model: bge-m3
-    api_key_env: BIFROST_SOA_VK
-    top_k: 5
+```toml
+[memory.rag]
+enabled = true
+base_url = "http://10.0.0.6:4002/v1"
+model = "bge-m3"
+api_key_env = "BIFROST_SOA_VK"
+top_k = 5
 ```
 
 Notes need no file list. Drop a markdown file under
@@ -220,20 +221,22 @@ With `bwrap` missing it **fails
 closed** — `physics.sandbox: "off"` is the explicit opt-in to running
 unconfined.
 <!---->
-```yaml
-physics:
-  model: deepseek-v4-flash          # the Research Manager: strategy, verification
-  coder_model: qwen3.8-27b          # whoever is writing code — see below
-  python: /nix/store/…-son-of-anton-physics-runtime/bin/python3
-  sandbox: bwrap                    # auto | bwrap | off
-  data_dirs: [~/lab-data]           # mounted read-only into every computation
-  workspace_root: ~/runs            # each run gets a fresh git-versioned subdir
-  critique_every_n: 1               # review each iteration from outside
-  mcp:                              # lookup tools, per role
-    server: oracle                  # an entry in the top-level mcp_servers
-    roles:
-      manager:  [arxiv, context7]   # strategy wants the literature
-      subagent: [context7]          # writing a script wants the API
+```toml
+[physics]
+model = "deepseek-v4-flash"       # the Research Manager: strategy, verification
+coder_model = "qwen3.8-27b"       # whoever is writing code — see below
+python = "/nix/store/…-son-of-anton-physics-runtime/bin/python3"
+sandbox = "bwrap"                 # auto | bwrap | off
+data_dirs = ["~/lab-data"]        # mounted read-only into every computation
+workspace_root = "~/runs"         # each run gets a fresh git-versioned subdir
+critique_every_n = 1              # review each iteration from outside
+
+[physics.mcp]
+server = "oracle"                 # an entry in the top-level mcp_servers
+
+[physics.mcp.roles]
+manager = ["arxiv", "context7"]   # strategy wants the literature
+subagent = ["context7"]           # writing a script wants the API
 ```
 <!---->
 ### The critic
@@ -253,10 +256,9 @@ One call per iteration is a rounding error against a Manager that spends five
 rounds and several sub-agent dispatches, which makes this the one place a slow,
 more knowledgeable model earns its latency:
 
-```yaml
-physics:
-  agent_models:
-    critic: deepseek-v4-flash-local
+```toml
+[physics.agent_models]
+critic = "deepseek-v4-flash-local"
 ```
 
 ### Two models, split by role
@@ -321,7 +323,7 @@ computations still have no network.
 <!---->
 ### Writing a problem spec
 <!---->
-A spec is a `problem.yaml`: the task text, the `data:` paths to expose, and the
+A spec is a `problem.toml`: the task text, the `data:` paths to expose, and the
 numeric `checks` that score `RESULTS.txt`.
 `son-of-anton problem create`
 writes one from a dataset and a one-line goal:
@@ -331,7 +333,7 @@ son-of-anton problem create \
     --data ~/lab-data/run42 \
     --goal "measure the half-life; any fitting method is fine" \
     --truth reference_results.txt \
-    -o problems/run42/problem.yaml
+    -o problems/run42/problem.toml
 ```
 <!---->
 The probe does the mechanical part deterministically — ROOT trees, branches and
@@ -348,7 +350,7 @@ probe plus `--truth`.
 ### Running a problem spec
 <!---->
 ```bash
-son-of-anton problem run problems/run42/problem.yaml --max-iterations 5
+son-of-anton problem run problems/run42/problem.toml --max-iterations 5
 ```
 <!---->
 It prints `ANSWER.md` and `FORMAL_EVAL.md` when it finishes.
@@ -387,7 +389,7 @@ A gateway process runs the cron scheduler; `son-of-anton cron <verb>` (or
 `/cron`) manages jobs, and the agent can schedule through the `cronjob` tool.
 <!---->
 Jobs without an explicit `--provider` / `--model` pin follow the global default,
-re-resolved from `config.yaml` on every run. By default a **model-drift guard**
+re-resolved from `config.toml` on every run. By default a **model-drift guard**
 fails those unpinned jobs closed: if the global default has changed since the job
 was created, the run is skipped (no inference call) and a one-time alert tells
 you to pin the axis. That protects an unattended job from silently inheriting a
@@ -397,9 +399,9 @@ If your models are served locally and there is no spend to protect against, the
 guard is just friction. Turn it off and unpinned jobs track the live default
 model/provider at run time instead of `drift_skip`-ing:
 <!---->
-```yaml
-cron:
-  model_drift_guard: false
+```toml
+[cron]
+model_drift_guard = false
 ```
 <!---->
 Pinned jobs and `cron.model` / `cron.model_provider` fleet defaults are never
@@ -569,9 +571,9 @@ services.son-of-anton = {
 users.users.YOUR-ACCOUNT.linger = true;
 ```
 <!---->
-## What `settings` does to config.yaml
+## What `settings` does to config.toml
 <!---->
-Son of Anton writes `config.yaml` at runtime too — `son-of-anton config set`,
+Son of Anton writes `config.toml` at runtime too — `son-of-anton config set`,
 the settings panes, `/model` — so activation merges into it rather than
 replacing it. The merge is three-way: it records what it wrote in
 `~/.son-of-anton/.nix-managed.json`, so the next activation can tell a key you
@@ -583,7 +585,7 @@ The first activation after that state file appears cannot attribute anything to
 Nix, so it removes nothing and instead lists the keys on disk that Nix does not
 declare. If they are leftovers from an older generation rather than runtime
 settings, `pruneUnmanagedSettings = true` for one rebuild clears them. Leave it
-on if you want `config.yaml` purely declarative and are willing to lose runtime
+on if you want `config.toml` purely declarative and are willing to lose runtime
 edits on every rebuild.
 <!---->
 ## Shell completions
@@ -605,7 +607,7 @@ son-of-anton completion fish > ~/.config/fish/completions/son-of-anton.fish
 This is not an imperative program. There is no `setup`, `update`, `uninstall`,
 `login`/`logout`, `doctor`, or `gateway install|start|stop`: the deployment is
 declared by the NixOS or Home Manager module, `systemctl` runs the service, and
-that module's `settings` owns `config.yaml`. `gateway` has two actions, `run`
+that module's `settings` owns `config.toml`. `gateway` has two actions, `run`
 and `status`.
 <!---->
 (`mcp install` and `skills install` stay — those add content the agent manages
@@ -628,10 +630,10 @@ config already sets. To author commits under a dedicated account instead —
 while keeping *you* as the committer, so the log reads "authored by the
 account, committed by you" — set both:
 
-```yaml
-git:
-  author_name: some-bot
-  author_email: 12345+some-bot@users.noreply.github.com
+```toml
+[git]
+author_name = "some-bot"
+author_email = "12345+some-bot@users.noreply.github.com"
 ```
 <!---->
 On the command line, `son-of-anton -c [name]` continues this directory's most

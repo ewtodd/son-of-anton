@@ -295,8 +295,8 @@ def run_dump(args):
 
     profile = "(default)"
 
-    # Terminal backend — report the EFFECTIVE backend, not just config.yaml.
-    # ``terminal.backend`` in config.yaml is bridged to the TERMINAL_ENV env var,
+    # Terminal backend — report the EFFECTIVE backend, not just config.toml.
+    # ``terminal.backend`` in config.toml is bridged to the TERMINAL_ENV env var,
     # but a TERMINAL_ENV set directly in .env / the shell overrides config and is
     # what terminal_tool actually uses (tools/terminal_tool.py reads TERMINAL_ENV).
     # Reporting only the config value hides that override and sends users chasing
@@ -308,7 +308,7 @@ def run_dump(args):
     env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     if env_backend and env_backend != str(config_backend).strip().lower():
         backend = (
-            f"{env_backend}  (TERMINAL_ENV overrides config.yaml "
+            f"{env_backend}  (TERMINAL_ENV overrides config.toml "
             f"terminal.backend={config_backend})"
         )
     else:

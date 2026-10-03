@@ -837,7 +837,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
         return False, "zip archive is empty"
 
     # Look for telltale files that a son-of-anton home would have
-    markers = {"config.yaml", ".env", "state.db"}
+    markers = {"config.toml", ".env", "state.db"}
     found = set()
     for n in names:
         # Could be at the root or one level deep (if someone zipped the directory)
@@ -848,7 +848,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     if not found:
         return False, (
             "zip does not appear to be a Son of Anton backup "
-            "(no config.yaml, .env, or state databases found)"
+            "(no config.toml, .env, or state databases found)"
         )
 
     return True, ""
@@ -857,7 +857,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
 def _detect_prefix(zf: zipfile.ZipFile) -> str:
     """Detect if the zip has a common directory prefix wrapping all entries.
 
-    Some tools zip as `.son-of-anton/config.yaml` instead of `config.yaml`.
+    Some tools zip as `.son-of-anton/config.toml` instead of `config.toml`.
     Returns the prefix to strip (empty string if none).
     """
     names = [n for n in zf.namelist() if not n.endswith("/")]
@@ -917,7 +917,7 @@ def _extract_member_atomically(
     complete new contents.
 
     ``atomic_replace`` rather than a bare ``os.replace``: it resolves a
-    symlinked target first, so a deployment that links ``config.yaml`` into a
+    symlinked target first, so a deployment that links ``config.toml`` into a
     dotfiles repo keeps the link instead of having it silently swapped for a
     regular file (GitHub #16743), and it falls back to copy/fsync/unlink on
     ``EXDEV``/``EBUSY`` for cross-device and bind-mount installs.  That
@@ -947,7 +947,7 @@ def _extract_member_atomically(
     """
     # ``_preserve_file_mode`` returns None when the target does not exist (or
     # cannot be stat'd), in which case the umask-derived create-mode applies —
-    # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
+    # the same shape as ``atomic_toml_write``'s ``create_mode`` fallback.
     mode = _preserve_file_mode(target)
     owner = _preserve_file_owner(target)
     if mode is None:
@@ -988,7 +988,7 @@ def _extract_member_atomically(
             dst.flush()
             os.fsync(dst.fileno())
         real_path = Path(atomic_replace(tmp_name, target))
-        # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
+        # Owner first, mode second — the ordering ``atomic_toml_write`` uses,
         # because chown drops setuid/setgid and a mode restore that ran first
         # would be partly undone.  Here ``mode`` no longer carries those bits,
         # so the two agree: neither step can re-elevate the restored file.
@@ -1034,7 +1034,7 @@ def run_import(args) -> None:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
         # Check for existing installation
-        has_config = (son_of_anton_root / "config.yaml").exists()
+        has_config = (son_of_anton_root / "config.toml").exists()
         has_env = (son_of_anton_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
@@ -1207,7 +1207,7 @@ def run_import(args) -> None:
 # are recoverable if anything goes wrong (issue #15733).
 _QUICK_STATE_FILES = (
     "state.db",
-    "config.yaml",
+    "config.toml",
     ".env",
     "auth.json",
     "cron/jobs.json",

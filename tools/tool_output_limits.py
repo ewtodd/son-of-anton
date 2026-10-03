@@ -13,11 +13,11 @@ hardcoded constants in two places:
   ``MAX_LINE_LENGTH = 2000`` (read_file pagination cap + per-line cap)
 
 This module centralises those values behind a single config section
-(``tool_output`` in ``config.yaml``) so power users can tune them
+(``tool_output`` in ``config.toml``) so power users can tune them
 without patching the source. The existing hardcoded numbers remain as
 defaults, so behaviour is unchanged when the config key is absent.
 
-Example ``config.yaml``::
+Example ``config.toml``::
 
     tool_output:
       max_bytes: 100000        # terminal output cap (chars)
@@ -35,7 +35,7 @@ from typing import Any, Dict
 
 # Hardcoded defaults — these match the pre-existing values, so adding
 # this module is behaviour-preserving for users who don't set
-# ``tool_output`` in config.yaml.
+# ``tool_output`` in config.toml.
 DEFAULT_MAX_BYTES = 50_000       # terminal_tool.MAX_OUTPUT_CHARS
 DEFAULT_MAX_LINES = 2000         # file_operations.MAX_LINES
 DEFAULT_MAX_LINE_LENGTH = 2000   # file_operations.MAX_LINE_LENGTH

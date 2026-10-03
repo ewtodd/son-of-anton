@@ -4,7 +4,7 @@ Covers the two failure modes found by the live deployment:
 - An unreadable ``$SON_OF_ANTON_HOME/.env`` (stale/cross-user HOME) must
   fail open instead of crashing startup with a raw PermissionError.
 - A dotenv reload must never clobber the ``TERMINAL_*`` runtime contract
-  that the launcher bridged from config.yaml.
+  that the launcher bridged from config.toml.
 """
 
 import os
@@ -43,7 +43,7 @@ def test_unreadable_dotenv_fails_open(tmp_path) -> None:
 def test_dotenv_reload_does_not_clobber_terminal_contract(tmp_path, monkeypatch) -> None:
     """A later dotenv reload must not overwrite TERMINAL_* already bridged.
 
-    The CLI bridges TERMINAL_ENV/TERMINAL_CWD from config.yaml (local
+    The CLI bridges TERMINAL_ENV/TERMINAL_CWD from config.toml (local
     backend contract = the launch directory). A stale .env left by an older
     setup (TERMINAL_ENV=docker/ssh, a configured terminal.cwd) must lose to
     that bridge on every reload (run_agent import, gateway per-turn reload,

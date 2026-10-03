@@ -107,7 +107,7 @@ def _get_subagent_approval_callback():
 
     Config key: delegation.subagent_auto_approve (bool, default False).
     Reads via the same _load_config() path as the rest of delegate_task so
-    priority is config.yaml > (no env override for this knob) > default.
+    priority is config.toml > (no env override for this knob) > default.
     """
     cfg = _load_config()
     val = cfg.get("subagent_auto_approve", False)
@@ -846,7 +846,7 @@ def _get_max_concurrent_children() -> int:
     Users can raise this as high as they want; only the floor (1) is enforced.
 
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
-    uses, keeping config priority consistent (config.yaml > env > default).
+    uses, keeping config priority consistent (config.toml > env > default).
     """
     cfg = _load_config()
     val = cfg.get("max_concurrent_children")
@@ -907,7 +907,7 @@ def _get_max_async_children() -> int:
     queued) so a runaway model can't pile up unbounded background work; the
     caller falls back to running the work synchronously.
 
-    A leftover ``max_async_children`` in config.yaml is ignored (the config
+    A leftover ``max_async_children`` in config.toml is ignored (the config
     migration removes it, folding a raised value into
     ``max_concurrent_children``); we log a one-time deprecation warning if
     one is still present.
@@ -919,7 +919,7 @@ def _get_max_async_children() -> int:
         logger.warning(
             "delegation.max_async_children is deprecated and ignored; "
             "delegation.max_concurrent_children now caps background "
-            "delegations too. Remove the stale key from config.yaml."
+            "delegations too. Remove the stale key from config.toml."
         )
     return _get_max_concurrent_children()
 
@@ -1016,7 +1016,7 @@ def _get_orchestrator_enabled() -> bool:
     val = cfg.get("orchestrator_enabled", True)
     if isinstance(val, bool):
         return val
-    # Accept "true"/"false" strings from YAML that doesn't auto-coerce.
+    # Accept "true"/"false" strings from TOML that doesn't auto-coerce.
     if isinstance(val, str):
         return val.strip().lower() in {"true", "1", "yes", "on"}
     return True
@@ -1732,7 +1732,7 @@ def _build_child_agent(
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
     # total iterations across parent + subagents can exceed the parent's
-    # max_iterations.  The user controls the per-subagent cap in config.yaml.
+    # max_iterations.  The user controls the per-subagent cap in config.toml.
 
     child_thinking_cb = None
     if child_progress_cb:
@@ -1786,7 +1786,7 @@ def _build_child_agent(
             raise ValueError(
                 f"Pinned delegation command '{override_acp_command}' was not "
                 f"found on PATH. Install it or remove delegation.command from "
-                f"config.yaml."
+                f"config.toml."
             )
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
@@ -1815,7 +1815,7 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+        # Keep the raw value — ``str(x or "")`` would coerce a TOML boolean
         # False (``reasoning_effort: false``) to "" and inherit the parent
         # instead of disabling thinking for children.
         delegation_effort = delegation_cfg.get("reasoning_effort")
@@ -3665,7 +3665,7 @@ def delegate_task(
         return tool_error(
             f"Delegation depth limit reached (depth={depth}, "
             f"max_spawn_depth={max_spawn}). Raise "
-            f"delegation.max_spawn_depth in config.yaml if deeper "
+            f"delegation.max_spawn_depth in config.toml if deeper "
             f"nesting is required (no hard ceiling, but each level "
             f"multiplies API cost)."
         )
@@ -3718,7 +3718,7 @@ def delegate_task(
                 f"max_concurrent_children is {max_children}. "
                 f"Either reduce the task count, split into multiple "
                 f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
+                f"delegation.max_concurrent_children in config.toml."
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
@@ -4312,7 +4312,7 @@ def delegate_task(
                 "The background delegation pool was at capacity "
                 "(delegation.max_concurrent_children), so the subagent(s) ran "
                 "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
+                "delegation.max_concurrent_children in config.toml to allow "
                 "more concurrent background delegations."
             )
         return json.dumps(_cap_result, ensure_ascii=False)
@@ -4565,7 +4565,7 @@ def _load_config() -> dict:
     ``SON_OF_ANTON_IGNORE_USER_CONFIG=1`` (``son-of-anton chat --ignore-user-config``) is
     only honored by the legacy ``cli`` loader, not the shared one, so when the
     flag is set we keep ``cli.CLI_CONFIG`` authoritative to preserve the
-    flag's contract of suppressing user config.yaml settings.
+    flag's contract of suppressing user config.toml settings.
     """
     prefer_legacy = os.environ.get("SON_OF_ANTON_IGNORE_USER_CONFIG") == "1"
     if not prefer_legacy:
@@ -4640,7 +4640,7 @@ def _build_top_level_description() -> str:
         "memory, send_message, or cronjob; orchestrators regain only "
         "delegate_task.\n"
         "- Children inherit the parent model and fallback chain unless pinned "
-        "globally via delegation.provider / delegation.model in config.yaml. "
+        "globally via delegation.provider / delegation.model in config.toml. "
         "Results are returned as an array, one entry per task."
     )
 
@@ -4686,7 +4686,7 @@ def _build_role_param_description() -> str:
         nesting_note = (
             f"Nesting is OFF for this user (max_spawn_depth={max_depth}); "
             "'orchestrator' is silently forced to 'leaf'. Raise "
-            "delegation.max_spawn_depth in config.yaml to enable."
+            "delegation.max_spawn_depth in config.toml to enable."
         )
 
     return (

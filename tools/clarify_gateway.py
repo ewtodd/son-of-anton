@@ -562,7 +562,7 @@ def get_clarify_timeout() -> int:
     tap landed on a dead entry and the agent hung on ``running: clarify``
     (#32762).
 
-    Reads ``agent.clarify_timeout`` from config.yaml (see
+    Reads ``agent.clarify_timeout`` from config.toml (see
     :func:`resolve_clarify_timeout` for the full resolution order).  Set to
     ``0`` (or negative) for an unlimited wait — never auto-skip while the user
     is still deciding.

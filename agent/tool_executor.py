@@ -184,7 +184,7 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     """Resolve the per-batch concurrent tool deadline.
 
     Delegates to the unified resolver (#85125): ``timeouts.tools.concurrent_batch``
-    in config.yaml wins, the legacy ``SON_OF_ANTON_CONCURRENT_TOOL_TIMEOUT_S`` env var
+    in config.toml wins, the legacy ``SON_OF_ANTON_CONCURRENT_TOOL_TIMEOUT_S`` env var
     remains the back-compat bridge, and ``0``/negative still disables the bound.
     """
     from agent.deadline import resolve_timeout
@@ -776,7 +776,7 @@ _SEQUENTIAL_INTERRUPT_POLL_SECONDS = 1.0
 def _resolve_sequential_tool_timeout() -> float | None:
     """Deadline for one sequential tool call (#85125 Phase 2a).
 
-    ``timeouts.tools.sequential_call`` in config.yaml wins; when unset, the
+    ``timeouts.tools.sequential_call`` in config.toml wins; when unset, the
     sequential path inherits the concurrent batch deadline (same value, same
     ``SON_OF_ANTON_CONCURRENT_TOOL_TIMEOUT_S`` legacy bridge) so the two executor
     paths cannot drift apart by default. ``0``/negative disables the bound.

@@ -657,7 +657,7 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
         # Gateway working directory defaults to home; sudo stays off. Both are
-        # configurable later via `son-of-anton setup terminal` / config.yaml.
+        # configurable later via `son-of-anton setup terminal` / config.toml.
         config["terminal"].setdefault("cwd", str(Path.home()))
 
     elif selected_backend == "ssh":
@@ -709,7 +709,7 @@ def setup_terminal_backend(config: dict):
                 print_info("  Check your SSH key and host settings.")
 
     # Sync terminal backend to .env so terminal_tool picks it up directly.
-    # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
+    # config.toml is the source of truth, but terminal_tool reads TERMINAL_ENV.
     save_env_value("TERMINAL_ENV", selected_backend)
     save_config(config)
     print()
@@ -724,10 +724,10 @@ def setup_terminal_backend(config: dict):
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
     config.setdefault("agent", {})["max_turns"] = 150
-    # config.yaml is the authoritative source for max_turns; the gateway
+    # config.toml is the authoritative source for max_turns; the gateway
     # bridges it into SON_OF_ANTON_MAX_ITERATIONS at startup. We no longer write
     # to .env to avoid the dual-source inconsistency that caused the
-    # 60-vs-500 bug (stale .env entry silently shadowing config.yaml).
+    # 60-vs-500 bug (stale .env entry silently shadowing config.toml).
     remove_env_value("SON_OF_ANTON_MAX_ITERATIONS")
 
     config.setdefault("display", {})["tool_progress"] = "all"
@@ -737,7 +737,7 @@ def _apply_default_agent_settings(config: dict):
 
     # Default: never auto-reset sessions. This matches the gateway's own
     # default (SessionResetPolicy.mode = "none"); we still write it
-    # explicitly so the choice is visible/editable in config.yaml.
+    # explicitly so the choice is visible/editable in config.toml.
     config.setdefault("session_reset", {})["mode"] = "none"
 
     save_config(config)
@@ -756,7 +756,7 @@ def setup_agent_settings(config: dict):
     print()
 
     # ── Max Iterations ──
-    # config.yaml is authoritative; read from there. If a legacy .env
+    # config.toml is authoritative; read from there. If a legacy .env
     # entry is still around (from pre-PR#18413 setups), prefer the
     # config value so we don't surface a stale number to the user.
     current_max = str(cfg_get(config, "agent", "max_turns", default=90))
@@ -770,7 +770,7 @@ def setup_agent_settings(config: dict):
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
-            # Write to config.yaml (authoritative) only. Also clean up any
+            # Write to config.toml (authoritative) only. Also clean up any
             # stale .env entry from earlier setup runs — the gateway's
             # bridge in gateway/run.py now unconditionally derives
             # SON_OF_ANTON_MAX_ITERATIONS from agent.max_turns at startup.
@@ -1140,7 +1140,7 @@ def _model_section_has_credentials(config: dict) -> bool:
                 return True
         return False
 
-    # Prefer the provider declared in config.yaml, avoids false positives
+    # Prefer the provider declared in config.toml, avoids false positives
     # from stray env vars (GH_TOKEN, etc.) when the user has already picked
     # a different provider.
     model_cfg = config.get("model") if isinstance(config, dict) else None
@@ -1383,7 +1383,7 @@ def _offer_openclaw_migration(son_of_anton_home: Path) -> bool:
         )
         return False
 
-    # Ensure config.yaml exists before migration tries to read it
+    # Ensure config.toml exists before migration tries to read it
     config_path = get_config_path()
     if not config_path.exists():
         save_config(load_config())

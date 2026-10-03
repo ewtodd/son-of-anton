@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from physics_intern.core.config import Config
-from physics_intern.utils.mcp import DEFAULT_ROLES, MCPToolset
+from autophysicist.core.config import Config
+from autophysicist.utils.mcp import DEFAULT_ROLES, MCPToolset
 
 SPEC = {
     "name": "parity",
@@ -56,7 +56,7 @@ def runner_kwargs(tmp_path, monkeypatch):
     spec = dict(SPEC, data=[str(data_dir)])
 
     monkeypatch.setattr(
-        "physics_intern.autophysicist.runner.build_lookups",
+        "autophysicist.runner.build_lookups",
         lambda: _FakeToolset(),
     )
 
@@ -67,15 +67,15 @@ def runner_kwargs(tmp_path, monkeypatch):
         return tmp_path
 
     monkeypatch.setattr(
-        "physics_intern.autophysicist.runner.run_autophysicist", fake_runner
+        "autophysicist.runner.run_autophysicist", fake_runner
     )
 
-    from physics_intern.run import run_problem
+    from autophysicist.run import run_problem
 
-    spec_path = tmp_path / "problem.yaml"
-    import yaml
+    spec_path = tmp_path / "problem.toml"
+    from utils import dump_toml
 
-    spec_path.write_text(yaml.dump(spec), encoding="utf-8")
+    spec_path.write_text(dump_toml(spec), encoding="utf-8")
     run_problem(str(spec_path), mode="physics")
     return seen, data_dir
 
@@ -93,7 +93,7 @@ def test_the_specs_data_is_mounted_in_the_sandbox_policy(runner_kwargs) -> None:
 
 def test_declared_data_is_passed_to_the_sandbox(monkeypatch, tmp_path) -> None:
     """SandboxPolicy.from_config must actually mount the declared data."""
-    from physics_intern.utils.sandbox import SandboxPolicy
+    from autophysicist.utils.sandbox import SandboxPolicy
 
     data_dir = tmp_path / "lab-data"
     data_dir.mkdir()
@@ -122,7 +122,7 @@ def test_a_subagent_gets_documentation_but_not_literature() -> None:
 
 def test_a_role_cannot_call_a_tool_outside_its_allowlist() -> None:
     """Role-scoped, not global: a sub-agent asking for a paper is refused."""
-    from physics_intern.utils.mcp import LookupExecutor
+    from autophysicist.utils.mcp import LookupExecutor
 
     toolset = _FakeToolset()
     assert toolset.handles("arxiv-get_abstract", "manager") is True
@@ -139,13 +139,13 @@ def test_no_mcp_leaves_the_run_lookups_empty(monkeypatch, tmp_path) -> None:
         return tmp_path
 
     monkeypatch.setattr(
-        "physics_intern.autophysicist.runner.build_lookups",
+        "autophysicist.runner.build_lookups",
         lambda: None,
     )
     monkeypatch.setattr(
-        "physics_intern.autophysicist.runner.run_autophysicist", fake_runner
+        "autophysicist.runner.run_autophysicist", fake_runner
     )
-    from physics_intern.run import run_problem
+    from autophysicist.run import run_problem
 
     run_problem("a plain question", mode="physics")
     assert seen["problem_def"] is None

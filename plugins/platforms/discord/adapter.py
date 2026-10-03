@@ -392,7 +392,7 @@ def _clean_discord_id(entry: str) -> str:
 
 # ── per-profile gate env reads (issue #72348) ────────────────────────────
 # Under gateway.multiplex_profiles, os.environ is process-global and the
-# YAML→env bridge in _apply_yaml_config is first-writer-wins, so a raw
+# TOML→env bridge in _apply_toml_config is first-writer-wins, so a raw
 # os.getenv() on an allow/deny gate can return ANOTHER profile's value.
 # _scoped_gate_env reads the active profile's secret scope when one is
 # installed (secondary adapters connect — and their discord.py event tasks
@@ -477,7 +477,7 @@ def _build_allowed_mentions():
     conversation still works.
 
     Override via environment variables (or ``discord.allow_mentions.*`` in
-    config.yaml):
+    config.toml):
 
         DISCORD_ALLOW_MENTION_EVERYONE      default false  — @everyone + @here
         DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
@@ -900,8 +900,8 @@ class VoiceReceiver:
 def _read_dm_role_auth_guild() -> Optional[int]:
     """Return the guild ID opted-in for DM role-based auth, or None.
 
-    Reads ``discord.dm_role_auth_guild`` from config.yaml. This is
-    deliberately a config.yaml-only setting (not an env var): per repo
+    Reads ``discord.dm_role_auth_guild`` from config.toml. This is
+    deliberately a config.toml-only setting (not an env var): per repo
     policy, ``~/.son-of-anton/.env`` is for secrets only, and this is a
     behavioral setting. Guild IDs aren't secrets.
 
@@ -927,7 +927,7 @@ def _read_dm_role_auth_guild() -> Optional[int]:
 
 # Default timeout for Discord interactive button views (exec approval, slash
 # confirm, update prompt, clarify choice). Used when the user has not set
-# ``approvals.discord_prompt_timeout`` in config.yaml. 300s (5 min) matches
+# ``approvals.discord_prompt_timeout`` in config.toml. 300s (5 min) matches
 # the previous hardcoded value. Bounded to a sane range — Discord
 # interaction tokens expire from the API's side at ~15 minutes, so 900s is
 # the practical ceiling.
@@ -946,7 +946,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def _read_discord_prompt_timeout() -> int:
     """Return the timeout (in seconds) for Discord button views.
 
-    Reads ``approvals.discord_prompt_timeout`` from config.yaml. Falls back
+    Reads ``approvals.discord_prompt_timeout`` from config.toml. Falls back
     to the historical 300s default for any missing / malformed value, and
     clamps the result to ``[_DISCORD_PROMPT_TIMEOUT_MIN,
     _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo can't accidentally make
@@ -1302,7 +1302,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # allowed_mentions is set with safe defaults (no @everyone/roles)
             # so LLM output or echoed user content can't ping the whole
             # server; override per DISCORD_ALLOW_MENTION_* env vars or the
-            # discord.allow_mentions.* block in config.yaml.
+            # discord.allow_mentions.* block in config.toml.
 
             # Close any existing client to prevent zombie websocket connections
             # on reconnect (see #18187). Without this, the old client remains
@@ -4236,9 +4236,9 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _load_voice_fx_config(self) -> Dict[str, Any]:
-        """Read voice mixer / ambient / ack settings from config.yaml.
+        """Read voice mixer / ambient / ack settings from config.toml.
 
-        All settings live under ``discord.voice_fx`` in config.yaml (NOT the
+        All settings live under ``discord.voice_fx`` in config.toml (NOT the
         .env file — these are behavioral, not secrets).  The feature is OFF by
         default; users opt in with ``discord.voice_fx.enabled: true``.
 
@@ -4962,7 +4962,7 @@ class DiscordAdapter(BasePlatformAdapter):
         Role checks are **scoped to the guild the message originated from**.
         For DMs (no guild context), role-based auth is disabled by default and
         only user-ID allowlist applies. Set ``discord.dm_role_auth_guild``
-        in config.yaml to a specific guild ID to opt-in: role membership in
+        in config.toml to a specific guild ID to opt-in: role membership in
         that one guild will authorize DMs. This prevents cross-guild
         privilege escalation where a user with the configured role in any
         shared public server could DM the bot and pass the allowlist.
@@ -5017,7 +5017,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
         # DM path: roles require explicit opt-in via
-        # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
+        # ``discord.dm_role_auth_guild`` in config.toml. Without this, a
         # user with the configured role in ANY mutual guild could DM the
         # bot and bypass the allowlist (cross-guild leakage).
         if is_dm or guild is None:
@@ -6551,11 +6551,11 @@ class DiscordAdapter(BasePlatformAdapter):
     # ── per-adapter authorization gates (issue #72348) ───────────────────
     # Under gateway.multiplex_profiles every Discord adapter must enforce
     # ITS OWN profile's allow/deny lists. os.environ is process-global and
-    # the YAML→env bridge is first-writer-wins, so raw os.getenv reads here
+    # the TOML→env bridge is first-writer-wins, so raw os.getenv reads here
     # would leak profile A's gates into profile B. Each accessor reads, in
     # order: the per-adapter env snapshot taken inside the owning profile's
     # runtime scope at connect() (authoritative under multiplex), then this
-    # adapter's PlatformConfig.extra (per-profile YAML), with the live
+    # adapter's PlatformConfig.extra (per-profile TOML), with the live
     # scope-aware env read as the pre-connect fallback. Single-profile
     # deployments resolve to plain os.getenv, unchanged.
 
@@ -6654,10 +6654,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
-        # YAML parses a bare numeric value such as
+        # TOML parses a bare numeric value such as
         # `free_response_channels: 1491973769726791812` as int, which was
         # previously falling through the isinstance(str) branch and silently
-        # returning an empty set.  str() here accepts whatever scalar the YAML
+        # returning an empty set.  str() here accepts whatever scalar the TOML
         # loader hands us without changing existing string/CSV semantics.
         s = str(raw).strip() if raw is not None else ""
         if s:
@@ -7382,7 +7382,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _approval_mention_content(self) -> Optional[str]:
         """Return user mentions for approval prompts when explicitly enabled.
 
-        Gated on ``discord.approval_mentions`` in config.yaml (bridged to the
+        Gated on ``discord.approval_mentions`` in config.toml (bridged to the
         ``DISCORD_APPROVAL_MENTIONS`` env var). Only numeric allowlist entries
         can be mentioned; default off avoids surprise pings.
         """
@@ -8012,7 +8012,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
         #
-        # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
+        # Config (all settable via discord.* in config.toml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
@@ -10249,10 +10249,10 @@ def interactive_setup() -> None:
             print_info("Home channel cleared.")
 
 
-def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
-    """Translate ``config.yaml`` ``discord:`` keys into env vars.
+def _apply_toml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
+    """Translate ``config.toml`` ``discord:`` keys into env vars.
 
-    Implements the ``apply_yaml_config_fn`` contract (#24836).  Mirrors the
+    Implements the ``apply_toml_config_fn`` contract (#24836).  Mirrors the
     legacy ``discord_cfg`` block that used to live in
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
@@ -10267,7 +10267,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
-    env-driven model and merely owns the YAML→env translation here, next to
+    env-driven model and merely owns the TOML→env translation here, next to
     the adapter that consumes it.
 
     ``PlatformConfig.extra`` is the per-adapter source of truth for liveness
@@ -10377,7 +10377,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
-    # these YAML keys only override when set and let users opt back
+    # these TOML keys only override when set and let users opt back
     # into unsafe modes (e.g. roles=true) if they actually want it.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):
@@ -10390,7 +10390,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
                 os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
     # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode.
-    # YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".
+    # TOML 1.1 parses bare 'off' as boolean False — coerce to string "off".
     _discord_extra = discord_cfg.get("extra") if isinstance(discord_cfg.get("extra"), dict) else {}
     _discord_rtm = (
         discord_cfg["reply_to_mode"] if "reply_to_mode" in discord_cfg
@@ -10468,14 +10468,14 @@ def register(ctx) -> None:
         # Interactive setup wizard — replaces the central
         # son_of_anton_cli/setup.py::_setup_discord function.
         setup_fn=interactive_setup,
-        # YAML→env config bridge — owns the translation of ``config.yaml``
+        # TOML→env config bridge — owns the translation of ``config.toml``
         # ``discord:`` keys (require_mention, free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
         # no_thread_channels, allow_mentions.*, reply_to_mode,
         # thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.
-        apply_yaml_config_fn=_apply_yaml_config,
+        apply_toml_config_fn=_apply_toml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="DISCORD_ALLOWED_USERS",
         allow_all_env="DISCORD_ALLOW_ALL_USERS",

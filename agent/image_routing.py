@@ -13,7 +13,7 @@ Two modes:
             behaviour and still the right choice for non-vision models.
 
 The decision is made once per message turn by :func:`decide_image_input_mode`.
-It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
+It reads ``agent.image_input_mode`` from config.toml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
 In ``auto`` mode:
@@ -148,12 +148,12 @@ def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
     return local_paths, urls
 
 
-# Strict YAML/JSON boolean coercion for capability overrides.
+# Strict TOML/JSON boolean coercion for capability overrides.
 #
 # ``bool("false")`` is True in Python because non-empty strings are truthy, so
-# a user writing ``supports_vision: "false"`` (quoted — a common YAML mistake)
+# a user writing ``supports_vision: "false"`` (quoted — a common TOML mistake)
 # would silently enable native vision routing on a model that can't actually
-# handle it. Accept only the values YAML 1.1 / 1.2 treat as booleans, plus
+# handle it. Accept only the values TOML 1.1 / 1.2 treat as booleans, plus
 # real ``bool`` and integer 0/1. Anything else returns None so the caller
 # falls through to models.dev rather than honouring garbage.
 _TRUE_TOKENS = frozenset({"true", "yes", "on", "1"})
@@ -184,7 +184,7 @@ def _supports_vision_override(
     *,
     requested_provider: str = "",
 ) -> Optional[bool]:
-    """Resolve user-declared vision capability from config.yaml.
+    """Resolve user-declared vision capability from config.toml.
 
     Resolution order, first hit wins:
       1. ``model.supports_vision`` (top-level shortcut for the active model)
@@ -393,7 +393,7 @@ def _lookup_supports_vision(
 ) -> Optional[bool]:
     """Return True/False if we can resolve caps, None if unknown.
 
-    Consults the user's ``supports_vision`` override in config.yaml first
+    Consults the user's ``supports_vision`` override in config.toml first
     (so custom/local models declared as vision-capable don't fall through to
     text routing in ``auto`` mode), then falls back to models.dev.
     """
@@ -477,7 +477,7 @@ def decide_image_input_mode(
     Args:
       provider: active inference provider ID (e.g. ``"anthropic"``, ``"openrouter"``).
       model:    active model slug as it would be sent to the provider.
-      cfg:      loaded config.yaml dict, or None. When None, behaves as auto.
+      cfg:      loaded config.toml dict, or None. When None, behaves as auto.
       requested_provider: provider identity before runtime canonicalization.
     """
     mode_cfg = "auto"

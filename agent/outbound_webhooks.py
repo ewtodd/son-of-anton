@@ -1,7 +1,7 @@
 """
 Outbound webhook notifications.
 
-Reads the ``hooks.outbound:`` list from ``config.yaml`` and registers
+Reads the ``hooks.outbound:`` list from ``config.toml`` and registers
 notify-only callbacks on the existing plugin hook manager, so every
 ``invoke_hook()`` site can push lifecycle events to external HTTP
 endpoints — CI systems, dashboards, other agents — with zero changes to
@@ -29,7 +29,7 @@ Design notes
 * Registration is idempotent — safe to invoke from both the CLI entry
   point and the gateway entry point.
 
-Config schema (``~/.son-of-anton/config.yaml``)::
+Config schema (``~/.son-of-anton/config.toml``)::
 
     hooks:
       outbound:

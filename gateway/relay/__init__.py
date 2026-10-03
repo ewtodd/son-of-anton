@@ -12,7 +12,7 @@ See ``docs/relay-connector-contract.md`` for the formal cross-repo interface.
 
 Activation is driven by configuration, not a separate feature flag: the relay
 platform is registered when a connector relay URL is configured
-(``GATEWAY_RELAY_URL`` env or ``gateway.relay_url`` in config.yaml). Deployments
+(``GATEWAY_RELAY_URL`` env or ``gateway.relay_url`` in config.toml). Deployments
 that don't set it are unaffected — exactly the same shape as ``gateway.proxy_url``.
 """
 
@@ -38,7 +38,7 @@ def relay_url() -> Optional[str]:
     """The connector relay endpoint URL, or None when relay is not configured.
 
     Checks ``GATEWAY_RELAY_URL`` (convenient for Docker) first, then
-    ``gateway.relay_url`` in config.yaml. A non-empty value activates the relay
+    ``gateway.relay_url`` in config.toml. A non-empty value activates the relay
     platform; absence means a normal direct/single-tenant gateway.
     """
     url = os.environ.get("GATEWAY_RELAY_URL", "").strip()
@@ -157,7 +157,7 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
     ``GATEWAY_RELAY_SECRET`` is the per-gateway signing secret. Either absent ->
     ``(None, None)`` and the transport dials unauthenticated (dev/test, or a
     connector that doesn't enforce auth). Checks env first (Docker), then
-    ``gateway.relay_id`` / ``gateway.relay_secret`` in config.yaml.
+    ``gateway.relay_id`` / ``gateway.relay_secret`` in config.toml.
     """
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip()
     secret = os.environ.get("GATEWAY_RELAY_SECRET", "").strip()
@@ -185,7 +185,7 @@ def relay_endpoint() -> Optional[str]:
     stamped in (NAS knows the public URL only in that case). Absent -> the
     gateway provisions outbound-only (no inbound routes written).
 
-    Env first (Docker), then ``gateway.relay_endpoint`` in config.yaml.
+    Env first (Docker), then ``gateway.relay_endpoint`` in config.toml.
     """
     url = os.environ.get("GATEWAY_RELAY_ENDPOINT", "").strip()
     if not url:
@@ -207,7 +207,7 @@ def relay_route_keys() -> list[str]:
     take effect alongside an endpoint. Empty -> outbound-only provisioning (the
     connector accepts an empty set and writes no route rows).
 
-    ``GATEWAY_RELAY_ROUTE_KEYS`` is comma-separated; config.yaml
+    ``GATEWAY_RELAY_ROUTE_KEYS`` is comma-separated; config.toml
     ``gateway.relay_route_keys`` may be a list or a comma string.
     """
     raw = os.environ.get("GATEWAY_RELAY_ROUTE_KEYS", "").strip()
@@ -238,7 +238,7 @@ def relay_instance_id() -> Optional[str]:
     as ``relay_endpoint()``. Absent -> the connector stores null and per-instance
     routing simply has no binding for this connection yet (back-compat).
 
-    Env first (Docker/NAS), then ``gateway.relay_instance_id`` in config.yaml.
+    Env first (Docker/NAS), then ``gateway.relay_instance_id`` in config.toml.
     """
     value = os.environ.get("GATEWAY_RELAY_INSTANCE_ID", "").strip()
     if not value:
@@ -269,7 +269,7 @@ def relay_wake_url() -> Optional[str]:
     Absent -> the connector stores null and simply can't wake this instance
     (buffering still works; the gateway drains whenever it next reconnects).
 
-    Env first (Docker/NAS), then ``gateway.relay_wake_url`` in config.yaml.
+    Env first (Docker/NAS), then ``gateway.relay_wake_url`` in config.toml.
     """
     value = os.environ.get("GATEWAY_RELAY_WAKE_URL", "").strip()
     if not value:

@@ -10,7 +10,7 @@ urgency -> surface only what's above the bar).
 
 Design choices:
   * Uses Son of Anton' auxiliary client with task="monitor", so the classifier model
-    is configured once in config.yaml (auxiliary.monitor.{provider,model}) and
+    is configured once in config.toml (auxiliary.monitor.{provider,model}) and
     can be a cheap fast model independent of the main chat model.
   * Reads items as JSON (a list of objects) from stdin or --input-file.
   * One LLM call scores the whole batch (cheap, single round-trip) and returns

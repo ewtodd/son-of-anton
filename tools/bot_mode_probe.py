@@ -24,7 +24,7 @@ Silent (returns ``""``) when:
 Deterministic within a process: the result is computed once and cached, so
 compaction-triggered prompt rebuilds produce identical bytes.
 
-Toggle via ``agent.bot_mode_protocol`` in config.yaml (default True).
+Toggle via ``agent.bot_mode_protocol`` in config.toml (default True).
 """
 
 from __future__ import annotations
@@ -60,18 +60,18 @@ def _profile_name(home: Path) -> str:
 def _is_bot_managed(profile_dir: Path) -> bool:
     """True when profile.yaml carries a ui_meta['son-of-anton-bots'] block.
 
-    Cheap substring check before the YAML parse keeps the silent path fast.
+    Cheap substring check before the TOML parse keeps the silent path fast.
     """
-    meta = profile_dir / "profile.yaml"
+    meta = profile_dir / "profile.toml"
     try:
         if not meta.is_file():
             return False
         raw = meta.read_text(encoding="utf-8", errors="replace")
         if "son-of-anton-bots" not in raw:
             return False
-        import yaml
+        import tomllib
 
-        data = yaml.safe_load(raw)
+        data = tomllib.loads(raw)
         ui_meta = data.get("ui_meta") if isinstance(data, dict) else None
         return isinstance(ui_meta, dict) and isinstance(ui_meta.get("son-of-anton-bots"), dict)
     except Exception:
@@ -108,19 +108,19 @@ def _handle(name: str) -> str:
 def _peers(root: Path) -> list[str]:
     """Registered peer gateway names (``son-of-anton peer``), for the protocol text.
 
-    Reads config.yaml directly (cheap, no config-loader import) — the section
+    Reads config.toml directly (cheap, no config-loader import) — the section
     is optional and absent on most installs. Never raises.
     """
     try:
-        cfg_path = root / "config.yaml"
+        cfg_path = root / "config.toml"
         if not cfg_path.is_file():
             return []
         raw = cfg_path.read_text(encoding="utf-8", errors="replace")
         if "bot_peers" not in raw:
             return []
-        import yaml
+        import tomllib
 
-        data = yaml.safe_load(raw)
+        data = tomllib.loads(raw)
         peers = data.get("bot_peers") if isinstance(data, dict) else None
         if not isinstance(peers, dict):
             return []
@@ -227,7 +227,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile.
 
     Sources: the profile's disabled skills + enabled toolsets + MCP server
-    config (config.yaml), SOUL.md bytes, installed skill names, and the
+    config (config.toml), SOUL.md bytes, installed skill names, and the
     Bot-Mode roster (managed profile names). Deliberately NOT cached — the
     whole point is detecting on-disk drift; callers compare it against the
     epoch embedded in a stored prompt. Never raises.

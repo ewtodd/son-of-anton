@@ -3,7 +3,7 @@ Skills configuration for Son of Anton Agent.
 `son-of-anton skills` enters this module.
 
 Toggle individual skills or categories on/off, globally or per-platform.
-Config stored in ~/.son-of-anton/config.yaml under:
+Config stored in ~/.son-of-anton/config.toml under:
 
   skills:
     disabled: [skill-a, skill-b]          # global disabled list
@@ -27,7 +27,7 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items()}
 def _normalize_skill_names(values) -> Set[str]:
     """Normalize a config value into a set of skill names.
 
-    Mirrors ``agent.skill_utils._normalize_string_set``: ``None`` (YAML null)
+    Mirrors ``agent.skill_utils._normalize_string_set``: ``None`` (TOML null)
     means empty, a bare scalar (``disabled: my-skill``) means a single-item
     list — NOT a set of its characters (#13026).
     """

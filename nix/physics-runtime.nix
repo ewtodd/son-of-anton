@@ -5,7 +5,7 @@
 # plus a scientific Python environment, which would land on every deployment
 # that never runs a physics turn. The physics modes execute model-authored
 # scripts under a separate interpreter instead, named by `physics.python` in
-# config.yaml and confined by bubblewrap.
+# config.toml and confined by bubblewrap.
 #
 # The lab's own library comes in as a flake input rather than being vendored or
 # reimplemented. Analysis-Utilities is where the house conventions already live

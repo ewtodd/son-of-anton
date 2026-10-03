@@ -89,7 +89,7 @@ from son_of_anton_cli.config import (
 )
 from son_of_anton_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
+from utils import atomic_replace, atomic_toml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +242,7 @@ class ProviderConfig:
 
 # The fork's provider surface: OpenAI-compatible API-key providers only.
 # Local / self-hosted endpoints (llama-swap, ollama, vllm, ...) are custom
-# providers declared in config.yaml ``custom_providers`` and are NOT registry
+# providers declared in config.toml ``custom_providers`` and are NOT registry
 # entries — see son_of_anton_cli/providers.py for their resolution.
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "openai-api": ProviderConfig(
@@ -1498,7 +1498,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
 
     Checks:
       1. active_provider in auth.json matches
-      2. model.provider in config.yaml matches
+      2. model.provider in config.toml matches
       3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
 
     This is used to gate auto-discovery of external credentials (e.g.
@@ -1517,7 +1517,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Check config.yaml model.provider and other explicit provider slots.
+    # 2. Check config.toml model.provider and other explicit provider slots.
     try:
         from son_of_anton_cli.config import load_config
         cfg = load_config()
@@ -1668,7 +1668,7 @@ def deactivate_provider() -> None:
 def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
     """Return a helpful hint string when provider resolution fails.
 
-    Checks for common config.yaml mistakes (malformed custom_providers, etc.)
+    Checks for common config.toml mistakes (malformed custom_providers, etc.)
     and returns a human-readable diagnostic, or empty string if nothing found.
     """
     try:
@@ -1702,7 +1702,7 @@ def resolve_provider(
     Priority (when requested="auto" or None) — explicit user intent wins over a
     stale logged-in OAuth provider (#29285):
     1. Explicit CLI api_key/base_url -> "openrouter"
-    2. config.yaml `model.provider`
+    2. config.toml `model.provider`
     3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
     4. OpenRouter credential pool
     5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
@@ -1768,7 +1768,7 @@ def resolve_provider(
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
-        # Check for common config.yaml issues that cause this error
+        # Check for common config.toml issues that cause this error
         _config_hint = _get_config_hint_for_unknown_provider(normalized)
         msg = f"Unknown provider '{normalized}'."
         if _config_hint:
@@ -1783,7 +1783,7 @@ def resolve_provider(
 
     # Provider precedence for the auto-path (#29285): explicit user intent must
     # win over a stale logged-in OAuth `active_provider`. Order matches the
-    # docstring: 1. explicit CLI creds  2. config.yaml `model.provider`
+    # docstring: 1. explicit CLI creds  2. config.toml `model.provider`
     # 3. OPENAI/OPENROUTER env keys  4. OpenRouter pool  5. provider-specific
     # env keys  6. auth.json `active_provider` (OAuth)  7. Bedrock  8. error.
     # The normal chat/gateway path resolves config.provider upstream in
@@ -1800,7 +1800,7 @@ def resolve_provider(
             if isinstance(_cfg_provider, str) and _cfg_provider.strip().lower() in PROVIDER_REGISTRY:
                 return _cfg_provider.strip().lower()
     except Exception as e:
-        logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
+        logger.debug("Could not read config.toml model.provider for auto-resolution: %s", e)
 
     # Scope-aware key reads: under multiplex a secondary profile's API keys
     # live only in its secret scope, not os.environ — a bare getenv here
@@ -1893,7 +1893,7 @@ def resolve_provider(
         if isinstance(_model_cfg, dict) and _model_cfg and not _model_cfg.get("provider"):
             logger.warning(
                 "Provider resolved to logged-in OAuth provider %r because "
-                "config.yaml `model` has no `provider` key. If you meant a "
+                "config.toml `model` has no `provider` key. If you meant a "
                 "different provider, set `model.provider` explicitly.",
                 _oauth_active,
             )
@@ -4784,7 +4784,7 @@ def _update_config_for_provider(
     inference_base_url: str,
     default_model: Optional[str] = None,
 ) -> Path:
-    """Update config.yaml and auth.json to reflect the active provider.
+    """Update config.toml and auth.json to reflect the active provider.
 
     When *default_model* is provided the function also writes it as the
     ``model.default`` value.  This prevents a race condition where the
@@ -4799,7 +4799,7 @@ def _update_config_for_provider(
         auth_store["active_provider"] = provider_id
         _save_auth_store(auth_store)
 
-    # Update config.yaml model section
+    # Update config.toml model section
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
@@ -4838,12 +4838,12 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_toml_write(config_path, config, sort_keys=False)
     return config_path
 
 
 def _get_config_provider() -> Optional[str]:
-    """Return model.provider from config.yaml, normalized, if present."""
+    """Return model.provider from config.toml, normalized, if present."""
     try:
         config = read_raw_config()
     except Exception:
@@ -4861,7 +4861,7 @@ def _get_config_provider() -> Optional[str]:
 
 
 def _config_provider_matches(provider_id: Optional[str]) -> bool:
-    """Return True when config.yaml currently selects *provider_id*."""
+    """Return True when config.toml currently selects *provider_id*."""
     if not provider_id:
         return False
     return _get_config_provider() == provider_id.strip().lower()
@@ -4880,7 +4880,7 @@ def _logout_default_provider_from_config() -> Optional[str]:
 
     `son-of-anton logout` historically keyed off auth.json.active_provider only.
     That left users stuck when auth state had already been cleared but
-    config.yaml still selected an OAuth provider such as openai-codex for the
+    config.toml still selected an OAuth provider such as openai-codex for the
     agent model: there was no active auth provider to target, so logout printed
     "No provider is currently logged in" and never reset model.provider.
     """
@@ -4891,7 +4891,7 @@ def _logout_default_provider_from_config() -> Optional[str]:
 
 
 def _reset_config_provider() -> Path:
-    """Reset config.yaml provider back to auto after logout."""
+    """Reset config.toml provider back to auto after logout."""
     config_path = get_config_path()
     if not config_path.exists():
         return config_path
@@ -4906,7 +4906,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_toml_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -5246,9 +5246,9 @@ def _prompt_model_selection(
 
 
 def _save_model_choice(model_id: str) -> None:
-    """Save the selected model to config.yaml (single source of truth).
+    """Save the selected model to config.toml (single source of truth).
 
-    The model is stored in config.yaml only — NOT in .env.  This avoids
+    The model is stored in config.toml only — NOT in .env.  This avoids
     conflicts in multi-agent setups where env vars would stomp each other.
     """
     from son_of_anton_cli.config import save_config, load_config

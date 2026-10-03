@@ -69,7 +69,7 @@ def _get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
 
 
 def prompt_text(value: Any) -> str:
-    """Normalize config prompt values from YAML (str | list | None) to text."""
+    """Normalize config prompt values from TOML (str | list | None) to text."""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -164,17 +164,17 @@ def persist_personality(value: Any) -> bool:
     """Persist the personality selection — the ONLY sanctioned write path.
 
     Writes the canonical name (or '') to ``display.personality`` in the active
-    SON_OF_ANTON_HOME config.yaml atomically, preserving comments and ordering.
+    SON_OF_ANTON_HOME config.toml atomically, preserving comments and ordering.
     Never touches ``agent.system_prompt``. Returns True on success.
     """
     name = normalize_personality_name(value)
     try:
         from son_of_anton_constants import get_son_of_anton_home
-        from utils import atomic_roundtrip_yaml_update
+        from utils import atomic_toml_update
 
-        config_path = get_son_of_anton_home() / "config.yaml"
+        config_path = get_son_of_anton_home() / "config.toml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_roundtrip_yaml_update(config_path, "display.personality", name)
+        atomic_toml_update(config_path, "display.personality", name)
         try:
             import os
 

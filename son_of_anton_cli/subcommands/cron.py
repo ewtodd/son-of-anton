@@ -97,7 +97,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help=(
             "Pin this job to a specific inference model (user-owned; the "
             "agent's cronjob tool cannot set this). Omit to follow "
-            "cron.model / model.default from config.yaml."
+            "cron.model / model.default from config.toml."
         ),
     )
     cron_create.add_argument(

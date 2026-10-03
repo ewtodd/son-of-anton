@@ -6,7 +6,7 @@ metadata endpoints (169.254.169.254), localhost services, or private
 network hosts.
 
 The check can be globally disabled via ``security.allow_private_urls: true``
-in config.yaml for environments where DNS resolves external domains to
+in config.toml for environments where DNS resolves external domains to
 private/benchmark-range IPs (OpenWrt routers, corporate proxies, VPNs
 that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
 metadata hostnames (metadata.google.internal, 169.254.169.254) are
@@ -222,8 +222,8 @@ def _global_allow_private_urls() -> bool:
 
     Checks (in priority order):
     1. ``SON_OF_ANTON_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
-    2. ``security.allow_private_urls`` in config.yaml
-    3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
+    2. ``security.allow_private_urls`` in config.toml
+    3. ``browser.allow_private_urls`` in config.toml  (legacy / backward compat)
 
     The single-profile result is cached for the process lifetime. Multiplexed
     profile turns bypass that process-global cache because their config root is

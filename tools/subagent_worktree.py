@@ -8,7 +8,7 @@ This is a clean-room implementation of the documented behavior
 (https://dev.meta.ai/docs/muse-code/extending#multi-agent); no Muse Code
 code was referenced.
 
-Enable in config.yaml::
+Enable in config.toml::
 
     delegation:
       worktree_isolation: true   # default: false

@@ -131,7 +131,7 @@ class SecretSource(ABC):
     Everything else has a sensible default.
 
     Attributes:
-        name: Config-section key under ``secrets:`` in config.yaml.
+        name: Config-section key under ``secrets:`` in config.toml.
             Lowercase ``[a-z0-9_]+``.  Also the provenance label stored
             for every var this source supplies.
         label: Human-readable name used in startup messages and
@@ -164,7 +164,7 @@ class SecretSource(ABC):
         """Resolve this source's secrets. MUST NOT raise or prompt.
 
         ``cfg`` is the source's raw config section (``secrets.<name>``)
-        from config.yaml — treat every field defensively, the section
+        from config.toml — treat every field defensively, the section
         may be malformed.  ``home_path`` is the resolved SON_OF_ANTON_HOME.
         """
 

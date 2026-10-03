@@ -7,7 +7,7 @@ from environment variables:
   - ``SON_OF_ANTON_MEDIA_ALLOW_DIRS``         <- gateway.media_delivery_allow_dirs
   - ``SON_OF_ANTON_MEDIA_TRUST_RECENT_FILES`` <- gateway.trust_recent_files
 
-Historically the config.yaml -> env translation ran ONLY in gateway startup
+Historically the config.toml -> env translation ran ONLY in gateway startup
 (gateway/run.py), so any process that delivers media without booting the
 gateway — a manual ``son-of-anton cron run`` in the CLI, ``son-of-anton send``, a
 standalone cron tick — filtered MEDIA paths under DIFFERENT policy than the
@@ -20,7 +20,7 @@ path validation).
 helper. Gateway startup calls it, and every standalone delivery entrypoint
 calls it immediately before filtering media paths.
 
-Precedence: an explicitly-set environment variable WINS over config.yaml.
+Precedence: an explicitly-set environment variable WINS over config.toml.
 This preserves both the operator contract (env overrides are how deployments
 pin behavior) and gateway/run.py's historical shape (it only wrote the env
 var when the config key was present; we additionally refuse to overwrite a
@@ -53,7 +53,7 @@ def _load_gateway_cfg(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 
 
 def apply_media_policy_env(config: Optional[Dict[str, Any]] = None) -> None:
-    """Bridge gateway media-policy settings from config.yaml into the env.
+    """Bridge gateway media-policy settings from config.toml into the env.
 
     Idempotent and env-wins: a variable already present in the environment is
     never overwritten, so gateway startup (which runs this same helper) and

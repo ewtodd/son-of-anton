@@ -191,9 +191,9 @@ def detect_compromised(
 # =============================================================================
 # Acknowledgement persistence
 #
-# Acks live under ``security.acked_advisories`` in config.yaml as a list of
+# Acks live under ``security.acked_advisories`` in config.toml as a list of
 # advisory IDs. The list is the only state — no per-host data, no
-# timestamps, no fingerprints. Users sharing a config.yaml across machines
+# timestamps, no fingerprints. Users sharing a config.toml across machines
 # (rare but possible) get the same dismissal everywhere, which is the
 # correct behavior for a global advisory.
 # =============================================================================

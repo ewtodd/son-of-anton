@@ -28,7 +28,7 @@ DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 # Codex ~10K tokens); 50K chars keeps parity with the strictest general-
 # purpose caps while spillover (unlike truncation) preserves the full
 # payload on disk. Overridable via ``tool_budget.mcp_result_size_chars``
-# in config.yaml.
+# in config.toml.
 DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 
 # Tool-name prefix that identifies MCP-served tools (same prefix the
@@ -40,7 +40,7 @@ def _configured_mcp_result_size() -> int:
     """Read ``tool_budget.mcp_result_size_chars`` from the active config.
 
     Goes through :func:`son_of_anton_cli.config.load_config_readonly` (the
-    sanctioned read path — raw config.yaml parsing outside owner modules
+    sanctioned read path — raw config.toml parsing outside owner modules
     is guarded by tests/son_of_anton_cli/test_config_read_guard.py). Fully
     guarded: any error, missing key, or non-positive value returns the
     built-in default. The ``tool_budget:`` block name is shared with the

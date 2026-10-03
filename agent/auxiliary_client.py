@@ -7,7 +7,7 @@ the best available backend without duplicating fallback logic.
 Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
-  2. Custom endpoint (config.yaml model.base_url / custom_providers + key_env)
+  2. Custom endpoint (config.toml model.base_url / custom_providers + key_env)
   3. Native Anthropic
   4. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
   5. None
@@ -28,7 +28,7 @@ rots on its own.  Codex is used only when the user's main provider *is*
 openai-codex (Step 1 above) or when a caller explicitly requests it with
 a model (auxiliary.<task>.provider + auxiliary.<task>.model).
 
-Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
+Per-task overrides are configured in config.toml under the ``auxiliary:`` section
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compaction.model``).
 Default "auto" follows the chains above.
 
@@ -1087,16 +1087,16 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
 def build_or_headers(or_config: dict | None = None) -> dict:
     """Build OpenRouter headers, optionally including response-cache headers.
 
-    Precedence for response cache: env var > config.yaml > default (enabled).
+    Precedence for response cache: env var > config.toml > default (enabled).
 
     Environment variables:
         ``SON_OF_ANTON_OPENROUTER_CACHE`` — truthy (``1``/``true``/``yes``/``on``)
             enables caching; ``0``/``false``/``no``/``off`` disables.
-            Overrides ``openrouter.response_cache`` in config.yaml.
+            Overrides ``openrouter.response_cache`` in config.toml.
         ``SON_OF_ANTON_OPENROUTER_CACHE_TTL`` — integer seconds (1-86400).
-            Overrides ``openrouter.response_cache_ttl`` in config.yaml.
+            Overrides ``openrouter.response_cache_ttl`` in config.toml.
 
-    *or_config* is the ``openrouter`` section from config.yaml.  When *None*,
+    *or_config* is the ``openrouter`` section from config.toml.  When *None*,
     falls back to reading config from disk via ``load_config_readonly()``.
     """
     headers = dict(_OR_HEADERS_BASE)
@@ -1158,7 +1158,7 @@ _AUTH_JSON_PATH = get_son_of_anton_home() / "auth.json"
 # ChatGPT-account auth is an undocumented, shifting allow-list, and
 # pinning one here has drifted silently twice (gpt-5.3-codex → gpt-5.2-codex
 # → gpt-5.4 over 6 weeks in early 2026).  Callers must pass the model
-# they want explicitly (from config.yaml model.model, auxiliary.<task>.model,
+# they want explicitly (from config.toml model.model, auxiliary.<task>.model,
 # or the user's active Codex model selection).
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
@@ -1342,7 +1342,7 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
 
 
 # Hostnames (lowercase, exact) that the auxiliary Anthropic path is allowed to
-# be pointed at via config.yaml model.base_url. Anything else falls back to the
+# be pointed at via config.toml model.base_url. Anything else falls back to the
 # Anthropic default — operators routing main-session traffic through a
 # non-Anthropic host (e.g. OpenRouter, OpenAI) with provider=anthropic in config
 # must NOT have that foreign host leak into the auxiliary client. See #52608.
@@ -2205,13 +2205,13 @@ def _describe_openrouter_unavailable() -> str:
 
 
 def _read_main_model() -> str:
-    """Read the user's configured main model from config.yaml.
+    """Read the user's configured main model from config.toml.
 
-    config.yaml model.default is the single source of truth for the active
+    config.toml model.default is the single source of truth for the active
     model. Environment variables are no longer consulted.
 
     Runtime override: when an AIAgent is active with a CLI/gateway-provided
-    model that differs from config.yaml, ``set_runtime_main()`` records the
+    model that differs from config.toml, ``set_runtime_main()`` records the
     override in a process-local global. This is consulted FIRST so tools
     that gate on "the active main model" (e.g. ``vision_analyze``'s native
     fast path) see the live runtime, not the persisted config default.
@@ -2235,7 +2235,7 @@ def _read_main_model() -> str:
 
 
 def _read_main_provider() -> str:
-    """Read the user's configured main provider from config.yaml.
+    """Read the user's configured main provider from config.toml.
 
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
     if not configured.
@@ -2265,7 +2265,7 @@ def _read_main_api_key() -> str:
     Mirrors ``_read_main_model`` / ``_read_main_provider``: checks the
     process-local ``_RUNTIME_MAIN_API_KEY`` override first (set by
     ``set_runtime_main`` when an AIAgent is active), then falls back to
-    ``model.api_key`` in config.yaml.
+    ``model.api_key`` in config.toml.
 
     Used by the ``custom`` provider fallback chain so that auxiliary tasks
     configured with an explicit ``base_url`` but empty ``api_key`` inherit
@@ -2716,7 +2716,7 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
     This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
-    endpoints where the base URL lives in config.yaml instead of the live
+    endpoints where the base URL lives in config.toml instead of the live
     environment.
     """
     try:
@@ -2851,7 +2851,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     if not model:
         logger.warning(
             "Auxiliary client: xai-oauth requested without a model; "
-            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+            "pass model explicitly (auxiliary.<task>.model in config.toml)."
         )
         return None, None
     resolved = _resolve_xai_oauth_for_aux()
@@ -2883,7 +2883,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     if not model:
         logger.warning(
             "Auxiliary client: openai-codex requested without a model; "
-            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+            "pass model explicitly (auxiliary.<task>.model in config.toml)."
         )
         return None, None
     pool_present, entry = _select_pool_entry("openai-codex")
@@ -3245,7 +3245,7 @@ _TRANSIENT_RETRY_BACKOFF_BASE = 1.0
 def _transient_retry_count() -> int:
     """Number of same-provider retries for a transient transport blip.
 
-    Read from ``auxiliary.transient_retries`` in config.yaml (default 2 →
+    Read from ``auxiliary.transient_retries`` in config.toml (default 2 →
     3 total attempts). Clamped to [0, 6] to bound worst-case wall time. A
     connection blip to a pinned auxiliary target (e.g. a MoA reference
     advisor) has no meaningful provider fallback, so a couple of retries with
@@ -4487,7 +4487,7 @@ def _try_configured_fallback_chain(
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try user-configured fallback_chain for a specific auxiliary task.
 
-    Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
+    Reads auxiliary.<task>.fallback_chain from config.toml and tries each
     entry in order.  Each entry must have at least ``provider``; ``model``,
     ``base_url``, and ``api_key`` are optional.
 
@@ -4785,7 +4785,7 @@ def _resolve_auto_route(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
-    # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
+    # ── Warn once if OPENAI_BASE_URL is set but config.toml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
     #    scenario where a user switches providers via `son-of-anton model` but the
     #    old OPENAI_BASE_URL lingers in ~/.son-of-anton/.env. ──
@@ -4810,7 +4810,7 @@ def _resolve_auto_route(
     # "use my main chat model for side tasks as well" — including users
     # on aggregators (OpenRouter, Nous) who previously got routed to a
     # cheap provider-side default.  Explicit per-task overrides set via
-    # config.yaml (auxiliary.<task>.provider) still win over this.
+    # config.toml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
 
@@ -4960,7 +4960,7 @@ def _resolve_auto_route(
         tried.append(label)
     logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
                    "Compaction, summarization, and memory flush will not work. "
-                   "Configure a model in config.yaml (model.provider/model.default "
+                   "Configure a model in config.toml (model.provider/model.default "
                    "or a custom endpoint).",
                    ", ".join(tried))
     return None, None, ""
@@ -5153,7 +5153,7 @@ def resolve_provider_client(
     #      string for OAuth-gated providers (openai-codex, xai-oauth)
     #      whose accepted-model lists drift on the backend, so we don't
     #      pin a default that can silently rot.
-    #   3. User's main model from ``model.model`` in config.yaml.  This is
+    #   3. User's main model from ``model.model`` in config.toml.  This is
     #      the load-bearing step for OAuth providers: an xai-oauth user
     #      with grok-4.3 configured gets grok-4.3 for title generation
     #      instead of silently dropping to whatever Step-2 fallback (#31845).
@@ -5277,7 +5277,7 @@ def resolve_provider_client(
         if not model:
             logger.warning(
                 "resolve_provider_client: openai-codex requested without a "
-                "model; pass model explicitly (e.g. model.model in config.yaml "
+                "model; pass model explicitly (e.g. model.model in config.toml "
                 "or auxiliary.<task>.model for per-task aux routing)."
             )
             return None, None
@@ -5410,7 +5410,7 @@ def resolve_provider_client(
                        "but no endpoint credentials found")
         return None, None
 
-    # ── Named custom providers (config.yaml providers dict / custom_providers list) ───
+    # ── Named custom providers (config.toml providers dict / custom_providers list) ───
     try:
         from son_of_anton_cli.runtime_provider import _get_named_custom_provider
         # When the raw requested name is an alias (``kimi`` → ``kimi-coding``)
@@ -5669,7 +5669,7 @@ def get_text_auxiliary_client(
         task: Optional task name ("compaction", "web_extract") to check
               for a task-specific provider override.
 
-    Callers may override the returned model via config.yaml
+    Callers may override the returned model via config.toml
     (e.g. auxiliary.compaction.model, auxiliary.web_extract.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
@@ -6575,7 +6575,7 @@ def _resolve_task_provider_model(
 
     # MoA virtual provider: an *explicit* `provider: moa` override (either the
     # caller-passed `provider` arg or `auxiliary.<task>.provider` in
-    # config.yaml) reaches this function directly — it never goes through
+    # config.toml) reaches this function directly — it never goes through
     # _resolve_auto(), which only unwraps the *implicit* "main provider is
     # moa" case (#53827). Left as-is, "moa" is returned verbatim and
     # resolve_provider_client() looks it up in PROVIDER_REGISTRY (which has
@@ -6669,7 +6669,7 @@ def _resolve_task_provider_model(
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
-        # Config.yaml is the primary source for per-task overrides.
+        # config.toml is the primary source for per-task overrides.
         if cfg_base_url and cfg_api_key:
             # Both base_url and api_key explicitly set → custom endpoint.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
@@ -6708,7 +6708,7 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     plugin's declared *defaults* are layered underneath the user's config
     so an unconfigured plugin task still works:
 
-        plugin defaults  ←  config.yaml auxiliary.<task>  (user wins)
+        plugin defaults  ←  config.toml auxiliary.<task>  (user wins)
 
     Built-in tasks ignore this path (their defaults live in DEFAULT_CONFIG).
     """
@@ -6726,7 +6726,7 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
 
     # Layer plugin-declared defaults underneath user config so
     # ctx.register_auxiliary_task(defaults={...}) takes effect without
-    # forcing the user to write config.yaml entries.
+    # forcing the user to write config.toml entries.
     try:
         from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
@@ -7467,7 +7467,7 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     itself (see :func:`_aggregate_chat_stream`). Credit @kudi88 (PR #60686).
 
     Beyond the known-host list, users can mark ANY custom endpoint as
-    stream-only via ``auxiliary.stream_only_base_urls`` in config.yaml
+    stream-only via ``auxiliary.stream_only_base_urls`` in config.toml
     (list of substrings matched against the endpoint URL).
     """
     _url = str(base_url or "").lower()
@@ -7997,7 +7997,7 @@ def _call_llm_impl(
                     effective_provider = resolved_provider
                 else:
                     raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"Provider '{_explicit}' is set in config.toml but no API key "
                         f"was found. Set the {_explicit.upper()}_API_KEY environment "
                         f"variable, or switch to a different provider with `son-of-anton model`."
                     )
@@ -8717,7 +8717,7 @@ async def _async_call_llm_impl(
                     effective_provider = resolved_provider
                 else:
                     raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"Provider '{_explicit}' is set in config.toml but no API key "
                         f"was found. Set the {_explicit.upper()}_API_KEY environment "
                         f"variable, or switch to a different provider with `son-of-anton model`."
                     )

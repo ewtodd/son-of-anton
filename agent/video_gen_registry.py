@@ -8,7 +8,7 @@ Central map of registered providers. Populated by plugins at import-time via
 
 Active selection
 ----------------
-The active provider is chosen by ``video_gen.provider`` in ``config.yaml``.
+The active provider is chosen by ``video_gen.provider`` in ``config.toml``.
 If unset, :func:`get_active_provider` applies fallback logic:
 
 1. If exactly one *available* provider is registered, use it.
@@ -116,7 +116,7 @@ def restore_registration(
 def get_active_provider() -> Optional[VideoGenProvider]:
     """Resolve the currently-active provider.
 
-    Reads ``video_gen.provider`` from config.yaml; falls back per the
+    Reads ``video_gen.provider`` from config.toml; falls back per the
     module docstring.
     """
     configured: Optional[str] = None

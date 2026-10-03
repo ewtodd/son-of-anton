@@ -82,7 +82,7 @@ _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
 })
 
 # Direct providers that accept bare native names but should repair a matching
-# provider/ prefix when users copy the aggregator form into config.yaml.
+# provider/ prefix when users copy the aggregator form into config.toml.
 _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",

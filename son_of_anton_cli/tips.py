@@ -75,8 +75,8 @@ TIPS = [
     # --- CLI Subcommands ---
     "son-of-anton doctor --fix diagnoses and auto-repairs config and dependency issues.",
     "son-of-anton dump outputs a compact setup summary — great for bug reports.",
-    "son-of-anton config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.",
-    "son-of-anton config edit opens config.yaml in your default editor.",
+    "son-of-anton config set KEY VALUE auto-routes secrets to .env and everything else to config.toml.",
+    "son-of-anton config edit opens config.toml in your default editor.",
     "son-of-anton config check scans for missing or stale configuration options.",
     "son-of-anton sessions browse opens an interactive session picker with search.",
     "son-of-anton sessions stats shows session counts by platform and database size.",
@@ -102,7 +102,7 @@ TIPS = [
     "son-of-anton models routes vision, compaction, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---
-    "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
+    "Set display.bell_on_complete: true in config.toml to hear a bell when long tasks finish.",
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
     "Set display.compact: true to reduce whitespace in output for denser information.",
@@ -112,15 +112,15 @@ TIPS = [
     "Set agent.max_turns: 1000 to let the agent take more tool-calling steps per turn.",
     "Set file_read_max_chars: 200000 to increase the max content per read_file call.",
     "Set approvals.mode: smart to let an LLM auto-approve safe commands and auto-deny dangerous ones.",
-    "Set fallback_model in config.yaml to automatically fail over to a backup provider.",
+    "Set fallback_model in config.toml to automatically fail over to a backup provider.",
     "Set privacy.redact_pii: true to hash user IDs and phone numbers before sending to the LLM.",
-    "Set worktree: true in config.yaml to always create a git worktree (same as son-of-anton -w).",
+    "Set worktree: true in config.toml to always create a git worktree (same as son-of-anton -w).",
     "Set security.website_blocklist.enabled: true to block specific domains from web tools.",
     "Set cron.wrap_response: false to deliver raw agent output without the cron header/footer.",
     "SON_OF_ANTON_TIMEZONE overrides the server timezone with any IANA timezone string.",
-    "Environment variable substitution works in config.yaml: use ${VAR_NAME} syntax.",
-    "Quick commands in config.yaml run shell commands instantly with zero token usage.",
-    "Custom personalities can be defined in config.yaml under agent.personalities.",
+    "Environment variable substitution works in config.toml: use ${VAR_NAME} syntax.",
+    "Quick commands in config.toml run shell commands instantly with zero token usage.",
+    "Custom personalities can be defined in config.toml under agent.personalities.",
     "provider_routing controls OpenRouter provider sorting, whitelisting, and blacklisting.",
 
     # --- Tools & Capabilities ---
@@ -163,7 +163,7 @@ TIPS = [
     "Every installed skill automatically becomes a slash command — type / to see them all.",
     "son-of-anton skills install official/security/1password installs optional skills from the repo.",
     "Skills can restrict to specific OS platforms — some only load on macOS or Linux.",
-    "skills.external_dirs in config.yaml lets you load skills from custom directories.",
+    "skills.external_dirs in config.toml lets you load skills from custom directories.",
     "The agent can create its own skills as procedural memory using skill_manage.",
     "The plan skill saves markdown plans under .son-of-anton/plans/ in the active workspace.",
 
@@ -190,7 +190,7 @@ TIPS = [
     "Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.",
     "MCP subprocesses receive a filtered environment — only safe system vars pass through.",
     "Context files (.son-of-anton.md, AGENTS.md) are security-scanned for prompt injection before loading.",
-    "command_allowlist in config.yaml permanently approves specific shell command patterns.",
+    "command_allowlist in config.toml permanently approves specific shell command patterns.",
 
     # --- Context & Compaction ---
     "Context auto-compacts when it reaches the threshold — memories are flushed and history summarized.",
@@ -204,7 +204,7 @@ TIPS = [
 
     # --- MCP ---
     "son-of-anton mcp install <name> installs a catalog entry, prompts for credentials, and lets you pick which of its tools to enable.",
-    "MCP servers are configured in config.yaml — both stdio and HTTP transports supported.",
+    "MCP servers are configured in config.toml — both stdio and HTTP transports supported.",
     "Per-server tool filtering: tools.include whitelists and tools.exclude blacklists specific tools.",
     "MCP servers auto-generate toolsets at runtime — son-of-anton tools can toggle them per platform.",
 
@@ -233,7 +233,7 @@ TIPS = [
     "Dragging a file path into the terminal auto-attaches images or sends as context.",
     ".worktreeinclude in your repo root lists gitignored files to copy into worktrees.",
     "son-of-anton acp runs Son of Anton as an ACP server for VS Code, Zed, and JetBrains integration.",
-    "Custom providers: save named endpoints in config.yaml under custom_providers.",
+    "Custom providers: save named endpoints in config.toml under custom_providers.",
     "SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.",
     "credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.",
     "The API server supports both Chat Completions and Responses API with server-side state.",
@@ -243,13 +243,13 @@ TIPS = [
     # --- Hidden Gems & Power-User Tricks ---
     "Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context.",
     "Cron scripts live in ~/.son-of-anton/scripts/ and run before the agent — perfect for data collection pipelines.",
-    "prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.",
+    "prefill_messages_file in config.toml injects few-shot examples into every API call, never saved to history.",
     "SOUL.md completely replaces the agent's default identity — rewrite it to make Son of Anton your own.",
     "SOUL.md is auto-seeded with a default personality on first run. Edit it to customize.",
     "/compact <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.",
     "On second+ compaction, the compactor updates the previous summary instead of starting from scratch.",
     "Before a gateway session reset, Son of Anton auto-flushes important facts to memory in the background.",
-    "network.force_ipv4: true in config.yaml fixes hangs on servers with broken IPv6 — monkey-patches socket.",
+    "network.force_ipv4: true in config.toml fixes hangs on servers with broken IPv6 — monkey-patches socket.",
     "The terminal tool annotates common exit codes: grep returning 1 = 'No matches found (not an error)'.",
     "Failed foreground terminal commands auto-retry up to 3 times with exponential backoff (2s, 4s, 8s).",
     "Bare sudo commands are auto-rewritten to pipe SUDO_PASSWORD from .env — no interactive prompt needed.",
@@ -279,12 +279,12 @@ TIPS = [
     "Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).",
     "Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.",
     "delegation.reasoning_effort independently controls thinking depth for subagents.",
-    "display.platforms in config.yaml allows per-platform display overrides: {discord: {tool_progress: all}}.",
+    "display.platforms in config.toml allows per-platform display overrides: {discord: {tool_progress: all}}.",
     "human_delay.mode in config simulates human typing speed — configurable min_ms/max_ms range.",
     "Config version migrations run automatically on load — new config keys appear without manual intervention.",
     "GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.",
     "Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.",
-    "context.engine in config.yaml can be set to a plugin name for alternative context management strategies.",
+    "context.engine in config.toml can be set to a plugin name for alternative context management strategies.",
     "The compactor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM runs.",
     "When compaction fails, further attempts are paused for 10 minutes to avoid API hammering.",
     "Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.",
@@ -293,7 +293,7 @@ TIPS = [
     ".cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.",
     "Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.",
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
-    "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compaction.model, etc. in config.yaml.",
+    "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compaction.model, etc. in config.toml.",
     "The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.",
     "son-of-anton claw migrate --dry-run previews OpenClaw migration without writing anything.",
     "File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed.",
@@ -350,7 +350,7 @@ TIPS = [
     'SON_OF_ANTON_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs concise/all/error/off).',
     'SON_OF_ANTON_WRITE_SAFE_ROOT restricts write_file/patch to directory prefixes; multiple paths via os.pathsep (: or ;).',
     'SON_OF_ANTON_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
-    'SON_OF_ANTON_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
+    'SON_OF_ANTON_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.toml without a TTY prompt.',
     'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
 
@@ -389,7 +389,7 @@ TIPS = [
     "son-of-anton chat --source tool tags programmatic chats so they don't clutter son-of-anton sessions list.",
     'son-of-anton dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'son-of-anton sessions rename <ID> "new title" renames any past session; son-of-anton sessions delete <ID> removes one.',
-    'son-of-anton fallback manages the fallback_model chain interactively — no hand-editing config.yaml.',
+    'son-of-anton fallback manages the fallback_model chain interactively — no hand-editing config.toml.',
     'son-of-anton pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
     'son-of-anton setup walks first-time users through provider, keys, and platform wiring in one interactive flow.',
     'son-of-anton status --deep runs the full health sweep across every component; plain son-of-anton status is the quick view.',
@@ -416,7 +416,7 @@ TIPS = [
 
     # --- Security ---
     'security.tirith_fail_open: false makes Son of Anton block commands when the tirith scanner itself errors out.',
-    'TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.',
+    'TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.toml.',
 
     # --- Sessions & Source Tags ---
     '--source tool chats are excluded from son-of-anton sessions list by default — set --source explicitly to see them.',

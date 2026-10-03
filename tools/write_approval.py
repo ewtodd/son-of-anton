@@ -84,7 +84,7 @@ CONFIG_KEY = "write_approval"
 def write_approval_enabled(subsystem: str) -> bool:
     """Return whether the approval gate is enabled for ``subsystem``.
 
-    Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
+    Reads ``<subsystem>.write_approval`` from config.toml. Defaults to
     ``False`` (gate off — writes flow freely) for any unset / invalid value so
     existing installs keep their current behaviour until the user opts in.
     """
@@ -102,7 +102,7 @@ def write_approval_enabled(subsystem: str) -> bool:
 def _normalize_enabled(value: Any) -> bool:
     """Coerce a config value to a bool. Default (unknown) is False (gate off).
 
-    Accepts real bools and the usual truthy/falsey strings. YAML 1.1 parses
+    Accepts real bools and the usual truthy/falsey strings. TOML 1.1 parses
     bare ``on``/``off``/``yes``/``no`` as bools already, so the string branch
     is mostly for hand-edited configs.
     """
@@ -530,7 +530,7 @@ def skill_gist(action: str, name: str, *, content: str = "",
 
 
 def _frontmatter_description(content: str) -> str:
-    """Extract the ``description:`` value from SKILL.md YAML frontmatter."""
+    """Extract the ``description:`` value from SKILL.md TOML frontmatter."""
     import re
     m = re.search(r"^description:\s*(.+)$", content, re.MULTILINE)
     if not m:

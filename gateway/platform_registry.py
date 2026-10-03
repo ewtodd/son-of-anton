@@ -63,7 +63,7 @@ def _caller_plugin_scope() -> Optional[str]:
 class PlatformEntry:
     """Metadata and factory for a single platform adapter."""
 
-    # Identifier used in config.yaml (e.g. "discord", "slack").
+    # Identifier used in config.toml (e.g. "discord", "slack").
     name: str
 
     # Human-readable label (e.g. "Discord", "Slack").
@@ -164,21 +164,21 @@ class PlatformEntry:
     # Signature: () -> Optional[dict[str, Any]]
     env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None
 
-    # ── YAML→env config bridge ──
-    # Optional: translate this platform's ``config.yaml`` keys into env vars
+    # ── TOML→env config bridge ──
+    # Optional: translate this platform's ``config.toml`` keys into env vars
     # and/or seed ``PlatformConfig.extra`` directly.  Lets a plugin own its
-    # YAML config translation instead of forcing core ``gateway/config.py``
+    # TOML config translation instead of forcing core ``gateway/config.py``
     # to know every platform's schema.
     #
-    # Signature: (yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]
+    # Signature: (toml_cfg: dict, platform_cfg: dict) -> Optional[dict]
     # Called from ``load_gateway_config()`` after the generic shared-key loop
     # and before ``_apply_env_overrides``.  Mutating ``os.environ`` is allowed
-    # (use ``not os.getenv(...)`` guards to preserve env > YAML precedence);
+    # (use ``not os.getenv(...)`` guards to preserve env > TOML precedence);
     # any returned dict is merged into ``PlatformConfig.extra``.  Exceptions
     # are caught and logged at debug level.
     # See website/docs/developer-guide/adding-platform-adapters.md for the
     # full contract and a worked example.
-    apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
+    apply_toml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
 
     # Optional: home-channel env var name for cron/notification delivery
     # (e.g. ``"DISCORD_HOME_CHANNEL"``).  When set, ``cron.scheduler`` treats this

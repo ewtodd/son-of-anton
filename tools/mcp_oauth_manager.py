@@ -140,7 +140,7 @@ def _make_son_of_anton_provider_class() -> Optional[type]:
             super().__init__(*args, **kwargs)
             self._son_of_anton_server_name = server_name
             self._son_of_anton_home = ""
-            # When the client_id comes from config.yaml (pre-registered), an
+            # When the client_id comes from config.toml (pre-registered), an
             # invalid_client rejection means the *config* is wrong — deleting
             # client.json would just be re-seeded from config and re-running
             # registration can't help. Only auto-heal dynamically-registered

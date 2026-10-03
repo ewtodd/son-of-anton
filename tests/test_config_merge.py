@@ -1,11 +1,9 @@
-"""Config-loading contracts: DEFAULT_CONFIG deep-merges with user YAML,
+"""Config-loading contracts: DEFAULT_CONFIG deep-merges with user TOML,
 sections survive partial user files, and the env-var metadata used by the
 setup wizard stays well-formed.
 """
 
 from __future__ import annotations
-
-import yaml
 
 from son_of_anton_cli.config import load_config
 from son_of_anton_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
@@ -27,7 +25,7 @@ def test_default_config_has_expected_sections() -> None:
         assert section in DEFAULT_CONFIG, f"missing default section: {section}"
 
 
-def test_user_yaml_deep_merges_over_defaults(son_of_anton_home, monkeypatch) -> None:
+def test_user_toml_deep_merges_over_defaults(son_of_anton_home, monkeypatch) -> None:
     from son_of_anton_cli.config import save_config
 
     user = {
@@ -44,7 +42,7 @@ def test_user_yaml_deep_merges_over_defaults(son_of_anton_home, monkeypatch) -> 
     assert cfg["terminal"]["cwd"] == DEFAULT_CONFIG["terminal"]["cwd"]
 
 
-def test_user_yaml_cannot_remove_default_sections(son_of_anton_home) -> None:
+def test_user_toml_cannot_remove_default_sections(son_of_anton_home) -> None:
     from son_of_anton_cli.config import save_config
 
     # A user file that only touches one section must not erase the others.

@@ -57,7 +57,7 @@ FOCUS_USAGE = "Usage: /focus [on|off|status]"
 def normalize_tool_progress_mode(mode: object, default: str = "all") -> str:
     """Coerce a raw config/attr value into a known tool-progress mode.
 
-    YAML 1.1 parses a bare ``off`` as ``False``, and older configs stored
+    TOML 1.1 parses a bare ``off`` as ``False``, and older configs stored
     ``True``/``False`` booleans, so this mirrors ``cli.py``'s normalisation.
     """
     if mode is False:

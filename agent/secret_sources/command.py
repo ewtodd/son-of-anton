@@ -4,7 +4,7 @@ Ports the security semantics of the desktop app's TypeScript
 ``CommandSecretsProvider`` (son-of-anton-desktop ``src/main/secrets/commandProvider.ts``)
 to the Python agent.  The helper command (e.g. ``keepassxc-cli``,
 ``secret-tool``, or a script that cats a tmpfs env file) comes from
-``secrets.command`` in ``config.yaml`` — NEVER from ``.env``, which holds
+``secrets.command`` in ``config.toml`` — NEVER from ``.env``, which holds
 only secret values.
 
 Security model (mirrors the TS provider line-for-line where it matters):
@@ -329,7 +329,7 @@ def apply_command_secrets(
     if not command:
         result.error = (
             "secrets.command.enabled is true but secrets.command.command is "
-            "empty.  Set the helper command in config.yaml."
+            "empty.  Set the helper command in config.toml."
         )
         return result
 
@@ -423,7 +423,7 @@ class CommandSource(SecretSource):
         if not command:
             result.error = (
                 "secrets.command.enabled is true but secrets.command.command "
-                "is empty.  Set the helper command in config.yaml."
+                "is empty.  Set the helper command in config.toml."
             )
             result.error_kind = ErrorKind.NOT_CONFIGURED
             return result
@@ -457,7 +457,7 @@ class CommandSource(SecretSource):
     def remediation(self, kind, cfg: dict) -> str:
         if kind == ErrorKind.NOT_CONFIGURED:
             return (
-                "Set secrets.command.command in config.yaml to a fast, "
+                "Set secrets.command.command in config.toml to a fast, "
                 "non-interactive helper that prints KEY=VALUE lines."
             )
         if kind == ErrorKind.INTERNAL:

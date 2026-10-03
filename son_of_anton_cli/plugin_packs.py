@@ -1,6 +1,6 @@
 """Plugin packs — declarative, shareable plugin sets (#64166).
 
-A pack is a single YAML file (``son-of-anton-pack.yaml``) that pins a set of
+A pack is a single TOML file (``son-of-anton-pack.yaml``) that pins a set of
 plugins (source + exact commit SHA + optional non-secret config seeds).
 Installing a pack is nothing new at runtime: it fans out to N ordinary
 plugin installs through the existing pinned-ref install path, then seeds
@@ -178,19 +178,19 @@ def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
 
 
 def parse_pack(text: str, *, source: str = "<pack>") -> PluginPack:
-    """Parse and validate a pack YAML document.
+    """Parse and validate a pack TOML document.
 
     Raises :class:`PackError` with an actionable message on any problem —
     including refs that are not exact 40-character commit SHAs.
     """
-    import yaml
+    import tomllib
 
     try:
-        raw = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise PackError(f"Pack {source} is not valid YAML: {exc}") from exc
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise PackError(f"Pack {source} is not valid TOML: {exc}") from exc
     if not isinstance(raw, dict):
-        raise PackError(f"Pack {source} must be a YAML mapping.")
+        raise PackError(f"Pack {source} must be a TOML mapping.")
 
     # Accept the issue-sketch nested form (pack: {name: ...}) as sugar.
     meta = raw.get("pack") if isinstance(raw.get("pack"), dict) else raw
@@ -581,13 +581,13 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
 
 
 def export_pack(*, enabled_only: bool = False, pack_name: str = "my-son-of-anton-pack") -> tuple[str, List[str]]:
-    """Build pack YAML from the current install.
+    """Build pack TOML from the current install.
 
-    Returns ``(yaml_text, warnings)``. Plugins whose Git provenance is
+    Returns ``(toml_text, warnings)``. Plugins whose Git provenance is
     unknown (local-only, no install metadata) are listed in the warnings
-    and included as comments in the YAML, never as installable entries.
+    and included as comments in the TOML, never as installable entries.
     """
-    import yaml
+    from utils import dump_toml
 
     from son_of_anton_cli.plugins_cmd import (
         _get_enabled_set,
@@ -637,7 +637,7 @@ def export_pack(*, enabled_only: bool = False, pack_name: str = "my-son-of-anton
     if config:
         doc["config"] = config
 
-    text = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+    text = dump_toml(doc)
     if warnings:
         comment_lines = "\n".join(
             f"# WARNING (not exported): {w}" for w in warnings
@@ -727,7 +727,7 @@ def cmd_pack_install(source: str, *, force: bool = False) -> None:
 
 
 def cmd_pack_export(*, enabled_only: bool = False, name: str = "my-son-of-anton-pack") -> None:
-    """``son-of-anton plugins pack export [--enabled-only]`` — pack YAML on stdout."""
+    """``son-of-anton plugins pack export [--enabled-only]`` — pack TOML on stdout."""
     from rich.console import Console
 
     console = Console(stderr=True)

@@ -1,16 +1,19 @@
 ---
-name: codebase-inspection
-description: "Inspect codebases w/ pygount: LOC, languages, ratios."
-version: 1.0.0
-author: Son of Anton Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [LOC, Code Analysis, pygount, Codebase, Metrics, Repository]
-    related_skills: [github-repo-management]
-prerequisites:
-  commands: [pygount]
+name = "codebase-inspection"
+description = "Inspect codebases w/ pygount: LOC, languages, ratios."
+version = "1.0.0"
+author = "Son of Anton Agent"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["LOC", "Code Analysis", "pygount", "Codebase", "Metrics", "Repository"]
+related_skills = ["github-repo-management"]
+
+[prerequisites]
+commands = ["pygount"]
 ---
 
 # Codebase Inspection with pygount
@@ -65,7 +68,7 @@ Adjust based on the project type:
 # Only count Python files
 pygount --suffix=py --format=summary .
 
-# Only count Python and YAML
+# Only count Python and TOML
 pygount --suffix=py,yaml,yml --format=summary .
 ```
 

@@ -1,5 +1,5 @@
 """Physics-mode contracts: the modules import cleanly, the OpenAI-compatible
-endpoint layer resolves config.yaml in the documented order, and the formal
+endpoint layer resolves config.toml in the documented order, and the formal
 evaluation scores numeric checks against workspace RESULTS.txt.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from physics_intern.llm import _resolve_endpoint
+from autophysicist.llm import _resolve_endpoint
 
 
 def _base_url(client) -> str:
@@ -17,17 +17,17 @@ def _base_url(client) -> str:
 
 
 def test_physics_modules_import() -> None:
-    importlib.import_module("physics_intern")
-    importlib.import_module("physics_intern.run")
-    importlib.import_module("physics_intern.autophysicist")
-    importlib.import_module("physics_intern.llm")
-    importlib.import_module("physics_intern.verification.experimental")
+    importlib.import_module("autophysicist")
+    importlib.import_module("autophysicist.run")
+    importlib.import_module("autophysicist")
+    importlib.import_module("autophysicist.llm")
+    importlib.import_module("autophysicist.verification.experimental")
 
 
 def test_config_builds_for_unregistered_models() -> None:
     # The fork ships no models.yaml: Config must fall back to the package
     # default max_tokens instead of refusing to run (smoke-test regression).
-    from physics_intern.core.config import Config
+    from autophysicist.core.config import Config
 
     config = Config()
     assert config.max_tokens > 0
@@ -35,7 +35,7 @@ def test_config_builds_for_unregistered_models() -> None:
 
 def test_build_config_accepts_programmatic_overrides() -> None:
     # The Autophysicist runner passes overrides=... (smoke-test regression).
-    from physics_intern.core.config import build_config
+    from autophysicist.core.config import build_config
 
     config = build_config(None, overrides={"model": "qwen3.6-35b-a3b"})
     assert config.model == "qwen3.6-35b-a3b"
@@ -44,9 +44,9 @@ def test_build_config_accepts_programmatic_overrides() -> None:
 
 def test_formal_evaluation_render_does_not_raise(tmp_path: Path) -> None:
     # render_formal_evaluation imports the fork's console module
-    # (physics_intern.core.console) — this was a live ModuleNotFoundError
+    # (autophysicist.core.console) — this was a live ModuleNotFoundError
     # before the smoke test (smoke-test regression).
-    from physics_intern.verification.experimental import (
+    from autophysicist.verification.experimental import (
         run_formal_evaluation,
         render_formal_evaluation,
     )
@@ -63,7 +63,7 @@ def test_formal_evaluation_render_does_not_raise(tmp_path: Path) -> None:
 
 def test_endpoint_explicit_physics_base_url_wins(monkeypatch) -> None:
     monkeypatch.setattr(
-        "physics_intern.llm._load_agent_config",
+        "autophysicist.llm._load_agent_config",
         lambda: {
             "model": {"provider": "deepseek", "default": "deepseek-v4"},
             "physics": {
@@ -85,7 +85,7 @@ def test_endpoint_explicit_physics_base_url_wins(monkeypatch) -> None:
 
 def test_endpoint_deepseek_default(monkeypatch) -> None:
     monkeypatch.setattr(
-        "physics_intern.llm._load_agent_config",
+        "autophysicist.llm._load_agent_config",
         lambda: {
             "model": {"provider": "deepseek", "default": "deepseek-v4"},
             "physics": {},
@@ -103,7 +103,7 @@ def test_endpoint_deepseek_default(monkeypatch) -> None:
 
 def test_endpoint_openai_default(monkeypatch) -> None:
     monkeypatch.setattr(
-        "physics_intern.llm._load_agent_config",
+        "autophysicist.llm._load_agent_config",
         lambda: {
             "model": {"provider": "openai", "default": "gpt-5"},
             "physics": {},
@@ -128,7 +128,7 @@ def test_endpoint_custom_provider_then_localhost_fallback(monkeypatch) -> None:
             "llama-swap": {"base_url": "http://127.0.0.1:8080/v1"},
         },
     }
-    monkeypatch.setattr("physics_intern.llm._load_agent_config", lambda: config)
+    monkeypatch.setattr("autophysicist.llm._load_agent_config", lambda: config)
 
     class _Config:
         model = ""
@@ -144,7 +144,7 @@ def test_endpoint_custom_provider_then_localhost_fallback(monkeypatch) -> None:
 
 
 def test_formal_evaluation_passes_and_fails_numeric_checks(tmp_path: Path) -> None:
-    from physics_intern.verification.experimental import run_formal_evaluation
+    from autophysicist.verification.experimental import run_formal_evaluation
 
     problem = {
         "checks": [
@@ -168,7 +168,7 @@ def test_formal_evaluation_passes_and_fails_numeric_checks(tmp_path: Path) -> No
 
 
 def test_formal_evaluation_missing_value_fails_check(tmp_path: Path) -> None:
-    from physics_intern.verification.experimental import run_formal_evaluation
+    from autophysicist.verification.experimental import run_formal_evaluation
 
     problem = {
         "checks": [
@@ -184,15 +184,15 @@ def test_formal_evaluation_missing_value_fails_check(tmp_path: Path) -> None:
 def test_verification_spec_checks_have_required_fields() -> None:
     # Every toy problem spec must carry numeric checks with keys + expected
     # values so formal evaluation is meaningful.
-    import yaml
+    import tomllib
 
     problems_root = Path(__file__).resolve().parent.parent / "problems"
     if not problems_root.is_dir():
         return
-    problem_files = list(problems_root.rglob("problem.yaml"))
-    assert problem_files, "problems/ should ship at least one problem.yaml"
+    problem_files = list(problems_root.rglob("problem.toml"))
+    assert problem_files, "problems/ should ship at least one problem.toml"
     for path in problem_files:
-        spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+        spec = tomllib.loads(path.read_text(encoding="utf-8"))
         assert spec.get("checks"), f"{path} has no numeric checks"
         for check in spec["checks"]:
             assert check.get("key"), f"{path}: check missing key"

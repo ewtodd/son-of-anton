@@ -1,0 +1,16 @@
+model = ""
+max_iterations = 50
+max_tokens = 8192
+api_retry_max = 10
+api_retry_initial_delay = 10.0
+api_retry_max_delay = 60.0
+api_timeout = 2400.0
+parse_retries = 2
+max_tokens_retries = 2
+critique_every_n = 1
+
+[agent_max_tokens]
+manager = 32768
+subagent = 24576
+critic = 16384
+spec_writer = 16384

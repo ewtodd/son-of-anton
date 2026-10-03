@@ -136,7 +136,7 @@ def _fallback_chain_phrase() -> str:
     return (
         "No fallback chain configured — add one with `son-of-anton fallback add`, "
         "or set a cron fleet default via `cron.model` + `cron.model_provider` "
-        "in config.yaml."
+        "in config.toml."
     )
 
 
@@ -355,14 +355,14 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
 
     ``cronjob`` is policy-denied by default (loop prevention, not a security
     boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
-    in config.yaml drops it from the base denylist so cron-spawned agents may
+    in config.toml drops it from the base denylist so cron-spawned agents may
     manage the user's cron table. The gate only removes the built-in policy
     denial — it never overrides the user denylist below.
 
-    User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
+    User-level ``agent.disabled_toolsets`` from config.toml is layered on top
     so per-job ``enabled_toolsets`` cannot bypass policy that applies to
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
-    past config.yaml's denylist).
+    past config.toml's denylist).
     """
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
@@ -720,7 +720,7 @@ def _inflight_min_allowance_minutes() -> float:
 
     Effective allowance per job is ``max(2 * interval, this)``, so a
     slow-but-healthy long-interval job is never clipped by the sweep.
-    Reads ``cron.inflight_max_minutes`` from config.yaml; the
+    Reads ``cron.inflight_max_minutes`` from config.toml; the
     ``SON_OF_ANTON_CRON_INFLIGHT_MAX_MINUTES`` env var is kept as an internal
     escape hatch only.
     """
@@ -1446,7 +1446,7 @@ def _get_son_of_anton_home() -> Path:
     Cron is per-profile by design (#4707): the in-process ticker runs inside a
     profile-scoped gateway, so resolving the active SON_OF_ANTON_HOME at call time
     means a profile's jobs are stored AND executed under that profile's home
-    (its .env, config.yaml, scripts, skills). Do not freeze this at import or
+    (its .env, config.toml, scripts, skills). Do not freeze this at import or
     anchor it at the shared default root — either re-breaks profile isolation.
     """
     return _son_of_anton_home or get_son_of_anton_home()
@@ -1606,7 +1606,7 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     Precedence (first decisive value wins):
       1. Per-job ``attach_to_session`` (bool) — set via the ``cronjob`` tool,
          lets one briefing job opt in without flipping global behaviour.
-      2. Global ``cron.mirror_delivery`` (bool) in config.yaml.
+      2. Global ``cron.mirror_delivery`` (bool) in config.toml.
       3. False.
 
     When enabled, the cron's final output is appended to the target session as
@@ -2073,12 +2073,12 @@ def _resolve_home_env_var(platform_name: str) -> str:
 def _get_config_home_channel(platform_name: str):
     """Return the persisted ``HomeChannel`` for a platform from gateway config.
 
-    ``/sethome`` declares ``config.yaml`` canonical (it is the only store that
+    ``/sethome`` declares ``config.toml`` canonical (it is the only store that
     survives for relay-fronted logical platforms, whose adapters are not
     natively enabled) and mirrors the value into the legacy
     ``<PLATFORM>_HOME_CHANNEL`` env var only as a best-effort compatibility
     shim.  Cron historically read ONLY the env mirror, so a home channel that
-    existed solely in config.yaml — e.g. Discord fronted by the relay
+    existed solely in config.toml — e.g. Discord fronted by the relay
     connector, where no ``DISCORD_HOME_CHANNEL`` was ever exported — was
     invisible and jobs silently fell back to local-only.  Reading the
     canonical store here fixes that for every relay-fronted platform at once.
@@ -2115,7 +2115,7 @@ def _get_home_target_chat_id(platform_name: str) -> str:
 
     Resolution order: platform env var (legacy mirror, kept first so an
     operator override keeps winning) → legacy env var name → the canonical
-    ``home_channel`` block persisted in config.yaml by ``/sethome``.
+    ``home_channel`` block persisted in config.toml by ``/sethome``.
     """
     value = _env_home_target_chat_id(platform_name)
     if value:
@@ -2136,7 +2136,7 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
             value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
     if value:
         return value
-    # Canonical config.yaml fallback — same rationale as
+    # Canonical config.toml fallback — same rationale as
     # _get_home_target_chat_id, and thread affinity only applies when the
     # chat itself resolved from the same config block (an env-provided chat
     # id keeps its env-provided thread semantics).
@@ -2521,7 +2521,7 @@ def _send_media_via_adapter(
                 # Large attachments (long TTS audio, concatenated recordings,
                 # big exports) can legitimately exceed a fixed 30s upload
                 # window. Configurable, matching the other cron timeouts
-                # (cron.media_send_timeout_seconds in config.yaml, or the
+                # (cron.media_send_timeout_seconds in config.toml, or the
                 # SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT env override).
                 result = future.result(timeout=_get_media_send_timeout())
             except TimeoutError:
@@ -2605,7 +2605,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # in config.toml for clean output.
     wrap_response = True
     user_cfg = None
     try:
@@ -2652,7 +2652,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         [
             f"{_policy_dropped} media attachment(s) dropped by media path "
             "policy (missing file, denied prefix, or strict-mode miss); "
-            "see gateway.strict / media_delivery_allow_dirs in config.yaml"
+            "see gateway.strict / media_delivery_allow_dirs in config.toml"
         ]
         if _policy_dropped > 0
         else []
@@ -3381,7 +3381,7 @@ def _get_media_send_timeout() -> int:
 
     Mirrors the ``script_timeout_seconds`` resolution pattern: the
     SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT env var wins, then
-    ``cron.media_send_timeout_seconds`` in config.yaml, then the default
+    ``cron.media_send_timeout_seconds`` in config.toml, then the default
     (300s — large attachments like long TTS audio can legitimately exceed
     the old fixed 30s upload window).
     """
@@ -4792,7 +4792,7 @@ def run_job(
     try:
         from son_of_anton_state import SessionDB
 
-        # Resolve timeout: env override → config.yaml → default 10s.
+        # Resolve timeout: env override → config.toml → default 10s.
         # Mirrors the script_timeout_seconds resolution pattern.
         _session_db_timeout: float | None = None
         _raw_env_timeout = os.getenv("SON_OF_ANTON_CRON_SESSION_DB_TIMEOUT", "").strip()
@@ -5044,7 +5044,7 @@ def run_job(
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
-        # Re-read .env and config.yaml fresh every run so provider/key
+        # Re-read .env and config.toml fresh every run so provider/key
         # changes take effect without a gateway restart. Route through
         # load_son_of_anton_dotenv (not a bare load_dotenv) and reset the secret-
         # source cache first: startup already applied external secrets and
@@ -5074,7 +5074,7 @@ def run_job(
             )
 
         # Model resolution precedence: per-job override > cron.model (the
-        # cron-fleet default) > SON_OF_ANTON_MODEL env > config.yaml ``model:``
+        # cron-fleet default) > SON_OF_ANTON_MODEL env > config.toml ``model:``
         # (string or ``{default: ...}``). The per-job value is intentionally
         # re-read from storage every tick so a ``son-of-anton cron edit --model``
         # after a failed run takes effect on the next tick — there is no
@@ -5088,12 +5088,12 @@ def run_job(
         _cron_default_model = ""
         _cron_default_provider = ""
 
-        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
+        # Load config.toml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         _model_cfg = {}
         try:
             from son_of_anton_cli.config import read_user_config_raw
-            _cfg_path = str(_get_son_of_anton_home() / "config.yaml")
+            _cfg_path = str(_get_son_of_anton_home() / "config.toml")
             if os.path.exists(_cfg_path):
                 _cfg = read_user_config_raw(Path(_cfg_path))
                 # Managed scope: a scheduled job must honor administrator-pinned
@@ -5129,16 +5129,16 @@ def run_job(
                         if _global_model:
                             model = _global_model
         except Exception as e:
-            logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+            logger.warning("Job '%s': failed to load config.toml, using defaults: %s", job_id, e)
 
-        # Fail fast if no model resolved from job / env / config.yaml: an empty
+        # Fail fast if no model resolved from job / env / config.toml: an empty
         # model otherwise reaches the provider as an opaque 400 (#23979).
         if not (isinstance(model, str) and model.strip()):
             raise RuntimeError(
                 f"Cron job '{job_name}' has no model configured "
                 f"(job.model={job.get('model')!r}, "
                 f"SON_OF_ANTON_MODEL={os.getenv('SON_OF_ANTON_MODEL', '')!r}, "
-                "config.yaml model.default missing or empty). "
+                "config.toml model.default missing or empty). "
                 f"Set a per-job model via "
                 f"`son-of-anton cron edit {job_id} --model <name>` or set a "
                 "default with `son-of-anton model <name>`."
@@ -5158,7 +5158,7 @@ def run_job(
         # Resolution itself happens via _resolve_job_reasoning_config below
         # (per-job pin > agent.reasoning_overrides > agent.reasoning_effort).
 
-        # Prefill messages from env or config.yaml. The top-level
+        # Prefill messages from env or config.toml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
         # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
@@ -5221,7 +5221,7 @@ def run_job(
         # alert exactly once (dedup persisted via the job's
         # `preflight_alerted` bit — the #73506 alert-once shape).
         # Runs after the wake-gate/prompt build so silent script ticks stay
-        # silent. Opt-out: `cron.preflight: false` in config.yaml.
+        # silent. Opt-out: `cron.preflight: false` in config.toml.
         # ---------------------------------------------------------------
         _pf_reason = None
         try:
@@ -5272,7 +5272,7 @@ def run_job(
                 f"**Reason:** {_pf_reason}\n\n"
                 "The job will stay blocked (without re-alerting) until the "
                 "configuration is fixed; the next healthy run clears this "
-                "state. Set `cron.preflight: false` in config.yaml to "
+                "state. Set `cron.preflight: false` in config.toml to "
                 "disable this validation."
             )
             return False, blocked_doc, "", f"{marker} {_pf_reason}"
@@ -6850,7 +6850,7 @@ def tick(
         # at-most-once — mark_job_run re-anchors at completion regardless).
         advance_next_runs([job["id"] for job in due_jobs])
 
-        # Resolve max parallel workers: env var > config.yaml > unbounded.
+        # Resolve max parallel workers: env var > config.toml > unbounded.
         # Set SON_OF_ANTON_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
         _max_workers: Optional[int] = None
         try:

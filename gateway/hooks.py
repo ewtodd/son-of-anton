@@ -3,7 +3,7 @@ Event Hook System
 
 A lightweight event-driven system that fires handlers at key lifecycle points.
 Hooks are discovered from ~/.son-of-anton/hooks/ directories, each containing:
-  - HOOK.yaml  (metadata: name, description, events list)
+  - HOOK.toml  (metadata: name, description, events list)
   - handler.py (Python handler with async def handle(event_type, context))
 
 Events:
@@ -41,9 +41,8 @@ and ``thread_id`` is non-empty.
 import asyncio
 import importlib.util
 import sys
+import tomllib
 from typing import Any, Callable, Dict, List, Optional
-
-import yaml
 
 from son_of_anton_cli.config import get_son_of_anton_home
 
@@ -87,7 +86,7 @@ class HookRegistry:
         Also registers built-in hooks that are always active.
 
         Each hook directory must contain:
-          - HOOK.yaml with at least 'name' and 'events' keys
+          - HOOK.toml with at least 'name' and 'events' keys
           - handler.py with a top-level 'handle' function (sync or async)
         """
         self._register_builtin_hooks()
@@ -99,16 +98,16 @@ class HookRegistry:
             if not hook_dir.is_dir():
                 continue
 
-            manifest_path = hook_dir / "HOOK.yaml"
+            manifest_path = hook_dir / "HOOK.toml"
             handler_path = hook_dir / "handler.py"
 
             if not manifest_path.exists() or not handler_path.exists():
                 continue
 
             try:
-                manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+                manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
                 if not manifest or not isinstance(manifest, dict):
-                    print(f"[hooks] Skipping {hook_dir.name}: invalid HOOK.yaml", flush=True)
+                    print(f"[hooks] Skipping {hook_dir.name}: invalid HOOK.toml", flush=True)
                     continue
 
                 hook_name = manifest.get("name", hook_dir.name)

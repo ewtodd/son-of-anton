@@ -2,7 +2,7 @@
 
 A data-driven skin system that lets users (and Son of Anton itself) customize the
 visual appearance across the CLI, the TUI, and the desktop GUI from a single
-file. Skins are defined as YAML files in ~/.son-of-anton/skins/ or as built-in presets.
+file. Skins are defined as TOML files in ~/.son-of-anton/skins/ or as built-in presets.
 No code changes are needed to add a new skin.
 
 This module is the source of truth: it resolves the active skin, and the gateway
@@ -10,7 +10,7 @@ pushes the resolved palette to the TUI and desktop (see tui_gateway's
 ``resolve_skin`` / ``skin.changed``). A skin dropped in ~/.son-of-anton/skins/ therefore
 themes all three surfaces at once — the theme analogue of the plugin SDK.
 
-SKIN YAML SCHEMA
+SKIN TOML SCHEMA
 ================
 
 All fields are optional. Missing values inherit from the ``default`` skin.
@@ -137,8 +137,8 @@ BUILT-IN SKINS
 USER SKINS
 ==========
 
-Drop a YAML file in ``~/.son-of-anton/skins/<name>.yaml`` following the schema above.
-Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.yaml.
+Drop a TOML file in ``~/.son-of-anton/skins/<name>.yaml`` following the schema above.
+Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.toml.
 """
 
 import logging
@@ -913,12 +913,12 @@ def _skins_dir() -> Path:
     return get_son_of_anton_home() / "skins"
 
 
-def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
-    """Load a skin definition from a YAML file."""
+def _load_skin_from_toml(path: Path) -> Optional[Dict[str, Any]]:
+    """Load a skin definition from a TOML file."""
     try:
-        import yaml
+        import tomllib
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = tomllib.loads(f.read())
         if isinstance(data, dict) and "name" in data:
             return data
     except Exception as e:
@@ -942,7 +942,7 @@ def _mapping_or_empty(value: Any, *, section: str, skin_name: str) -> Dict[str, 
 
 
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
-    """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
+    """Build a SkinConfig from a raw dict (built-in or loaded from TOML)."""
     # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
     skin_name = str(data.get("name", "unknown"))
@@ -996,8 +996,8 @@ def list_skins() -> List[Dict[str, str]]:
 
     skins_path = _skins_dir()
     if skins_path.is_dir():
-        for f in sorted(skins_path.glob("*.yaml")):
-            data = _load_skin_from_yaml(f)
+        for f in sorted(skins_path.glob("*.toml")):
+            data = _load_skin_from_toml(f)
             if data:
                 skin_name = data.get("name", f.stem)
                 # Skip if it shadows a built-in
@@ -1016,9 +1016,9 @@ def load_skin(name: str) -> SkinConfig:
     """Load a skin by name. Checks user skins first, then built-in."""
     # Check user skins directory
     skins_path = _skins_dir()
-    user_file = skins_path / f"{name}.yaml"
+    user_file = skins_path / f"{name}.toml"
     if user_file.is_file():
-        data = _load_skin_from_yaml(user_file)
+        data = _load_skin_from_toml(user_file)
         if data:
             return _build_skin_config(data)
 
@@ -1122,7 +1122,7 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     # Input/prompt: leave unset by default so the typed text inherits
     # the terminal's foreground color (readable in both light and dark
     # color schemes).  Skins can opt into a colored prompt by setting
-    # `prompt` explicitly in their YAML.
+    # `prompt` explicitly in their TOML.
     prompt = skin.get_color("prompt", "")
     input_rule = skin.get_color("input_rule", "#CD7F32")
     title = skin.get_color("banner_title", "#FFD700")

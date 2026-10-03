@@ -6,7 +6,7 @@ command replies, restart-drain notices.  Agent-generated output, log lines,
 error tracebacks, tool outputs, and slash-command descriptions all stay in
 English.
 
-Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
+Catalog files live under ``locales/<lang>.toml`` at the repo root.  Each
 catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
 ``gateway.approval_expired``).  Missing keys fall back to English; if English
 is missing too, the key path itself is returned so a broken catalog never
@@ -22,7 +22,7 @@ Usage::
 Language resolution order:
     1. Explicit ``lang=`` argument passed to :func:`t`
     2. ``SON_OF_ANTON_LANGUAGE`` environment variable (for tests / quick override)
-    3. ``display.language`` from config.yaml
+    3. ``display.language`` from config.toml
     4. ``"en"`` (baseline)
 
 Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga,
@@ -89,7 +89,7 @@ _catalog_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
-    """Return the directory containing locale YAML files.
+    """Return the directory containing locale TOML files.
 
     Resolution order, first existing wins:
 
@@ -143,9 +143,9 @@ def _normalize_lang(value: Any) -> str:
 
 
 def _load_catalog(lang: str) -> dict[str, str]:
-    """Load and flatten one locale YAML file into a dotted-key dict.
+    """Load and flatten one locale TOML file into a dotted-key dict.
 
-    YAML files can be nested for human readability; this produces the flat
+    TOML files can be nested for human readability; this produces the flat
     key space :func:`t` expects.  Cached per-language for the process.
     """
     with _catalog_lock:
@@ -153,7 +153,7 @@ def _load_catalog(lang: str) -> dict[str, str]:
         if cached is not None:
             return cached
 
-    path = _locales_dir() / f"{lang}.yaml"
+    path = _locales_dir() / f"{lang}.toml"
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
         with _catalog_lock:
@@ -161,9 +161,9 @@ def _load_catalog(lang: str) -> dict[str, str]:
         return {}
 
     try:
-        import yaml  # PyYAML is already a son-of-anton dependency
+        import tomllib
         with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
+            raw = tomllib.loads(f.read()) or {}
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)
         with _catalog_lock:
@@ -189,10 +189,10 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
 
 @lru_cache(maxsize=1)
 def _config_language_cached() -> str | None:
-    """Read ``display.language`` from config.yaml once per process.
+    """Read ``display.language`` from config.toml once per process.
 
     Cached because ``t()`` is called in hot paths (every approval prompt,
-    every gateway reply) and re-reading YAML each call would be wasteful.
+    every gateway reply) and re-reading TOML each call would be wasteful.
     ``reset_language_cache()`` clears this when config changes at runtime
     (e.g. after the setup wizard).
     """

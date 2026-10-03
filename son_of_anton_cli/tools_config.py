@@ -5,7 +5,7 @@ Unified tool configuration for Son of Anton Agent.
 Select a platform → toggle toolsets on/off → for newly enabled tools
 that need API keys, run through provider-aware configuration.
 
-Saves per-platform tool configuration to ~/.son-of-anton/config.yaml under
+Saves per-platform tool configuration to ~/.son-of-anton/config.toml under
 the `platform_toolsets` key.
 """
 
@@ -541,7 +541,7 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
 
 
 def enabled_mcp_server_names(config: dict) -> Set[str]:
-    """Names of MCP servers globally enabled in config.yaml or by a plugin.
+    """Names of MCP servers globally enabled in config.toml or by a plugin.
 
     Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
     the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
@@ -550,7 +550,7 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     flag or an unrecognized value is treated as enabled.
 
     Portable Agent Plugins contribute MCP servers in-memory rather than via
-    ``config.yaml`` (see ``PluginManager.get_portable_mcp_servers``). Those are
+    ``config.toml`` (see ``PluginManager.get_portable_mcp_servers``). Those are
     included here so their tools fold into platform toolsets like native
     servers do — the user's opt-in is enabling the plugin itself. Without this,
     a portable server registers with the MCP runtime but its tools never reach
@@ -625,7 +625,7 @@ def _get_platform_tools(
             default_ts = f"son-of-anton-{platform}"
         toolset_names = [default_ts]
 
-    # YAML may parse bare numeric names (e.g. ``12306:``) as int.
+    # TOML may parse bare numeric names (e.g. ``12306:``) as int.
     # Normalise to str so downstream sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
@@ -827,7 +827,7 @@ def _get_platform_tools(
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 
-    # Honor agent.disabled_toolsets from config.yaml — allows users to
+    # Honor agent.disabled_toolsets from config.toml — allows users to
     # globally suppress specific toolsets (e.g. "memory") across all
     # platforms without per-platform toolset configuration.  This runs
     # last so it overrides everything above.  The value may arrive as a
@@ -880,7 +880,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     config.setdefault("platform_toolsets", {})
 
     # Drop platform-scoped toolsets that don't apply here.  Prevents the
-    # "Configure all platforms" checklist (or a hand-edited config.yaml)
+    # "Configure all platforms" checklist (or a hand-edited config.toml)
     # from turning on, say, the `discord` toolset for another platform.
     enabled_toolset_keys = {
         ts for ts in enabled_toolset_keys
@@ -922,7 +922,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # distinguish "new plugin, default enabled" from "user disabled it".
     if plugin_keys:
         # setdefault does NOT replace a present-but-null key ("known_plugin_toolsets:"
-        # in config.yaml parses to None) — normalize before indexing into it.
+        # in config.toml parses to None) — normalize before indexing into it.
         if not isinstance(config.get("known_plugin_toolsets"), dict):
             config["known_plugin_toolsets"] = {}
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
@@ -1735,7 +1735,7 @@ def _configure_vision_backend() -> None:
     """Interactive vision-backend configuration.
 
     Vision is an auxiliary task whose provider/model are resolved from
-    ``auxiliary.vision.{provider,model,base_url}`` in config.yaml (see
+    ``auxiliary.vision.{provider,model,base_url}`` in config.toml (see
     ``agent/auxiliary_client.resolve_vision_provider_client``). Rather than
     forcing the user onto OpenRouter, let them pick any authenticated
     provider + model — the same surface as ``son-of-anton model`` — or point at a
@@ -1792,7 +1792,7 @@ def _configure_vision_backend() -> None:
             f"    Vision model{f' (blank for {default_model})' if default_model else ''}"
         ).strip() or default_model
         save_env_value("OPENAI_API_KEY", api_key.strip())
-        # Only base_url + model go to config.yaml; the key is the secret.
+        # Only base_url + model go to config.toml; the key is the secret.
         # Pin provider="custom" so the resolver routes through this endpoint —
         # leaving it at the "auto" default would make _resolve_task_provider_model
         # ignore the base_url (it only honors base_url when paired with an
@@ -2448,7 +2448,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     print()
     from son_of_anton_constants import display_son_of_anton_home
-    print(color(f"  Tool configuration saved to {display_son_of_anton_home()}/config.yaml", Colors.DIM))
+    print(color(f"  Tool configuration saved to {display_son_of_anton_home()}/config.toml", Colors.DIM))
     print(color("  Changes take effect on next 'son-of-anton' or gateway restart.", Colors.DIM))
     print()
 
@@ -2461,7 +2461,7 @@ def _configure_mcp_tools_interactive(config: dict):
 
     Connects to each configured MCP server, discovers tools, then shows
     a per-server curses checklist.  Writes changes back as ``tools.exclude``
-    entries in config.yaml.
+    entries in config.toml.
     """
     from son_of_anton_cli.curses_ui import curses_checklist
 

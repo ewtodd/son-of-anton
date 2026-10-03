@@ -443,7 +443,7 @@ class HonchoClientConfig:
     dialectic_cadence: int = 1
     # Rewrite the latest user message into a retrieval query before dialectic.
     # Off by default: adds one auxiliary LLM call per dialectic fire
-    # (model/timeout under auxiliary.memory_query_rewrite in config.yaml).
+    # (model/timeout under auxiliary.memory_query_rewrite in config.toml).
     query_rewrite: bool = False
     # Bounded synchronous waits on turn 1, in seconds. 0 disables the wait
     # entirely (fully async first turn; context surfaces on later turns).
@@ -1073,7 +1073,7 @@ def _slot_for(key: tuple) -> SingletonSlot:
 # costs one stat() instead of a JSON parse. Path-keyed because multi-profile
 # processes resolve different honcho.json files — a single-slot memo would
 # thrash between profiles and return profile A's timeout for profile B.
-# mtime -1 = file absent. config.yaml needs no such memo:
+# mtime -1 = file absent. config.toml needs no such memo:
 # load_config_readonly() is internally cached on both the user and managed
 # files' signatures, and a bespoke key here would have to duplicate that
 # invalidation logic.
@@ -1129,9 +1129,9 @@ def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
     """Mirror the build path's timeout resolution so the staleness check agrees with it.
 
     With an explicit config this matches ``_build`` (config.timeout, then
-    config.yaml, then default).  With no config it matches what
+    config.toml, then default).  With no config it matches what
     ``from_global_config`` + ``_build`` would produce: honcho.json host
-    block/root keys, then HONCHO_TIMEOUT, then config.yaml, then default.
+    block/root keys, then HONCHO_TIMEOUT, then config.toml, then default.
     Any source skew here makes the check disagree with the built client
     forever and rebuild it on every call.
     """
@@ -1261,7 +1261,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                 "(or run `son-of-anton honcho setup` to configure)."
             )
 
-        # Allow config.yaml honcho.base_url to override the SDK's environment
+        # Allow config.toml honcho.base_url to override the SDK's environment
         # mapping, enabling remote self-hosted Honcho deployments without
         # requiring the server to live on localhost.
         resolved_base_url = config.base_url

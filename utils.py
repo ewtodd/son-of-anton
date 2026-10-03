@@ -1,5 +1,6 @@
 """Shared utility functions for son-of-anton."""
 
+import datetime
 import errno
 import json
 import logging
@@ -11,8 +12,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
-
-import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +99,7 @@ def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
     """Re-apply uid/gid after an atomic replace when permitted.
 
     ``os.replace`` swaps in the temp file's owner, so a root-run config write
-    can leave ``config.yaml`` owned by root. Best-effort chown preserves the
+    can leave ``config.toml`` owned by root. Best-effort chown preserves the
     existing owner for privileged callers and is harmless for unprivileged
     callers that cannot chown.
     """
@@ -150,7 +149,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     ``os.replace(tmp, target)`` atomically swaps ``tmp`` into place at
     ``target``.  When ``target`` is a symlink, the symlink itself is
     replaced with a regular file — silently detaching managed deployments
-    that symlink ``config.yaml`` / ``SOUL.md`` / ``auth.json`` etc. from
+    that symlink ``config.toml`` / ``SOUL.md`` / ``auth.json`` etc. from
     ``~/.son-of-anton/`` to a git-tracked profile package or dotfiles repo
     (GitHub #16743).
 
@@ -199,7 +198,7 @@ def atomic_write_text(
     Args:
         preserve_mode: When True, carry an existing target's permission bits
             and (POSIX, best-effort) owner across the replace, like
-            ``atomic_yaml_write`` does unconditionally.  ``os.replace`` swaps
+            ``atomic_toml_write`` does unconditionally.  ``os.replace`` swaps
             in mkstemp's 0600 temp file owned by the writing user, so without
             this a root-run rewrite of a user-owned file flips its owner and
             tightens its mode.  The mode is applied to the temp fd *before*
@@ -350,44 +349,124 @@ def warn_if_credential_file_broadly_readable(
     return True
 
 
-class IndentDumper(yaml.SafeDumper):
-    """PyYAML dumper that indents list items under mapping keys (2-space).
+# ─── TOML support ─────────────────────────────────────────────────────────────
+#
+# TOML is the preferred format for user-authored configuration, skins, and
+# problem specs; TOML stays readable for one deprecation window. Reading is
+# stdlib-only (``tomllib``); writing needs a small serializer because there is
+# no stdlib TOML writer. ``None`` has no TOML representation, so null mapping
+# values and null list elements are dropped on write.
 
-    Default PyYAML emits "indentless" sequences — list items start at the
-    same column as their parent mapping key.  ``ruamel.yaml`` (used by
-    :func:`atomic_roundtrip_yaml_update`) emits 2-space-indented sequences.
-    Mixing both styles in the same ``config.yaml`` produces a file that
-    stricter parsers like ``js-yaml`` reject with ``bad indentation of a
-    mapping entry``.  Forcing ``indentless=False`` aligns the two
-    serializers so all write paths emit byte-identical layouts (#31999).
+_BARE_TOML_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _toml_key(key: Any) -> str:
+    name = str(key)
+    if _BARE_TOML_KEY_RE.fullmatch(name):
+        return name
+    return json.dumps(name, ensure_ascii=False)
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value:
+            return "nan"
+        if value == float("inf"):
+            return "inf"
+        if value == float("-inf"):
+            return "-inf"
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return "[" + ", ".join(
+            _toml_value(item) for item in value if item is not None
+        ) + "]"
+    raise TypeError(
+        f"cannot serialize {type(value).__name__} to TOML: {value!r}"
+    )
+
+
+def _is_array_of_tables(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(element, dict) for element in value)
+    )
+
+
+def _dump_toml_table(lines: list, prefix: list, table: dict) -> None:
+    # TOML requires every scalar/array key of a table before its sub-tables,
+    # so emit in two passes instead of insertion order.
+    for key, value in table.items():
+        if value is None or isinstance(value, dict) or _is_array_of_tables(value):
+            continue
+        if isinstance(value, list) and any(
+            isinstance(element, dict) for element in value
+        ):
+            raise TypeError(
+                "TOML cannot mix tables and values in array "
+                f"{'.'.join(prefix + [str(key)])!r}"
+            )
+        lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
+    for key, value in table.items():
+        if value is None:
+            continue
+        path = prefix + [str(key)]
+        if isinstance(value, dict):
+            lines.append("")
+            lines.append(f"[{'.'.join(_toml_key(part) for part in path)}]")
+            _dump_toml_table(lines, path, value)
+        elif _is_array_of_tables(value):
+            for element in value:
+                lines.append("")
+                lines.append(
+                    f"[[{'.'.join(_toml_key(part) for part in path)}]]"
+                )
+                _dump_toml_table(lines, path, element)
+
+
+def dump_toml(data: dict) -> str:
+    """Serialize a plain mapping to TOML text.
+
+    ``None`` values cannot be represented in TOML and are dropped. Any other
+    unsupported value raises ``TypeError`` rather than writing a document that
+    reloads differently. Key order is preserved; scalar keys precede
+    sub-tables as TOML requires.
     """
+    if not isinstance(data, dict):
+        raise TypeError("TOML document root must be a mapping")
+    lines: list = []
+    _dump_toml_table(lines, [], data)
+    while lines and lines[0] == "":
+        lines.pop(0)
+    return "\n".join(lines) + "\n" if lines else ""
 
-    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
-        return super().increase_indent(flow, False)
 
-
-def atomic_yaml_write(
+def atomic_toml_write(
     path: Union[str, Path],
     data: Any,
     *,
-    default_flow_style: bool = False,
-    sort_keys: bool = False,
     extra_content: str | None = None,
     create_mode: "int | None" = None,
 ) -> None:
-    """Write YAML data to a file atomically.
+    """Write TOML to a file atomically.
 
     Uses temp file + fsync + os.replace to ensure the target file is never
-    left in a partially-written state.  If the process crashes mid-write,
-    the previous version of the file remains intact.
+    left in a partially-written state. If the process crashes mid-write, the
+    previous version of the file remains intact.
 
     Args:
         path: Target file path (will be created or overwritten).
-        data: YAML-serializable data to write.
-        default_flow_style: YAML flow style (default False).
-        sort_keys: Whether to sort dict keys (default False).
-        extra_content: Optional string to append after the YAML dump
-            (e.g. commented-out sections for user reference).
+        data: TOML-serializable mapping to write.
+        extra_content: Optional comment block appended after the document.
+            Lines must already start with ``#`` (TOML comment syntax).
         create_mode: Permission bits to apply when the target does not yet
             exist (a created file otherwise keeps mkstemp's 0600).  Never
             applied to an existing file, whose mode is always preserved.
@@ -411,21 +490,7 @@ def atomic_yaml_write(
                 # Apply the mode to the temp fd BEFORE the replace so the
                 # target never transits through mkstemp's 0600.
                 os.fchmod(f.fileno(), original_mode)
-            # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
-            # cursors) as real UTF-8 instead of fragile escape sequences. Without
-            # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
-            # inside multi-line double-quoted strings wrapped with `\`
-            # continuations — a structure that stricter/non-PyYAML parsers and
-            # hand-edits routinely break into unclosed quotes, corrupting the whole
-            # config (GitHub #51356).
-            yaml.dump(
-                data,
-                f,
-                Dumper=IndentDumper,
-                default_flow_style=default_flow_style,
-                sort_keys=sort_keys,
-                allow_unicode=True,
-            )
+            f.write(dump_toml(data))
             if extra_content:
                 f.write(extra_content)
             f.flush()
@@ -445,189 +510,56 @@ def atomic_yaml_write(
         raise
 
 
-def atomic_roundtrip_yaml_update(
+def atomic_toml_update(
     path: Union[str, Path],
     key_path: str,
     value: Any,
 ) -> None:
-    """Update one dotted YAML key while preserving comments and readable text.
+    """Set one dotted key in a TOML document, rewriting the whole file.
 
-    This is intentionally narrower than :func:`atomic_yaml_write`: it is for
-    user-edited config files where comments, ordering, quoting, and Unicode
-    should survive a single setting mutation.  Writes still use the same temp
-    file + fsync + atomic replace pattern.
+    There is no comment-preserving TOML writer in the stdlib (and no tomlkit
+    dependency), so a single-key edit rewrites the document; comments are not
+    preserved. Uses the same temp file + fsync + atomic replace pattern as
+    :func:`atomic_toml_write`.
     """
-    from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
-
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    yaml_rt = YAML(typ="rt")
-    yaml_rt.preserve_quotes = True
-    yaml_rt.allow_unicode = True
-    yaml_rt.default_flow_style = False
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
-
-    if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            config = yaml_rt.load(f) or CommentedMap()
-    else:
-        config = CommentedMap()
-
-    if not isinstance(config, CommentedMap):
-        config = CommentedMap(config)
-
-    current = config
+    data = load_toml_file(path)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} does not contain a TOML mapping")
+    current = data
     keys = key_path.split(".")
     for key in keys[:-1]:
         next_value = current.get(key)
-        if not isinstance(next_value, CommentedMap):
-            next_value = CommentedMap()
+        if not isinstance(next_value, dict):
+            next_value = {}
             current[key] = next_value
         current = next_value
     current[keys[-1]] = value
-
-    original_mode = _preserve_file_mode(path)
-    original_owner = _preserve_file_owner(path)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f".{path.stem}_",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml_rt.dump(config, f)
-            f.flush()
-            os.fsync(f.fileno())
-        real_path = atomic_replace(tmp_path, path)
-        real_path_obj = Path(real_path)
-        _restore_file_owner(real_path_obj, original_owner)
-        _restore_file_mode(real_path_obj, original_mode)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_toml_write(path, data)
 
 
-def atomic_roundtrip_yaml_save(
+def atomic_toml_save(
     path: Union[str, Path],
     new_state: dict,
 ) -> None:
-    """Persist a full config-state dict while preserving comments and ordering.
+    """Persist a full config-state mapping as TOML.
 
-    Behaves like ``atomic_yaml_write`` (writes the whole file in one shot from
-    ``new_state``), but routes through ruamel.yaml round-trip mode so existing
-    comments, key order, quotes, and readable Unicode survive.
-
-    Reconciliation rules against the on-disk YAML:
-
-    * Keys present in both are updated in-place via assignment, which keeps
-      ruamel's CommentedMap anchors (and their attached comments) attached to
-      their original positions.
-    * Keys missing from ``new_state`` are deleted.
-    * Keys added in ``new_state`` are appended at the end of their parent map.
-    * Nested ``dict`` values recurse with the same rules.
-    * Non-dict values (lists, scalars) are overwritten wholesale — list
-      element comments are not individually preserved, matching ruamel's
-      semantics.
-
-    This is the comment-safe replacement for ``yaml.safe_dump(cfg, f)`` in
-    callers that mutate a deep-loaded config dict and want to persist the
-    whole thing.
-
-    Shares the fail-closed contract ``son_of_anton_cli.config.atomic_config_write``
-    enforces for plain (non-comment-preserving) full-document writes: an
-    existing-but-unreadable ``config.yaml`` (permission error, broken mount,
-    transient I/O) raises rather than being silently replaced with only
-    ``new_state``. Imported lazily to avoid a module-level circular import —
-    ``son_of_anton_cli.config`` itself imports from this module.
+    The old ruamel round-trip saver preserved comments; TOML has no stdlib
+    equivalent, so the document is rewritten wholesale from *new_state* and
+    comments are lost. Keeps the fail-closed guard against clobbering an
+    existing-but-unreadable config file. The import is lazy because
+    ``son_of_anton_cli.config`` imports from this module.
     """
-    from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
-    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-
     from son_of_anton_cli.config import require_readable_config_before_write
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(path)
-
-    yaml_rt = YAML(typ="rt")
-    yaml_rt.preserve_quotes = True
-    yaml_rt.allow_unicode = True
-    yaml_rt.default_flow_style = False
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
-
-    if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            existing = yaml_rt.load(f)
-        if not isinstance(existing, CommentedMap):
-            existing = CommentedMap(existing or {})
-    else:
-        existing = CommentedMap()
-
-    # ruamel's round-trip dumper resolves plain scalars against the YAML 1.2
-    # core schema, where only true/false/null are reserved words — so a plain
-    # python str like "off" or "yes" is emitted unquoted. Every other config
-    # reader in this codebase (atomic_config_write's PyYAML path, yaml.safe_load
-    # call sites, etc.) parses under YAML 1.1 rules, where on/off/yes/no are
-    # boolean synonyms. Without forcing quotes here, a freshly written
-    # `approvals.mode: off` silently round-trips back as `False` under
-    # yaml.safe_load. Force-quote any new string value that YAML 1.1 would
-    # otherwise misparse as bool/null.
-    _YAML11_AMBIGUOUS_WORDS = {
-        "y", "n", "yes", "no", "true", "false", "on", "off", "null", "~",
-    }
-
-    def _quote_if_yaml11_ambiguous(value):
-        if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
-            return DoubleQuotedScalarString(value)
-        return value
-
-    def _merge(dst: CommentedMap, src: dict) -> None:
-        # Update / recurse into keys present in src.
-        for key, value in src.items():
-            if isinstance(value, dict):
-                current = dst.get(key)
-                if not isinstance(current, CommentedMap):
-                    current = CommentedMap()
-                    dst[key] = current
-                _merge(current, value)
-            else:
-                dst[key] = _quote_if_yaml11_ambiguous(value)
-        # Delete keys missing from src — preserves "explicit absence" semantics
-        # of the old _save_cfg(cfg) pattern (e.g. cfg.pop("custom_prompt", None)
-        # then _save_cfg must actually remove the key from disk).
-        for key in [k for k in dst.keys() if k not in src]:
-            del dst[key]
-
-    _merge(existing, new_state)
-
-    original_mode = _preserve_file_mode(path)
-    original_owner = _preserve_file_owner(path)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f".{path.stem}_",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml_rt.dump(existing, f)
-            f.flush()
-            os.fsync(f.fileno())
-        real_path = atomic_replace(tmp_path, path)
-        real_path_obj = Path(real_path)
-        _restore_file_owner(real_path_obj, original_owner)
-        _restore_file_mode(real_path_obj, original_mode)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_toml_write(path, new_state)
 
 
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────
@@ -646,32 +578,30 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return default
 
 
-# ── Fast YAML loading ────────────────────────────────────────────────────
+# ── TOML loading ────────────────────────────────────────────────────────
 #
-# PyYAML's pure-Python SafeLoader is ~8x slower than the libyaml-backed
-# ``CSafeLoader`` C extension. Startup parses config.yaml and every plugin
-# manifest with the slow path, costing ~0.9s of cold-start time. The C loader
-# is a true drop-in for ``safe_load`` (same restricted tag set), so prefer it
-# and fall back to the pure-Python loader only when libyaml isn't compiled in.
-_fast_yaml_loader = None
+# tomllib is stdlib and C-accelerated; there is no slower fallback path. One
+# parse entry point keeps config, manifests, problem specs and markdown
+# frontmatter on identical semantics.
 
 
-def _get_fast_yaml_loader():
-    global _fast_yaml_loader
-    if _fast_yaml_loader is None:
-        _fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-    return _fast_yaml_loader
+def fast_toml_load(stream: Any) -> Any:
+    """Parse TOML from a ``str``/``bytes`` document or a readable file object."""
+    import tomllib
+
+    payload = stream.read() if hasattr(stream, "read") else stream
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    return tomllib.loads(payload)
 
 
-def fast_safe_load(stream: Any) -> Any:
-    """``yaml.safe_load`` using the libyaml C loader when available.
-
-    Accepts the same inputs as ``yaml.safe_load`` (a ``str``/``bytes`` document
-    or a readable file object) and returns the same parsed structure. Falls
-    back to PyYAML's pure-Python ``SafeLoader`` when ``CSafeLoader`` isn't
-    available, so behavior is identical everywhere — only the speed differs.
-    """
-    return yaml.load(stream, Loader=_get_fast_yaml_loader())
+def load_toml_file(path: Union[str, Path]) -> Any:
+    """Read a TOML file into plain Python data, or ``None`` when absent."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        return fast_toml_load(handle)
 
 
 # ─── Environment Variable Helpers ─────────────────────────────────────────────

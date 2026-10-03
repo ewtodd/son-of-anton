@@ -17,7 +17,7 @@ workspace/
     run_baselines.py           # Baseline comparison
     run_ablation.py            # Ablation studies
     strategies.py              # Method implementations
-    config.yaml                # Shared configuration
+    config.toml                # Shared configuration
   results/
     <experiment_name>/
       <task_or_problem>/
@@ -82,10 +82,10 @@ def save_pass_artifacts(output_dir, pass_num, artifacts):
 
 **3. Configuration Management**
 
-Use YAML configs for reproducibility:
+Use TOML configs for reproducibility:
 
 ```yaml
-# config.yaml
+# config.toml
 model: anthropic/claude-sonnet-4-20250514
 author_temperature: 0.8
 judge_temperature: 0.3
@@ -98,7 +98,7 @@ convergence_k: 2
 ```python
 import yaml
 
-with open("config.yaml") as f:
+with open("config.toml") as f:
     config = yaml.safe_load(f)
 ```
 

@@ -5,7 +5,7 @@ This module is the single source of truth for the dangerous command system:
 - Per-session approval state (thread-safe, keyed by session_key)
 - Approval prompting (CLI interactive + gateway async)
 - Smart approval via auxiliary LLM (auto-approve low-risk commands)
-- Permanent allowlist persistence (config.yaml)
+- Permanent allowlist persistence (config.toml)
 """
 
 import contextlib
@@ -344,7 +344,7 @@ def _should_fall_through_to_cli_approval(
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $SON_OF_ANTON_HOME, or by the resolved absolute
-# active profile home path such as /home/son-of-anton/.son-of-anton/config.yaml. The
+# active profile home path such as /home/son-of-anton/.son-of-anton/config.toml. The
 # resolved-absolute form is folded into the ~/.son-of-anton/ patterns at detection
 # time by _normalize_command_for_detection() — see the rewrite step there — so
 # these static patterns stay free of any import-time path snapshot (which would
@@ -357,7 +357,7 @@ _SON_OF_ANTON_ENV_PATH = (
     r'(?:\$son_of_anton_home|\$\{son_of_anton_home\})/)'
     r'\.env\b'
 )
-# ~/.son-of-anton/config.yaml IS the security policy: approvals.mode, yolo, and the
+# ~/.son-of-anton/config.toml IS the security policy: approvals.mode, yolo, and the
 # permanent-approval allowlist live here, and the config cache is mtime-keyed
 # so a write takes effect mid-session (the agent could flip approvals.mode=off
 # and immediately bypass the gate). Pair the write_file/patch deny (file_tools
@@ -408,7 +408,7 @@ _USER_SENSITIVE_WRITE_TARGET = (
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # Anchor for the cp/mv/install rule, where the sensitive path is only a write
 # target when it is the LAST argument (the destination). Requiring end-of-line
-# (or a command separator) keeps `cp config.yaml backup.yaml` — config.yaml as
+# (or a command separator) keeps `cp config.toml backup.yaml` — config.toml as
 # the SOURCE — out of the deny.
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # Boundary for stream-write rules (`>`/`>>` redirection and `tee`), where the
@@ -425,7 +425,7 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # whitespace before the `#` (already covered by `\s`), whereas a `#` glued to
 # the path is part of the filename. `echo x > .env#backup` writes to the
 # distinct file `.env#backup`, not `.env`, so it must stay OUT of the deny —
-# the same reasoning that keeps `config.yaml.bak` safe.
+# the same reasoning that keeps `config.toml.bak` safe.
 _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 
 # =========================================================================
@@ -620,7 +620,7 @@ def detect_hardline_command(command: str) -> tuple:
 def _match_user_deny_rule(command: str) -> str | None:
     """Return the matching ``approvals.deny`` glob, or None.
 
-    ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
+    ``approvals.deny`` in config.toml is a user-defined list of fnmatch
     globs that block a command unconditionally — like the hardline floor,
     a deny match fires BEFORE the yolo / mode=off bypass. It is the
     user-editable counterpart to the code-shipped hardline blocklist:
@@ -656,7 +656,7 @@ def _user_deny_block_result(pattern: str) -> dict:
         "user_deny": True,
         "message": (
             f"BLOCKED: this command matches the user-defined deny rule "
-            f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
+            f"'{pattern}' (approvals.deny in config.toml). It cannot be "
             "executed via the agent — not even with --yolo, /yolo, or "
             "approvals.mode=off. Do NOT retry or rephrase this command; "
             "the user has explicitly forbidden it."
@@ -920,7 +920,7 @@ DANGEROUS_PATTERNS = [
     # cp/mv/install OVERWRITING a sensitive credential/SSH/shell-rc/Son of Anton file.
     # The tee/redirection patterns above already gate _SENSITIVE_WRITE_TARGET
     # (~/.ssh/*, ~/.netrc/.pgpass/.npmrc/.pypirc, shell rc files,
-    # ~/.son-of-anton/config.yaml/.env), but cp/mv/install was only paired for /etc and
+    # ~/.son-of-anton/config.toml/.env), but cp/mv/install was only paired for /etc and
     # project-relative env/config — so `cp evil ~/.ssh/authorized_keys` (key
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command
     # injection) slipped through with auto-approve. Same unpaired-door rationale
@@ -940,7 +940,7 @@ DANGEROUS_PATTERNS = [
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
-    # In-place edit of a Son of Anton-managed security file (~/.son-of-anton/config.yaml or
+    # In-place edit of a Son of Anton-managed security file (~/.son-of-anton/config.toml or
     # .env). sed -i bypasses the redirection/tee patterns above because it
     # mutates the file directly. Pairs the file_tools write_file/patch deny so
     # the terminal side is not an open door. See #14639.
@@ -950,7 +950,7 @@ DANGEROUS_PATTERNS = [
     # not caught by the -e/-c script-execution pattern above (which targets code
     # evaluation, not file mutation). Pairs the sed -i coverage from #14639.
     # The -i flag can appear as its own token after other flags
-    # (`perl -p -i -e ... config.yaml`), combined (`perl -pi -e`), or with a
+    # (`perl -p -i -e ... config.toml`), combined (`perl -pi -e`), or with a
     # backup suffix (`perl -i.bak`). Match any flag token containing `i`
     # anywhere in the args, not just the first token — `perl -e '...'` (code
     # eval, no -i) does not trip because it has no `-...i` flag token.
@@ -1218,7 +1218,7 @@ def _rewrite_resolved_son_of_anton_home(command: str) -> str:
     ``~/.son-of-anton/`` so the static ``_SON_OF_ANTON_CONFIG_PATH`` / ``_SON_OF_ANTON_ENV_PATH``
     patterns match. In gateway deployments the agent often references
     the resolved absolute path directly (e.g. ``sed -i ...
-    /home/son-of-anton/.son-of-anton/config.yaml``) rather than ``~``, ``$HOME``, or
+    /home/son-of-anton/.son-of-anton/config.toml``) rather than ``~``, ``$HOME``, or
     ``$SON_OF_ANTON_HOME``. Matches both POSIX and Windows separators. No-op when the
     path can't be resolved or doesn't appear.
     """
@@ -3043,7 +3043,7 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     os.environ["SON_OF_ANTON_SPINNER_PAUSE"] = "1"
     try:
         # Resolve the active UI language once per prompt so we don't re-read
-        # config/YAML inside the retry loop below.
+        # config/TOML inside the retry loop below.
         from agent.i18n import t
         while True:
             print()
@@ -3125,9 +3125,9 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
 
 
 def _normalize_approval_mode(mode) -> str:
-    """Normalize approval mode values loaded from YAML/config.
+    """Normalize approval mode values loaded from TOML/config.
 
-    YAML 1.1 treats bare words like `off` as booleans, so a config entry like
+    TOML 1.1 treats bare words like `off` as booleans, so a config entry like
     `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
     intended string mode instead of falling back to manual approvals.
 
@@ -3186,7 +3186,7 @@ def _is_lockdown_enabled() -> bool:
     """Return whether the lockdown permission mode is active.
 
     A session-scoped override decides for its own session; otherwise
-    ``security.lockdown`` in config.yaml (set via /perm lockdown) forces every
+    ``security.lockdown`` in config.toml (set via /perm lockdown) forces every
     terminal command through the human approval flow.
     """
     override = _current_session_permission_mode()
@@ -3884,7 +3884,7 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
 
-    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # User-defined deny rules (approvals.deny in config.toml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
     # user saying "never, even under yolo".
     deny_pattern = _match_user_deny_rule(command)
@@ -3915,14 +3915,14 @@ def check_dangerous_command(command: str, env_type: str,
             "but cron jobs run without a user present to approve it. "
             "Find an alternative approach that avoids this command. "
             "To allow dangerous commands in cron jobs, set "
-            "approvals.cron_mode: approve in config.yaml."
+            "approvals.cron_mode: approve in config.toml."
         ),
         single_query_deny_message=(
             f"BLOCKED: Command flagged as dangerous ({description}) but "
             "single-query mode (-q) runs without a user present to approve "
             "it. Find an alternative approach that avoids this command. "
             "To allow dangerous commands in single-query mode, set "
-            "approvals.single_query_mode: approve in config.yaml."
+            "approvals.single_query_mode: approve in config.toml."
         ),
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
@@ -4002,14 +4002,14 @@ def request_tool_approval(
             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
             "but cron jobs run without a user present to approve it. Find an "
             "alternative approach. To allow flagged actions in cron jobs, set "
-            "approvals.cron_mode: approve in config.yaml."
+            "approvals.cron_mode: approve in config.toml."
         ),
         single_query_deny_message=(
             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
             "but single-query mode (-q) runs without a user present to "
             "approve it. Find an alternative approach. To allow flagged "
             "actions in single-query mode, set "
-            "approvals.single_query_mode: approve in config.yaml."
+            "approvals.single_query_mode: approve in config.toml."
         ),
         autoapprove_log_prefix=(
             f"plugin-escalated tool call '{tool_name}' in "
@@ -4511,7 +4511,7 @@ def check_all_command_guards(command: str, env_type: str,
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
 
-    # User-defined deny rules (approvals.deny in config.yaml): like the
+    # User-defined deny rules (approvals.deny in config.toml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
     # rule is the user saying "never, even under yolo".
     deny_pattern = _match_user_deny_rule(command)
@@ -4579,7 +4579,7 @@ def check_all_command_guards(command: str, env_type: str,
                             "present to approve it. Find an alternative approach "
                             "that avoids this command. To allow dangerous "
                             "commands in single-query mode, set "
-                            "approvals.single_query_mode: approve in config.yaml."
+                            "approvals.single_query_mode: approve in config.toml."
                         ),
                         "pattern_key": _pk,
                         "description": description,
@@ -4601,7 +4601,7 @@ def check_all_command_guards(command: str, env_type: str,
                                 "present to approve it. Find an alternative "
                                 "approach that avoids this command. To allow "
                                 "dangerous commands in single-query mode, set "
-                                "approvals.single_query_mode: approve in config.yaml."
+                                "approvals.single_query_mode: approve in config.toml."
                             ),
                         }
                 except ImportError:
@@ -4629,7 +4629,7 @@ def check_all_command_guards(command: str, env_type: str,
                                 "single-query mode (-q) runs without a user "
                                 "present to approve it. Find an alternative "
                                 "approach, install tirith, or set "
-                                "approvals.single_query_mode: approve in config.yaml."
+                                "approvals.single_query_mode: approve in config.toml."
                             ),
                         }
                     # else: tirith_fail_open is True — allow as before
@@ -4647,7 +4647,7 @@ def check_all_command_guards(command: str, env_type: str,
                             "but cron jobs run without a user present to approve it. "
                             "Find an alternative approach that avoids this command. "
                             "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
+                            "approvals.cron_mode: approve in config.toml."
                         ),
                     }
                 # Also run tirith check in cron-deny mode so content-level
@@ -4666,7 +4666,7 @@ def check_all_command_guards(command: str, env_type: str,
                                 "but cron jobs run without a user present to approve it. "
                                 "Find an alternative approach that avoids this command. "
                                 "To allow dangerous commands in cron jobs, set "
-                                "approvals.cron_mode: approve in config.yaml."
+                                "approvals.cron_mode: approve in config.toml."
                             ),
                         }
                 except ImportError:
@@ -4693,7 +4693,7 @@ def check_all_command_guards(command: str, env_type: str,
                                 "so this command cannot be silently allowed — and "
                                 "cron jobs run without a user present to approve it. "
                                 "Find an alternative approach, install tirith, or set "
-                                "approvals.cron_mode: approve in config.yaml."
+                                "approvals.cron_mode: approve in config.toml."
                             ),
                         }
                     # else: tirith_fail_open is True — allow as before

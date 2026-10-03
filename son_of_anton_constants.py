@@ -155,6 +155,18 @@ def get_son_of_anton_home() -> Path:
     return _son_of_anton_home_from_env()
 
 
+USER_CONFIG_NAME = "config.toml"
+
+
+def get_user_config_path(home: str | Path | None = None) -> Path:
+    """Return the user config file for *home* (default: SON_OF_ANTON_HOME).
+
+    TOML is the only supported format; there is no YAML fallback.
+    """
+    base = Path(home) if home is not None else get_son_of_anton_home()
+    return base / USER_CONFIG_NAME
+
+
 def son_of_anton_home_key(path: str | Path | None = None) -> str:
     """Return a stable key for a Son of Anton home/profile directory.
 
@@ -176,7 +188,7 @@ def get_process_son_of_anton_home() -> Path:
     so it reflects the scope the process was launched under **as long as
     nothing mutates ``os.environ`` in-process**.
 
-    Use this for machine/process-level dashboard-owned assets — theme YAML,
+    Use this for machine/process-level dashboard-owned assets — theme TOML,
     dashboard plugin manifests — that live under the server's launch home and
     must stay visible even while a request is scoped to another profile (e.g.
     the embedded ``/chat`` running under ``--open-profile``).  Do NOT use it
@@ -906,8 +918,8 @@ def parse_reasoning_effort(effort) -> dict | None:
     "ultra".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none" (aliases: "false", "disabled", and
-    YAML boolean False — users write ``reasoning_effort: false``/``off``/``no``
-    in config.yaml and YAML hands us a bool, which must mean disabled, not
+    TOML boolean False — users write ``reasoning_effort: false``/``off``/``no``
+    in config.toml and TOML hands us a bool, which must mean disabled, not
     "fall back to the default and keep thinking").
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
     """
@@ -1023,7 +1035,7 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
         model: The model string (any spelling — exact, normalized, bare,
                with provider prefix, etc.)
         overrides: The dict of per-model overrides from
-                   agent.reasoning_overrides in config.yaml. Keys can be
+                   agent.reasoning_overrides in config.toml. Keys can be
                    any sensible spelling of the model name.
 
     Returns:
@@ -1076,7 +1088,7 @@ def resolve_reasoning_config(
     3. ``model.reasoning_effort`` from the ``model`` section — applies to
        the model that section describes (the configured default model).
     4. Global ``agent.reasoning_effort`` — the raw value is passed through
-       so a YAML boolean ``False`` (``reasoning_effort: false``/``off``/
+       so a TOML boolean ``False`` (``reasoning_effort: false``/``off``/
        ``no``) means "thinking disabled", never silently re-enabled.
 
     Session-scoped overrides (gateway ``/reasoning --session``) are resolved
@@ -1193,7 +1205,7 @@ def resolve_reasoning_config(
                 )
 
     # Global fallback — keep the raw value; coercing with ``or ""`` turns a
-    # YAML boolean False into "", silently re-enabling thinking for users
+    # TOML boolean False into "", silently re-enabling thinking for users
     # who explicitly disabled it.
     effort = agent_cfg.get("reasoning_effort", "")
     result = parse_reasoning_effort(effort)
@@ -1273,12 +1285,12 @@ def _custom_provider_reasoning_decl(
 
 
 def get_config_path() -> Path:
-    """Return the path to ``config.yaml`` under SON_OF_ANTON_HOME.
+    """Return the path to ``config.toml`` under SON_OF_ANTON_HOME.
 
-    Replaces the ``get_son_of_anton_home() / "config.yaml"`` pattern repeated
+    Replaces the ``get_son_of_anton_home() / "config.toml"`` pattern repeated
     in 7+ files (skill_utils.py, son_of_anton_logging.py, son_of_anton_time.py, etc.).
     """
-    return get_son_of_anton_home() / "config.yaml"
+    return get_son_of_anton_home() / "config.toml"
 
 
 def get_skills_dir() -> Path:
@@ -1309,7 +1321,7 @@ def apply_ipv4_preference(force: bool = False) -> None:
     original unfiltered resolution so pure-IPv6 hosts still work.
 
     Safe to call multiple times — only patches once.
-    Set ``network.force_ipv4: true`` in ``config.yaml`` to enable.
+    Set ``network.force_ipv4: true`` in ``config.toml`` to enable.
     """
     if not force:
         return
@@ -1386,7 +1398,7 @@ FIRST_PARTY_MODULE_ROOTS: frozenset = frozenset({
     "agent",
     "cron",
     "gateway",
-    "physics_intern",
+    "autophysicist",
     "plugins",
     "providers",
     "tools",

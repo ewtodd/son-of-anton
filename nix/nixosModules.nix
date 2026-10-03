@@ -1,6 +1,6 @@
 # nix/nixosModules.nix — the NixOS module for son-of-anton
 #
-# This module shares its options, its renderers for config.yaml, .env and
+# This module shares its options, its renderers for config.toml, .env and
 # documents, and its state setup with the Home Manager module
 # (nix/homeManagerModules.nix). The shared code is in nix/moduleCommon.nix.
 # This file holds only the parts that need root: service users, state
@@ -254,10 +254,10 @@
 
       # ── Per-instance renderers ────────────────────────────────────────────
 
-      # config.yaml mode: group-writable (0660) when interactive users share
+      # config.toml mode: group-writable (0660) when interactive users share
       # this SON_OF_ANTON_HOME via addToSystemPackages. A managedAccount owns
       # its home outright, so everything stays owner-only.
-      configYamlMode =
+      configTomlMode =
         inst:
         if inst.managedAccount then
           "0600"
@@ -534,7 +534,7 @@
                     owner = "${inst.user}:${inst.group}";
                     stateDirs = common.stateSubdirs;
                     modes = {
-                      config = configYamlMode inst;
+                      config = configTomlMode inst;
                       env = envMode inst;
                       managed = "0644";
                       auth = "0600";

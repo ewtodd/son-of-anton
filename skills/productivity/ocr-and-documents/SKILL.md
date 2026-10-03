@@ -1,14 +1,16 @@
 ---
-name: ocr-and-documents
-description: "Extract text from PDFs/scans (pymupdf, marker-pdf)."
-version: 2.3.0
-author: Son of Anton Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [PDF, Documents, Research, Arxiv, Text-Extraction, OCR]
-    related_skills: [pdf, docx, powerpoint]
+name = "ocr-and-documents"
+description = "Extract text from PDFs/scans (pymupdf, marker-pdf)."
+version = "2.3.0"
+author = "Son of Anton Agent"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["PDF", "Documents", "Research", "Arxiv", "Text-Extraction", "OCR"]
+related_skills = ["pdf", "docx", "powerpoint"]
 ---
 
 # PDF & Document Extraction

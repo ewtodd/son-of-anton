@@ -273,9 +273,9 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
     """Resolve and inject skill-declared config values into the message parts.
 
     If the loaded skill's frontmatter declares ``metadata.son-of-anton.config``
-    entries, their current values (from config.yaml or defaults) are appended
+    entries, their current values (from config.toml or defaults) are appended
     as a ``[Skill config: ...]`` block so the agent knows the configured values
-    without needing to read config.yaml itself.
+    without needing to read config.toml itself.
     """
     try:
         from agent.skill_utils import (
@@ -298,7 +298,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         if not resolved:
             return
 
-        lines = ["", f"[Skill config (from {display_son_of_anton_home()}/config.yaml):"]
+        lines = ["", f"[Skill config (from {display_son_of_anton_home()}/config.toml):"]
         for key, value in resolved.items():
             display_val = str(value) if value else "(not set)"
             lines.append(f"  {key} = {display_val}")
@@ -340,7 +340,7 @@ def _build_skill_message(
         parts.append(f"[Skill directory: {skill_dir}]")
         parts.append(
             "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
-            "`templates/config.yaml`) against that directory, then run them "
+            "`templates/config.toml`) against that directory, then run them "
             "with the terminal tool using the absolute path."
         )
 

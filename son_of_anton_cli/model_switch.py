@@ -170,7 +170,7 @@ def _save_discovered_models_to_config(
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
 ) -> None:
-    """Persist discovered models into ``custom_providers`` in config.yaml.
+    """Persist discovered models into ``custom_providers`` in config.toml.
 
     Called after a successful ``/v1/models`` probe so that the next read
     with ``discover_models: false`` uses the cached list instead of a stale
@@ -464,7 +464,7 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 # in the models.dev catalog (e.g. Ollama Cloud, local servers).
 # Checked BEFORE catalog resolution.  Format:
 #   alias -> (model_id, provider, base_url)
-# These can also be loaded from config.yaml ``model_aliases:`` section.
+# These can also be loaded from config.toml ``model_aliases:`` section.
 # ---------------------------------------------------------------------------
 
 class DirectAlias(NamedTuple):
@@ -474,7 +474,7 @@ class DirectAlias(NamedTuple):
     base_url: str
 
 
-# Built-in direct aliases (can be extended via config.yaml model_aliases:)
+# Built-in direct aliases (can be extended via config.toml model_aliases:)
 _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
@@ -482,7 +482,7 @@ DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
 def _load_direct_aliases() -> dict[str, DirectAlias]:
-    """Load direct aliases from config.yaml ``model_aliases:`` section.
+    """Load direct aliases from config.toml ``model_aliases:`` section.
 
     Config format::
 
@@ -690,7 +690,7 @@ def resolve_persist_behavior(
     is_once: bool = False,
     explicit_provider: str = "",
 ) -> bool:
-    """Decide whether a ``/model`` switch should persist to ``config.yaml``.
+    """Decide whether a ``/model`` switch should persist to ``config.toml``.
 
     Resolution order:
 
@@ -702,7 +702,7 @@ def resolve_persist_behavior(
        user is trying a different backend for this conversation, not
        reconfiguring the default.  ``--global`` can still force persist.
     5. Otherwise defer to ``model.persist_switch_by_default`` in
-       ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
+       ``config.toml`` (defaults to ``False``: a plain ``/model <name>``
        affects only the current session).  Users who want the old
        persist-by-default behavior can set the key to ``true``; a one-off
        ``--global`` always persists.
@@ -1432,8 +1432,8 @@ def switch_model(
         current_api_key: The currently active API key.
         is_global: Whether to persist the switch.
         explicit_provider: From --provider flag (empty = no explicit provider).
-        user_providers: The ``providers:`` dict from config.yaml (for user endpoints).
-        custom_providers: The ``custom_providers:`` list from config.yaml.
+        user_providers: The ``providers:`` dict from config.toml (for user endpoints).
+        custom_providers: The ``custom_providers:`` list from config.toml.
 
     Returns:
         ModelSwitchResult with all information the caller needs.
@@ -1469,7 +1469,7 @@ def switch_model(
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
                 f"Check 'son-of-anton model' for available providers, or define it "
-                f"in config.yaml under 'providers:'."
+                f"in config.toml under 'providers:'."
             )
             # Check for common config issues that cause provider resolution failures
             try:
@@ -1783,7 +1783,7 @@ def switch_model(
     suppress_ollama_headers = False
 
     if provider_changed or explicit_provider:
-        # User-config providers (providers.<name> in config.yaml) carry their
+        # User-config providers (providers.<name> in config.toml) carry their
         # own base_url + transport + key reference. resolve_runtime_provider()
         # resolves by provider NAME and doesn't know user-config slugs (e.g. a
         # block named "openai"), so it would re-resolve from scratch and fail
@@ -2761,7 +2761,7 @@ def list_authenticated_providers(
 
     # Build reverse mapping: models.dev ID → Son of Anton provider ID.
     # SON_OF_ANTON_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
-    # while _PROVIDER_MODELS and config.yaml use Son of Anton IDs ("copilot").
+    # while _PROVIDER_MODELS and config.toml use Son of Anton IDs ("copilot").
     _mdev_to_son_of_anton = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in SON_OF_ANTON_OVERLAYS.items():
@@ -3230,7 +3230,7 @@ def list_authenticated_providers(
     # In that shape there is no named providers:/custom_providers row for the
     # picker to render, but the gateway only passes this current model slice to
     # list_authenticated_providers(). Surface the active endpoint explicitly so
-    # /model does not look like it ignored config.yaml.
+    # /model does not look like it ignored config.toml.
     if (
         _current_provider_norm == "custom"
         and current_base_url

@@ -88,7 +88,7 @@ def _scan_on_install_enabled() -> bool:
     """Whether install/update-time plugin security scanning is enabled.
 
     On by default (inspired by Claude Cowork's skill & plugin security
-    scanning). Disable via ``plugins.scan_on_install: false`` in config.yaml.
+    scanning). Disable via ``plugins.scan_on_install: false`` in config.toml.
     """
     try:
         from son_of_anton_cli.config import load_config
@@ -132,7 +132,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
             f"{format_scan_report(result)}\n"
             "Review the findings above. Install only plugins from sources "
             "you trust. (Scanning can be configured via "
-            "plugins.scan_on_install in config.yaml.)",
+            "plugins.scan_on_install in config.toml.)",
             scan_result=result,
         )
     logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
@@ -140,7 +140,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
 
 
 # Minimum manifest version this installer understands.
-# Plugins may declare ``manifest_version: 1`` in plugin.yaml;
+# Plugins may declare ``manifest_version: 1`` in plugin.toml;
 # future breaking changes to the manifest schema bump this.
 _SUPPORTED_MANIFEST_VERSION = 1
 
@@ -334,10 +334,10 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read a native or portable manifest, preferring native YAML."""
-    manifest_file = plugin_dir / "plugin.yaml"
+    """Read a native or portable manifest, preferring native TOML."""
+    manifest_file = plugin_dir / "plugin.toml"
     if not manifest_file.exists():
-        manifest_file = plugin_dir / "plugin.yml"
+        manifest_file = plugin_dir / "plugin.toml"
     if not manifest_file.exists():
         portable_file = plugin_dir / "plugin.json"
         if not portable_file.exists() and not portable_file.is_symlink():
@@ -351,23 +351,23 @@ def _read_manifest(plugin_dir: Path) -> dict:
             logger.warning("Failed to read plugin.json in %s: %s", plugin_dir, e)
             return {}
     try:
-        import yaml
+        import tomllib
 
         with open(manifest_file, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            return tomllib.loads(f.read()) or {}
     except Exception as e:
-        logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
+        logger.warning("Failed to read plugin.toml in %s: %s", plugin_dir, e)
         return {}
 
 
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 
-    For example, ``config.yaml.example`` becomes ``config.yaml``.
+    For example, ``config.toml.example`` becomes ``config.toml``.
     Skips files that already exist to avoid overwriting user config on reinstall.
     """
     for example_file in plugin_dir.glob("*.example"):
-        real_name = example_file.stem  # e.g. "config.yaml" from "config.yaml.example"
+        real_name = example_file.stem  # e.g. "config.toml" from "config.toml.example"
         real_path = plugin_dir / real_name
         if not real_path.exists():
             try:
@@ -426,7 +426,7 @@ def _print_python_dependencies(manifest: dict, console) -> None:
 
 
 def _prompt_plugin_env_vars(manifest: dict, console) -> None:
-    """Prompt for required environment variables declared in plugin.yaml.
+    """Prompt for required environment variables declared in plugin.toml.
 
     ``requires_env`` accepts two formats:
 
@@ -778,8 +778,8 @@ def _install_plugin_core(
         tmp_target = (
             _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
         )
-        has_native_manifest = (tmp_target / "plugin.yaml").exists() or (
-            tmp_target / "plugin.yml"
+        has_native_manifest = (tmp_target / "plugin.toml").exists() or (
+            tmp_target / "plugin.toml"
         ).exists()
         has_portable_manifest = (tmp_target / "plugin.json").exists() or (
             tmp_target / "plugin.json"
@@ -876,11 +876,11 @@ def _install_plugin_core(
                 _install_metadata_path().unlink(missing_ok=True)
             raise
 
-    has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
+    has_yaml = (target / "plugin.toml").exists() or (target / "plugin.toml").exists()
     has_portable = (target / "plugin.json").exists()
     if not has_yaml and not has_portable and not (target / "__init__.py").exists():
         logger.warning(
-            "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
+            "%s has no plugin.toml / __init__.py; may not be a valid plugin",
             plugin_name,
         )
 
@@ -1021,11 +1021,11 @@ def cmd_install(
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (target / "plugin.json").exists() and not (
+    if not (target / "plugin.toml").exists() and not (target / "plugin.toml").exists() and not (target / "plugin.json").exists() and not (
         target / "__init__.py"
     ).exists():
         console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
+            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.toml, "
             f"plugin.json, or __init__.py. It may not be a valid Son of Anton plugin.",
         )
 
@@ -1255,7 +1255,7 @@ def cmd_remove(name: str) -> None:
 
 
 def _get_disabled_set() -> set:
-    """Read the disabled plugins set from config.yaml.
+    """Read the disabled plugins set from config.toml.
 
     An explicit deny-list. A plugin name here never loads, even if also
     listed in ``plugins.enabled``.
@@ -1270,7 +1270,7 @@ def _get_disabled_set() -> set:
 
 
 def _save_disabled_set(disabled: set) -> None:
-    """Write the disabled plugins list to config.yaml."""
+    """Write the disabled plugins list to config.toml."""
     from son_of_anton_cli.config import load_config, save_config
     config = load_config()
     if "plugins" not in config:
@@ -1307,7 +1307,7 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
 
 
 def _get_enabled_set() -> set:
-    """Read the enabled plugins allow-list from config.yaml.
+    """Read the enabled plugins allow-list from config.toml.
 
     Plugins are opt-in: only names here are loaded. Returns ``set()`` if
     the key is missing (same behaviour as "nothing enabled yet").
@@ -1325,7 +1325,7 @@ def _get_enabled_set() -> set:
 
 
 def _save_enabled_set(enabled: set) -> None:
-    """Write the enabled plugins list to config.yaml."""
+    """Write the enabled plugins list to config.toml."""
     from son_of_anton_cli.config import load_config, save_config
     config = load_config()
     if "plugins" not in config:
@@ -1383,7 +1383,7 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
 
 
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
-    """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
+    """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.toml."""
     from son_of_anton_cli.config import load_config, save_config
     config = load_config()
     plugins_cfg = config.setdefault("plugins", {})
@@ -1749,9 +1749,9 @@ def _read_manifest_info(d: Path, prefix: str):
 
     Returns None if no manifest file exists.
     """
-    manifest_file = d / "plugin.yaml"
+    manifest_file = d / "plugin.toml"
     if not manifest_file.exists():
-        manifest_file = d / "plugin.yml"
+        manifest_file = d / "plugin.toml"
     if not manifest_file.exists():
         portable_file = d / "plugin.json"
         if not portable_file.exists() and not portable_file.is_symlink():
@@ -1770,34 +1770,31 @@ def _read_manifest_info(d: Path, prefix: str):
             )
         except Exception:
             return None
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
     name = d.name
     version = ""
     description = ""
-    if yaml:
-        try:
-            with open(manifest_file, encoding="utf-8") as f:
-                manifest = yaml.safe_load(f) or {}
-            name = manifest.get("name", d.name)
-            version = manifest.get("version", "")
-            description = manifest.get("description", "")
-        except Exception:
-            pass
+    try:
+        import tomllib
+
+        with open(manifest_file, encoding="utf-8") as f:
+            manifest = tomllib.loads(f.read()) or {}
+        name = manifest.get("name", d.name)
+        version = manifest.get("version", "")
+        description = manifest.get("description", "")
+    except Exception:
+        pass
     key = f"{prefix}/{d.name}" if prefix else name
     return name, version, description, key
 
 
 def _is_portable_plugin_dir(dir_path) -> bool:
     """True when *dir_path* is an Agent Plugins v1 package (``plugin.json``
-    only — a native ``plugin.yaml`` takes precedence, matching the loader)."""
+    only — a native ``plugin.toml`` takes precedence, matching the loader)."""
     try:
         d = Path(dir_path)
         if not d.is_dir():
             return False
-        if (d / "plugin.yaml").exists() or (d / "plugin.yml").exists():
+        if (d / "plugin.toml").exists() or (d / "plugin.toml").exists():
             return False
         portable_file = d / "plugin.json"
         return portable_file.exists() or portable_file.is_symlink()
@@ -1815,16 +1812,16 @@ def _bundled_default_on(dir_path) -> bool:
     """True when a bundled plugin at *dir_path* is active without an explicit
     ``plugins.enabled`` entry. Standalone/exclusive kinds stay opt-in, and
     portable packages (``plugin.json``) have no kind at all."""
-    manifest_file = Path(dir_path) / "plugin.yaml"
+    manifest_file = Path(dir_path) / "plugin.toml"
     if not manifest_file.exists():
-        manifest_file = Path(dir_path) / "plugin.yml"
+        manifest_file = Path(dir_path) / "plugin.toml"
     if not manifest_file.exists():
         return False
     try:
-        import yaml
+        import tomllib
 
         with open(manifest_file, encoding="utf-8") as f:
-            manifest = yaml.safe_load(f) or {}
+            manifest = tomllib.loads(f.read()) or {}
         kind = str(manifest.get("kind", "standalone")).strip().lower()
         return kind in _BUNDLED_DEFAULT_ON_KINDS
     except Exception:
@@ -2083,7 +2080,7 @@ def _get_current_context_engine() -> str:
 
 
 def _save_memory_provider(name: str) -> None:
-    """Persist memory.provider to config.yaml."""
+    """Persist memory.provider to config.toml."""
     from son_of_anton_cli.config import load_config, save_config
     config = load_config()
     if "memory" not in config:
@@ -2093,7 +2090,7 @@ def _save_memory_provider(name: str) -> None:
 
 
 def _save_context_engine(name: str) -> None:
-    """Persist context.engine to config.yaml."""
+    """Persist context.engine to config.toml."""
     from son_of_anton_cli.config import load_config, save_config
     config = load_config()
     if "context" not in config:
@@ -2188,7 +2185,7 @@ def cmd_show(name: str) -> None:
 
     Resolves *name* against every discoverable plugin (bundled + user +
     entrypoint) by either its display name or its registry key, then reads
-    its ``plugin.yaml`` to surface the advisory event-bus declarations
+    its ``plugin.toml`` to surface the advisory event-bus declarations
     (``emits`` / ``listens``) alongside the basic metadata.
     """
     from rich.console import Console
@@ -2710,7 +2707,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     """Return the toolset key a plugin registers its tools under, or None.
 
     Queries the live tool registry — the plugin must already be loaded.
-    Falls back to reading ``provides_tools`` from plugin.yaml and looking
+    Falls back to reading ``provides_tools`` from plugin.toml and looking
     up the toolset from the registry for the first tool name found.
     """
     try:
@@ -2791,7 +2788,7 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
 
 
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists).
+    """Enable or disable a plugin in ``config.toml`` (runtime allow/deny lists).
 
     For plugins that provide tools (toolsets), also toggles the toolset in
     ``platform_toolsets`` so the agent actually sees the tools in sessions.

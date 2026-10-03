@@ -81,7 +81,7 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     """Apply a per-platform prompt-hint override to the default hint.
 
     Reads ``agent._platform_hint_overrides`` (populated from
-    ``config.yaml`` ``platform_hints`` by ``agent_init``) and resolves the
+    ``config.toml`` ``platform_hints`` by ``agent_init``) and resolves the
     effective hint for *platform_key*:
 
       * ``replace`` — substitute the default hint entirely.
@@ -394,7 +394,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # models regardless of tool_use_enforcement gating — the failure modes
     # this targets (stopping after a stub; fabricating output when a real
     # path is blocked) are not model-family specific.  Gated only by
-    # config.yaml ``agent.task_completion_guidance`` (default True) so
+    # config.toml ``agent.task_completion_guidance`` (default True) so
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
@@ -405,7 +405,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # (read-only tools always; non-overlapping path-scoped file ops), so the
     # only thing missing was steering the model to produce the batch.  Cuts
     # round-trips and the resent-context cost that compounds over a long
-    # conversation.  Gated by config.yaml ``agent.parallel_tool_call_guidance``
+    # conversation.  Gated by config.toml ``agent.parallel_tool_call_guidance``
     # (default True) and only injected when tools are actually loaded.
     if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
@@ -448,7 +448,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(computer_use_guidance())
 
     # Tool-use enforcement: tells the model to actually call tools instead
-    # of describing intended actions.  Controlled by config.yaml
+    # of describing intended actions.  Controlled by config.toml
     # agent.tool_use_enforcement:
     #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
     #   true  — always inject (all models)
@@ -482,7 +482,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # nested inside the tool-use-enforcement branch and fenced to
     # gpt/codex/grok; now an independent gate so DeepSeek/Kimi/Qwen-class
     # models receive it even when tool_use_enforcement is off.  Controlled
-    # by config.yaml agent.execution_guidance:
+    # by config.toml agent.execution_guidance:
     #   "auto" (default) — matches EXECUTION_GUIDANCE_MODELS
     #   true  — always inject (all models)
     #   false — never inject
@@ -594,7 +594,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # NOTHING when the environment is clean (no token cost).  Skipped
     # entirely for remote terminal backends (the host's Python state is
     # irrelevant when tools run inside docker/modal/ssh).  Gated by
-    # config.yaml ``agent.environment_probe`` (default True).
+    # config.toml ``agent.environment_probe`` (default True).
     if getattr(agent, "_environment_probe", True):
         try:
             from tools.env_probe import get_environment_probe_line
@@ -612,7 +612,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Regular sessions never carry it — the desktop's composer middleware
     # owns the @mention send path. Title is read once at first build and the
     # rendered prompt is cached + DB-restored, so this is cache-safe.
-    # Gated by config.yaml ``agent.bot_mode_protocol`` (default True).
+    # Gated by config.toml ``agent.bot_mode_protocol`` (default True).
     if getattr(agent, "_bot_mode_protocol", True):
         try:
             from tools.bot_mode_probe import (

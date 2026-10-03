@@ -118,7 +118,7 @@ def start_loop_liveness_watchdog(
     """Start an out-of-loop watchdog that hard-exits after missed probes.
 
     The guard is on by default; operators opt out with
-    ``gateway.loop_watchdog: false`` in config.yaml (enforced by the caller,
+    ``gateway.loop_watchdog: false`` in config.toml (enforced by the caller,
     ``GatewayRunner._start_loop_liveness_guards`` — this module stays
     config-agnostic so bare-loop tests can drive it directly).
     """

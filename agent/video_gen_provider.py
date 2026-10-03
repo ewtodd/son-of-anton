@@ -4,7 +4,7 @@ Video Generation Provider ABC
 
 Defines the pluggable-backend interface for video generation. Providers register
 instances via ``PluginContext.register_video_gen_provider()``; the active one
-(selected via ``video_gen.provider`` in ``config.yaml``) services every
+(selected via ``video_gen.provider`` in ``config.toml``) services every
 ``video_generate`` tool call.
 
 Providers live in ``<repo>/plugins/video_gen/<name>/`` (built-in, auto-loaded

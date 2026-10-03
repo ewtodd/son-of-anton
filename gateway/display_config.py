@@ -154,7 +154,7 @@ def resolve_display_setting(
     Parameters
     ----------
     user_config : dict
-        The full parsed config.yaml dict.
+        The full parsed config.toml dict.
     platform_key : str
         Platform config key (e.g. ``"discord"``, ``"slack"``).  Use
         ``_platform_config_key(source.platform)`` from gateway/run.py.
@@ -213,7 +213,7 @@ def resolve_display_setting(
 # ---------------------------------------------------------------------------
 
 def _normalise(setting: str, value: Any) -> Any:
-    """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
+    """Normalise TOML quirks (bare ``off`` → False in TOML 1.1)."""
     if setting == "tool_progress":
         if value is False:
             return "off"

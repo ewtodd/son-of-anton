@@ -462,7 +462,7 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     None / absent / non-numeric / non-positive all resolve to ``None``
     (feature off) so a malformed config value can never activate the
     deadline machinery, only leave it dormant. ``bool`` is rejected because
-    YAML ``true`` would otherwise become a 1-second budget.
+    TOML ``true`` would otherwise become a 1-second budget.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -901,7 +901,7 @@ def init_agent(
     )
     agent._cache_disabled = False
     # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
-    # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
+    # config.toml under prompt_caching.cache_ttl; unknown values keep "5m".
     # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
     # sessions with >5-minute pauses between turns (#14971).
     #
@@ -940,7 +940,7 @@ def init_agent(
     agent._budget_grace_call = False
 
     # Optional wall-clock run budget (seconds per run_conversation turn).
-    # Explicit constructor arg wins; else resolved from config.yaml
+    # Explicit constructor arg wins; else resolved from config.toml
     # (agent.run_budget_seconds) further below. None = feature fully off:
     # no clock reads, no injection, no stale-timeout capping.
     agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
@@ -1201,7 +1201,7 @@ def init_agent(
                         break
                 if not _fb_resolved:
                     raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"Provider '{_explicit}' is set in config.toml but no API key "
                         f"was found. Set the {_env_hint} environment "
                         f"variable, or switch to a different provider with `son-of-anton model`."
                     )
@@ -1234,7 +1234,7 @@ def init_agent(
             client_kwargs["default_headers"] = headers
 
     # User-configured request headers (model.default_headers in
-    # config.yaml) override provider/SDK defaults. Lets custom
+    # config.toml) override provider/SDK defaults. Lets custom
     # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
     # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
     # client_kwargs is the same dict object as agent._client_kwargs, so
@@ -1795,7 +1795,7 @@ def init_agent(
     # set this so the gate doesn't depend on write ordering.
     agent._session_title_hint = None
 
-    # Per-platform prompt-hint overrides (config.yaml → platform_hints).
+    # Per-platform prompt-hint overrides (config.toml → platform_hints).
     # Lets an enterprise admin append to or replace Son of Anton' built-in
     # platform hint for a single messaging platform (e.g. WhatsApp) without
     # affecting other platforms. Shape:
@@ -1813,7 +1813,7 @@ def init_agent(
     agent._platform_hint_overrides = _platform_hints_cfg
 
     # App-level API retry count (wraps each model API call).  Default 3,
-    # overridable via agent.api_max_retries in config.yaml.  See #11616.
+    # overridable via agent.api_max_retries in config.toml.  See #11616.
     try:
         _raw_api_retries = _agent_section.get("api_max_retries", 3)
         _api_retries = int(_raw_api_retries)
@@ -1824,7 +1824,7 @@ def init_agent(
 
     # Initialize context compactor for automatic context management
     # Compacts conversation when approaching model's context limit
-    # Configuration via config.yaml (compaction section)
+    # Configuration via config.toml (compaction section)
     _compaction_cfg = _agent_cfg.get("compaction", {})
     if not isinstance(_compaction_cfg, dict):
         _compaction_cfg = {}
@@ -1934,7 +1934,7 @@ def init_agent(
 
     def _parse_prune_int(raw, default):
         # Same parser semantics as compaction.max_attempts above: reject
-        # booleans (bool subclasses int — YAML `true` would coerce to 1),
+        # booleans (bool subclasses int — TOML `true` would coerce to 1),
         # reject fractional floats rather than truncating them, accept
         # integral floats and numeric strings, fall back to the default on
         # anything else.
@@ -2116,13 +2116,13 @@ def init_agent(
                 agent.max_tokens = _parsed_max_tokens
             except (TypeError, ValueError):
                 _ra().logger.warning(
-                    "Invalid model.max_tokens in config.yaml: %r — "
+                    "Invalid model.max_tokens in config.toml: %r — "
                     "must be a positive integer (e.g. 4096). "
                     "Falling back to provider default.",
                     _config_max_tokens,
                 )
                 print(
-                    f"\n⚠ Invalid model.max_tokens in config.yaml: {_config_max_tokens!r}\n"
+                    f"\n⚠ Invalid model.max_tokens in config.toml: {_config_max_tokens!r}\n"
                     f"  Must be a positive integer (e.g. 4096).\n"
                     f"  Falling back to provider default.\n",
                     file=sys.stderr,
@@ -2139,13 +2139,13 @@ def init_agent(
             _config_context_length = int(_config_context_length)
         except (TypeError, ValueError):
             _ra().logger.warning(
-                "Invalid model.context_length in config.yaml: %r — "
+                "Invalid model.context_length in config.toml: %r — "
                 "must be a plain integer (e.g. 256000, not '256K'). "
                 "Falling back to auto-detection.",
                 _config_context_length,
             )
             print(
-                f"\n⚠ Invalid model.context_length in config.yaml: {_config_context_length!r}\n"
+                f"\n⚠ Invalid model.context_length in config.toml: {_config_context_length!r}\n"
                 f"  Must be a plain integer (e.g. 256000, not '256K').\n"
                 f"  Falling back to auto-detected context window.\n",
                 file=sys.stderr,
@@ -2390,7 +2390,7 @@ def init_agent(
 
 
     # Select context engine: config-driven (like memory providers).
-    # 1. Check config.yaml context.engine setting
+    # 1. Check config.toml context.engine setting
     # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
     # 3. Check general plugin system (user-installed plugins)
     # 4. Fall back to built-in ContextCompactor
@@ -2551,7 +2551,7 @@ def init_agent(
             f"by Son of Anton Agent.  Choose a model with at least "
             f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
             f"reports a window smaller than the model's true window, set "
-            f"model.context_length in config.yaml to the real value "
+            f"model.context_length in config.toml to the real value "
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
@@ -2645,7 +2645,7 @@ def init_agent(
     # Ollama defaults to 2048 context regardless of the model's capabilities.
     # When running against an Ollama server, detect the model's max context
     # and pass num_ctx on every chat request so the full window is used.
-    # User override: set model.ollama_num_ctx in config.yaml to cap VRAM use.
+    # User override: set model.ollama_num_ctx in config.toml to cap VRAM use.
     # If model.context_length is set, it caps num_ctx so the user's VRAM
     # budget is respected even when GGUF metadata advertises a larger window.
     agent._ollama_num_ctx: int | None = None
@@ -2672,7 +2672,7 @@ def init_agent(
     # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
     # Without this, GGUF metadata can advertise 256K+ which Ollama honours
     # by allocating that much VRAM — blowing up small GPUs even though the
-    # user explicitly set a smaller context_length in config.yaml.
+    # user explicitly set a smaller context_length in config.toml.
     if (
         agent._ollama_num_ctx
         and _config_context_length

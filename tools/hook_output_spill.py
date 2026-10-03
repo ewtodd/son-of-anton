@@ -18,7 +18,7 @@ full content to a per-session directory on disk and replace the in-prompt
 payload with a head/tail preview plus the saved path. The model can still
 inspect the full content via ``read_file`` or ``terminal`` if it needs to.
 
-Config (``config.yaml``)::
+Config (``config.toml``)::
 
     hooks:
       output_spill:
@@ -181,7 +181,7 @@ def spill_if_oversized(
         ``"plugin hook"``, ``"shell hook"``, etc.). Free-form.
     config:
         Optional override for tests; normally resolved from
-        ``config.yaml``.
+        ``config.toml``.
     """
     if text is None:
         return ""

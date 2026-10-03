@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from physics_intern.autophysicist import critic as critic_module
-from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
-from physics_intern.core.config import Config
-from physics_intern.core.tool_call import ToolCall
+from autophysicist import critic as critic_module
+from autophysicist.memory import PermanentMemory, Scratchpad
+from autophysicist.core.config import Config
+from autophysicist.core.tool_call import ToolCall
 
 
 class _Result:
@@ -42,7 +42,7 @@ def pieces(tmp_path):
 
 
 def test_the_critique_reaches_the_next_iteration(pieces) -> None:
-    from physics_intern.autophysicist.runner import _build_user_content
+    from autophysicist.runner import _build_user_content
 
     memory, scratchpad, _ = pieces
     content = _build_user_content(
@@ -53,7 +53,7 @@ def test_the_critique_reaches_the_next_iteration(pieces) -> None:
 
 
 def test_no_critique_adds_no_block(pieces) -> None:
-    from physics_intern.autophysicist.runner import _build_user_content
+    from autophysicist.runner import _build_user_content
 
     memory, scratchpad, _ = pieces
     content = _build_user_content("p", "", memory, scratchpad, 1, 50, "")
@@ -106,7 +106,7 @@ def test_it_runs_under_its_own_model(pieces, monkeypatch) -> None:
         seen["agent"] = agent_name
         return _Response("Looks fine.")
 
-    monkeypatch.setattr("physics_intern.llm.call_llm", fake_call_llm)
+    monkeypatch.setattr("autophysicist.llm.call_llm", fake_call_llm)
     config = Config()
     config.model = "manager-model"
     config.agent_models = {"critic": "ds4"}
@@ -127,7 +127,7 @@ def test_it_runs_under_its_own_model(pieces, monkeypatch) -> None:
 def test_every_critique_is_logged(pieces, monkeypatch) -> None:
     memory, scratchpad, root = pieces
     monkeypatch.setattr(
-        "physics_intern.llm.call_llm",
+        "autophysicist.llm.call_llm",
         lambda **kw: _Response("The calibration anchor is quenched."),
     )
     critic_module.run_critique(
@@ -151,7 +151,7 @@ def test_a_failing_critic_never_fails_the_run(pieces, monkeypatch) -> None:
     def boom(**kwargs):
         raise RuntimeError("endpoint down")
 
-    monkeypatch.setattr("physics_intern.llm.call_llm", boom)
+    monkeypatch.setattr("autophysicist.llm.call_llm", boom)
     assert (
         critic_module.run_critique(
             config=Config(),
@@ -170,7 +170,7 @@ def test_a_long_critique_is_capped(pieces, monkeypatch) -> None:
     """It competes with the problem statement for the Manager's attention."""
     memory, scratchpad, root = pieces
     monkeypatch.setattr(
-        "physics_intern.llm.call_llm", lambda **kw: _Response("x" * 50_000)
+        "autophysicist.llm.call_llm", lambda **kw: _Response("x" * 50_000)
     )
     text = critic_module.run_critique(
         config=Config(),
@@ -210,7 +210,7 @@ def test_a_broken_runtime_probe_does_not_break_the_critic(monkeypatch) -> None:
     def boom():
         raise RuntimeError("no interpreter")
 
-    monkeypatch.setattr("physics_intern.utils.sandbox.describe_runtime", boom)
+    monkeypatch.setattr("autophysicist.utils.sandbox.describe_runtime", boom)
     assert critic_module._runtime_description() == ""
 
 
@@ -218,7 +218,7 @@ def test_the_header_shows_every_effective_model(monkeypatch, capsys, tmp_path) -
     """A critic silently inheriting the Manager's model looked identical to one
     configured to use it: the header printed only agent_models overrides, so an
     empty map printed nothing."""
-    from physics_intern.core.config import Config
+    from autophysicist.core.config import Config
 
     config = Config()
     config.model = "manager-model"
@@ -235,7 +235,7 @@ def test_the_header_shows_every_effective_model(monkeypatch, capsys, tmp_path) -
 
 def test_disabling_the_critic_is_visible() -> None:
     """`critique_every_n: 0` must read as "off", not as a missing line."""
-    from physics_intern.core.config import Config
+    from autophysicist.core.config import Config
 
     config = Config()
     config.critique_every_n = 0

@@ -49,7 +49,7 @@ def resolve_provider_secret(
     <provider>`` were invisible to the voice tools, which only consulted
     env/.env):
 
-    1. An explicit ``config_value`` from config.yaml, when the caller has one.
+    1. An explicit ``config_value`` from config.toml, when the caller has one.
     2. The environment / ``~/.son-of-anton/.env``, via
        ``son_of_anton_cli.config.get_env_value`` (os.environ, then ``.env``).
     3. The credential pool / auth store for ``provider_id`` (``son-of-anton auth
@@ -88,7 +88,7 @@ def resolve_provider_secret(
         from agent.credential_pool import load_pool
 
         # `son-of-anton auth add <provider>` keys a registry provider by its plain
-        # id, but a provider declared via config.yaml ``providers.<name>`` /
+        # id, but a provider declared via config.toml ``providers.<name>`` /
         # ``custom_providers`` is pooled under ``custom:<name>`` (see
         # agent/credential_pool.py CUSTOM_POOL_PREFIX). Check both.
         for pool_key in (provider_id, f"custom:{provider_id}"):
@@ -141,7 +141,7 @@ def resolve_openai_audio_api_key() -> str:
 def prefers_gateway(config_section: str) -> bool:
     """Return True when the user opted into the Tool Gateway for this tool.
 
-    Reads ``<section>.use_gateway`` from config.yaml.  Never raises.
+    Reads ``<section>.use_gateway`` from config.toml.  Never raises.
     """
     try:
         from son_of_anton_cli.config import load_config
@@ -178,7 +178,7 @@ def read_selection(section: str) -> str | None:
     - ``None`` — the category has NEVER been configured; the legacy
       credential autodetect ladder is permitted (and must not be persisted).
 
-    Reads the RAW config.yaml (not the DEFAULT_CONFIG-merged view) so key
+    Reads the RAW config.toml (not the DEFAULT_CONFIG-merged view) so key
     presence means "a selection was actually written", not "the schema has a
     default". Never raises; an unreadable config reports ``None``.
 
@@ -210,7 +210,7 @@ def read_selection(section: str) -> str | None:
             break
 
     # NOTE on the legacy DEFAULT_CONFIG ``stt.provider: local`` seed: it never
-    # reached the raw config.yaml (``save_config`` strips schema defaults),
+    # reached the raw config.toml (``save_config`` strips schema defaults),
     # and the old picker's Local Whisper row always wrote ``use_gateway:
     # False`` beside it. A raw ``local`` here therefore IS a user selection —
     # hand-written or picker-written — and is honored like any other vendor

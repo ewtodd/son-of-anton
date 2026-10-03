@@ -9,7 +9,7 @@ Provider profiles can live in three places:
 
 Each plugin directory contains:
   - ``__init__.py`` — calls ``register_provider(profile)`` at import
-  - ``plugin.yaml`` — manifest (name, kind: model-provider, version, description)
+  - ``plugin.toml`` — manifest (name, kind: model-provider, version, description)
 
 Discovery is lazy: the first call to ``get_provider_profile()`` or
 ``list_providers()`` scans both locations and imports every plugin. User

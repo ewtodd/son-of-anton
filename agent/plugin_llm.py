@@ -34,7 +34,7 @@ The host owns provider routing, auth resolution, timeouts, and
 fallback. The plugin never sees raw OAuth tokens or API keys. All
 override knobs (``provider=``, ``model=``, ``agent_id=``,
 ``profile=``) are gated behind explicit per-plugin trust flags in
-``config.yaml``::
+``config.toml``::
 
     plugins:
       entries:
@@ -195,7 +195,7 @@ def _normalize_ref(raw: str) -> str:
 
 
 def _coerce_allowlist(raw: Any) -> tuple[Optional[frozenset], bool]:
-    """Coerce a YAML list into ``(frozenset_or_None, allow_any)``.
+    """Coerce a TOML list into ``(frozenset_or_None, allow_any)``.
 
     ``["*"]`` (or any list containing ``"*"``) → ``(frozenset(), True)``.
     Any other list → ``(frozenset({...}), False)``.
@@ -214,7 +214,7 @@ def _coerce_allowlist(raw: Any) -> tuple[Optional[frozenset], bool]:
 
 
 def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
-    """Read ``plugins.entries.<plugin_id>.llm`` from config.yaml.
+    """Read ``plugins.entries.<plugin_id>.llm`` from config.toml.
 
     Missing config → fully restrictive policy (default deny on every
     override). The policy is resolved per-call rather than cached so
@@ -1193,7 +1193,7 @@ def make_plugin_llm_for_test(
 ) -> PluginLlm:
     """Construct a :class:`PluginLlm` with an injected policy and caller.
 
-    Used by unit tests that don't want to round-trip through config.yaml
+    Used by unit tests that don't want to round-trip through config.toml
     or hit a real provider. Not part of the public plugin API.
     """
     return PluginLlm(

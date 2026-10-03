@@ -11,7 +11,7 @@ Two data sources, merged at runtime:
    and additional env vars that models.dev doesn't track.  Small dict,
    maintained here.
 
-3. **User config** (``providers:`` section in config.yaml) — user-defined
+3. **User config** (``providers:`` section in config.toml) — user-defined
    endpoints and overrides.  Merged on top of everything else.
 
 Other modules import from this file.  No parallel registries.
@@ -45,7 +45,7 @@ class SonOfAntonOverlay:
 
 
 # The fork's provider surface. Local / self-hosted endpoints (llama-swap,
-# ollama, vllm, ...) are resolved through config.yaml custom_providers — the
+# ollama, vllm, ...) are resolved through config.toml custom_providers — the
 # ``custom`` plugin profile in plugins/model-providers/custom/ — not through
 # overlays here.
 SON_OF_ANTON_OVERLAYS: Dict[str, SonOfAntonOverlay] = {
@@ -132,7 +132,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
       1. Son of Anton overlays (for providers not in models.dev: nous, openai-codex, etc.)
       2. models.dev catalog + Son of Anton overlay
 
-    User-defined providers from config.yaml (``providers:`` / ``custom_providers:``)
+    User-defined providers from config.toml (``providers:`` / ``custom_providers:``)
     are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
     and ``resolve_custom_provider`` on top of this function. Callers that need
     user-config support should use ``resolve_provider_full`` instead.
@@ -210,7 +210,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
         _prof = _profile(canonical)
         # Only profiles with a concrete endpoint resolve here. Placeholder
         # profiles like ``custom`` (aliases: ollama/local/vllm) ship with an
-        # empty base_url and are completed by config.yaml custom_providers —
+        # empty base_url and are completed by config.toml custom_providers —
         # resolving them here would preempt resolve_provider_full's
         # custom-provider step and collapse keyed IDs
         # (``custom:local-...``) back to a bare, endpoint-less ``custom``.
@@ -370,11 +370,11 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
 # -- Provider from user config ------------------------------------------------
 
 def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
-    """Resolve a provider from the user's config.yaml ``providers:`` section.
+    """Resolve a provider from the user's config.toml ``providers:`` section.
 
     Args:
         name: Provider name as given by the user.
-        user_config: The ``providers:`` dict from config.yaml.
+        user_config: The ``providers:`` dict from config.toml.
 
     Returns:
         ProviderDef if found, else None.
@@ -444,7 +444,7 @@ def resolve_custom_provider(
     name: str,
     custom_providers: Optional[List[Dict[str, Any]]],
 ) -> Optional[ProviderDef]:
-    """Resolve a provider from the user's config.yaml ``custom_providers`` list."""
+    """Resolve a provider from the user's config.toml ``custom_providers`` list."""
     if not custom_providers or not isinstance(custom_providers, list):
         return None
 
@@ -530,8 +530,8 @@ def resolve_provider_full(
 
     Args:
         name: Provider name or alias.
-        user_providers: The ``providers:`` dict from config.yaml (optional).
-        custom_providers: The ``custom_providers:`` list from config.yaml (optional).
+        user_providers: The ``providers:`` dict from config.toml (optional).
+        custom_providers: The ``custom_providers:`` list from config.toml (optional).
 
     Returns:
         ProviderDef if found, else None.
@@ -540,7 +540,7 @@ def resolve_provider_full(
     raw = name.strip().lower()
 
     # 0. User-defined config providers win over the built-in alias table.
-    #    A user who declares ``providers.<name>`` in config.yaml has stated
+    #    A user who declares ``providers.<name>`` in config.toml has stated
     #    explicit intent for that name — it must not be hijacked by a legacy
     #    vendor alias (e.g. bare "openai" → "openrouter"). Resolve the raw
     #    name against user config FIRST so a configured ``providers.openai``

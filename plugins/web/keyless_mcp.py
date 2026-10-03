@@ -20,7 +20,7 @@ a ``session_id`` used for rate limiting; we send a random per-process UUID
 (rotates every restart, never persisted). Their optional ``model_name``
 analytics field is deliberately omitted.
 
-Disable the whole tier with ``web.keyless_fallback: false`` in config.yaml.
+Disable the whole tier with ``web.keyless_fallback: false`` in config.toml.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def keyless_enabled() -> bool:
 def provider_tier(name: str) -> str:
     """Return the user-selected tier for *name*: ``free``, ``paid``, or ``auto``.
 
-    Reads ``web.provider_tier.<name>`` from config.yaml (set by the
+    Reads ``web.provider_tier.<name>`` from config.toml (set by the
     ``son-of-anton tools`` picker's Free/Paid rows). ``free`` forces the keyless
     public endpoint even when the vendor API key is present; ``paid``
     forces the keyed SDK path (missing key surfaces the standard

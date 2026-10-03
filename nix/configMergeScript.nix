@@ -1,4 +1,4 @@
-# nix/configMergeScript.nix — merge Nix settings into an existing config.yaml
+# nix/configMergeScript.nix — merge Nix settings into an existing config.toml
 #
 # Used by the NixOS and Home Manager activation scripts. The logic lives in
 # ./config_merge.py rather than in a Nix string: it is a real three-way merge
@@ -9,7 +9,7 @@
 # indented string — interpolation would treat the Python as Nix source.
 { pkgs }:
 let
-  python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+  python = pkgs.python3;
 in
 pkgs.writeScript "son-of-anton-config-merge" (
   "#!" + "${python}/bin/python3" + "\n" + builtins.readFile ./config_merge.py

@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, fast_toml_load
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -302,7 +302,7 @@ def _sanitize_loaded_credentials() -> None:
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     # TERMINAL_* env vars are the terminal backend's runtime contract, bridged
-    # from config.yaml by the launcher (cli.py, gateway/run.py, the TUI child
+    # from config.toml by the launcher (cli.py, gateway/run.py, the TUI child
     # env builder). A dotenv reload with override=True must never clobber that
     # contract with stale values left in ~/.son-of-anton/.env by an older
     # `son-of-anton setup` (the classic TERMINAL_ENV=docker/ssh artefact) —
@@ -520,15 +520,15 @@ def load_son_of_anton_dotenv(
         _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
-    # config.yaml is the documented source of truth for terminal.* settings,
+    # config.toml is the documented source of truth for terminal.* settings,
     # but the dotenv loads above run with override=True — so a stale
     # TERMINAL_ENV=docker left in ~/.son-of-anton/.env (e.g. written by an older
-    # `son-of-anton setup` before the user switched terminal.backend in config.yaml)
+    # `son-of-anton setup` before the user switched terminal.backend in config.toml)
     # silently wins again on every reload. Startup launchers bridge
     # config→env once, but long-lived processes (gateway per-turn reload,
     # cron standalone runs) call load_son_of_anton_dotenv() repeatedly and used to
     # flip the effective backend back to the stale .env value mid-session
-    # (#29186, #67323). Re-apply config.yaml's explicit terminal keys last so
+    # (#29186, #67323). Re-apply config.toml's explicit terminal keys last so
     # the documented config path always wins. Runs after _apply_managed_env()
     # so the merged config (which already carries the managed overlay) is
     # what lands in the env.
@@ -538,14 +538,14 @@ def load_son_of_anton_dotenv(
 
 
 def _reapply_terminal_config_bridge(home_path: Path) -> None:
-    """Re-assert config.yaml's explicit ``terminal.*`` keys over reloaded .env.
+    """Re-assert config.toml's explicit ``terminal.*`` keys over reloaded .env.
 
     Delegates to ``son_of_anton_cli.config.apply_terminal_config_to_env`` — the
     single shared bridge (same one terminal_tool's fallback and the TUI/
     dashboard launchers use) — so key coverage, explicit-keys-only override
     semantics, cwd placeholder handling, and the managed-scope overlay can't
     drift from the other bridge sites. Only keys the user actually wrote in
-    config.yaml's ``terminal`` section override env values; a config.yaml
+    config.toml's ``terminal`` section override env values; a config.toml
     without a terminal section leaves .env/shell selections untouched.
 
     Scoped to the process SON_OF_ANTON_HOME: the shared bridge reads the
@@ -626,13 +626,13 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
-        # Deliberately NOT marked applied: a malformed config.yaml would
+        # Deliberately NOT marked applied: a malformed config.toml would
         # otherwise permanently disable secret loading for this process
         # even after the user fixes the file (#40597).
         return
     if not cfg:
         # No secrets section (or everything disabled at parse level).  Not
-        # marked applied either — the re-parse is a cheap fast_safe_load and
+        # marked applied either — the re-parse is a cheap fast_toml_load and
         # leaving the home unmarked lets a process pick up a config change
         # on its next load_son_of_anton_dotenv() call instead of never.
         return
@@ -740,16 +740,16 @@ def _remediation_hint(
 
 
 def _load_secrets_config(home_path: Path) -> dict:
-    """Read just the ``secrets:`` section out of config.yaml.
+    """Read just the ``secrets:`` section out of config.toml.
 
     Imported lazily and isolated from the main config loader so a
     malformed config can't take down dotenv loading entirely.
     """
-    config_path = home_path / "config.yaml"
+    config_path = home_path / "config.toml"
     if not config_path.exists():
         return {}
     # Prefer the shared (mtime, size)-keyed raw-config cache — this is the
-    # first config.yaml read in a normal `son-of-anton` startup, so populating the
+    # first config.toml read in a normal `son-of-anton` startup, so populating the
     # shared cache here lets main.py's early bridge and son_of_anton_logging reuse
     # the same parse (one parse per process instead of 3-4). Falls back to a
     # direct isolated parse if the shared reader is unavailable, preserving
@@ -764,12 +764,8 @@ def _load_secrets_config(home_path: Path) -> dict:
         except Exception:
             pass
     try:
-        import yaml  # type: ignore
-    except ImportError:
-        return {}
-    try:
         with open(config_path, "r", encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+            data = fast_toml_load(f) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}

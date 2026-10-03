@@ -1,7 +1,7 @@
 """Structural + convention linter for SKILL.md files.
 
 The hard *validator* in ``tools/skill_manager_tool.py::_validate_frontmatter``
-guards the non-negotiables (fence present, YAML mapping, ``name`` +
+guards the non-negotiables (fence present, TOML mapping, ``name`` +
 ``description`` present, description length, non-empty body, size cap) and is a
 create/edit BLOCKER. This module is the softer, broader companion: it encodes
 the "Skill authoring standards (HARDLINE)" conventions

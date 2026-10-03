@@ -6,7 +6,7 @@ Connects to external MCP servers via stdio, HTTP/StreamableHTTP, or SSE
 transport, discovers their tools, and registers them into the son-of-anton
 tool registry so the agent can call them like any built-in tool.
 
-Configuration is read from ~/.son-of-anton/config.yaml under the ``mcp_servers`` key.
+Configuration is read from ~/.son-of-anton/config.toml under the ``mcp_servers`` key.
 The ``mcp`` Python package is optional -- if not installed, this module is a
 no-op and logs a debug message.
 
@@ -1663,7 +1663,7 @@ def _format_connect_error(exc: BaseException) -> str:
 def _safe_numeric(value, default, coerce=int, minimum=1):
     """Coerce a config value to a numeric type, returning *default* on failure.
 
-    Handles string values from YAML (e.g. ``"10"`` instead of ``10``),
+    Handles string values from TOML (e.g. ``"10"`` instead of ``10``),
     non-finite floats, and values below *minimum*.
     """
     try:
@@ -3377,7 +3377,7 @@ class MCPServerTask:
 
         # SSE transport (for MCP servers that implement the SSE transport protocol
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
-        # mcp_servers entry in config.yaml.
+        # mcp_servers entry in config.toml.
         if config.get("transport") == "sse":
             if _strict_cfg_headers:
                 # Portable packages never translate to SSE; if a config
@@ -3697,7 +3697,7 @@ class MCPServerTask:
 
         # Validate remote URL once, up front.  Raising here (rather than
         # letting it blow up inside the SDK's httpx layer on every retry)
-        # means a typo in config.yaml fails fast with a clear error — and
+        # means a typo in config.toml fails fast with a clear error — and
         # critically, no reconnect-backoff burn.  (Ported from
         # anomalyco/opencode#25019.)
         if self._is_http():
@@ -4243,7 +4243,7 @@ _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
 # Trust-tier gating state (per-server trust + per-tool readOnlyHint).
 #
 # ``trust: full | untrusted`` is a per-server key in the MCP server config
-# (config.yaml → mcp_servers.<name>.trust). On an ``untrusted`` server,
+# (config.toml → mcp_servers.<name>.trust). On an ``untrusted`` server,
 # every WRITE-CAPABLE tool call routes through the existing dangerous-
 # approval surface before the RPC fires. A tool is write-capable unless its
 # discovery-time ``annotations.readOnlyHint`` is exactly ``True``
@@ -5337,7 +5337,7 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     A token pasted with a trailing newline or a URL copied with a leading
     space produces opaque auth/connect failures (the server rejects the
     credential, TLS/DNS fails on ``"example.com "``), and the whitespace is
-    invisible when eyeballing config.yaml. Inspired by Claude Code v2.1.219,
+    invisible when eyeballing config.toml. Inspired by Claude Code v2.1.219,
     which added the same startup warning for its MCP config values.
 
     Advisory only — values are never mutated (whitespace could theoretically
@@ -5370,7 +5370,7 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
             "MCP server '%s': config value '%s' has hidden leading or "
             "trailing whitespace — this often causes authentication or "
             "connection failures. Check for stray spaces/newlines in "
-            "config.yaml (or the referenced env var).",
+            "config.toml (or the referenced env var).",
             server_name,
             key_path,
         )
@@ -7625,7 +7625,7 @@ def get_registered_mcp_server_names() -> set:
     """Return the set of MCP server names that have actually registered at
     least one tool into the registry (post-connection, post check_fn/include-
     exclude filtering) -- i.e. the real, availability-filtered signal, not
-    just what's present in config.yaml under ``mcp_servers``.
+    just what's present in config.toml under ``mcp_servers``.
 
     Used by capability-aware prompt building (e.g. gateway/session.py's
     Slack platform note) to detect an MCP server that provides a given

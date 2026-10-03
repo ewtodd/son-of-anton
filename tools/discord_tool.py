@@ -16,7 +16,7 @@ The schema exposed to the model is filtered by two gates:
    its description is annotated when the intent is missing.
 
 2. User config allowlist at ``discord.server_actions``. If the user
-   sets a comma-separated list (or YAML list) of action names, only
+   sets a comma-separated list (or TOML list) of action names, only
    those appear in the schema. Empty/unset means all intent-available
    actions are exposed.
 
@@ -706,7 +706,7 @@ def _load_allowed_actions_config() -> Optional[List[str]]:
     Returns a list of allowed action names, or ``None`` if the user
     hasn't restricted the set (default: all actions allowed).
 
-    Accepts either a comma-separated string or a YAML list.
+    Accepts either a comma-separated string or a TOML list.
     Unknown action names are dropped with a log warning.
     """
     try:

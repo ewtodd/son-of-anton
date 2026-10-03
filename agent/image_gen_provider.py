@@ -4,7 +4,7 @@ Image Generation Provider ABC
 
 Defines the pluggable-backend interface for image generation. Providers register
 instances via ``PluginContext.register_image_gen_provider()``; the active one
-(selected via ``image_gen.provider`` in ``config.yaml``) services every
+(selected via ``image_gen.provider`` in ``config.toml``) services every
 ``image_generate`` tool call.
 
 Providers live in ``<repo>/plugins/image_gen/<name>/`` (built-in, auto-loaded

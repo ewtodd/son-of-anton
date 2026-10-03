@@ -4,7 +4,7 @@ Renders a compact footer showing runtime state (model, context %, cwd) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
 
-Config (``~/.son-of-anton/config.yaml``)::
+Config (``~/.son-of-anton/config.toml``)::
 
     display:
       runtime_footer:

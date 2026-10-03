@@ -48,7 +48,7 @@ declares capabilities whose set hash differs, the additions stay ungranted
 until the user re-consents (``son-of-anton plugins update`` surfaces the diff).
 
 Ground rule: everything defaults OFF. Any failure to read consent state
-(missing config, corrupt YAML, wrong types) means **not granted**.
+(missing config, corrupt TOML, wrong types) means **not granted**.
 """
 
 from __future__ import annotations

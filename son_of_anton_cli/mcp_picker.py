@@ -140,7 +140,7 @@ def _configure_tools(name: str) -> None:
 
 
 def _remove_custom(name: str) -> None:
-    """Remove a non-catalog MCP entry from config.yaml."""
+    """Remove a non-catalog MCP entry from config.toml."""
     cfg = load_config()
     servers = cfg.get("mcp_servers") or {}
     if name not in servers:

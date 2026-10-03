@@ -24,7 +24,7 @@ host's Python state is irrelevant when tools run inside a sandbox.
 The sandbox has its own existing probe (``_probe_remote_backend``)
 in ``agent/prompt_builder.py``.
 
-Toggle via ``agent.environment_probe`` in config.yaml (default True).
+Toggle via ``agent.environment_probe`` in config.toml (default True).
 """
 
 from __future__ import annotations

@@ -637,7 +637,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         status = _probe_supermemory_connection(api_key, son_of_anton_home)
         print(f"\n  {_format_connection_summary(status)}")
         print("\n  Memory provider: supermemory")
-        print("  Activation saved to config.yaml")
+        print("  Activation saved to config.toml")
         if env_writes:
             print("  API keys saved to .env")
         print("\n  Start a new session to activate.\n")

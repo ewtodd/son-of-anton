@@ -122,7 +122,7 @@ def _read_allowlist_env(env_var: str) -> str:
     """Read a platform allowlist env var through the profile secret scope.
 
     Under multiplexing the process env may hold ANOTHER profile's allowlist
-    (first-writer-wins YAML→env bridges), so reads must honor the installed
+    (first-writer-wins TOML→env bridges), so reads must honor the installed
     scope's verdict — including a scoped miss returning empty rather than
     borrowing the process value.  Unscoped callers (single-profile CLI /
     admin endpoints) keep the legacy ``os.getenv`` read.

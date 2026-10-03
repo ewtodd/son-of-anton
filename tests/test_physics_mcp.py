@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from physics_intern.autophysicist.tools import ManagerToolExecutor
-from physics_intern.utils.mcp import (
+from autophysicist.tools import ManagerToolExecutor
+from autophysicist.utils.mcp import (
     DEFAULT_ROLES,
     MCPToolset,
     is_allowed,
@@ -148,9 +148,9 @@ class _FakeToolset:
 
 @pytest.fixture
 def executor(tmp_path):
-    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
-    from physics_intern.core.config import Config
-    from physics_intern.utils.sandbox import SandboxPolicy
+    from autophysicist.memory import PermanentMemory, Scratchpad
+    from autophysicist.core.config import Config
+    from autophysicist.utils.sandbox import SandboxPolicy
 
     return ManagerToolExecutor(
         config=Config(),
@@ -201,9 +201,9 @@ def test_unknown_tool_error_names_the_mcp_tools_too(executor) -> None:
 
 
 def test_no_mcp_configured_leaves_the_manager_unchanged(tmp_path) -> None:
-    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
-    from physics_intern.core.config import Config
-    from physics_intern.utils.sandbox import SandboxPolicy
+    from autophysicist.memory import PermanentMemory, Scratchpad
+    from autophysicist.core.config import Config
+    from autophysicist.utils.sandbox import SandboxPolicy
 
     executor = ManagerToolExecutor(
         config=Config(),
@@ -228,7 +228,6 @@ def test_the_manager_prompt_describes_the_tools_it_actually_has() -> None:
 
     prompt = (
         Path(__file__).resolve().parent.parent
-        / "physics_intern"
         / "autophysicist"
         / "prompt.md"
     ).read_text(encoding="utf-8")
@@ -249,8 +248,8 @@ def test_a_subagent_gets_documentation_lookups(monkeypatch, tmp_path) -> None:
     That is right for a derivation and wrong for writing code against a library
     the model has not memorised.
     """
-    from physics_intern.autophysicist import subagent as subagent_module
-    from physics_intern.core.config import Config
+    from autophysicist import subagent as subagent_module
+    from autophysicist.core.config import Config
 
     toolset = _FakeToolset({"subagent": ["context7-query-docs"]})
     seen: dict = {}
@@ -282,8 +281,8 @@ def test_a_subagent_gets_documentation_lookups(monkeypatch, tmp_path) -> None:
 
 def test_a_subagent_without_lookups_stays_a_plain_call(monkeypatch, tmp_path) -> None:
     """No MCP configured must not change how a sub-agent runs."""
-    from physics_intern.autophysicist import subagent as subagent_module
-    from physics_intern.core.config import Config
+    from autophysicist import subagent as subagent_module
+    from autophysicist.core.config import Config
 
     called = {"loop": 0, "plain": 0}
 

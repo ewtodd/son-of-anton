@@ -108,7 +108,7 @@
             defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/.son-of-anton"'';
             description = ''
               The value of SON_OF_ANTON_HOME. This state directory holds
-              config.yaml, .env, auth.json, the sessions, the skills, the
+              config.toml, .env, auth.json, the sessions, the skills, the
               memory and the cron jobs.
 
               The NixOS module takes a `stateDir` and adds `/.son-of-anton` to it.

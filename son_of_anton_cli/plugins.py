@@ -16,7 +16,7 @@ Discovers, loads, and manages plugins from four sources:
 Later sources override earlier ones on name collision, so a user or project
 plugin with the same name as a bundled plugin replaces it.
 
-Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
+Each directory plugin must contain a ``plugin.toml`` manifest **and** an
 ``__init__.py`` with a ``register(ctx)`` function.
 
 Lifecycle hooks
@@ -60,7 +60,7 @@ from son_of_anton_constants import (
     set_son_of_anton_home_override,
 )
 from registration_lifecycle import replacement_coordinator
-from utils import env_var_enabled, fast_safe_load
+from utils import env_var_enabled, fast_toml_load
 from son_of_anton_cli.config import cfg_get, load_config_readonly
 from son_of_anton_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 from son_of_anton_cli.plugin_capabilities import (  # noqa: F401 — re-exported
@@ -89,12 +89,6 @@ def get_bundled_plugins_dir() -> Path:
     if env_override:
         return Path(env_override)
     return Path(__file__).resolve().parent.parent / "plugins"
-
-try:
-    import yaml
-except ImportError:  # pragma: no cover – yaml is optional at import time
-    yaml = None  # type: ignore[assignment]
-
 
 class PluginToolOverrideError(PermissionError):
     """Raised when a plugin attempts to override a built-in tool without
@@ -572,7 +566,7 @@ def _env_enabled(name: str) -> bool:
 
 
 def _get_disabled_plugins() -> set:
-    """Read the disabled plugins list from config.yaml.
+    """Read the disabled plugins list from config.toml.
 
     Kept for backward compat and explicit deny-list semantics. A plugin
     name in this set will never load, even if it appears in
@@ -588,7 +582,7 @@ def _get_disabled_plugins() -> set:
 
 
 def _get_enabled_plugins() -> Optional[set]:
-    """Read the enabled-plugins allow-list from config.yaml.
+    """Read the enabled-plugins allow-list from config.toml.
 
     Plugins are opt-in by default — only plugins whose name appears in
     this set are loaded. Returns:
@@ -649,7 +643,7 @@ def _display_author(value: object) -> str:
 
 # ── Manifest v2 (#64165) parsing helpers ──────────────────────────────────
 
-# Fields the current parser understands. Anything else in plugin.yaml is
+# Fields the current parser understands. Anything else in plugin.toml is
 # forward-compat surface: warn (once per manifest, at debug for v1 files to
 # avoid churning existing plugins, at warning for v2+) and continue loading.
 _KNOWN_MANIFEST_FIELDS: Set[str] = {
@@ -1033,7 +1027,7 @@ def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
 
 @dataclass
 class PluginManifest:
-    """Parsed representation of a plugin.yaml manifest."""
+    """Parsed representation of a plugin.toml manifest."""
 
     name: str
     version: str = ""
@@ -1483,7 +1477,7 @@ class PluginContext:
         # plugin read/merge/write transactions from dropping siblings.
         with _locked_plugin_state(config_mod.get_config_path()):
             with config_mod._CONFIG_LOCK:
-                # Fail closed on malformed YAML. save_config's raw-cache reader
+                # Fail closed on malformed TOML. save_config's raw-cache reader
                 # intentionally degrades parse failures to {}, which is safe for
                 # reads but destructive for read-modify-write.
                 config_mod.read_user_config_raw()
@@ -1698,7 +1692,7 @@ class PluginContext:
 
         ``override=True`` against a built-in tool requires the operator to
         opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
-        in config.yaml — mirrors the trust gate pattern used for
+        in config.toml — mirrors the trust gate pattern used for
         ``ctx.llm`` provider/model overrides (#23194). Without that gate,
         any enabled plugin could silently replace a privileged built-in
         like ``shell_exec`` or ``write_file`` and exfiltrate everything
@@ -1710,7 +1704,7 @@ class PluginContext:
                 f"Plugin {self.manifest.name!r} cannot override built-in tool "
                 f"{name!r}. Set "
                 f"plugins.entries.{plugin_id}.allow_tool_override: true "
-                f"in config.yaml to allow this plugin to replace built-in tools."
+                f"in config.toml to allow this plugin to replace built-in tools."
             )
 
         from tools.registry import registry
@@ -1803,7 +1797,7 @@ class PluginContext:
 
         Default-off: a plugin has NO MCP access until the operator lists the
         servers it may reach under ``plugins.entries.<plugin_id>.mcp_allowlist``
-        in config.yaml::
+        in config.toml::
 
             plugins:
               entries:
@@ -1838,7 +1832,7 @@ class PluginContext:
             raise PermissionError(
                 f"Plugin {self.manifest.name!r} is not allowed to call MCP "
                 f"server {server!r}. Add it to "
-                f"plugins.entries.{plugin_id}.mcp_allowlist in config.yaml "
+                f"plugins.entries.{plugin_id}.mcp_allowlist in config.toml "
                 f"to grant access (default is no MCP access)."
             )
 
@@ -2265,7 +2259,7 @@ class PluginContext:
         """Register a memory provider.
 
         Memory providers are activated exclusively, by name, through
-        ``memory.provider`` in config.yaml, and ``plugins/memory/__init__.py``
+        ``memory.provider`` in config.toml, and ``plugins/memory/__init__.py``
         owns that path with its own collector. A provider reaching *this*
         implementation is therefore one the general PluginManager loaded — it
         was not classified ``exclusive`` — so the call is recorded and
@@ -2300,7 +2294,7 @@ class PluginContext:
         ``provider`` must be an instance of
         :class:`agent.image_gen_provider.ImageGenProvider`. The
         ``provider.name`` attribute is what ``image_gen.provider`` in
-        ``config.yaml`` matches against when routing ``image_generate``
+        ``config.toml`` matches against when routing ``image_generate``
         tool calls.
         """
         from agent.image_gen_provider import ImageGenProvider
@@ -2410,7 +2404,7 @@ class PluginContext:
         ``provider`` must be an instance of
         :class:`agent.video_gen_provider.VideoGenProvider`. The
         ``provider.name`` attribute is what ``video_gen.provider`` in
-        ``config.yaml`` matches against when routing ``video_generate``
+        ``config.toml`` matches against when routing ``video_generate``
         tool calls.
         """
         from agent.video_gen_provider import VideoGenProvider
@@ -2459,7 +2453,7 @@ class PluginContext:
         ``provider`` must be an instance of
         :class:`agent.web_search_provider.WebSearchProvider`. The
         ``provider.name`` attribute is what ``web.search_backend`` /
-        ``web.extract_backend`` / ``web.backend`` in ``config.yaml``
+        ``web.extract_backend`` / ``web.backend`` in ``config.toml``
         matches against when routing ``web_search`` / ``web_extract``
         tool calls.
         """
@@ -2509,7 +2503,7 @@ class PluginContext:
         ``provider`` must be an instance of
         :class:`agent.browser_provider.BrowserProvider`. The
         ``provider.name`` attribute is what ``browser.cloud_provider`` in
-        ``config.yaml`` matches against when routing cloud-mode
+        ``config.toml`` matches against when routing cloud-mode
         ``browser_*`` tool calls.
 
         Mirrors :meth:`register_web_search_provider` exactly — same
@@ -2629,7 +2623,7 @@ class PluginContext:
 
         ``provider`` must be an instance of
         :class:`agent.tts_provider.TTSProvider`. The ``provider.name``
-        attribute is what ``tts.provider`` in ``config.yaml`` matches
+        attribute is what ``tts.provider`` in ``config.toml`` matches
         against when routing ``text_to_speech`` tool calls — **but
         only when**:
 
@@ -2690,7 +2684,7 @@ class PluginContext:
         ``provider`` must be an instance of
         :class:`agent.transcription_provider.TranscriptionProvider`.
         The ``provider.name`` attribute is what ``stt.provider`` in
-        ``config.yaml`` matches against when routing
+        ``config.toml`` matches against when routing
         :func:`tools.transcription_tools.transcribe_audio` calls —
         **but only when**:
 
@@ -2930,7 +2924,7 @@ class PluginContext:
         core files. After registration, the task:
 
           - Appears in the ``son-of-anton model → Configure auxiliary models`` picker
-          - Has its provider/model/base_url/api_key bridged from config.yaml to
+          - Has its provider/model/base_url/api_key bridged from config.toml to
             ``AUXILIARY_<KEY_UPPER>_*`` env vars at gateway startup
           - Gets default routing fields (provider="auto", model="", etc.) merged
             into loaded configs so ``cfg.get("auxiliary", {}).get(key)`` works
@@ -3776,7 +3770,7 @@ class PluginManager:
                 # first process sees plugin backends (tracking #64177).
                 self._refresh_secret_sources_after_discovery()
                 if force:
-                    # config.yaml shell hooks live in ``_hooks`` but are
+                    # config.toml shell hooks live in ``_hooks`` but are
                     # config-owned, not plugin-owned — the ledger-driven
                     # unload() above wiped them and cannot restore them.
                     # Re-register so force-reload is symmetric (#60036;
@@ -3787,7 +3781,7 @@ class PluginManager:
                 raise
 
     def _re_register_shell_hooks_after_force(self) -> None:
-        """Restore config.yaml shell hooks wiped by force-clear of ``_hooks``."""
+        """Restore config.toml shell hooks wiped by force-clear of ``_hooks``."""
         try:
             from agent.shell_hooks import re_register_config_hooks
 
@@ -4107,7 +4101,7 @@ class PluginManager:
         """Probe enabled portable MCP packages without loading plugins.
 
         The directory manifest collection is shared with full discovery, so
-        native ``plugin.yaml`` precedence, source ordering, depth limits, and
+        native ``plugin.toml`` precedence, source ordering, depth limits, and
         project-plugin gating cannot diverge between startup and runtime.
         """
         if _env_enabled("SON_OF_ANTON_SAFE_MODE"):
@@ -4169,14 +4163,14 @@ class PluginManager:
         source: str,
         skip_names: Optional[Set[str]] = None,
     ) -> List[PluginManifest]:
-        """Read ``plugin.yaml`` manifests from subdirectories of *path*.
+        """Read ``plugin.toml`` manifests from subdirectories of *path*.
 
         Supports two layouts, mixed freely:
 
-        * **Flat** — ``<root>/<plugin-name>/plugin.yaml``. Key is
+        * **Flat** — ``<root>/<plugin-name>/plugin.toml``. Key is
           ``<plugin-name>`` (e.g. ``disk-cleanup``).
-        * **Category** — ``<root>/<category>/<plugin-name>/plugin.yaml``,
-          where the ``<category>`` directory itself has no ``plugin.yaml``.
+        * **Category** — ``<root>/<category>/<plugin-name>/plugin.toml``,
+          where the ``<category>`` directory itself has no ``plugin.toml``.
           Key is ``<category>/<plugin-name>`` (e.g. ``image_gen/openai``).
           Depth is capped at two segments.
 
@@ -4217,9 +4211,9 @@ class PluginManager:
                 continue
             if depth == 0 and skip_names and child.name in skip_names:
                 continue
-            manifest_file = child / "plugin.yaml"
+            manifest_file = child / "plugin.toml"
             if not manifest_file.exists():
-                manifest_file = child / "plugin.yml"
+                manifest_file = child / "plugin.toml"
 
             if manifest_file.exists():
                 manifest = self._parse_manifest(
@@ -4263,7 +4257,7 @@ class PluginManager:
             # cap, treat this directory as a category namespace and recurse
             # one level in looking for children with manifests.
             if depth >= 1:
-                logger.debug("Skipping %s (no plugin.yaml, depth cap reached)", child)
+                logger.debug("Skipping %s (no plugin.toml, depth cap reached)", child)
                 continue
 
             sub_prefix = f"{prefix}/{child.name}" if prefix else child.name
@@ -4286,15 +4280,12 @@ class PluginManager:
         source: str,
         prefix: str,
     ) -> Optional[PluginManifest]:
-        """Parse a single ``plugin.yaml`` into a :class:`PluginManifest`.
+        """Parse a single ``plugin.toml`` into a :class:`PluginManifest`.
 
         Returns ``None`` on parse failure (logs a warning).
         """
         try:
-            if yaml is None:
-                logger.warning("PyYAML not installed – cannot load %s", manifest_file)
-                return None
-            data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+            data = fast_toml_load(manifest_file.read_text(encoding="utf-8")) or {}
 
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
@@ -4418,7 +4409,7 @@ class PluginManager:
         declarations from the ``son_of_anton_agent.plugin_capabilities`` group.
         Capability declarations live in distribution metadata so discovery
         is available before importing untrusted plugin code and does not
-        depend on a package-data ``plugin.yaml`` being present.
+        depend on a package-data ``plugin.toml`` being present.
         """
         return discover_entrypoint_manifests()
 
@@ -4431,7 +4422,7 @@ class PluginManager:
 
         The platform name registered via ``register_platform(name=...)`` lives
         inside the adapter module (which we are explicitly trying NOT to import
-        early). It is not carried in ``plugin.yaml``. Across every bundled
+        early). It is not carried in ``plugin.toml``. Across every bundled
         platform plugin the manifest name is ``<platform>-platform`` and the
         plugin directory basename is ``<platform>``, so we derive the name
         without importing: strip a trailing ``-platform`` from the manifest

@@ -3,7 +3,7 @@
 Standalone Web Tools Module
 
 This module provides generic web tools that work with multiple backend providers.
-Backend is selected during ``son-of-anton tools`` setup (web.backend in config.yaml).
+Backend is selected during ``son-of-anton tools`` setup (web.backend in config.toml).
 When available, Son of Anton can route Firecrawl calls through a Nous-hosted tool-gateway
 for Nous Subscribers only.
 
@@ -134,10 +134,10 @@ def _has_env(name: str) -> bool:
     return bool(_env_value(name))
 
 def _load_web_config() -> dict:
-    """Load the ``web:`` section from ~/.son-of-anton/config.yaml."""
+    """Load the ``web:`` section from ~/.son-of-anton/config.toml."""
     try:
         from son_of_anton_cli.config import load_config
-        # ``or {}``: a present-but-null ``web:`` section (YAML ``web:`` with no
+        # ``or {}``: a present-but-null ``web:`` section (TOML ``web:`` with no
         # body) makes ``.get("web", {})`` return None, which would break every
         # caller that does ``_load_web_config().get(...)``. Honor the ``-> dict``
         # contract so callers never see None.
@@ -213,7 +213,7 @@ def _list_registered_web_providers():
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
-    Reads ``web.backend`` from config.yaml (set by ``son-of-anton tools``). A
+    Reads ``web.backend`` from config.toml (set by ``son-of-anton tools``). A
     stored backend name is returned as-is — no availability probe, no
     fallback — so the vendor path can raise its own honest error when the
     selection is broken. The credential/entitlement autodetect ladder runs
@@ -609,7 +609,7 @@ def _web_requires_env() -> list[str]:
 # or under this size are returned whole; larger pages are head+tail truncated
 # and the full text is stored on disk (see _store_full_text). Spending context,
 # not API dollars — so this is generous relative to the old 5k summary cap.
-# Override via web.extract_char_limit in config.yaml.
+# Override via web.extract_char_limit in config.toml.
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
 # Hard ceiling on the full-text file written to cache/web. The truncate-store

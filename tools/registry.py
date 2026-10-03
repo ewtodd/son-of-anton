@@ -798,7 +798,7 @@ class ToolRegistry:
                             "override built-in tool %r (existing toolset %r) without "
                             "operator opt-in. Set "
                             "plugins.entries.<plugin_id>.allow_tool_override: true "
-                            "in config.yaml to allow it.",
+                            "in config.toml to allow it.",
                             owner, name, existing.toolset,
                         )
                         raise PermissionError(
@@ -910,7 +910,7 @@ class ToolRegistry:
                         "remove tool %r (toolset %r) it does not own, without "
                         "operator opt-in. Set "
                         "plugins.entries.%s.allow_tool_override: true in "
-                        "config.yaml to allow it.",
+                        "config.toml to allow it.",
                         caller_mod, name, entry.toolset, caller_mod,
                     )
                     raise PermissionError(
@@ -1041,7 +1041,7 @@ class ToolRegistry:
             # Apply runtime-dynamic overrides (e.g. delegate_task description
             # depends on current delegation.max_concurrent_children /
             # max_spawn_depth). Caller side (model_tools.get_tool_definitions)
-            # already keys its memo on config.yaml mtime + size, so changes
+            # already keys its memo on config.toml mtime + size, so changes
             # to delegation.* in config invalidate the cache automatically.
             if entry.dynamic_schema_overrides is not None:
                 try:

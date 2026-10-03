@@ -99,7 +99,7 @@ MAX_SAFE_EXPORT_MESSAGES = 20_000
 def _configured_transcript_limit(key: str, fallback: int) -> int:
     """Resolve a transcript safety limit from config at call time.
 
-    Reads ``sessions.<key>`` from config.yaml lazily (avoiding a circular
+    Reads ``sessions.<key>`` from config.toml lazily (avoiding a circular
     import at module load) and falls back to the module constant when the
     config subsystem is unavailable (scaffold installs, stripped test
     environments). A value of 0 disables the guard entirely. No caching:
@@ -145,7 +145,7 @@ class SessionResumeTooLargeError(ValueError):
         super().__init__(
             f"session has at least {message_count} active messages {scope}; "
             f"safe resume limit is {limit}. Export the session instead, or set "
-            "sessions.max_resume_messages: 0 in config.yaml to disable the guard."
+            "sessions.max_resume_messages: 0 in config.toml to disable the guard."
         )
 
 
@@ -1047,7 +1047,7 @@ def sqlite_source_id() -> str:
 def resolve_journal_mode() -> str:
     """Return the configured journal mode (``wal`` or ``delete``).
 
-    ``database.journal_mode`` in config.yaml is the canonical operator
+    ``database.journal_mode`` in config.toml is the canonical operator
     setting. ``wal`` remains the default; use ``delete`` when the backing
     filesystem does not provide WAL-safe durability (for example macOS
     virtiofs, NFS, or SMB). Invalid or malformed values fail safely to the
@@ -1470,7 +1470,7 @@ def apply_database_pragmas(
     *,
     db_label: str = "state.db",
 ) -> None:
-    """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml``.
+    """Apply optional performance and WAL-sizing PRAGMAs from ``config.toml``.
 
     Reads the ``database:`` section and applies configurable PRAGMAs when set
     to integer values.  The journal mode itself is NOT handled here —
@@ -1479,7 +1479,7 @@ def apply_database_pragmas(
     all the safety guards (never live-downgrading an on-disk WAL DB,
     filesystem fallback, WAL-reset-bug gating).
 
-    Supported keys under ``database:`` in config.yaml:
+    Supported keys under ``database:`` in config.toml:
 
     * ``cache_size`` — negative value = KiB, positive = pages
       (e.g. ``-262144`` = 256 MB page cache)
@@ -6840,7 +6840,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         When *provider* is given, it is merged into ``model_config``
         alongside the model (``$.model`` / ``$.provider``) so a later
         resume recombines the persisted model with the provider that
-        actually serves it instead of the config.yaml primary provider
+        actually serves it instead of the config.toml primary provider
         (#79536). Callers without provider knowledge leave any stored
         provider untouched.
         """

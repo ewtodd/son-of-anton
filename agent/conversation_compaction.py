@@ -1707,7 +1707,7 @@ def check_compaction_model_feasibility(agent: Any) -> None:
                     "⚠ Configured auxiliary compaction provider "
                     f"'{_aux_cfg_provider}' is unavailable — context "
                     "compaction will drop middle turns without a summary. "
-                    "Check auxiliary.compaction in config.yaml and "
+                    "Check auxiliary.compaction in config.toml and "
                     "reauthenticate that provider."
                 )
             else:
@@ -1760,7 +1760,7 @@ def check_compaction_model_feasibility(agent: Any) -> None:
                 f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Son of Anton "
                 f"Agent.  Choose a compaction model with at least "
                 f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
-                f"auxiliary.compaction.model in config.yaml), or set "
+                f"auxiliary.compaction.model in config.toml), or set "
                 f"auxiliary.compaction.context_length to override the "
                 f"detected value if it is wrong."
             )
@@ -1860,7 +1860,7 @@ def check_compaction_model_feasibility(agent: Any) -> None:
             )
             if threshold_suggestion_viable:
                 msg += (
-                    f"  To make this permanent, edit config.yaml — either:\n"
+                    f"  To make this permanent, edit config.toml — either:\n"
                     f"  1. Use a larger compaction model:\n"
                     f"       auxiliary:\n"
                     f"         compaction:\n"
@@ -1872,7 +1872,7 @@ def check_compaction_model_feasibility(agent: Any) -> None:
             else:
                 msg += (
                     f"  To make this permanent, use a larger compaction "
-                    f"model in config.yaml:\n"
+                    f"model in config.toml:\n"
                     f"       auxiliary:\n"
                     f"         compaction:\n"
                     f"           model: <model-with-{old_threshold:,}+-context>\n"
@@ -3276,7 +3276,7 @@ def compact_context(
                     agent._emit_warning(
                         f"ℹ Configured compaction model '{_aux_fail_model}' failed "
                         f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                        "check auxiliary.compaction.model in config.yaml."
+                        "check auxiliary.compaction.model in config.toml."
                     )
 
         todo_snapshot = agent._todo_store.format_for_injection()

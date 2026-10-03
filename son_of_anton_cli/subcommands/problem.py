@@ -6,8 +6,8 @@ three. The builder does that from a data directory and a one-line goal — but
 it only helps if it is reachable, and a script under ``scripts/`` is not
 shipped in the sealed wheel and is not on anyone's PATH.
 
-The options come from ``physics_intern.spec_builder.add_arguments``, so this
-subcommand and ``python -m physics_intern.spec_builder`` cannot drift apart.
+The options come from ``autophysicist.spec_builder.add_arguments``, so this
+subcommand and ``python -m autophysicist.spec_builder`` cannot drift apart.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
 
     create = problem_sub.add_parser(
         "create",
-        help="Generate a problem.yaml from a dataset and a one-line goal",
+        help="Generate a problem.toml from a dataset and a one-line goal",
         description=(
-            "Probe a dataset, then write a problem.yaml for it.\n\n"
+            "Probe a dataset, then write a problem.toml for it.\n\n"
             "The probe is deterministic and runs inside the same sandbox the "
             "run's computations will, with the data read-only — so what it "
             "reports is what the agent will be able to see. The model is given "
@@ -43,7 +43,7 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         ),
     )
 
-    from physics_intern.spec_builder import add_arguments
+    from autophysicist.spec_builder import add_arguments
 
     add_arguments(create)
 
@@ -57,7 +57,7 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
             "pinning a mode and pasting a path is a worse way to say so."
         ),
     )
-    run.add_argument("spec", help="Path to a problem.yaml (or a problem statement)")
+    run.add_argument("spec", help="Path to a problem.toml (or a problem statement)")
     run.add_argument(
         "--max-iterations",
         type=int,

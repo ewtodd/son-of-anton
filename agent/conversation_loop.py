@@ -2508,7 +2508,7 @@ def run_conversation(
                                 f"⏳ {_nous_msg}\n\n"
                                 "No fallback provider available. "
                                 "Try again after the reset, or add a "
-                                "fallback provider in config.yaml."
+                                "fallback provider in config.toml."
                             ),
                             "messages": messages,
                             "api_calls": api_call_count,
@@ -5210,7 +5210,7 @@ def run_conversation(
                             force=True,
                         )
                         agent._vprint(
-                            f"{agent.log_prefix}   💡 Lower model.max_tokens in your config.yaml to "
+                            f"{agent.log_prefix}   💡 Lower model.max_tokens in your config.toml to "
                             f"at or below the model's max-output limit. "
                             f"(This is an output-cap error, not a context overflow — "
                             f"compaction cannot fix it.)",
@@ -5223,7 +5223,7 @@ def run_conversation(
                         agent._persist_session(messages, conversation_history)
                         _final_response = (
                             "max_tokens exceeds the provider's output cap for this model. "
-                            "Lower model.max_tokens in config.yaml."
+                            "Lower model.max_tokens in config.toml."
                         )
                         return {
                             "final_response": _final_response,
@@ -5781,7 +5781,7 @@ def run_conversation(
                         agent._vprint(
                             f"{agent.log_prefix}      1. Set "
                             f"`providers.{_provider}.models.{_model}.stale_timeout_seconds: 900` "
-                            f"in `~/.son-of-anton/config.yaml` to extend the per-call "
+                            f"in `~/.son-of-anton/config.toml` to extend the per-call "
                             f"timeout. (Son of Anton's built-in floor is 600s for "
                             f"known reasoning models — if you still see this "
                             f"after raising, the upstream cap is even shorter.)",

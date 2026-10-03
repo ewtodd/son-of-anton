@@ -128,8 +128,8 @@ def _find_son_of_anton_md(cwd: Path) -> Optional[Path]:
     return None
 
 
-def _strip_yaml_frontmatter(content: str) -> str:
-    """Remove optional YAML frontmatter (``---`` delimited) from *content*.
+def _strip_frontmatter(content: str) -> str:
+    """Remove optional TOML frontmatter (``---`` delimited) from *content*.
 
     The frontmatter may contain structured config (model overrides, tool
     settings) that will be handled separately in a future PR.  For now we
@@ -284,7 +284,7 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm",
 # are covered here too. Gemini/Gemma are excluded — they get the more specific
 # GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead. Claude is excluded because
 # it does not exhibit these failure modes; users can opt any model in via
-# config.yaml `agent.execution_guidance: true` or a substring list.
+# config.toml `agent.execution_guidance: true` or a substring list.
 EXECUTION_GUIDANCE_MODELS = (
     "gpt", "codex", "grok",
     "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral",
@@ -376,7 +376,7 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
 # prose, skipping read-back verification after external writes, "repairing"
 # malformed identifiers, and claiming completeness despite count mismatches —
 # exactly the failure modes this block targets. The injection gate lives in
-# agent/system_prompt.py and is controlled by config.yaml
+# agent/system_prompt.py and is controlled by config.toml
 # ``agent.execution_guidance`` (auto/true/false/list); "auto" matches the
 # EXECUTION_GUIDANCE_MODELS substring tuple below.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
@@ -1277,7 +1277,7 @@ def build_environment_hints() -> str:
     # agent is running in — proxy, credential handling, mount layout — without
     # forking the identity slot (SOUL.md). Read once at prompt-build time, so
     # it's part of the stable, cache-safe system prompt. The env var is the
-    # build-time/embedder mechanism; config.yaml
+    # build-time/embedder mechanism; config.toml
     # ``agent.environment_hint`` is the user-facing surface. Env var wins.
     extra = (os.getenv("SON_OF_ANTON_ENVIRONMENT_HINT") or "").strip()
     if not extra:
@@ -1329,7 +1329,7 @@ def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
     """Return the context-file truncation limit.
 
     Resolution order:
-      1. Explicit ``context_file_max_chars`` in config.yaml — user knows best,
+      1. Explicit ``context_file_max_chars`` in config.toml — user knows best,
          always wins (including over the dynamic cap).
       2. Dynamic cap derived from the model's ``context_length`` when provided
          (scales the budget to the window; floor 20K, ceiling 500K).
@@ -1593,7 +1593,7 @@ def build_skills_system_prompt(
 
     Falls back to a full filesystem scan when both layers miss.
 
-    External skill directories (``skills.external_dirs`` in config.yaml) are
+    External skill directories (``skills.external_dirs`` in config.toml) are
     scanned alongside the local ``~/.son-of-anton/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
@@ -2053,7 +2053,7 @@ def _load_son_of_anton_md(cwd_path: Path, context_length: Optional[int] = None) 
         content = son_of_anton_md_path.read_text(encoding="utf-8").strip()
         if not content:
             return ""
-        content = _strip_yaml_frontmatter(content)
+        content = _strip_frontmatter(content)
         rel = son_of_anton_md_path.name
         try:
             rel = str(son_of_anton_md_path.relative_to(cwd_path))
@@ -2238,7 +2238,7 @@ def build_context_files_prompt(
     Each context source is capped before injection. The cap defaults to the
     model's context window (scaled — see ``_dynamic_context_file_max_chars``)
     when *context_length* is provided, falling back to 20,000 chars otherwise.
-    An explicit ``context_file_max_chars`` in config.yaml always wins.
+    An explicit ``context_file_max_chars`` in config.toml always wins.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).

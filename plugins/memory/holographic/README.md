@@ -19,7 +19,7 @@ son-of-anton config set memory.provider holographic
 
 ## Config
 
-Config in `config.yaml` under `plugins.son-of-anton-memory-store`:
+Config in `config.toml` under `plugins.son-of-anton-memory-store`:
 
 | Key | Default | Description |
 |-----|---------|-------------|

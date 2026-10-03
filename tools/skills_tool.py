@@ -25,7 +25,7 @@ Directory Structure:
         └── another-skill/
             └── SKILL.md
 
-SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
+SKILL.md Format (TOML Frontmatter, agentskills.io compatible):
     ---
     name: skill-name              # Required, max 64 chars
     description: Brief description # Required, max 1024 chars
@@ -554,7 +554,7 @@ def check_skills_requirements() -> bool:
 
 
 def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
-    """Parse YAML frontmatter from markdown content.
+    """Parse TOML frontmatter from markdown content.
 
     Delegates to ``agent.skill_utils.parse_frontmatter`` — kept here
     as a public re-export so existing callers don't need updating.
@@ -594,7 +594,7 @@ def _parse_tags(tags_value) -> List[str]:
     Parse tags from frontmatter value.
 
     Handles:
-    - Already-parsed list (from yaml.safe_load): [tag1, tag2]
+    - Already-parsed list (from a TOML parse): [tag1, tag2]
     - String with brackets: "[tag1, tag2]"
     - Comma-separated string: "tag1, tag2"
 
@@ -607,7 +607,7 @@ def _parse_tags(tags_value) -> List[str]:
     if not tags_value:
         return []
 
-    # yaml.safe_load already returns a list for [tag1, tag2]
+    # A TOML parse already returns a list for [tag1, tag2]
     if isinstance(tags_value, list):
         return [str(t).strip() for t in tags_value if t]
 
@@ -1785,7 +1785,7 @@ def skill_view(
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
+            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.toml'"
             if linked_files
             else None,
             "required_environment_variables": required_env_vars,
@@ -1925,7 +1925,7 @@ SKILL_VIEW_SCHEMA = {
             },
             "file_path": {
                 "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.toml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
         },
         "required": ["name"],

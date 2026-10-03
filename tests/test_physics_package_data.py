@@ -20,13 +20,13 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PACKAGE = REPO_ROOT / "physics_intern"
+PACKAGE = REPO_ROOT / "autophysicist"
 
 
 def _patterns() -> list[str]:
     with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
         data = tomllib.load(handle)
-    return data["tool"]["setuptools"]["package-data"]["physics_intern"]
+    return data["tool"]["setuptools"]["package-data"]["autophysicist"]
 
 
 def _data_files() -> list[Path]:
@@ -35,7 +35,7 @@ def _data_files() -> list[Path]:
         path
         for path in PACKAGE.rglob("*")
         if path.is_file()
-        and path.suffix in {".md", ".yaml", ".yml"}
+        and path.suffix in {".md", ".toml"}
         and "__pycache__" not in path.parts
     ]
 
@@ -61,11 +61,7 @@ def test_every_data_file_is_shipped(relative: str) -> None:
 
 def test_the_prompts_that_are_loaded_by_name_exist() -> None:
     """Guards the other direction: a loader pointing at a file that is gone."""
-    for module, filename in (
-        ("autophysicist", "prompt.md"),
-        ("autophysicist", "critic_prompt.md"),
-    ):
-        assert (PACKAGE / module / filename).is_file(), (
-            f"physics_intern/{module}/{filename} is loaded at runtime but "
-            f"does not exist"
+    for filename in ("prompt.md", "critic_prompt.md"):
+        assert (PACKAGE / filename).is_file(), (
+            f"autophysicist/{filename} is loaded at runtime but does not exist"
         )

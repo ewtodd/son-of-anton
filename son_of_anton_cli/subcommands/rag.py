@@ -17,7 +17,7 @@ def build_rag_parser(subparsers, *, cmd_rag: Callable) -> None:
         description=(
             "Index session journals and configured note files into a local "
             "vector index for retrieval-augmented recall "
-            "(memory.rag in config.yaml)."
+            "(memory.rag in config.toml)."
         ),
     )
     rag_parser.set_defaults(func=cmd_rag)

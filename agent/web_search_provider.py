@@ -5,7 +5,7 @@ Web Search Provider ABC
 Defines the pluggable-backend interface for web search and content extraction.
 Providers register instances via ``PluginContext.register_web_search_provider()``;
 the active one (selected via ``web.search_backend`` / ``web.extract_backend`` /
-``web.backend`` in ``config.yaml``) services every ``web_search`` /
+``web.backend`` in ``config.toml``) services every ``web_search`` /
 ``web_extract`` tool call.
 
 Providers live in ``<repo>/plugins/web/<name>/`` (built-in, auto-loaded as

@@ -18,7 +18,7 @@ those keys, and spawn subprocesses. A naive reuse of the skill threat
 patterns would flag every legitimate provider plugin. So this scanner:
 
 - Runs the full skills_guard pattern set on documentation/config files
-  (README, after-install.md, plugin.yaml, ...), where prompt-injection
+  (README, after-install.md, plugin.toml, ...), where prompt-injection
   and social-engineering content lives.
 - Exempts the "reads own env secret" / "HTTP call with key" pattern
   family on *code* files, while keeping genuinely malicious signals:
@@ -91,7 +91,7 @@ CODE_EXEMPT_PATTERN_IDS = {
     "context_exfil",
     "send_to_url",
     "fake_policy",
-    # Plugins legitimately write their own settings into config.yaml during
+    # Plugins legitimately write their own settings into config.toml during
     # post_setup, and encode credentials (e.g. HTTP Basic auth) with base64.
     "agent_config_mod",
     "encoded_exfil",

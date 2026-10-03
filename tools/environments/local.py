@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def _resolve_local_initial_cwd(cwd: str) -> str:
     """Resolve the local backend's initial cwd to an absolute host path.
 
-    ``TERMINAL_CWD`` can be populated from config.yaml before the terminal
+    ``TERMINAL_CWD`` can be populated from config.toml before the terminal
     backend is created.  If that value is relative and happens to match the
     directory Son of Anton was already launched from (for example ``son-of-anton``
     while the process cwd is ``~/.son-of-anton/son-of-anton``), passing it through
@@ -274,7 +274,7 @@ def _is_son_of_anton_internal_secret(key: str) -> bool:
     ``os.environ`` at runtime under names no static registry knows about:
 
     - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
-      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
+      side-LLM credentials bridged from ``config.toml[auxiliary]`` by
       ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
       compaction, and any plugin-registered auxiliary task). These are
       separate, often higher-spend API keys plus base URLs that may point at
@@ -1165,7 +1165,7 @@ def _strip_son_of_anton_owned_pythonpath(env: dict) -> None:
 
 
 def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
-    """Return (shell_init_files, auto_source_bashrc) from config.yaml.
+    """Return (shell_init_files, auto_source_bashrc) from config.toml.
 
     Best-effort — returns sensible defaults on any failure so terminal
     execution never breaks because the config file is unreadable.

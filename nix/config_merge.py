@@ -1,4 +1,4 @@
-"""Merge the Nix-declared settings into the config.yaml on disk.
+"""Merge the Nix-declared settings into the config.toml on disk.
 
 This is a THREE-way merge, and the third input is the point of it.
 
@@ -7,12 +7,12 @@ can add a key and can change a key, but it can never take one away. So a key
 that Nix used to declare and no longer does survives on disk forever, and the
 module stops being declarative the moment anything is retired. The symptom is
 undramatic and durable: a nixos-rebuild that says it removed a model leaves the
-model in config.yaml, the agent goes on offering it, and every request against
+model in config.toml, the agent goes on offering it, and every request against
 it fails at the provider. Nothing in the rebuild reports a problem, because as
 far as the rebuild is concerned there wasn't one.
 
 The fix is to remember what Nix wrote last time. Each run records its own
-output in a state file next to config.yaml, so the next run has a base to
+output in a state file next to config.toml, so the next run has a base to
 compare against and can tell two situations apart that a two-way merge cannot:
 
   Nix declared it, no longer declares it, and the on-disk value is still the
@@ -39,20 +39,89 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime
 import json
+import re
 import sys
+import tomllib
 from pathlib import Path
-
-import yaml
 
 MISSING = object()
 
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
-def load_yaml(path: Path) -> dict:
+
+def _toml_key(key) -> str:
+    name = str(key)
+    if _BARE_KEY.fullmatch(name):
+        return name
+    return json.dumps(name, ensure_ascii=False)
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value if v is not None) + "]"
+    raise TypeError(f"cannot serialize {type(value).__name__} to TOML")
+
+
+def _is_array_of_tables(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(
+        isinstance(element, dict) for element in value
+    )
+
+
+def _emit_table(lines: list, prefix: list, table: dict) -> None:
+    for key, value in table.items():
+        if value is None or isinstance(value, dict) or _is_array_of_tables(value):
+            continue
+        if isinstance(value, list) and any(isinstance(e, dict) for e in value):
+            raise TypeError(f"mixed array at {prefix + [key]!r}")
+        lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
+    for key, value in table.items():
+        if value is None:
+            continue
+        path = prefix + [str(key)]
+        if isinstance(value, dict):
+            lines.append("")
+            lines.append(f"[{'.'.join(_toml_key(p) for p in path)}]")
+            _emit_table(lines, path, value)
+        elif _is_array_of_tables(value):
+            for element in value:
+                lines.append("")
+                lines.append(f"[[{'.'.join(_toml_key(p) for p in path)}]]")
+                _emit_table(lines, path, element)
+
+
+def dump_toml(data: dict) -> str:
+    """Serialize *data* to TOML text.
+
+    Self-contained on purpose: this file is concatenated into a standalone
+    activation script with no son-of-anton package on sys.path.
+    """
+    if not isinstance(data, dict):
+        raise TypeError("TOML document root must be a mapping")
+    lines: list = []
+    _emit_table(lines, [], data)
+    while lines and lines[0] == "":
+        lines.pop(0)
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def load_config_file(path: Path) -> dict:
     if not path.exists():
         return {}
     with path.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
+        data = tomllib.loads(handle.read())
     return data if isinstance(data, dict) else {}
 
 
@@ -172,10 +241,10 @@ def unmanaged_paths(ours: dict, theirs: dict) -> list[tuple]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="son-of-anton-config-merge",
-        description="Merge Nix-declared settings into config.yaml on disk.",
+        description="Merge Nix-declared settings into config.toml on disk.",
     )
     parser.add_argument("nix_json", type=Path, help="The generated Nix settings.")
-    parser.add_argument("config_path", type=Path, help="The config.yaml on disk.")
+    parser.add_argument("config_path", type=Path, help="The config.toml on disk.")
     parser.add_argument(
         "--state",
         type=Path,
@@ -198,7 +267,7 @@ def main() -> int:
 
     with args.nix_json.open(encoding="utf-8") as handle:
         theirs = json.load(handle)
-    ours = load_yaml(args.config_path)
+    ours = load_config_file(args.config_path)
 
     state = load_state(args.state)
     first_run = state is None
@@ -212,10 +281,10 @@ def main() -> int:
         delete_path(merged, path)
 
     for name in collapse(remove, before, merged):
-        print(f"config.yaml: removed {name} (retired in Nix)", file=sys.stderr)
+        print(f"config.toml: removed {name} (retired in Nix)", file=sys.stderr)
     for path in kept:
         print(
-            f"config.yaml: kept {render(path)} — no longer declared in Nix, but "
+            f"config.toml: kept {render(path)} — no longer declared in Nix, but "
             "its value changed after Nix wrote it",
             file=sys.stderr,
         )
@@ -224,7 +293,7 @@ def main() -> int:
         orphans = unmanaged_paths(ours, theirs)
         if orphans:
             print(
-                "config.yaml: no record of what Nix wrote previously, so nothing "
+                "config.toml: no record of what Nix wrote previously, so nothing "
                 "was retracted on this run. These keys are on disk and not "
                 "declared in Nix — runtime settings, or leftovers from a Nix "
                 "generation that predates this state file:",
@@ -244,7 +313,7 @@ def main() -> int:
         return 0
 
     with args.config_path.open("w", encoding="utf-8") as handle:
-        yaml.dump(merged, handle, default_flow_style=False, sort_keys=False)
+        handle.write(dump_toml(merged))
 
     if args.state is not None:
         args.state.parent.mkdir(parents=True, exist_ok=True)

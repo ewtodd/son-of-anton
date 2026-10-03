@@ -2,7 +2,7 @@
 
 Auto-detects installed memory providers via the plugin system.
 Interactive curses-based UI for provider selection, then walks through
-the provider's config schema. Writes config to config.yaml + .env.
+the provider's config schema. Writes config to config.toml + .env.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ _CANCELLED = -1
 def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
     """Return the pip deps a provider actually needs on THIS install.
 
-    ``plugin.yaml`` declares the provider's baseline bridge packages, but
+    ``plugin.toml`` declares the provider's baseline bridge packages, but
     some providers install mode-dependent extras at setup time that the
     manifest can't express. Hindsight's ``local_embedded`` mode installs
     ``hindsight-all`` (daemon + embedder + client) during
@@ -105,7 +105,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # ---------------------------------------------------------------------------
 
 def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
-    """Install pip dependencies declared in ``plugin.yaml``.
+    """Install pip dependencies declared in ``plugin.toml``.
 
     When ``force`` is true, every declared dependency is handed to the
     installer even if its import currently succeeds — the resolver then
@@ -120,14 +120,14 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
         return
-    yaml_path = plugin_dir / "plugin.yaml"
+    yaml_path = plugin_dir / "plugin.toml"
     if not yaml_path.exists():
         return
 
     try:
-        import yaml
+        import tomllib
         with open(yaml_path, encoding="utf-8") as f:
-            meta = yaml.safe_load(f) or {}
+            meta = tomllib.loads(f.read()) or {}
     except Exception:
         return
 
@@ -277,7 +277,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
-    print("  Activation saved to config.yaml\n")
+    print("  Activation saved to config.toml\n")
 
 
 def cmd_setup(args) -> None:
@@ -312,14 +312,14 @@ def cmd_setup(args) -> None:
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
-        print("  Saved to config.yaml\n")
+        print("  Saved to config.toml\n")
         return
 
     name, _, provider = providers[selected]
 
     _clear_interactive_transition()
 
-    # Install pip dependencies if declared in plugin.yaml
+    # Install pip dependencies if declared in plugin.toml
     _install_dependencies(name)
 
     # If the provider has a post_setup hook, delegate entirely to it.
@@ -400,7 +400,7 @@ def cmd_setup(args) -> None:
                     if env_var and env_var not in env_writes:
                         env_writes[env_var] = val
 
-    # Write activation key to config.yaml
+    # Write activation key to config.toml
     config["memory"]["provider"] = name
     save_config(config)
 
@@ -417,7 +417,7 @@ def cmd_setup(args) -> None:
         _write_env_vars(env_path, env_writes)
 
     print(f"\n  Memory provider: {name}")
-    print("  Activation saved to config.yaml")
+    print("  Activation saved to config.toml")
     if provider_config:
         print("  Provider config saved")
     if env_writes:

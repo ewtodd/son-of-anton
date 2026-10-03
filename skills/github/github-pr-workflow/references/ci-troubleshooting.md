@@ -111,7 +111,7 @@ Error: Resource not accessible by integration
 2. Check if secrets are configured (missing `GITHUB_TOKEN` or custom secrets)
 
 **Common fixes:**
-- Add `permissions:` block to workflow YAML
+- Add `permissions:` block to workflow TOML
 - Verify secrets exist: `gh secret list` or check repo settings
 - For fork PRs: some secrets aren't available by design
 

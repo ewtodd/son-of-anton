@@ -3524,7 +3524,7 @@ class SlackAdapter(BasePlatformAdapter):
         Defaults to ``True`` so each visible DM reply thread is isolated as its
         own Son of Anton session — matching the per-thread behavior channels already
         have.  Set ``platforms.slack.extra.dm_top_level_threads_as_sessions``
-        to ``false`` in config.yaml to revert to the legacy behavior where all
+        to ``false`` in config.toml to revert to the legacy behavior where all
         top-level DMs share one continuous session.
         """
         raw = self.config.extra.get("dm_top_level_threads_as_sessions")
@@ -3540,7 +3540,7 @@ class SlackAdapter(BasePlatformAdapter):
         (deliver FLAT into the channel timeline; the shared-channel session
         ``(slack, channel_id, None)`` is the continuation surface).  Set
         ``platforms.slack.extra.cron_continuable_surface: in_channel`` in
-        config.yaml.  Pair with ``reply_in_thread: false`` so the user's reply
+        config.toml.  Pair with ``reply_in_thread: false`` so the user's reply
         is answered flat in the channel and keyed to the same shared session —
         see ``_warn_if_inchannel_without_flat_reply``.  Any unrecognised value
         coerces to ``"thread"`` (fail safe).
@@ -3917,7 +3917,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _rich_blocks_enabled(self) -> bool:
         """Whether to render outbound agent messages as Slack Block Kit blocks.
 
-        Opt-in via ``platforms.slack.extra.rich_blocks`` (config.yaml). Default
+        Opt-in via ``platforms.slack.extra.rich_blocks`` (config.toml). Default
         off: messages continue to go out as flat mrkdwn ``text``. Enabling it
         renders the *final* agent message with real structural primitives
         (headers, dividers, true nested lists via ``rich_text``, and native
@@ -3932,7 +3932,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _markdown_blocks_enabled(self) -> bool:
         """Whether to render outbound messages via Slack's ``markdown`` block.
 
-        Opt-in via ``platforms.slack.extra.markdown_blocks`` (config.yaml).
+        Opt-in via ``platforms.slack.extra.markdown_blocks`` (config.toml).
         Slack's Block Kit ``markdown`` block accepts *standard* markdown
         (tables, headers, task lists, fenced code with syntax highlighting,
         links) and lets Slack do the translation natively — eliminating the
@@ -4994,7 +4994,7 @@ class SlackAdapter(BasePlatformAdapter):
         return metadata
 
     def _assistant_suggested_prompts(self) -> Tuple[str, List[Dict[str, str]]]:
-        """Return config.yaml-defined Slack AI suggested prompts.
+        """Return config.toml-defined Slack AI suggested prompts.
 
         Supported shapes under ``platforms.slack.extra.suggested_prompts``:
 
@@ -5466,7 +5466,7 @@ class SlackAdapter(BasePlatformAdapter):
         non-empty set — enabled for exactly these emoji names, on any
                         message (operator-curated handoff emojis).
 
-        Sources: ``slack.reaction_triggers`` in config.yaml (bool or list),
+        Sources: ``slack.reaction_triggers`` in config.toml (bool or list),
         or the ``SLACK_REACTION_TRIGGERS`` env var (``true``/``all`` or a
         comma-separated emoji-name list).
         """
@@ -6630,7 +6630,7 @@ class SlackAdapter(BasePlatformAdapter):
                     logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
 
                     # Inject small text-ish files directly into the prompt so
-                    # snippets like JSON/YAML/configs are actually visible to the
+                    # snippets like JSON/TOML/configs are actually visible to the
                     # agent. Gate on a text-like extension/MIME — NOT a blind
                     # UTF-8 decode, since binary formats (PDF/zip/docx) can have
                     # decodable ASCII headers. Binary files are surfaced as a
@@ -6700,7 +6700,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Slack's AI Agent Messages tab shows visible app threads; title the
         # first DM thread turn from the user's prompt when Slack AI APIs are
-        # available. This is best-effort and configurable via config.yaml.
+        # available. This is best-effort and configurable via config.toml.
         if is_dm and thread_ts and msg_type != MessageType.COMMAND:
             await self._set_assistant_thread_title(
                 channel_id,
@@ -8857,10 +8857,10 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
-        # A bare numeric YAML value (`free_response_channels: 1234567890`) is
+        # A bare numeric TOML value (`free_response_channels: 1234567890`) is
         # loaded as int and was previously falling through the isinstance(str)
         # branch to return an empty set.  str() here accepts whatever scalar
-        # the YAML loader hands us without changing existing string/CSV
+        # the TOML loader hands us without changing existing string/CSV
         # semantics.
         s = str(raw).strip() if raw is not None else ""
         if s:
@@ -8978,9 +8978,9 @@ class SlackAdapter(BasePlatformAdapter):
 # ``gateway/platforms/slack.py`` into this bundled plugin. It mirrors the
 # Discord migration (PR #24356) exactly: a ``register(ctx)`` entry point plus
 # the hook implementations (``_standalone_send``, ``interactive_setup``,
-# ``_apply_yaml_config``, ``_is_connected``, ``_build_adapter``) that replace
+# ``_apply_toml_config``, ``_is_connected``, ``_build_adapter``) that replace
 # the per-platform core touchpoints (the ``Platform.SLACK`` elif in
-# ``gateway/run.py``, the ``slack_cfg`` YAML→env block in ``gateway/config.py``,
+# ``gateway/run.py``, the ``slack_cfg`` TOML→env block in ``gateway/config.py``,
 # the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict in
 # ``son_of_anton_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in
 # ``tools/send_message_tool.py``).
@@ -9472,20 +9472,20 @@ def interactive_setup() -> None:
             print_info("Home channel cleared.")
 
 
-def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
-    """Translate ``config.yaml`` ``slack:`` keys into ``SLACK_*`` env vars.
+def _apply_toml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
+    """Translate ``config.toml`` ``slack:`` keys into ``SLACK_*`` env vars.
 
-    Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the
+    Implements the ``apply_toml_config_fn`` contract (#24849). Mirrors the
     legacy ``slack_cfg`` block that used to live in
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
     The SlackAdapter reads its runtime configuration via ``os.getenv()``
     throughout the connect / handle code paths, so rather than rewrite those
     call sites to read from ``PlatformConfig.extra``, this hook keeps the
-    existing env-driven model and owns the YAML→env translation here, next to
-    the adapter that consumes it. Env vars take precedence over YAML — every
+    existing env-driven model and owns the TOML→env translation here, next to
+    the adapter that consumes it. Env vars take precedence over TOML — every
     assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
+    survive a config.toml update. Returns ``None`` because no extras are
     seeded into ``PlatformConfig.extra`` directly (everything flows through env).
     """
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
@@ -9573,14 +9573,14 @@ def register(ctx) -> None:
         # Interactive setup wizard — replaces son_of_anton_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in son_of_anton_cli/gateway.py.
         setup_fn=interactive_setup,
-        # YAML→env config bridge — owns the translation of config.yaml slack:
+        # TOML→env config bridge — owns the translation of config.toml slack:
         # keys (require_mention, strict_mention, ignore_other_user_mentions,
         # thread_require_mention, allow_bots, free_response_channels,
         # reactions, disable_dms, allowed_channels, ignored_channels) into
         # SLACK_* env vars that
         # the adapter reads via os.getenv(). Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.
-        apply_yaml_config_fn=_apply_yaml_config,
+        apply_toml_config_fn=_apply_toml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="SLACK_ALLOWED_USERS",
         allow_all_env="SLACK_ALLOW_ALL_USERS",

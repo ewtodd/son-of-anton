@@ -32,7 +32,7 @@ Two independent guards, both failing OPEN to today's behaviour:
    leave the budget untouched.
 
 Configured via the additive ``agent.empty_response_guard`` section in
-``config.yaml`` (resolved once at agent init by ``agent_init``)::
+``config.toml`` (resolved once at agent init by ``agent_init``)::
 
     agent:
       empty_response_guard:
@@ -41,7 +41,7 @@ Configured via the additive ``agent.empty_response_guard`` section in
 
 Per project policy, no ``SON_OF_ANTON_*`` environment variables are involved —
 ``.env`` is reserved for credentials; behavioural settings live in
-``config.yaml``.
+``config.toml``.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
     if isinstance(enabled_raw, bool):
         enabled = enabled_raw
     elif isinstance(enabled_raw, str):
-        # YAML quoting can turn true/false into strings.
+        # TOML quoting can turn true/false into strings.
         enabled = enabled_raw.strip().lower() not in ("0", "false", "no", "off")
     else:
         enabled = DEFAULT_GUARD_ENABLED

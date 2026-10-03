@@ -63,7 +63,7 @@ def _format_relative_ts(ts: float) -> str:
 
 
 def _configured_model_label(config: dict) -> str:
-    """Return the configured default model from config.yaml."""
+    """Return the configured default model from config.toml."""
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         model = (model_cfg.get("default") or model_cfg.get("name") or "").strip()
@@ -83,9 +83,9 @@ def _effective_provider_label() -> str:
         effective = requested or "auto"
 
     if effective == "openrouter":
-        # A custom endpoint may be configured either in config.yaml
+        # A custom endpoint may be configured either in config.toml
         # (model.base_url — the canonical location; the runtime treats
-        # config.yaml as the single source of truth) or via the legacy
+        # config.toml as the single source of truth) or via the legacy
         # OPENAI_BASE_URL env var. Either way, labeling it "OpenRouter"
         # is misleading (#3296).
         config_base_url = ""

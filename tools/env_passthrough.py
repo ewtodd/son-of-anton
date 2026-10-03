@@ -10,7 +10,7 @@ Two sources feed the allowlist:
 
 1. **Skill declarations** — when a skill is loaded via ``skill_view``, its
    ``required_environment_variables`` are registered here automatically.
-2. **User config** — ``terminal.env_passthrough`` in config.yaml lets users
+2. **User config** — ``terminal.env_passthrough`` in config.toml lets users
    explicitly allowlist vars for non-skill use cases.
 
 Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
@@ -124,7 +124,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
 
 
 def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached)."""
+    """Load ``tools.env_passthrough`` from config.toml (cached)."""
     global _config_passthrough
     if _config_passthrough is not None:
         return _config_passthrough
@@ -142,12 +142,12 @@ def _load_config_passthrough() -> frozenset[str]:
                 # Mirror the skill-path filter in register_env_passthrough:
                 # Son of Anton-managed provider credentials must not be passed
                 # through to execute_code / terminal children, regardless of
-                # whether the request came from a skill or from config.yaml.
+                # whether the request came from a skill or from config.toml.
                 # See GHSA-rhgp-j443-p4rf.
                 if _is_son_of_anton_provider_credential(name):
                     logger.warning(
                         "env passthrough: refusing to register Son of Anton "
-                        "provider credential %r from config.yaml (blocked "
+                        "provider credential %r from config.toml (blocked "
                         "by _SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST). Operator "
                         "configuration must not override the execute_code "
                         "sandbox's credential scrubbing; see "

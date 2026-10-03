@@ -20,7 +20,7 @@ shadow a shipped provider would silently redirect the agent's memory. Changing
 this order is a breaking change, not a cleanup.
 
 Only ONE provider can be active at a time, selected via
-``memory.provider`` in config.yaml.
+``memory.provider`` in config.toml.
 
 Usage:
     from plugins.memory import discover_memory_providers, load_memory_provider
@@ -269,14 +269,14 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     seen: set[str] = set()
 
     for name, child in _iter_provider_dirs():
-        # Read description from plugin.yaml if available
+        # Read description from plugin.toml if available
         desc = ""
-        yaml_file = child / "plugin.yaml"
+        yaml_file = child / "plugin.toml"
         if yaml_file.exists():
             try:
-                import yaml
+                import tomllib
                 with open(yaml_file, encoding="utf-8-sig") as f:
-                    meta = yaml.safe_load(f) or {}
+                    meta = tomllib.loads(f.read()) or {}
                 desc = meta.get("description", "")
             except Exception:
                 pass
@@ -644,7 +644,7 @@ class _ProviderCollector:
 
 
 def _get_active_memory_provider() -> Optional[str]:
-    """Read the active memory provider name from config.yaml.
+    """Read the active memory provider name from config.toml.
 
     Returns the provider name (e.g. ``"honcho"``) or None if no
     external provider is configured.  Lightweight — only reads config,
@@ -683,7 +683,7 @@ def discover_plugin_cli_commands() -> List[dict]:
     """Return CLI commands for the **active** memory plugin only.
 
     Only one memory provider can be active at a time (set via
-    ``memory.provider`` in config.yaml).  This function reads that
+    ``memory.provider`` in config.toml).  This function reads that
     value and only loads CLI registration for the matching plugin.
     If no provider is active, no commands are registered.
 
@@ -745,15 +745,15 @@ def discover_plugin_cli_commands() -> List[dict]:
         if not callable(register_cli):
             return results
 
-        # Read metadata from plugin.yaml if available
+        # Read metadata from plugin.toml if available
         help_text = f"Manage {active_provider} memory plugin"
         description = ""
-        yaml_file = plugin_dir / "plugin.yaml"
+        yaml_file = plugin_dir / "plugin.toml"
         if yaml_file.exists():
             try:
-                import yaml
+                import tomllib
                 with open(yaml_file, encoding="utf-8-sig") as f:
-                    meta = yaml.safe_load(f) or {}
+                    meta = tomllib.loads(f.read()) or {}
                 desc = meta.get("description", "")
                 if desc:
                     help_text = desc

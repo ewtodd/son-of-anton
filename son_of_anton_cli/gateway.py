@@ -5005,7 +5005,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     # Portable, app-level respawn-storm circuit breaker. launchd/systemd have
     # their own throttles, but this backstop works on every platform (and covers
     # supervisors that lack a respawn floor). Configured via
-    # ``gateway.respawn_storm`` in config.yaml (``max_starts`` / ``window_seconds``);
+    # ``gateway.respawn_storm`` in config.toml (``max_starts`` / ``window_seconds``);
     # the env vars ``SON_OF_ANTON_GATEWAY_MAX_STARTS`` /
     # ``SON_OF_ANTON_GATEWAY_START_WINDOW_S`` override for escape-hatch use.
     # Set max_starts <= 0 to disable. Best-effort: a bookkeeping failure must
@@ -5015,7 +5015,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
         from gateway.status import record_start_and_check_storm
 
-        # Defaults mirror config.yaml DEFAULT_CONFIG ``gateway.respawn_storm``.
+        # Defaults mirror config.toml DEFAULT_CONFIG ``gateway.respawn_storm``.
         _max_starts = 5
         _win = 120.0
         try:
@@ -5190,7 +5190,7 @@ def _platform_status(platform: dict) -> str:
     entry = platform.get("_registry_entry")
     if entry is not None:
         configured = False
-        # Prefer is_connected (checks both env and config.yaml) over
+        # Prefer is_connected (checks both env and config.toml) over
         # check_fn (typically just dependency / env presence).
         if entry.is_connected is not None:
             try:
@@ -5641,7 +5641,7 @@ def _configure_platform(platform: dict) -> None:
         print_info(f"  Set these env vars in ~/.son-of-anton/.env: {', '.join(required)}")
     else:
         print_info(
-            f"  Configure {label} in config.yaml under gateway.platforms.{platform['key']}"
+            f"  Configure {label} in config.toml under gateway.platforms.{platform['key']}"
         )
     if platform.get("install_hint"):
         print_info(f"  {platform['install_hint']}")

@@ -6,7 +6,7 @@ A provider API key can live in up to THREE stores at once:
     2. ``~/.son-of-anton/auth.json`` →
        ``credential_pool.<provider>[*]``      — env-seeded pool entries
        (``source == "env:<VAR>"``) persisted by the pool loader
-    3. ``~/.son-of-anton/config.yaml``              — inline mirrors written by the
+    3. ``~/.son-of-anton/config.toml``              — inline mirrors written by the
        custom-endpoint flows (``model.api_key``, ``auxiliary.<task>.api_key``,
        ``custom_providers[*].api_key``)
 
@@ -19,7 +19,7 @@ whole bug family:
       survives, so the provider keeps appearing in the model picker, even
       across restarts (the pool loader is additive-only).
     * #62269 — updating a key rewrites ``.env`` but leaves the OLD key in a
-      higher-precedence ``config.yaml`` mirror (``model.api_key`` wins over
+      higher-precedence ``config.toml`` mirror (``model.api_key`` wins over
       env at client construction), producing persistent 401s with a key the
       UI no longer shows.
 
@@ -108,7 +108,7 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
 
 
 def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[str]:
-    """Reconcile config.yaml api_key mirrors that hold ``old_value``.
+    """Reconcile config.toml api_key mirrors that hold ``old_value``.
 
     Value-matched on purpose: we only touch a config entry when it provably
     holds the SAME credential that just changed in ``.env`` — an independent
@@ -121,7 +121,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     """
     if not old_value:
         return []
-    from utils import atomic_yaml_write, fast_safe_load
+    from utils import atomic_toml_write, fast_toml_load
 
     from son_of_anton_cli.config import (
         get_config_path,
@@ -133,7 +133,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         return []
     try:
         with open(config_path, encoding="utf-8") as f:
-            user_config = fast_safe_load(f) or {}
+            user_config = fast_toml_load(f) or {}
     except Exception:
         return []
     if not isinstance(user_config, dict):
@@ -171,7 +171,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
 
     if touched:
         require_readable_config_before_write(config_path)
-        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        atomic_toml_write(config_path, user_config, sort_keys=False)
     return touched
 
 
@@ -213,7 +213,7 @@ def purge_env_credential_references(
 def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     """Save/update a credential in ``.env`` and reconcile every mirror.
 
-    After the ``.env`` write, any config.yaml mirror that held the PREVIOUS
+    After the ``.env`` write, any config.toml mirror that held the PREVIOUS
     value of this var (``model.api_key`` etc.) is updated to the new value so
     a stale higher-precedence copy cannot shadow the rotation (#62269).
     Suppressed ``env:<VAR>`` pool sources are re-enabled so a deliberate
@@ -247,7 +247,7 @@ def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
 
     Clears the ``.env`` entry (and process env), prunes env-seeded
     ``credential_pool`` entries, drops the affected providers' model-cache
-    rows, and removes any config.yaml mirror holding the same value.
+    rows, and removes any config.toml mirror holding the same value.
     OAuth/device-code/manual credentials are preserved (see module docstring).
 
     ``found`` is True when ANY store held the credential — callers that

@@ -1,7 +1,7 @@
 # nix/moduleCommon.nix — the code that the NixOS and Home Manager modules share
 #
 # `services.son-of-anton` is the same option set on both modules. Both modules
-# get their options, their renderers for config.yaml, .env and documents, and
+# get their options, their renderers for config.toml, .env and documents, and
 # their state setup from this file. A NixOS example works on Home Manager
 # without a change. An option added here appears on both modules at once.
 #
@@ -29,7 +29,7 @@ let
   # all of the definitions. Without it, only the last definition applies.
   deepConfigType = types.mkOptionType {
     name = "son-of-anton-config-attrs";
-    description = "Son of Anton YAML config (attrset), merged deeply via lib.recursiveUpdate.";
+    description = "Son of Anton TOML config (attrset), merged deeply via lib.recursiveUpdate.";
     check = builtins.isAttrs;
     merge = _loc: defs: lib.foldl' lib.recursiveUpdate { } (map (d: d.value) defs);
   };
@@ -177,7 +177,7 @@ let
     };
   };
 
-  # Convert the mcpServers submodules into the shape that config.yaml uses.
+  # Convert the mcpServers submodules into the shape that config.toml uses.
   mcpServersToConfig =
     servers:
     lib.mapAttrs (
@@ -249,7 +249,7 @@ let
         defaultText = defaultWorkingDirectoryText;
         description = ''
           The working directory for the agent. The module also writes this
-          path to config.yaml as `terminal.cwd`. The terminal and file tools
+          path to config.toml as `terminal.cwd`. The terminal and file tools
           of the agent use that value.
         '';
       };
@@ -259,7 +259,7 @@ let
         type = types.nullOr types.path;
         default = null;
         description = ''
-          The path to an existing config.yaml. If you set this option, it
+          The path to an existing config.toml. If you set this option, it
           replaces the `settings` option. The module installs the file
           without a change and overwrites all runtime edits on each
           activation.
@@ -271,9 +271,9 @@ let
         default = { };
         description = ''
           The Son of Anton configuration, as an attribute set. The module joins the
-          definitions from all modules and writes the result to config.yaml.
+          definitions from all modules and writes the result to config.toml.
 
-          The merge into the config.yaml on disk is a three-way merge
+          The merge into the config.toml on disk is a three-way merge
           against `.nix-managed.json`, which records what the previous
           activation wrote. These keys replace the keys on disk; a key this
           option USED to declare and no longer does is removed from disk,
@@ -298,7 +298,7 @@ let
         type = types.bool;
         default = false;
         description = ''
-          Treat `settings` as the whole truth for config.yaml: on every
+          Treat `settings` as the whole truth for config.toml: on every
           activation, remove any key on disk that Nix does not declare.
 
           Off by default, because the keys Nix does not declare are the ones
@@ -307,11 +307,11 @@ let
           worse than a stale key.
 
           Two reasons to turn it on. As a one-off, to adopt an install whose
-          config.yaml predates `.nix-managed.json`: the first activation after
+          config.toml predates `.nix-managed.json`: the first activation after
           that state file appears cannot attribute anything to Nix, so it
           removes nothing and instead lists the undeclared keys it found — set
           this for one rebuild to clear the ones that are leftovers, then unset
-          it. Or permanently, if this deployment wants config.yaml to be purely
+          it. Or permanently, if this deployment wants config.toml to be purely
           declarative and is willing to lose runtime edits on every rebuild.
 
           Leaving it off does not mean keys can never be removed. The ordinary
@@ -454,7 +454,7 @@ let
         default = [ ];
         description = ''
           Directory-based plugin packages to symlink into the son-of-anton plugins
-          directory. Each package must contain a plugin.yaml and __init__.py
+          directory. Each package must contain a plugin.toml and __init__.py
           at its root. Son of Anton discovers these automatically on startup.
         '';
         example = literalExpression ''
@@ -538,11 +538,11 @@ let
     else
       cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
 
-  # ── The rendered config.yaml ────────────────────────────────────────────
-  # YAML contains JSON, so the output of toJSON is a correct config.yaml.
-  # terminal.cwd replaces the old MESSAGING_CWD environment variable. The
-  # order of the recursiveUpdate lets an explicit settings.terminal.cwd
-  # replace the default value.
+  # ── The rendered config.toml ────────────────────────────────────────────
+  # TOML is not a JSON superset, so the settings are rendered through
+  # nixpkgs' TOML generator. terminal.cwd replaces the old MESSAGING_CWD
+  # environment variable. The order of the recursiveUpdate lets an explicit
+  # settings.terminal.cwd replace the default value.
   mkConfigFiles =
     {
       pkgs,
@@ -550,8 +550,8 @@ let
       workingDirectory,
     }:
     let
-      generated = pkgs.writeText "son-of-anton-config.yaml" (
-        builtins.toJSON (lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings)
+      generated = (pkgs.formats.toml { }).generate "son-of-anton-config.toml" (
+        lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings
       );
     in
     {
@@ -617,7 +617,7 @@ let
 
   # ── State setup ─────────────────────────────────────────────────────────
   # The activation code that both modules run. It makes the directories and
-  # installs config.yaml, .env, auth.json, the documents and the plugins. The
+  # installs config.toml, .env, auth.json, the documents and the plugins. The
   # differences between the two modules are only the install flags for the
   # owner and the file modes. Thus they are arguments, and not a second copy
   # of the script.
@@ -697,16 +697,16 @@ let
         )
       }
 
-      # config.yaml: merge the Nix settings into the file on disk. Son of Anton
+      # config.toml: merge the Nix settings into the file on disk. Son of Anton
       # writes this file at runtime. A read-only symlink to the Nix store
       # breaks each save from the application. The Nix keys replace the keys
       # on disk, and the module keeps all other keys.
       #
       # Activation runs as root, so anything it CREATES is root-owned. The
-      # merge only inherited the right owner by rewriting a config.yaml that
+      # merge only inherited the right owner by rewriting a config.toml that
       # already had it — which silently stopped being true the moment the file
       # had to be created, and was never true for the state file, which is new
-      # every install. A 0600 root:root config.yaml is unreadable by the very
+      # every install. A 0600 root:root config.toml is unreadable by the very
       # service that needs it. Hence an explicit chown, like .env has.
       #
       # --state is what makes retiring a key work. The merge records its own
@@ -717,15 +717,15 @@ let
       # disk with nothing reporting that it did.
       ${
         if cfg.configFile != null then
-          "${inst} -m ${modes.config} -D ${configFiles.effective} ${son-of-antonHome}/config.yaml"
+          "${inst} -m ${modes.config} -D ${configFiles.effective} ${son-of-antonHome}/config.toml"
         else
           ''
-            ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.yaml --state ${son-of-antonHome}/.nix-managed.json${lib.optionalString cfg.pruneUnmanagedSettings " --adopt"}
-            ${run}chmod ${modes.config} ${son-of-antonHome}/config.yaml
+            ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.toml --state ${son-of-antonHome}/.nix-managed.json${lib.optionalString cfg.pruneUnmanagedSettings " --adopt"}
+            ${run}chmod ${modes.config} ${son-of-antonHome}/config.toml
             ${run}chmod ${modes.config} ${son-of-antonHome}/.nix-managed.json
             ${lib.optionalString (
               owner != null
-            ) "${run}chown ${owner} ${son-of-antonHome}/config.yaml ${son-of-antonHome}/.nix-managed.json"}
+            ) "${run}chown ${owner} ${son-of-antonHome}/config.toml ${son-of-antonHome}/.nix-managed.json"}
           ''
       }
 
@@ -757,8 +757,8 @@ let
       # goes away from the plugins directory.
       ${run}find ${son-of-antonHome}/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
       ${lib.concatMapStringsSep "\n" (plugin: ''
-        if [ ! -f ${plugin}/plugin.yaml ]; then
-          echo "son-of-anton: ERROR extraPlugins entry '${plugin}' has no plugin.yaml" >&2
+        if [ ! -f ${plugin}/plugin.toml ]; then
+          echo "son-of-anton: ERROR extraPlugins entry '${plugin}' has no plugin.toml" >&2
           exit 1
         fi
         ${run}ln -sfn ${plugin} ${son-of-antonHome}/plugins/nix-managed-${lib.getName plugin}

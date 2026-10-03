@@ -1,4 +1,4 @@
-"""``gateway.model`` — a per-surface default out of one config.yaml.
+"""``gateway.model`` — a per-surface default out of one config.toml.
 
 One SON_OF_ANTON_HOME is shared by an account's Signal service and that
 account's own CLI; that shared home is what makes a Signal conversation
@@ -25,7 +25,7 @@ def test_gateway_model_wins_over_model_default() -> None:
 
 
 def test_model_default_is_used_when_gateway_model_is_unset() -> None:
-    """Back-compat: an existing config.yaml behaves exactly as before."""
+    """Back-compat: an existing config.toml behaves exactly as before."""
     assert _resolve_gateway_model({"model": {"default": "cli-model"}}) == "cli-model"
     assert (
         _resolve_gateway_model({"model": {"default": "cli-model"}, "gateway": {}})
@@ -37,7 +37,7 @@ def test_blank_gateway_model_falls_through() -> None:
     """A provisioned-but-empty value must not blank the model.
 
     The Nix module renders ``gateway.model`` from an option whose default is
-    the empty string, so "" reaches config.yaml whenever an instance does not
+    the empty string, so "" reaches config.toml whenever an instance does not
     pin one. Treating that as a real value would leave the gateway with no
     model at all.
     """
@@ -60,7 +60,7 @@ def test_gateway_model_is_stripped() -> None:
 
 
 def test_non_string_gateway_model_is_ignored() -> None:
-    """config.yaml is user-edited; a mistyped value must not become the model."""
+    """config.toml is user-edited; a mistyped value must not become the model."""
     for bogus in (True, 42, ["a"], {"x": 1}, None):
         assert (
             _resolve_gateway_model(

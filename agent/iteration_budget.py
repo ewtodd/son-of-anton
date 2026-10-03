@@ -23,7 +23,7 @@ class IterationBudget:
     ``delegation.max_iterations`` (default 50) — this means total
     iterations across parent + subagents can exceed the parent's cap.
     Users control the per-subagent limit via ``delegation.max_iterations``
-    in config.yaml.
+    in config.toml.
 
     ``execute_code`` (programmatic tool calling) iterations are refunded via
     :meth:`refund` so they don't eat into the budget.

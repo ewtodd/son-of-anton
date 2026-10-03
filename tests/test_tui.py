@@ -1193,7 +1193,7 @@ def test_permission_cycle_is_session_scoped_and_never_writes_config(backend) -> 
     assert get_session_permission_mode(b.session_id) == "lockdown"
 
     after = config.read_bytes() if config.exists() else None
-    assert after == before, "cycling permission modes must not touch config.yaml"
+    assert after == before, "cycling permission modes must not touch config.toml"
 
     # A different session is unaffected: the override is keyed by session id.
     assert get_session_permission_mode("some-other-session") is None
@@ -1528,16 +1528,17 @@ def test_no_identity_is_shipped_as_a_default(backend) -> None:
 
 
 def test_a_configured_identity_is_picked_up(backend, monkeypatch, son_of_anton_home) -> None:
-    """Setting both keys in config.yaml is what turns the override on."""
-    import yaml
+    """Setting both keys in config.toml is what turns the override on."""
+    import tomllib
 
     from son_of_anton_cli.config import load_config_readonly
+    from utils import dump_toml
 
-    config_path = son_of_anton_home / "config.yaml"
-    existing = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+    config_path = son_of_anton_home / "config.toml"
+    existing = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
     existing = existing or {}
     existing["git"] = {"author_name": "a-bot", "author_email": "bot@example.invalid"}
-    config_path.write_text(yaml.safe_dump(existing))
+    config_path.write_text(dump_toml(existing))
     load_config_readonly.cache_clear() if hasattr(load_config_readonly, "cache_clear") else None
 
     b, _rec = backend

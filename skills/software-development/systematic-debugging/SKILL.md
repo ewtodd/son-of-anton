@@ -1,14 +1,16 @@
 ---
-name: systematic-debugging
-description: "4-phase root cause debugging: understand bugs before fixing."
-version: 1.1.0
-author: Son of Anton Agent (adapted from obra/superpowers)
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
-    related_skills: [test-driven-development, plan, subagent-driven-development]
+name = "systematic-debugging"
+description = "4-phase root cause debugging: understand bugs before fixing."
+version = "1.1.0"
+author = "Son of Anton Agent (adapted from obra/superpowers)"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["debugging", "troubleshooting", "problem-solving", "root-cause", "investigation"]
+related_skills = ["test-driven-development", "plan", "subagent-driven-development"]
 ---
 
 # Systematic Debugging

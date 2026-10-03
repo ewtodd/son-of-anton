@@ -5,7 +5,7 @@ with entity resolution, trust scoring, and HRR-based compositional retrieval.
 
 Original plugin by dusterbloom (PR #2351), adapted to the MemoryProvider ABC.
 
-Config in $SON_OF_ANTON_HOME/config.yaml (profile-scoped):
+Config in $SON_OF_ANTON_HOME/config.toml (profile-scoped):
   plugins:
     son-of-anton-memory-store:
       db_path: $SON_OF_ANTON_HOME/memory_store.db   # omit to use the default
@@ -127,11 +127,11 @@ class HolographicMemoryProvider(MemoryProvider):
         return True  # SQLite is always available, numpy is optional
 
     def save_config(self, values, son_of_anton_home):
-        """Write config to config.yaml under plugins.son-of-anton-memory-store."""
+        """Write config to config.toml under plugins.son-of-anton-memory-store."""
         from pathlib import Path
-        config_path = Path(son_of_anton_home) / "config.yaml"
+        config_path = Path(son_of_anton_home) / "config.toml"
         try:
-            import yaml
+            from utils import dump_toml
             # Write-back round-trip: raw read is correct (merged defaults
             # must not be persisted back into the user's file).
             from son_of_anton_cli.config import read_user_config_raw
@@ -139,7 +139,7 @@ class HolographicMemoryProvider(MemoryProvider):
             existing.setdefault("plugins", {})
             existing["plugins"]["son-of-anton-memory-store"] = values
             with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(existing, f, default_flow_style=False)
+                f.write(dump_toml(existing))
         except Exception:
             pass
 

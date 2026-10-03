@@ -145,7 +145,7 @@ def test_secret_scope_exposes_no_scoping_api() -> None:
 
 
 def test_gateway_config_has_no_multiplex_settings() -> None:
-    """config.yaml must not be able to turn multiplexing back on."""
+    """config.toml must not be able to turn multiplexing back on."""
     from gateway.config import GatewayConfig
 
     fields = GatewayConfig.__dataclass_fields__

@@ -12,7 +12,7 @@ curl -fsSL https://byterover.dev/install.sh | sh).
 Config via environment variables (profile-scoped via each profile's .env):
   BRV_API_KEY   — ByteRover API key (for cloud features, optional for local)
 
-Config via config.yaml:
+Config via config.toml:
   memory:
     byterover:
       auto_extract: false  # disable automatic brv curate hooks

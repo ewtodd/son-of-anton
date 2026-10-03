@@ -843,7 +843,7 @@ def _connection_values_from_ovcli(data: dict) -> dict:
     user = _clean_config_value(data.get("user") or data.get("user_id"))
     return {
         # A linked profile with no URL contributes no endpoint; the resolver
-        # can then continue to config.yaml and finally the built-in default.
+        # can then continue to config.toml and finally the built-in default.
         "endpoint": _normalize_openviking_url(endpoint_value) if endpoint_value else "",
         "api_key": api_key,
         "root_api_key": root_api_key,
@@ -1130,10 +1130,10 @@ def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict
     user_env = _env_value("OPENVIKING_USER")
     agent_env = _env_value("OPENVIKING_AGENT")
 
-    # Non-secret fields fall back to config.yaml (e.g. the Dashboard writes
+    # Non-secret fields fall back to config.toml (e.g. the Dashboard writes
     # ``memory.openviking.endpoint`` there) before the built-in default, so the
-    # full chain is env -> ovcli -> config.yaml -> default. The secret api_key is
-    # sourced from the environment (synced from .env), never from config.yaml.
+    # full chain is env -> ovcli -> config.toml -> default. The secret api_key is
+    # sourced from the environment (synced from .env), never from config.toml.
     endpoint = _first_nonempty(
         endpoint_env,
         ovcli_values.get("endpoint"),
@@ -2293,7 +2293,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if os.environ.get("OPENVIKING_ENDPOINT"):
             return True
         provider_config = _load_son_of_anton_openviking_config()
-        # A non-secret endpoint saved to config.yaml (e.g. via the Dashboard)
+        # A non-secret endpoint saved to config.toml (e.g. via the Dashboard)
         # counts as configured even without an env var or ovcli config.
         if _clean_config_value(provider_config.get("endpoint")):
             return True
@@ -3708,8 +3708,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return max(minimum, min(maximum, parsed))
 
     def _recall_config(self) -> Dict[str, Any]:
-        # Read from config.yaml → memory.openviking as primary source, env vars
-        # as override. Behavioural settings belong in config.yaml (AGENTS.md).
+        # Read from config.toml → memory.openviking as primary source, env vars
+        # as override. Behavioural settings belong in config.toml (AGENTS.md).
         provider_config = _load_son_of_anton_openviking_config()
         cfg = provider_config
 

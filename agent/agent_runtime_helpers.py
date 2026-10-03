@@ -2173,7 +2173,7 @@ def anthropic_prompt_cache_policy(
     on every turn.
 
     If the operator has set ``prompt_caching.cache_ttl`` to a falsy value
-    (``false``, ``null``, ``"off"``, etc.) in config.yaml, prompt caching
+    (``false``, ``null``, ``"off"``, etc.) in config.toml, prompt caching
     is fully disabled — this early return ensures the disable survives
     ``/model`` switches, fallback re-derivation, and runtime snapshot
     restoration (#33555). We check ``"_cache_disabled"`` (set by
@@ -2797,7 +2797,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # Refresh the custom-provider snapshot from the config just loaded above
     # so the per-model ``prompt_caching`` capability lookup sees the same
     # live list the context-length resolution used — without this, a flag
-    # added to config.yaml after session start is invisible to a /model
+    # added to config.toml after session start is invisible to a /model
     # switch (the policy would read the stale init-time snapshot).
     if _sm_custom_providers is not None:
         agent._custom_providers = _sm_custom_providers
@@ -2845,7 +2845,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read
     # config so the override takes effect immediately on /model switch —
-    # resolved through the shared chokepoint (per-model > global; YAML
+    # resolved through the shared chokepoint (per-model > global; TOML
     # boolean False = disabled).
     try:
         from son_of_anton_constants import resolve_reasoning_config

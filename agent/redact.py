@@ -69,7 +69,7 @@ _SENSITIVE_BODY_KEYS = frozenset({
 # `export SON_OF_ANTON_REDACT_SECRETS=false`) cannot disable redaction
 # mid-session.  ON by default — secure default per issue #17691. Users who
 # need raw credential values in tool output (e.g. working on the redactor
-# itself) can opt out via `security.redact_secrets: false` in config.yaml
+# itself) can opt out via `security.redact_secrets: false` in config.toml
 # (bridged to this env var in son_of_anton_cli/main.py, gateway/run.py, and
 # cli.py) or `SON_OF_ANTON_REDACT_SECRETS=false` in ~/.son-of-anton/.env. An opt-out
 # warning is logged at gateway and CLI startup so operators see the
@@ -164,7 +164,7 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 )
 
 # Lowercase / dotted / hyphenated config keys from config files
-# (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
+# (application.properties, .env, TOML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
 # never matched these, so config-file passwords leaked verbatim (issue #16413).
 #
@@ -212,7 +212,7 @@ _CFG_ANCHORED_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Unquoted YAML / colon config (e.g. ``password: secret``,
+# Unquoted TOML / colon config (e.g. ``password: secret``,
 # ``spring.datasource.password: hunter2``). The secret keyword must be part of
 # the KEY (anchored to the start of the line/indent), and the value is a single
 # whitespace-free token — so prose like ``note: secret meeting`` (keyword in the
@@ -782,7 +782,7 @@ def redact_sensitive_text(
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
+    Enabled by default. Disable via security.redact_secrets: false in config.toml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
 
@@ -801,7 +801,7 @@ def redact_sensitive_text(
     but prefix-matched credentials are replaced with a non-reusable sentinel
     (``«redacted:ghp_…»``) instead of a head/tail-preserving mask
     (``ghp_S1...Pn2T``). The old mask looked like a real-but-truncated key, so
-    an agent reading it from config.yaml and writing it back silently corrupted
+    an agent reading it from config.toml and writing it back silently corrupted
     the stored credential into a dead 13-char value → 401 (issue #35519). The
     sentinel is syntactically invalid as a token, so it can't be mistaken for a
     usable key or written back as one. Implies code_file=True (config/data
@@ -897,7 +897,7 @@ def redact_sensitive_text(
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
-        # Unquoted YAML / colon config: password: ***  (after JSON so quoted
+        # Unquoted TOML / colon config: password: ***  (after JSON so quoted
         # values are handled there; the lookahead in _YAML_ASSIGN_RE skips
         # quotes). Skip URLs — web-URL query params pass through by design.
         if ":" in text and "://" not in text:
@@ -1021,7 +1021,7 @@ _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 # Commands that read file contents to stdout. When the target is a ``.env``
 # file, the output is a credential dump — the same as ``printenv`` — so the
 # ENV-assignment pass must run (code_file=False). Per AGENTS.md, ``.env`` is
-# for secrets only; behavioral settings belong in config.yaml, so running
+# for secrets only; behavioral settings belong in config.toml, so running
 # the generic ENV redactor on ``.env`` content is the correct behavior.
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",

@@ -1039,11 +1039,11 @@ class RelayAdapter(BasePlatformAdapter):
 
         Native SlackAdapter reads its behavior flags with
         ``str(raw).strip().lower() in {"1","true","yes","on"}``, so a
-        YAML-quoted ``"false"`` — a shape operators write routinely — turns
+        TOML-quoted ``"false"`` — a shape operators write routinely — turns
         the flag OFF. A bare ``bool()`` would read that same string as True
         (non-empty string), silently ignoring the off switch. These knobs are
         documented as native-parity mirrors, so they must coerce identically
-        or the parity claim only holds for unquoted YAML booleans.
+        or the parity claim only holds for unquoted TOML booleans.
         """
         if raw is None:
             return default

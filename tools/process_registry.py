@@ -815,7 +815,7 @@ class ProcessRegistry:
     def _daemon_term_grace_seconds() -> float:
         """Grace window (s) between SIGTERM and escalated SIGKILL.
 
-        Read from ``terminal.daemon_term_grace_seconds`` in config.yaml; floored
+        Read from ``terminal.daemon_term_grace_seconds`` in config.toml; floored
         at 0 (0 disables escalation). Falls back to the DEFAULT_CONFIG value if
         config is unreadable, so callers always get a sane number.
         """

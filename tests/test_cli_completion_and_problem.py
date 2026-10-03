@@ -98,7 +98,7 @@ def test_the_bash_script_is_valid_bash(parser, tmp_path) -> None:
 
 def test_problem_create_is_reachable(parser) -> None:
     args = parser.parse_args(
-        ["problem", "create", "--data", "/tmp", "--goal", "g", "-o", "/tmp/p.yaml"]
+        ["problem", "create", "--data", "/tmp", "--goal", "g", "-o", "/tmp/p.toml"]
     )
     assert args.command == "problem"
     assert args.problem_action == "create"
@@ -123,7 +123,7 @@ def test_the_options_come_from_the_builder_itself() -> None:
     """One definition, so the subcommand and `python -m` cannot drift apart."""
     import argparse
 
-    from physics_intern.spec_builder import add_arguments
+    from autophysicist.spec_builder import add_arguments
 
     built = add_arguments(argparse.ArgumentParser())
     flags = {a for action in built._actions for a in action.option_strings}
@@ -131,9 +131,9 @@ def test_the_options_come_from_the_builder_itself() -> None:
 
 
 def test_the_builder_still_runs_standalone() -> None:
-    """`python -m physics_intern.spec_builder --help` must keep working."""
+    """`python -m autophysicist.spec_builder --help` must keep working."""
     result = subprocess.run(
-        [sys.executable, "-m", "physics_intern.spec_builder", "--help"],
+        [sys.executable, "-m", "autophysicist.spec_builder", "--help"],
         capture_output=True,
         text=True,
         check=False,
@@ -200,7 +200,7 @@ def test_the_help_text_does_not_advertise_installing_anything() -> None:
         assert banned not in lowered, (
             f"--help still offers {banned!r}; the NixOS/Home Manager module "
             "owns the install, systemctl owns the service, and `settings` owns "
-            "config.yaml"
+            "config.toml"
         )
 
 
@@ -247,7 +247,7 @@ def test_the_session_name_splitter_lists_only_real_commands(parser) -> None:
 
 
 def test_raw_newlines_inside_a_string_are_accepted() -> None:
-    from physics_intern.spec_builder import parse_json_object
+    from autophysicist.spec_builder import parse_json_object
 
     payload = '{"name": "psd", "problem": "Line one.\nLine two.", "checks": []}'
     parsed = parse_json_object(payload)
@@ -256,20 +256,20 @@ def test_raw_newlines_inside_a_string_are_accepted() -> None:
 
 
 def test_a_fenced_object_with_raw_newlines_is_accepted() -> None:
-    from physics_intern.spec_builder import parse_json_object
+    from autophysicist.spec_builder import parse_json_object
 
     payload = '```json\n{"problem": "a\nb", "checks": []}\n```'
     assert parse_json_object(payload)["problem"] == "a\nb"
 
 
 def test_tabs_and_carriage_returns_too() -> None:
-    from physics_intern.spec_builder import parse_json_object
+    from autophysicist.spec_builder import parse_json_object
 
     assert parse_json_object('{"problem": "a\tb\r\nc"}')["problem"] == "a\tb\r\nc"
 
 
 def test_output_with_no_object_still_raises() -> None:
-    from physics_intern.spec_builder import parse_json_object
+    from autophysicist.spec_builder import parse_json_object
 
     with pytest.raises(ValueError, match="no JSON object"):
         parse_json_object("I could not produce a spec for this dataset.")
@@ -283,7 +283,7 @@ def test_a_spec_with_no_checks_is_allowed() -> None:
     reports PASS or FAIL against nothing — worse than admitting it is
     unscored.
     """
-    from physics_intern.spec_builder import validate_spec
+    from autophysicist.spec_builder import validate_spec
 
     spec = {
         "name": "psd_ml",
@@ -294,7 +294,7 @@ def test_a_spec_with_no_checks_is_allowed() -> None:
 
 
 def test_a_check_on_a_key_the_task_never_asks_for_is_still_refused() -> None:
-    from physics_intern.spec_builder import validate_spec
+    from autophysicist.spec_builder import validate_spec
 
     spec = {
         "name": "psd_ml",

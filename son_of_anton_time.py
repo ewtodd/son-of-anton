@@ -6,7 +6,7 @@ based on the user's configured IANA timezone (e.g. ``Asia/Kolkata``).
 
 Resolution order:
   1. ``SON_OF_ANTON_TIMEZONE`` environment variable
-  2. ``timezone`` key in ``~/.son-of-anton/config.yaml``
+  2. ``timezone`` key in ``~/.son-of-anton/config.toml``
   3. Falls back to the server's local time (``datetime.now().astimezone()``)
 
 Invalid timezone values log a warning and fall back safely — Son of Anton never
@@ -37,7 +37,7 @@ _cache_resolved: bool = False
 def _resolve_timezone_name() -> str:
     """Read the configured IANA timezone string (or empty string).
 
-    This does file I/O when falling through to config.yaml, so callers
+    This does file I/O when falling through to config.toml, so callers
     should cache the result rather than calling on every ``now()``.
     """
     # 1. Environment variable (highest priority — set by Supervisor, etc.)
@@ -45,26 +45,26 @@ def _resolve_timezone_name() -> str:
     if tz_env:
         return tz_env
 
-    # 2. config.yaml ``timezone`` key
+    # 2. config.toml ``timezone`` key
     try:
-        # Prefer the shared cached raw-config reader (mtime/size-keyed cache +
-        # libyaml C loader) — a direct yaml.safe_load of a large config.yaml
+        # Prefer the shared cached raw-config reader (mtime/size-keyed cache) —
+        # a direct TOML parse of a large config.toml
         # costs ~100ms+ and this used to run inside the FIRST system prompt
         # build, on the time-to-first-token critical path.
         try:
             from son_of_anton_cli.config import read_raw_config
             cfg = read_raw_config() or {}
         except Exception:
-            import yaml
+            import tomllib
             config_path = get_config_path()
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
+                    cfg = tomllib.loads(f.read()) or {}
             else:
                 cfg = {}
         if cfg:
             # Managed scope: an administrator can pin ``timezone`` too. Overlay
-            # via the shared helper (fail-open) since this reads config.yaml directly.
+            # via the shared helper (fail-open) since this reads config.toml directly.
             try:
                 from son_of_anton_cli import managed_scope
                 cfg = managed_scope.apply_managed_overlay(cfg)

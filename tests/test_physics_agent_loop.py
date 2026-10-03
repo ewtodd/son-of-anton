@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from physics_intern.llm import run_agent_loop
-from physics_intern.core.tool_call import ToolCall
+from autophysicist.llm import run_agent_loop
+from autophysicist.core.tool_call import ToolCall
 
 
 class _Config:
@@ -86,7 +86,7 @@ def capture(monkeypatch):
     requests: list[dict] = []
 
     monkeypatch.setattr(
-        "physics_intern.llm._resolve_endpoint", lambda config: (None, "test-model")
+        "autophysicist.llm._resolve_endpoint", lambda config: (None, "test-model")
     )
 
     def _create(client, model, messages, max_tokens, config, tools=None):
@@ -94,7 +94,7 @@ def capture(monkeypatch):
         # Always ask for one tool call; the loop is what must decide to stop.
         return _response(_message(tool_calls=[_tool_call(f"c{len(requests)}", "end_turn")]))
 
-    monkeypatch.setattr("physics_intern.llm._create_with_retry", _create)
+    monkeypatch.setattr("autophysicist.llm._create_with_retry", _create)
     return requests
 
 
@@ -179,10 +179,10 @@ def test_end_round_can_force_the_loop_to_stop(capture) -> None:
 
 def test_truncated_final_response_is_flagged(monkeypatch) -> None:
     monkeypatch.setattr(
-        "physics_intern.llm._resolve_endpoint", lambda config: (None, "test-model")
+        "autophysicist.llm._resolve_endpoint", lambda config: (None, "test-model")
     )
     monkeypatch.setattr(
-        "physics_intern.llm._create_with_retry",
+        "autophysicist.llm._create_with_retry",
         lambda *a, **k: _response(_message(content="half a sent"), finish_reason="length"),
     )
     result = run_agent_loop(
@@ -207,7 +207,7 @@ def test_a_truncated_one_shot_continues_without_duplicating_the_system_turn(
     beginning". call_llm passed the whole message list to the continuation
     helper, which prepends its own system turn — so every truncated one-shot
     response failed instead of continuing."""
-    from physics_intern.llm import call_llm
+    from autophysicist.llm import call_llm
 
     seen: list[list[dict]] = []
     replies = iter(
@@ -218,14 +218,14 @@ def test_a_truncated_one_shot_continues_without_duplicating_the_system_turn(
     )
 
     monkeypatch.setattr(
-        "physics_intern.llm._resolve_endpoint", lambda config: (None, "m")
+        "autophysicist.llm._resolve_endpoint", lambda config: (None, "m")
     )
 
     def _create(client, model, messages, max_tokens, config, tools=None):
         seen.append([dict(m) for m in messages])
         return next(replies)
 
-    monkeypatch.setattr("physics_intern.llm._create_with_retry", _create)
+    monkeypatch.setattr("autophysicist.llm._create_with_retry", _create)
 
     config = _Config()
     config.max_tokens_retries = 1
@@ -239,12 +239,12 @@ def test_a_truncated_one_shot_continues_without_duplicating_the_system_turn(
 
 def test_reasoning_effort_is_sent_only_when_configured(monkeypatch) -> None:
     """A thinking model's default effort is its highest."""
-    from physics_intern.llm import call_llm
+    from autophysicist.llm import call_llm
 
     seen: list[dict] = []
 
     monkeypatch.setattr(
-        "physics_intern.llm._resolve_endpoint", lambda config: (None, "m")
+        "autophysicist.llm._resolve_endpoint", lambda config: (None, "m")
     )
 
     class _Client:
@@ -256,7 +256,7 @@ def test_reasoning_effort_is_sent_only_when_configured(monkeypatch) -> None:
                     return _response(_message(content="ok"), finish_reason="stop")
 
     monkeypatch.setattr(
-        "physics_intern.llm._resolve_endpoint", lambda config: (_Client(), "m")
+        "autophysicist.llm._resolve_endpoint", lambda config: (_Client(), "m")
     )
 
     config = _Config()
@@ -271,7 +271,7 @@ def test_reasoning_effort_is_sent_only_when_configured(monkeypatch) -> None:
 def test_a_malformed_request_is_not_reported_as_context_too_long() -> None:
     """Every 400 used to become ContextTooLongError, so the loops responded by
     compacting a request that was never too big and never saw the real fault."""
-    from physics_intern.llm import ContextTooLongError, _raise_if_context_error
+    from autophysicist.llm import ContextTooLongError, _raise_if_context_error
 
     class _Resp:
         status_code = 400
@@ -306,7 +306,7 @@ def test_every_round_is_logged(monkeypatch, tmp_path) -> None:
     import json
 
     monkeypatch.setattr(
-        "physics_intern.llm._resolve_endpoint", lambda config: (None, "test-model")
+        "autophysicist.llm._resolve_endpoint", lambda config: (None, "test-model")
     )
     replies = iter(
         [
@@ -315,7 +315,7 @@ def test_every_round_is_logged(monkeypatch, tmp_path) -> None:
         ]
     )
     monkeypatch.setattr(
-        "physics_intern.llm._create_with_retry",
+        "autophysicist.llm._create_with_retry",
         lambda *a, **k: next(replies),
     )
 

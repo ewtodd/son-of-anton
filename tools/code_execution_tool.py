@@ -64,7 +64,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "terminal",
 ])
 
-# Resource limit defaults (overridable via config.yaml → code_execution.*)
+# Resource limit defaults (overridable via config.toml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
@@ -1301,7 +1301,7 @@ def execute_code(
         # API keys and tokens to prevent credential exfiltration from LLM-
         # generated scripts. The child accesses tools via RPC, not direct API.
         # Exception: env vars declared by loaded skills (via env_passthrough
-        # registry) or explicitly allowed by the user in config.yaml
+        # registry) or explicitly allowed by the user in config.toml
         # (terminal.env_passthrough) are passed through.  See
         # ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)
@@ -1691,7 +1691,7 @@ DEFAULT_EXECUTION_MODE = "project"
 def _get_execution_mode() -> str:
     """Return the active execute_code mode — 'project' or 'strict'.
 
-    Reads ``code_execution.mode`` from config.yaml; invalid values fall back
+    Reads ``code_execution.mode`` from config.toml; invalid values fall back
     to ``DEFAULT_EXECUTION_MODE`` ('project') with a log warning.
 
     Mode semantics:

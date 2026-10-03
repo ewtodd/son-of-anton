@@ -49,7 +49,7 @@ from typing import Any, Callable, Dict, List, Tuple
 #: (defaults deep-merged at read time, matching the non-fatal posture used
 #: for unparseable configs) and a clear message tells the user how to
 #: proceed. The removed steps were the <12 targets: v4 (tool-progress .env →
-#: config.yaml), v5 (timezone seed), v9 (clear ANTHROPIC_TOKEN).
+#: config.toml), v5 (timezone seed), v9 (clear ANTHROPIC_TOKEN).
 SUPPORT_FLOOR_VERSION = 12
 
 
@@ -60,7 +60,7 @@ def support_floor_message() -> str:
     return (
         f"This config predates version {SUPPORT_FLOOR_VERSION} (~2 years old) "
         "and can no longer be auto-migrated. Back up "
-        f"{display_son_of_anton_home()}/config.yaml and run `son-of-anton setup` to "
+        f"{display_son_of_anton_home()}/config.toml and run `son-of-anton setup` to "
         f"regenerate, or manually set _config_version: {SUPPORT_FLOOR_VERSION} "
         "after reviewing the changelog."
     )
@@ -146,7 +146,7 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
 def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
     # These env vars were written by the old setup wizard but nothing reads
-    # them anymore (config.yaml is the sole source of truth since March 2026).
+    # them anymore (config.toml is the sole source of truth since March 2026).
     # Stale entries cause user confusion — see issue report.
     _c = _cfg()
     get_env_value = _c.get_env_value
@@ -158,14 +158,14 @@ def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
             if old_val:
                 save_env_value(dead_var, "")
                 if not quiet:
-                    print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
+                    print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.toml is source of truth)")
         except Exception:
             pass
 
 
 def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
-    # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
+    # Old configs (and cli-config.toml.example) had a flat `stt.model` key
     # that was provider-agnostic.  When the provider was "local" this caused
     # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
     # crashing with "Invalid model size".  Move the value into the correct
@@ -323,7 +323,7 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
     get_son_of_anton_home = _c.get_son_of_anton_home
-    fast_safe_load = _c.fast_safe_load
+    fast_toml_load = _c.fast_safe_load
 
     config = read_raw_config()
     plugins_cfg = config.get("plugins")
@@ -344,14 +344,14 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
                 for child in sorted(user_plugins_dir.iterdir()):
                     if not child.is_dir():
                         continue
-                    manifest_file = child / "plugin.yaml"
+                    manifest_file = child / "plugin.toml"
                     if not manifest_file.exists():
-                        manifest_file = child / "plugin.yml"
+                        manifest_file = child / "plugin.toml"
                     if not manifest_file.exists():
                         continue
                     try:
                         with open(manifest_file, encoding="utf-8") as _mf:
-                            manifest = fast_safe_load(_mf) or {}
+                            manifest = fast_toml_load(_mf) or {}
                     except Exception:
                         manifest = {}
                     name = manifest.get("name") or child.name
@@ -387,11 +387,11 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
     # unification under `auxiliary.curator`) never wrote the curator section
     # to disk. The runtime deep-merge in `load_config()` fills defaults at
     # read time, so the curator *functions*; but users can't see/edit the
-    # settings in their `config.yaml`, and `son-of-anton curator status` has no
+    # settings in their `config.toml`, and `son-of-anton curator status` has no
     # stable logs dir to point at until the first run mkdir's it.
     #
     # This migration:
-    #   1. Writes the `curator` top-level section to config.yaml (enabled,
+    #   1. Writes the `curator` top-level section to config.toml (enabled,
     #      interval_hours, min_idle_hours, stale_after_days, archive_after_days)
     #      — only keys the user hasn't already overridden.
     #   2. Writes the `auxiliary.curator` aux-task slot (provider, model,
@@ -578,7 +578,7 @@ def _migrate_to_32(results: Dict[str, Any], quiet: bool) -> None:
     # DEFAULT_CONFIG["agent"]["verify_on_stop"] to a literal True, and
     # migrate_config persists defaults with strip_defaults=False — so every
     # install that updated through v30 got `verify_on_stop: true` written into
-    # config.yaml as a literal. v31's guard deliberately preserves an explicit
+    # config.toml as a literal. v31's guard deliberately preserves an explicit
     # bool, so it skipped that whole population and left them ON. That literal
     # true was never a user choice: the feature had no off-switch worth setting
     # it against until v31 introduced one, so a true persisted before v32 is

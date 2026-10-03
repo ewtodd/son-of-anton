@@ -1,14 +1,16 @@
 ---
-name: plan
-description: Write a markdown plan to .son-of-anton/plans/; no execution.
-version: 2.0.0
-author: Son of Anton Agent (writing-craft adapted from obra/superpowers)
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [planning, plan-mode, implementation, workflow, design, documentation]
-    related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]
+name = "plan"
+description = "Write a markdown plan to .son-of-anton/plans/; no execution."
+version = "2.0.0"
+author = "Son of Anton Agent (writing-craft adapted from obra/superpowers)"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["planning", "plan-mode", "implementation", "workflow", "design", "documentation"]
+related_skills = ["subagent-driven-development", "test-driven-development", "requesting-code-review"]
 ---
 
 # Plan Mode

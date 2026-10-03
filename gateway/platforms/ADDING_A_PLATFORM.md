@@ -5,7 +5,7 @@ There are two ways to add a platform to the Son of Anton gateway:
 ## Plugin Path (Recommended for Community/Third-Party)
 
 Create a plugin directory in `~/.son-of-anton/plugins/` (or under `plugins/platforms/`
-for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
+for bundled plugins) with a `plugin.toml` and `adapter.py`.  The adapter
 inherits from `BasePlatformAdapter` and registers via
 `ctx.register_platform()` in the `register(ctx)` entry point.  This requires
 **zero changes to core Son of Anton code**.
@@ -21,12 +21,12 @@ status display, gateway setup, and more.
   constructed.  Without this, env-only setups don't surface in
   `son-of-anton gateway status` or `get_connected_platforms()` until the SDK
   instantiates.
-- `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
-  translate this platform's `config.yaml` keys into env vars and/or seed
-  `PlatformConfig.extra` directly.  Lets a plugin own its YAML schema
+- `apply_toml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
+  translate this platform's `config.toml` keys into env vars and/or seed
+  `PlatformConfig.extra` directly.  Lets a plugin own its TOML schema
   instead of growing core `gateway/config.py` boilerplate per platform.
   Mutating `os.environ` is allowed (use `not os.getenv(...)` guards to
-  preserve env > YAML precedence); the returned dict is merged into
+  preserve env > TOML precedence); the returned dict is merged into
   `PlatformConfig.extra`.  Called during `load_gateway_config()` after
   the generic shared-key loop and before `_apply_env_overrides()`.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
@@ -37,7 +37,7 @@ status display, gateway setup, and more.
   `deliver=<name>` job fires correctly but the actual send returns
   `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
   for end-to-end cron support.  See the docsite for the signature.
-- `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
+- `plugin.toml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `son_of_anton_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.
 

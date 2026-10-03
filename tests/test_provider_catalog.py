@@ -1,5 +1,5 @@
 """Provider-catalog contracts — the fork ships exactly one API-key provider
-(openai-api) plus config.yaml custom endpoints. These tests assert the catalog
+(openai-api) plus config.toml custom endpoints. These tests assert the catalog
 structure that the /model picker, setup wizard, and provider resolution all
 derive from, so a provider added or removed in one layer but not the others
 fails loudly.

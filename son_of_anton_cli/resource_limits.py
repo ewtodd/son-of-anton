@@ -2,7 +2,7 @@
 
 The public helper in this module is shared by the gateway and the dashboard/
 serve entrypoints. It deliberately has no user-facing environment-variable
-control: the target comes from the profile's canonical ``config.yaml`` loader.
+control: the target comes from the profile's canonical ``config.toml`` loader.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _configured_nofile_soft_limit(
     """
     if config is None:
         try:
-            # Use Son of Anton's real, profile-aware loader rather than reading YAML
+            # Use Son of Anton's real, profile-aware loader rather than reading TOML
             # here. This also applies managed-scope overlays and defaults.
             from son_of_anton_cli.config import load_config_readonly
 

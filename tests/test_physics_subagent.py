@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from physics_intern.autophysicist import subagent as subagent_module
-from physics_intern.core.config import Config
+from autophysicist import subagent as subagent_module
+from autophysicist.core.config import Config
 
 
 @dataclass
@@ -106,10 +106,10 @@ def test_the_managers_own_config_is_not_mutated(monkeypatch, tmp_path) -> None:
 
 
 def _manager(tmp_path):
-    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
-    from physics_intern.autophysicist.tools import ManagerToolExecutor
-    from physics_intern.core.config import Config
-    from physics_intern.utils.sandbox import SandboxPolicy
+    from autophysicist.memory import PermanentMemory, Scratchpad
+    from autophysicist.tools import ManagerToolExecutor
+    from autophysicist.core.config import Config
+    from autophysicist.utils.sandbox import SandboxPolicy
 
     return ManagerToolExecutor(
         config=Config(),
@@ -177,7 +177,7 @@ def test_reading_survives_wind_down(tmp_path) -> None:
 
 def test_the_retry_leads_with_the_exception(tmp_path, monkeypatch) -> None:
     """A retry given 5000 chars of traceback fixes whatever it notices first."""
-    from physics_intern.autophysicist import subagent as subagent_module
+    from autophysicist import subagent as subagent_module
 
     class _Result:
         stdout = ""
@@ -194,7 +194,7 @@ def test_the_retry_leads_with_the_exception(tmp_path, monkeypatch) -> None:
 
 
 def test_subagent_output_is_saved_next_to_the_script(tmp_path) -> None:
-    from physics_intern.autophysicist.subagent import _save_output
+    from autophysicist.subagent import _save_output
 
     class _Result:
         stdout = "centroid = 661.4\n"
@@ -216,7 +216,7 @@ def test_subagent_output_is_saved_next_to_the_script(tmp_path) -> None:
 
 
 def _config(**kwargs):
-    from physics_intern.core.config import Config
+    from autophysicist.core.config import Config
 
     config = Config()
     config.model = "reasoning-model"
@@ -254,8 +254,8 @@ def test_roles_match_by_longest_prefix() -> None:
 def test_the_critic_runs_under_its_resolved_model(monkeypatch, tmp_path) -> None:
     """The critic answers to "critic" — an agent_models key has to match the
     agent's own name. The run's config must not be mutated by the resolution."""
-    from physics_intern.autophysicist.critic import run_critique
-    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
+    from autophysicist.critic import run_critique
+    from autophysicist.memory import PermanentMemory, Scratchpad
 
     seen: dict = {}
 
@@ -270,7 +270,7 @@ def test_the_critic_runs_under_its_resolved_model(monkeypatch, tmp_path) -> None
 
         return _R()
 
-    monkeypatch.setattr("physics_intern.llm.call_llm", fake_call_llm)
+    monkeypatch.setattr("autophysicist.llm.call_llm", fake_call_llm)
 
     config = _config(agent_models={"critic": "critic-model"})
     critique = run_critique(
@@ -290,8 +290,8 @@ def test_the_critic_runs_under_its_resolved_model(monkeypatch, tmp_path) -> None
 
 def test_a_critic_with_no_override_shares_the_run_config(monkeypatch, tmp_path) -> None:
     """No copy-when-unchanged needed — the run's model is the critic's."""
-    from physics_intern.autophysicist.critic import run_critique
-    from physics_intern.autophysicist.memory import PermanentMemory, Scratchpad
+    from autophysicist.critic import run_critique
+    from autophysicist.memory import PermanentMemory, Scratchpad
 
     seen: dict = {}
 
@@ -305,7 +305,7 @@ def test_a_critic_with_no_override_shares_the_run_config(monkeypatch, tmp_path) 
 
         return _R()
 
-    monkeypatch.setattr("physics_intern.llm.call_llm", fake_call_llm)
+    monkeypatch.setattr("autophysicist.llm.call_llm", fake_call_llm)
     config = _config()
     run_critique(
         config=config,
@@ -327,9 +327,9 @@ def test_a_missing_module_retry_names_what_is_installed(monkeypatch, tmp_path) -
     the sub-agent will keep writing it. Three byte-identical attempts, all
     dying on `import uproot`, is what that looks like.
     """
-    from physics_intern.autophysicist import subagent as subagent_module
-    from physics_intern.core.config import Config
-    from physics_intern.utils.sandbox import SandboxPolicy
+    from autophysicist import subagent as subagent_module
+    from autophysicist.core.config import Config
+    from autophysicist.utils.sandbox import SandboxPolicy
 
     prompts: list[str] = []
 
@@ -351,7 +351,7 @@ def test_a_missing_module_retry_names_what_is_installed(monkeypatch, tmp_path) -
     monkeypatch.setattr(subagent_module, "call_llm", fake_call_llm)
     monkeypatch.setattr(subagent_module, "execute_python", lambda *a, **k: _Failed())
     monkeypatch.setattr(
-        "physics_intern.utils.sandbox.describe_runtime",
+        "autophysicist.utils.sandbox.describe_runtime",
         lambda _i=None: "Python 3.12, and: ROOT 6.40.00, analysis_utilities 26.8.27",
     )
 
@@ -375,9 +375,9 @@ def test_a_missing_module_retry_names_what_is_installed(monkeypatch, tmp_path) -
 def test_an_ordinary_error_retry_does_not_lecture_about_packages(
     monkeypatch, tmp_path
 ) -> None:
-    from physics_intern.autophysicist import subagent as subagent_module
-    from physics_intern.core.config import Config
-    from physics_intern.utils.sandbox import SandboxPolicy
+    from autophysicist import subagent as subagent_module
+    from autophysicist.core.config import Config
+    from autophysicist.utils.sandbox import SandboxPolicy
 
     prompts: list[str] = []
 

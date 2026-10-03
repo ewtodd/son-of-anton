@@ -148,7 +148,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
-import yaml
+import tomllib
 
 
 # All skills live in ~/.son-of-anton/skills/ (single source of truth)
@@ -581,21 +581,21 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     content = content.lstrip("\ufeff")
 
     if not content.startswith("---"):
-        return "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
+        return "SKILL.md must start with TOML frontmatter (---). See existing skills for format."
 
     end_match = re.search(r'\n---\s*\n', content[3:])
     if not end_match:
         return "SKILL.md frontmatter is not closed. Ensure you have a closing '---' line."
 
-    yaml_content = content[3:end_match.start() + 3]
+    toml_content = content[3:end_match.start() + 3]
 
     try:
-        parsed = yaml.safe_load(yaml_content)
-    except yaml.YAMLError as e:
-        return f"YAML frontmatter parse error: {e}"
+        parsed = tomllib.loads(toml_content)
+    except tomllib.TOMLDecodeError as e:
+        return f"TOML frontmatter parse error: {e}"
 
     if not isinstance(parsed, dict):
-        return "Frontmatter must be a YAML mapping (key: value pairs)."
+        return "Frontmatter must be a TOML mapping (key = value pairs)."
 
     if "name" not in parsed:
         return "Frontmatter must include 'name' field."
@@ -878,7 +878,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     try:
         _fm_end = re.search(r'\n---\s*\n', content[3:])
         if _fm_end:
-            _parsed = yaml.safe_load(content[3:_fm_end.start() + 3])
+            _parsed = tomllib.loads(content[3:_fm_end.start() + 3])
             _desc = str(_parsed.get("description", ""))[:120]
     except Exception:
         pass
@@ -969,7 +969,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     try:
         _fm_end = re.search(r'\n---\s*\n', content[3:])
         if _fm_end:
-            _parsed = yaml.safe_load(content[3:_fm_end.start() + 3])
+            _parsed = tomllib.loads(content[3:_fm_end.start() + 3])
             _desc = str(_parsed.get("description", ""))[:120]
     except Exception:
         pass
@@ -1607,7 +1607,7 @@ SKILL_MANAGE_SCHEMA = {
             "content": {
                 "type": "string",
                 "description": (
-                    "Full SKILL.md content (YAML frontmatter + markdown body). "
+                    "Full SKILL.md content (TOML frontmatter + markdown body). "
                     "Required for 'create' and 'edit'. For 'edit', read the skill "
                     "first with skill_view() and provide the complete updated text."
                 )

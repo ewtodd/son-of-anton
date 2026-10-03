@@ -1,14 +1,16 @@
 ---
-name: spike
-description: "Throwaway experiments to validate an idea before build."
-version: 1.0.0
-author: Son of Anton Agent (adapted from gsd-build/get-shit-done)
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [spike, prototype, experiment, feasibility, throwaway, exploration, research, planning, mvp, proof-of-concept]
-    related_skills: [sketch, subagent-driven-development, plan]
+name = "spike"
+description = "Throwaway experiments to validate an idea before build."
+version = "1.0.0"
+author = "Son of Anton Agent (adapted from gsd-build/get-shit-done)"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["spike", "prototype", "experiment", "feasibility", "throwaway", "exploration", "research", "planning", "mvp", "proof-of-concept"]
+related_skills = ["sketch", "subagent-driven-development", "plan"]
 ---
 
 # Spike

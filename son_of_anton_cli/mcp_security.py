@@ -16,7 +16,7 @@ blocks two high-signal abuse shapes seen in the wild:
 3. A hardcoded indicator-of-compromise (IOC) blocklist for that campaign — the
    attacker's ``son-of-anton-0day`` SSH public key and source IPs. Any entry whose
    command/args/env carry an IOC is refused outright, regardless of shape, so a
-   pre-planted ``config.yaml`` cannot spawn it.
+   pre-planted ``config.toml`` cannot spawn it.
 
 These checks run BOTH at save time (``_save_mcp_server`` — dashboard API + CLI)
 and at spawn time (``tools.mcp_tool._filter_suspicious_mcp_servers`` — discovery
@@ -74,7 +74,7 @@ _PERSISTENCE_PATTERN = re.compile(
 )
 
 # ── Indicators of compromise: June 2026 son-of-anton-0day campaign ──────────────────
-# Hardcoded so a pre-planted config.yaml (written by any vector) is refused at
+# Hardcoded so a pre-planted config.toml (written by any vector) is refused at
 # both save and spawn time. These are exact attacker artifacts observed on
 # multiple compromised public instances (r/son-of-antonagent, 854.media).
 _IOC_SUBSTRINGS = (

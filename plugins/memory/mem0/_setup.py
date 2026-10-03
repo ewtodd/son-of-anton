@@ -335,7 +335,7 @@ def _setup_platform(son_of_anton_home: str, config: dict, flags: dict[str, str])
         _write_env(Path(son_of_anton_home) / ".env", env_writes)
 
     print("\n  Memory provider: mem0")
-    print("  Activation saved to config.yaml")
+    print("  Activation saved to config.toml")
     print("  Provider config saved")
     if env_writes:
         print("  API keys saved to .env")
@@ -431,7 +431,7 @@ def _setup_selfhosted(son_of_anton_home: str, config: dict, flags: dict[str, str
     _check_selfhosted_server(host)
     print("\n  Memory provider: mem0 (self-hosted)")
     print(f"  Server: {host}")
-    print("  Activation saved to config.yaml")
+    print("  Activation saved to config.toml")
     print("  Provider config saved")
     if env_writes:
         print("  API key saved to .env")
@@ -490,7 +490,7 @@ def _setup_oss(son_of_anton_home: str, config: dict, flags: dict[str, str]) -> N
     if env_writes:
         print("    API keys saved to .env")
     print("    Config saved to mem0.json")
-    print("    Provider set in config.yaml")
+    print("    Provider set in config.toml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -848,7 +848,7 @@ def _setup_oss_interactive(son_of_anton_home: str, config: dict) -> None:
     if env_writes:
         print("    API keys saved to .env")
     print("    Config saved to mem0.json")
-    print("    Provider set in config.yaml")
+    print("    Provider set in config.toml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -943,7 +943,7 @@ def _run_connectivity_checks(oss_config: dict) -> None:
 
 
 def _check_min_dep_version() -> None:
-    """Ensure mem0ai meets the minimum version from plugin.yaml."""
+    """Ensure mem0ai meets the minimum version from plugin.toml."""
     try:
         import mem0
         installed_ver = getattr(mem0, "__version__", None)

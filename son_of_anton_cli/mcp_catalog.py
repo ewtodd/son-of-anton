@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import tomllib
 
 from son_of_anton_constants import get_son_of_anton_home
 from son_of_anton_cli._subprocess_compat import noninteractive_git_env
@@ -178,10 +178,10 @@ def _parse_env_spec(raw: Any) -> EnvVarSpec:
 
 
 def _parse_manifest(path: Path) -> CatalogEntry:
-    """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
+    """Read and validate a manifest.toml. Raise CatalogError on any problem."""
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = tomllib.loads(f.read()) or {}
     except Exception as exc:
         raise CatalogError(f"failed to read {path}: {exc}") from exc
 
@@ -409,7 +409,7 @@ def get_entry(name: str) -> Optional[CatalogEntry]:
 
 
 def installed_servers() -> Dict[str, dict]:
-    """Return current ``mcp_servers`` block from config.yaml."""
+    """Return current ``mcp_servers`` block from config.toml."""
     cfg = load_config()
     servers = cfg.get("mcp_servers") or {}
     return servers if isinstance(servers, dict) else {}
@@ -781,7 +781,7 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
            ``auth: oauth`` marker (MCP client handles browser on first connect
            in the non-pre-authenticated case).
         4. Translate the manifest into an ``mcp_servers.<name>`` block and
-           save into config.yaml.
+           save into config.toml.
         5. Probe the server, present a curses checklist for tool selection,
            write ``tools.include`` (or no filter, depending on choice).
            If probe fails, fall back to the manifest's

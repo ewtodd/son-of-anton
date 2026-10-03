@@ -73,7 +73,7 @@ _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
-# Resolution: config.yaml auxiliary.vision.download_timeout → env var → 30s default.
+# Resolution: config.toml auxiliary.vision.download_timeout → env var → 30s default.
 def _resolve_download_timeout() -> float:
     env_val = os.getenv("SON_OF_ANTON_VISION_DOWNLOAD_TIMEOUT", "").strip()
     if env_val:
@@ -153,7 +153,7 @@ def _resolve_vision_cpu_workers() -> int:
     CPU bursts are bounded so the event loop always keeps a core.
 
     Resolution order: SON_OF_ANTON_VISION_MAX_CONCURRENCY env →
-    config.yaml auxiliary.vision.max_concurrency → host core count. Any value
+    config.toml auxiliary.vision.max_concurrency → host core count. Any value
     that parses to < 1 is ignored in favor of the next source so the cap can
     never be disabled into an unbounded encode storm.
     """
@@ -1480,7 +1480,7 @@ async def vision_analyze_tool(
         logger.info("Processing image with vision model...")
         
         # Call the vision API via centralized router.
-        # Read timeout from config.yaml (auxiliary.vision.timeout), default 120s.
+        # Read timeout from config.toml (auxiliary.vision.timeout), default 120s.
         # Local vision models (llama.cpp, ollama) can take well over 30s.
         vision_timeout = 120.0
         vision_temperature = 0.1
@@ -1778,7 +1778,7 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    # Prefer config.yaml auxiliary.vision.model; env var is a legacy override.
+    # Prefer config.toml auxiliary.vision.model; env var is a legacy override.
     model = None
     try:
         from son_of_anton_cli.config import cfg_get, load_config
@@ -2194,7 +2194,7 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    # Prefer config.yaml auxiliary.video.model (falling back to vision);
+    # Prefer config.toml auxiliary.video.model (falling back to vision);
     # env vars are a legacy override.
     model = None
     try:

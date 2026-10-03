@@ -174,7 +174,7 @@ def register_credential_files(
 
 
 def _load_config_files() -> List[Dict[str, str]]:
-    """Load ``terminal.credential_files`` from config.yaml (cached)."""
+    """Load ``terminal.credential_files`` from config.toml (cached)."""
     global _config_files
     if _config_files is not None:
         return _config_files

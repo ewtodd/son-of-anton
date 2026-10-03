@@ -124,7 +124,7 @@ def _resolve_discovery_timeout(
 ) -> float:
     """Resolve the MCP discovery wait bound: explicit arg > config > default.
 
-    Reads ``mcp_discovery_timeout`` from config.yaml, defaulting to the value in
+    Reads ``mcp_discovery_timeout`` from config.toml, defaulting to the value in
     ``DEFAULT_CONFIG`` (single source of truth) when the key is absent. Kept lazy
     and fail-safe — a missing/invalid value or a broken config falls back to a
     short safe bound so startup can never hang or crash.

@@ -3,9 +3,9 @@
 Two processes disagree about what ``TERMINAL_CWD`` means and share one env var:
 
 - the **CLI** owns the *launch directory* (where the user typed the command);
-- the **gateway** owns the configured ``terminal.cwd`` from config.yaml.
+- the **gateway** owns the configured ``terminal.cwd`` from config.toml.
 
-``gateway/run.py`` bridges config.yaml -> env at import time. The CLI agent
+``gateway/run.py`` bridges config.toml -> env at import time. The CLI agent
 lazy-imports that module on its first turn (``agent/relay_runtime
 ._segments_config``), so the bridge used to fire inside the CLI and silently
 replace the launch dir with the gateway's configured cwd ~2s after startup —
@@ -37,8 +37,8 @@ CONFIGURED_CWD = "/gateway-configured-cwd"
 
 def _write_config(home: Path, cwd_value: str = CONFIGURED_CWD) -> None:
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(
-        f"terminal:\n  backend: local\n  cwd: {cwd_value}\n",
+    (home / "config.toml").write_text(
+        f"[terminal]\nbackend = \"local\"\ncwd = \"{cwd_value}\"\n",
         encoding="utf-8",
     )
 

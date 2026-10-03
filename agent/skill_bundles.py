@@ -1,13 +1,13 @@
 """Skill bundles — aliases that load multiple skills under one slash command.
 
-A skill bundle is a small YAML file that names a set of skills to load
+A skill bundle is a small TOML file that names a set of skills to load
 together. Invoking ``/<bundle-name>`` from the CLI or gateway loads every
 referenced skill's full content into a single user message, the same way
 ``/<skill-name>`` does — but for N skills at once.
 
 Storage
 -------
-Bundles live in ``~/.son-of-anton/skill-bundles/*.yaml`` (and the equivalent
+Bundles live in ``~/.son-of-anton/skill-bundles/*.toml`` (and the equivalent
 profile-aware directory under ``SON_OF_ANTON_HOME``). Each file looks like::
 
     name: backend-dev
@@ -20,7 +20,7 @@ profile-aware directory under ``SON_OF_ANTON_HOME``). Each file looks like::
       Optional extra guidance to inject above the skill bodies.
 
 The file's stem is treated as a fallback name when ``name:`` is absent, so
-dropping a YAML into the directory is enough to register a new bundle.
+dropping a TOML into the directory is enough to register a new bundle.
 
 Conflict resolution
 -------------------
@@ -45,12 +45,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
-
 from son_of_anton_constants import get_son_of_anton_home
+from utils import dump_toml
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def _iter_bundle_files() -> List[Path]:
         )
         return []
     files: List[Path] = []
-    for ext in ("*.yaml", "*.yml"):
+    for ext in ("*.toml",):
         files.extend(sorted(base.glob(ext)))
     return files
 
@@ -132,7 +132,7 @@ def _max_mtime(files: List[Path]) -> float:
 
 
 def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
-    """Parse a single bundle YAML file. Returns ``None`` on any error.
+    """Parse a single bundle TOML file. Returns ``None`` on any error.
 
     Errors are logged at WARNING level. We don't raise — a broken bundle
     shouldn't take down slash command discovery.
@@ -143,9 +143,9 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None
     try:
-        data = yaml.safe_load(raw)
-    except yaml.YAMLError as exc:
-        logger.warning("Invalid YAML in bundle %s: %s", path, exc)
+        data = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as exc:
+        logger.warning("Invalid TOML in bundle %s: %s", path, exc)
         return None
     if not isinstance(data, dict):
         logger.warning("Bundle %s is not a mapping; skipping", path)
@@ -396,7 +396,7 @@ def bundle_path_for(name: str) -> Path:
     slug = _slugify(name)
     if not slug:
         raise ValueError(f"Bundle name {name!r} normalizes to an empty slug")
-    return _bundles_dir() / f"{slug}.yaml"
+    return _bundles_dir() / f"{slug}.toml"
 
 
 def save_bundle(
@@ -429,10 +429,7 @@ def save_bundle(
     if instruction:
         payload["instruction"] = instruction
 
-    path.write_text(
-        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    path.write_text(dump_toml(payload), encoding="utf-8")
     scan_bundles()  # refresh cache
     return path
 

@@ -1060,7 +1060,7 @@ class AIAgent:
                 f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
                 f"context window (~{context_length:,} tokens) with compaction disabled "
                 f"(compaction.enabled: false). Use /compact to compact history or "
-                f"enable compaction in config.yaml."
+                f"enable compaction in config.toml."
             )
 
     def _clear_context_overflow_warn(self) -> None:
@@ -1482,7 +1482,7 @@ class AIAgent:
     def _stale_timeout_is_explicit(self) -> bool:
         """True when the user explicitly configured the non-stream stale timeout.
 
-        Explicit = provider/model ``stale_timeout_seconds`` in config.yaml or
+        Explicit = provider/model ``stale_timeout_seconds`` in config.toml or
         the ``SON_OF_ANTON_API_CALL_STALE_TIMEOUT`` env var. Reasoning-model floors
         and the 90s default are implicit — they yield to the wall-clock run
         budget cap; explicit user configuration never does.
@@ -3626,7 +3626,7 @@ class AIAgent:
             cached = getattr(self, "_file_mutation_verifier_enabled_cache", None)
             if cached is not None:
                 return cached
-            # Read from the persisted config.yaml so gateway and CLI share
+            # Read from the persisted config.toml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
                 from son_of_anton_cli.config import load_config as _load_config
@@ -3649,7 +3649,7 @@ class AIAgent:
     # detector so that anything the gateway WOULD auto-attach is wrapped
     # in inline-code backticks here first (the extractor skips paths inside
     # `code` spans).  Defense-in-depth: even if a future error message
-    # echoes a credential path (config.yaml, .env, auth.json) into the
+    # echoes a credential path (config.toml, .env, auth.json) into the
     # user-facing footer, it can never be matched as a deliverable bare
     # path and silently uploaded to a messaging channel (#35584).
     _FOOTER_PATH_RE = re.compile(
@@ -3685,7 +3685,7 @@ class AIAgent:
         path and any path echoed inside the tool's error preview — is
         backtick-wrapped via ``_neutralize_footer_paths`` so the gateway's
         bare-path media extractor can never auto-attach a protected file
-        (e.g. ``~/.son-of-anton/config.yaml``) to a messaging channel (#35584).
+        (e.g. ``~/.son-of-anton/config.toml``) to a messaging channel (#35584).
         """
         if not failed:
             return ""
@@ -3736,7 +3736,7 @@ class AIAgent:
             cached = getattr(self, "_turn_completion_explainer_enabled_cache", None)
             if cached is not None:
                 return cached
-            # Read from the persisted config.yaml so gateway and CLI share
+            # Read from the persisted config.toml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
                 from son_of_anton_cli.config import load_config as _load_config
@@ -5362,7 +5362,7 @@ class AIAgent:
         look), never to mere divergence from the agent's current values —
         credential-pool rotation and failover legitimately move the session
         off the env credential, and stomping those back every turn would
-        flap. A config.yaml ``model.base_url`` (or a pool entry with a
+        flap. A config.toml ``model.base_url`` (or a pool entry with a
         custom endpoint) also wins: edits are only adopted while the
         session's current base_url is still the registry default or the
         previously-seen env value.
@@ -5577,7 +5577,7 @@ class AIAgent:
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
 
-        Reads ``model.default_headers`` from config.yaml and merges it onto
+        Reads ``model.default_headers`` from config.toml and merges it onto
         ``self._client_kwargs["default_headers"]``, with user values taking
         precedence over provider- and SDK-supplied defaults.
 
@@ -6811,7 +6811,7 @@ class AIAgent:
 
         The flag is per-active-provider:
 
-        * **Primary** — read from ``model.reasoning_echo`` in config.yaml
+        * **Primary** — read from ``model.reasoning_echo`` in config.toml
           at agent init and on ``switch_model()``.
         * **Fallback** — set by ``try_activate_fallback()`` from the
           fallback entry's ``reasoning_echo`` field.

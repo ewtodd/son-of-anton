@@ -1,14 +1,16 @@
 ---
-name: son-of-anton-skill-authoring
-description: "Author in-repo SKILL.md files: frontmatter and structure."
-version: 2.0.0
-author: Son of Anton Agent
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [skills, authoring, son-of-anton, conventions, skill-md]
-    related_skills: [plan, requesting-code-review]
+name = "son-of-anton-skill-authoring"
+description = "Author in-repo SKILL.md files: frontmatter and structure."
+version = "2.0.0"
+author = "Son of Anton Agent"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["skills", "authoring", "son-of-anton", "conventions", "skill-md"]
+related_skills = ["plan", "requesting-code-review"]
 ---
 
 # Authoring Son of Anton-Agent Skills (in-repo)
@@ -46,7 +48,7 @@ Validator source of truth: `tools/skill_manager_tool.py::_validate_frontmatter`.
 
 - Starts with `---` as the first bytes (no leading blank line).
 - Closes with `\n---\n` before the body.
-- Parses as a YAML mapping.
+- Parses as a TOML mapping.
 - `name` field present.
 - `description` field present (validator ceiling 1024 chars — but see the repo hardline below, which is much stricter).
 - Non-empty body after the closing `---`.
@@ -74,7 +76,7 @@ metadata:
 - State the capability, not the implementation, and don't repeat the skill name.
 - No marketing words ("powerful", "comprehensive", "seamless", "advanced").
 - The system prompt skill index truncates at 57 chars + "..." — the trigger/capability must be self-contained in that window.
-- If the description contains a `:`, wrap it in double quotes or YAML parses it as a mapping and the docs generator crashes. Quotes don't count toward the 60.
+- If the description contains a `:`, wrap it in double quotes or TOML parses it as a mapping and the docs generator crashes. Quotes don't count toward the 60.
 
 Good: `Track named companies for material news with cited digests.`
 Bad: `Use when a user asks to monitor named competitors or companies for product launches, pricing changes, funding, ...` (240 chars — rejected in review)

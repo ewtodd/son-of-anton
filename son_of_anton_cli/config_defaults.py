@@ -112,7 +112,7 @@ DEFAULT_CONFIG = {
         # 30 min is a safety valve for wedged agents, not a target latency —
         # an interactive `son-of-anton gateway restart` must never block for hours
         # on a turn that wedged (#79133). Long unattended turns can raise
-        # this in config.yaml.
+        # this in config.toml.
         "restart_after_turn_timeout": 1800,
         # Upper bound (seconds) a submitted prompt waits for the deferred
         # agent build (MCP discovery, model metadata, skills scan) before
@@ -352,7 +352,7 @@ DEFAULT_CONFIG = {
         # Dict mapping model names (any reasonable spelling) to effort levels.
         # Takes precedence over agent.reasoning_effort when the current model
         # matches a key in this dict.
-        # Edit directly in config.yaml (no CLI support due to dots in keys).
+        # Edit directly in config.toml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
 
         # Per-provider opt-in to preserve assistant ``reasoning_content``
@@ -370,7 +370,7 @@ DEFAULT_CONFIG = {
         "reasoning_echo": False,
     },
 
-    # Physics mode (physics_intern): the single-agent Autophysicist loop.
+    # Physics mode (autophysicist): the single-agent Autophysicist loop.
     # It shares the main agent's model configuration; override the endpoint
     # here for a dedicated server.
     "physics": {
@@ -469,7 +469,7 @@ DEFAULT_CONFIG = {
         "sandbox_net": False,
         # Extra text appended to the code-execution instructions both physics
         # agents see, for house libraries or local conventions the built-in
-        # notes do not cover (physics_intern/utils/runtime_notes.py). The
+        # notes do not cover (autophysicist/utils/runtime_notes.py). The
         # built-in note for analysis_utilities appears on its own whenever that
         # package imports in the configured runtime.
         "runtime_notes": "",
@@ -708,7 +708,7 @@ DEFAULT_CONFIG = {
     # MCP runtime behavior (distinct from the per-server definitions in
     # mcp_servers: and from the auxiliary.mcp side-LLM task settings).
     "mcp": {
-        # Auto-reload MCP connections when config.yaml's mcp_servers section
+        # Auto-reload MCP connections when config.toml's mcp_servers section
         # changes at runtime (CLI file watcher, default on).
         # Set to false to stop the automatic reload: every automatic reload
         # rebuilds the agent tool surface and INVALIDATES the provider
@@ -1068,7 +1068,7 @@ DEFAULT_CONFIG = {
         # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
         # single-shape tool returns DB content directly). The old
         # ``auxiliary.session_search.*`` block was removed here. Existing
-        # values in user config.yaml files are harmless leftovers and ignored.
+        # values in user config.toml files are harmless leftovers and ignored.
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -1397,9 +1397,9 @@ DEFAULT_CONFIG = {
         # via display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
         # Optional custom phrases for generic long-running status messages.
-        # Built-in defaults live in gateway/assets/status_phrases.yaml. Users
-        # can set `path`/`paths` to SON_OF_ANTON_HOME-relative YAML files/directories
-        # (or rely on conventional status_phrases.yaml / status_phrases/*.yaml).
+        # Built-in defaults live in gateway/assets/status_phrases.toml. Users
+        # can set `path`/`paths` to SON_OF_ANTON_HOME-relative TOML files/directories
+        # (or rely on conventional status_phrases.toml / status_phrases/*.yaml).
         # Keys: status, generic. Use
         # mode: "append" (default) to add phrases, or "replace" to fully
         # replace configured surfaces. Per-platform overrides live under
@@ -1835,7 +1835,7 @@ DEFAULT_CONFIG = {
         # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
-        # or YAML list. Unknown names are dropped with a warning at load time.
+        # or TOML list. Unknown names are dropped with a warning at load time.
         # Actions: list_guilds, server_info, list_channels, channel_info,
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
@@ -1934,7 +1934,7 @@ DEFAULT_CONFIG = {
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable
         # counterpart to the code-shipped hardline blocklist. Patterns are
-        # case-insensitive and must be quoted in YAML when they start with
+        # case-insensitive and must be quoted in TOML when they start with
         # * or contain {}/!/: sequences. Example:
         #   deny:
         #     - "git push --force*"
@@ -2472,7 +2472,7 @@ DEFAULT_CONFIG = {
     # Real-time token streaming to messaging platforms (Discord, Slack,
     # Slack, etc.). Read at the top level by the gateway; absent this block the
     # gateway falls back to these same defaults, so adding it here only makes
-    # the feature discoverable in config.yaml — it does not change behavior.
+    # the feature discoverable in config.toml — it does not change behavior.
     #
     # Disabled by default: streaming costs extra edit/draft API calls per
     # response. Set ``enabled: true`` and restart the gateway to turn it on.
@@ -2629,7 +2629,7 @@ DEFAULT_CONFIG = {
         # Pre-update safety backup — ONE consolidated mechanism, three modes:
         #
         #   quick (default) — snapshot critical small state files (pairing
-        #     JSONs, cron jobs, config.yaml, .env, auth.json, per-profile
+        #     JSONs, cron jobs, config.toml, .env, auth.json, per-profile
         #     DBs) into <SON_OF_ANTON_HOME>/state-snapshots/ before the update.
         #     Files over 1 GiB (e.g. a bloated state.db) are skipped with a
         #     warning so the snapshot stays fast. Restore via ``/snapshot``.
@@ -2755,7 +2755,7 @@ DEFAULT_CONFIG = {
             "enabled": False,
             # Name of the env var that holds the Bitwarden machine-account
             # access token.  This is the one bootstrap secret; it lives
-            # in ~/.son-of-anton/.env (or your shell) and never in config.yaml.
+            # in ~/.son-of-anton/.env (or your shell) and never in config.toml.
             "access_token_env": "BWS_ACCESS_TOKEN",
             # UUID of the BSM project to sync from.
             "project_id": "",

@@ -1,19 +1,20 @@
 ---
-name: research-paper-writing
-title: Research Paper Writing Pipeline
-description: "Write ML papers for NeurIPS/ICML/ICLR: design→submit."
-version: 1.1.0
-author: Orchestra Research
-license: MIT
-dependencies: [semanticscholar, arxiv, habanero, requests, scipy, numpy, matplotlib, SciencePlots]
-platforms: [linux, macos]
-metadata:
-  son-of-anton:
-    tags: [Research, Paper Writing, Experiments, ML, AI, NeurIPS, ICML, ICLR, ACL, AAAI, COLM, LaTeX, Citations, Statistical Analysis]
-    category: research
-    related_skills: [arxiv, subagent-driven-development, plan]
-    requires_toolsets: [terminal, files]
+name = "research-paper-writing"
+title = "Research Paper Writing Pipeline"
+description = "Write ML papers for NeurIPS/ICML/ICLR: design→submit."
+version = "1.1.0"
+author = "Orchestra Research"
+license = "MIT"
+dependencies = ["semanticscholar", "arxiv", "habanero", "requests", "scipy", "numpy", "matplotlib", "SciencePlots"]
+platforms = ["linux", "macos"]
 
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["Research", "Paper Writing", "Experiments", "ML", "AI", "NeurIPS", "ICML", "ICLR", "ACL", "AAAI", "COLM", "LaTeX", "Citations", "Statistical Analysis"]
+category = "research"
+related_skills = ["arxiv", "subagent-driven-development", "plan"]
+requires_toolsets = ["terminal", "files"]
 ---
 
 # Research Paper Writing Pipeline
@@ -476,7 +477,7 @@ See [references/human-evaluation.md](references/human-evaluation.md) for complet
 Use `nohup` for long-running experiments:
 
 ```bash
-nohup python run_experiment.py --config config.yaml > logs/experiment_01.log 2>&1 &
+nohup python run_experiment.py --config config.toml > logs/experiment_01.log 2>&1 &
 echo $!  # Record the PID
 ```
 

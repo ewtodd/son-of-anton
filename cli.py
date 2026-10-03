@@ -84,7 +84,7 @@ def format_duration_compact(*args, **kwargs):
     return f"{days:.1f}d"
 
 
-# Cached reverse map of config.yaml ``model_aliases:`` so the TUI can show
+# Cached reverse map of config.toml ``model_aliases:`` so the TUI can show
 # friendly names instead of full Palantir RIDs / long catalog IDs. Built
 # lazily on first call; cache is process-lifetime (config is read once at
 # session start, so further invalidation is unnecessary).
@@ -96,7 +96,7 @@ def _reverse_alias_for_display(model_name: str) -> str:
 
     Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
     and ``model.aliases:`` (string-based, set via ``son-of-anton config set``)
-    from config.yaml. Multiple aliases pointing at the same model — the
+    from config.toml. Multiple aliases pointing at the same model — the
     shortest wins, so ``opus47`` beats ``palantir-claude47``.
     """
     global _REVERSE_ALIAS_CACHE
@@ -179,7 +179,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
 from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-from utils import base_url_host_matches, base_url_hostname, fast_safe_load, strip_decorative_glyphs
+from utils import base_url_host_matches, base_url_hostname, fast_toml_load, strip_decorative_glyphs
 
 _son_of_anton_home = get_son_of_anton_home()
 _project_env = Path(__file__).parent / '.env'
@@ -341,7 +341,7 @@ def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
 def _parse_reasoning_config(effort) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
 
-    Accepts the raw config value (string or YAML boolean — ``false``/``off``
+    Accepts the raw config value (string or TOML boolean — ``false``/``off``
     parse as thinking disabled, see parse_reasoning_effort).
     """
     from son_of_anton_constants import parse_reasoning_effort
@@ -366,23 +366,23 @@ def load_cli_config() -> Dict[str, Any]:
     Load CLI configuration from config files.
     
     Config lookup order:
-    1. ~/.son-of-anton/config.yaml (user config - preferred)
-    2. ./cli-config.yaml (project config - fallback)
+    1. ~/.son-of-anton/config.toml (user config - preferred)
+    2. ./cli-config.toml (project config - fallback)
     
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
 
     If SON_OF_ANTON_IGNORE_USER_CONFIG=1 is set (via ``son-of-anton chat --ignore-user-config``),
-    the user config at ``~/.son-of-anton/config.yaml`` is skipped entirely and only the
-    built-in defaults plus the project-level ``cli-config.yaml`` (if any) are used.
+    the user config at ``~/.son-of-anton/config.toml`` is skipped entirely and only the
+    built-in defaults plus the project-level ``cli-config.toml`` (if any) are used.
     Credentials in ``.env`` are still loaded — this flag only suppresses
     behavioral/config settings.
     """
-    # Check user config first ({SON_OF_ANTON_HOME}/config.yaml)
-    user_config_path = _son_of_anton_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    # Check user config first ({SON_OF_ANTON_HOME}/config.toml)
+    user_config_path = _son_of_anton_home / 'config.toml'
+    project_config_path = Path(__file__).parent / 'cli-config.toml'
 
-    # --ignore-user-config: force-skip the user config.yaml (still honor project
+    # --ignore-user-config: force-skip the user config.toml (still honor project
     # config as a fallback so defaults stay sensible).
     ignore_user_config = os.environ.get("SON_OF_ANTON_IGNORE_USER_CONFIG") == "1"
 
@@ -508,7 +508,7 @@ def load_cli_config() -> Dict[str, Any]:
             with open(config_path, "r", encoding="utf-8") as f:
                 from son_of_anton_cli.config import _normalize_root_model_keys
 
-                file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
+                file_config = _normalize_root_model_keys(fast_toml_load(f) or {})
             
             _file_has_terminal_config = "terminal" in file_config
 
@@ -557,7 +557,7 @@ def load_cli_config() -> Dict[str, Any]:
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
-            logger.warning("Failed to load cli-config.yaml: %s", e)
+            logger.warning("Failed to load cli-config.toml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from son_of_anton_cli.config import _expand_env_vars
@@ -579,7 +579,7 @@ def load_cli_config() -> Dict[str, Any]:
     terminal_config = defaults.get("terminal", {})
     
     # Normalize config key: the new config system (son_of_anton_cli/config.py) and all
-    # documentation use "backend", the legacy cli-config.yaml uses "env_type".
+    # documentation use "backend", the legacy cli-config.toml uses "env_type".
     # Accept both, with "backend" taking precedence (it's the documented key).
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
@@ -654,7 +654,7 @@ def load_cli_config() -> Dict[str, Any]:
     
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
-    # Compaction config is read directly from config.yaml by run_agent.py and
+    # Compaction config is read directly from config.toml by run_agent.py and
     # auxiliary_client.py — no env var bridging needed.
     # Only set env vars for non-empty / non-default values so auto-detection
     # still works.
@@ -2308,7 +2308,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 def _run_state_db_auto_maintenance(session_db) -> None:
     """Call ``SessionDB.maybe_auto_prune_and_vacuum`` using current config.
 
-    Reads the ``sessions:`` section from config.yaml via
+    Reads the ``sessions:`` section from config.toml via
     :func:`son_of_anton_cli.config.load_config` (the authoritative loader that
     deep-merges DEFAULT_CONFIG, so unmigrated configs still get default
     values). Honours ``auto_prune`` / ``retention_days`` /
@@ -2374,7 +2374,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
 def _run_checkpoint_auto_maintenance() -> None:
     """Call ``checkpoint_manager.maybe_auto_prune_checkpoints`` using current config.
 
-    Reads the ``checkpoints:`` section from config.yaml via
+    Reads the ``checkpoints:`` section from config.toml via
     :func:`son_of_anton_cli.config.load_config`. Honours ``auto_prune`` /
     ``retention_days`` / ``delete_orphans`` / ``min_interval_hours``.
     Never raises — maintenance must never block interactive startup.
@@ -3885,7 +3885,7 @@ def _status_bar_visible_from_display_config(display_config: object) -> bool:
     """Return the initial classic-CLI status-bar visibility from display config.
 
     ``display.tui_statusbar`` is the persisted user-facing setting toggled by
-    the TUI/statusbar controls. YAML parses bare ``off`` as ``False``, while
+    the TUI/statusbar controls. TOML parses bare ``off`` as ``False``, while
     older config snapshots or hand edits may use strings such as ``"off"`` or
     ``"hidden"``. Treat those values consistently so a new CLI process does not
     re-enable a status bar that the user deliberately disabled.
@@ -4148,8 +4148,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     Save a value to the active config file at the specified key path.
     
     Respects the same lookup order as load_cli_config():
-    1. ~/.son-of-anton/config.yaml (user config - preferred, used if it exists)
-    2. ./cli-config.yaml (project config - fallback)
+    1. ~/.son-of-anton/config.toml (user config - preferred, used if it exists)
+    2. ./cli-config.toml (project config - fallback)
     
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
@@ -4158,29 +4158,29 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Runtime persistence ALWAYS targets the user's SON_OF_ANTON_HOME config.yaml,
+    # Runtime persistence ALWAYS targets the user's SON_OF_ANTON_HOME config.toml,
     # creating it if needed. Resolve SON_OF_ANTON_HOME live (not the import-time
     # _son_of_anton_home constant) so profile switches and test isolation land right.
     #
-    # We deliberately do NOT fall back to the repo's project cli-config.yaml:
+    # We deliberately do NOT fall back to the repo's project cli-config.toml:
     # that file is a shipped default/template, and most config readers
-    # (load_config → get_son_of_anton_home()/config.yaml, including
+    # (load_config → get_son_of_anton_home()/config.toml, including
     # load_wake_word_config) never read it. Writing a user setting there means
     # the reader never sees it. This was the "wake-word ear reverts to disabled
-    # after restart" bug — the toggle's persist wrote to cli-config.yaml (which
-    # exists in the checkout) while startup read SON_OF_ANTON_HOME/config.yaml, so the
+    # after restart" bug — the toggle's persist wrote to cli-config.toml (which
+    # exists in the checkout) while startup read SON_OF_ANTON_HOME/config.toml, so the
     # setting silently vanished every restart on any install whose
-    # SON_OF_ANTON_HOME/config.yaml didn't exist yet.
-    config_path = get_son_of_anton_home() / 'config.yaml'
+    # SON_OF_ANTON_HOME/config.toml didn't exist yet.
+    config_path = get_son_of_anton_home() / 'config.toml'
     
     try:
-        # Ensure parent directory exists (for ~/.son-of-anton/config.yaml on first use)
+        # Ensure parent directory exists (for ~/.son-of-anton/config.toml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save back atomically while preserving comments, ordering, quotes, and
-        # readable Unicode in user-edited config.yaml.
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        # readable Unicode in user-edited config.toml.
+        from utils import atomic_toml_update
+        atomic_toml_update(config_path, key_path, value)
         
         # Enforce owner-only permissions on config files (contain API keys)
         try:
@@ -4262,8 +4262,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
-        # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
-        # YAML 1.1 parses bare `off` as boolean False — normalise to string.
+        # tool_progress: "off", "new", "all", "verbose" (from config.toml display section)
+        # TOML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
         # focus_view: display-only reduced-output mode (/focus). When on, the
@@ -4316,7 +4316,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # to console whenever a user set tool_progress: verbose in config.
         self.verbose = bool(verbose) if verbose is not None else False
         
-        # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
+        # streaming: stream tokens to the terminal as they arrive (display.streaming in config.toml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
         # show_timestamps: prefix user and assistant labels with timestamps
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
@@ -4327,7 +4327,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self.final_response_markdown not in {"render", "strip", "raw"}:
             self.final_response_markdown = "strip"
 
-        # Inline diff previews for write actions (display.inline_diffs in config.yaml)
+        # Inline diff previews for write actions (display.inline_diffs in config.toml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
         # Per-turn accounting (display.turn_summary / display.spinner_token_flow).
@@ -4346,7 +4346,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # summary line out of non-interactive surfaces.
         self._interactive_turn = False
 
-        # Submitted multiline user-message preview (display.user_message_preview in config.yaml)
+        # Submitted multiline user-message preview (display.user_message_preview in config.toml)
         _ump = CLI_CONFIG["display"].get("user_message_preview", {})
         if not isinstance(_ump, dict):
             _ump = {}
@@ -4379,8 +4379,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._termios_drift_notice_shown = False
         
         # Configuration - priority: CLI args > env vars > config file
-        # Model comes from: CLI arg or config.yaml (single source of truth).
-        # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
+        # Model comes from: CLI arg or config.toml (single source of truth).
+        # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.toml is
         # authoritative.  This avoids conflicts in multi-agent setups where
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
@@ -4493,7 +4493,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # safety net for configs that still carry the root key.
             self.max_turns = _resolve_turn_limit(CLI_CONFIG["max_turns"])
         else:
-            # Env var bridge (set by gateway/run.py from config.yaml, or by the
+            # Env var bridge (set by gateway/run.py from config.toml, or by the
             # user directly). Empty/unset → default (unlimited).
             self.max_turns = _resolve_turn_limit(os.getenv("SON_OF_ANTON_MAX_ITERATIONS"))
 
@@ -4568,7 +4568,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         # An explicit --reasoning wins over config for this run only (never
         # persisted). Kanban's dispatcher uses it to pin a task's thinking
-        # depth without touching the worker profile's config.yaml. An
+        # depth without touching the worker profile's config.toml. An
         # unparseable level is ignored with a warning rather than silently
         # swapping in the default — same contract as the config path.
         if reasoning is not None and str(reasoning).strip():
@@ -5062,7 +5062,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
-        # Friendly display: prefer reverse-alias from config.yaml ``model_aliases:``
+        # Friendly display: prefer reverse-alias from config.toml ``model_aliases:``
         # before slash/length truncation. This turns long Palantir RIDs like
         # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
         # into the user's chosen short name (e.g. ``opus-4.7``) in the status bar.
@@ -6563,7 +6563,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_status()
         else:
             # Warm-launch fast path: replay last launch's tool panel when the
-            # snapshot fingerprint (config.yaml + .env + checkout rev +
+            # snapshot fingerprint (config.toml + .env + checkout rev +
             # toolsets) is unchanged, skipping the ~0.5-0.9s cold
             # get_tool_definitions walk. The agent's REAL tool list is still
             # computed fresh at first message; a background refresh below
@@ -6704,7 +6704,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
             else:
                 self._console_print(
-                    "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting"
+                    "[dim]   Fix: Set model.context_length in config.toml, or increase your server's context setting"
                 )
 
         # Project-local skills: one-line status. Trusted → show count;
@@ -7572,13 +7572,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
-        # Get terminal config from environment (which was set from cli-config.yaml)
+        # Get terminal config from environment (which was set from cli-config.toml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
-        user_config_path = _son_of_anton_home / 'config.yaml'
-        project_config_path = Path(__file__).parent / 'cli-config.yaml'
+        user_config_path = _son_of_anton_home / 'config.toml'
+        project_config_path = Path(__file__).parent / 'cli-config.toml'
         if user_config_path.exists():
             config_path = user_config_path
         else:
@@ -7948,7 +7948,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model --session, /fast, one-turn restores) do not carry
-        # forward.  Re-derive model/provider and service tier from config.yaml
+        # forward.  Re-derive model/provider and service tier from config.toml
         # so a session-only switch never leaks into the next session (#48055,
         # #23131).
         self._pending_one_turn_model_restore = None
@@ -8998,18 +8998,18 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.provider", result.target_provider)
             # base_url/api_mode were previously never persisted here, so a
             # global switch left the OLD provider's endpoint/wire-protocol in
-            # config.yaml. result.base_url/api_mode are always freshly
+            # config.toml. result.base_url/api_mode are always freshly
             # resolved for the target provider (see model_switch.py), so sync
             # them every time; None clears a value the new provider doesn't
             # need (#25106).
             save_config_value("model.base_url", result.base_url or None)
             save_config_value("model.api_mode", result.api_mode or None)
-            _cprint("    Saved to config.yaml (--global)")
+            _cprint("    Saved to config.toml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
 
         # Persist the switch to this session's row so --resume /
-        # session.resume restore it. --global also updates config.yaml
+        # session.resume restore it. --global also updates config.toml
         # (future sessions), but the row still records what THIS session
         # actually runs — otherwise a later resume would restore the stale
         # creation-time model over the user's new global choice.
@@ -9105,7 +9105,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Handle /perm — set the session permission mode.
 
         Maps onto the existing approval machinery (approvals.mode +
-        security.lockdown in config.yaml):
+        security.lockdown in config.toml):
 
           default  — smart approvals (the out-of-the-box behaviour)
           ask      — manual approval for every dangerous command
@@ -9158,13 +9158,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
           /model <name>                       — switch model (this session only)
           /model <name> --once                — switch for the next turn only
           /model <name> --session             — switch for this session only (explicit)
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name> --global              — switch and persist to config.toml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
           /model auto                         — clear the session pin, back to the configured default
 
         Persistence defaults to off (``model.persist_switch_by_default`` in
-        config.yaml, default False — switches are session-scoped). Use
+        config.toml, default False — switches are session-scoped). Use
         ``--global`` to persist, or ``--once`` for the next turn only.
         """
         from son_of_anton_cli.model_switch import (
@@ -9461,14 +9461,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # must be synced on every global switch (#25106).
             save_config_value("model.base_url", result.base_url or None)
             save_config_value("model.api_mode", result.api_mode or None)
-            _cprint("    Saved to config.yaml")
+            _cprint("    Saved to config.toml")
         elif one_turn:
             _cprint("    (next turn only — restores after one response)")
         else:
             _cprint("    (session only — add --global to persist)")
 
         # Persist the switch to this session's row so --resume /
-        # session.resume restore it (--global also updates config.yaml but
+        # session.resume restore it (--global also updates config.toml but
         # the row still records what THIS session runs; --once is ephemeral
         # and restored after one turn, so it must not touch the row).
         if not one_turn:
@@ -9609,14 +9609,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("  To start the gateway:")
             print("    son-of-anton gateway run")
             print()
-            print(f"  Configuration file: {display_son_of_anton_home()}/config.yaml")
+            print(f"  Configuration file: {display_son_of_anton_home()}/config.toml")
             print()
             
         except Exception as e:
             print(f"  Error loading gateway config: {e}")
             print()
             print("  To configure the gateway:")
-            print(f"    1. Add a platforms: block to {display_son_of_anton_home()}/config.yaml")
+            print(f"    1. Add a platforms: block to {display_son_of_anton_home()}/config.toml")
             print("    2. Or set the platform's credential env var, e.g.")
             print("       SIGNAL_HTTP_URL=http://host:7583")
             print("       DISCORD_BOT_TOKEN=your_token")
@@ -10089,7 +10089,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if exec_cmd:
                         try:
                             # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
+                            # shell snippets from config.toml — not agent/LLM controlled.
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the CLI process which
                             # has all API keys in os.environ.
@@ -11305,10 +11305,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"  Error generating insights: {e}")
 
     def _check_config_mcp_changes(self) -> None:
-        """Detect mcp_servers changes in config.yaml and react.
+        """Detect mcp_servers changes in config.toml and react.
 
         Called from process_loop every CONFIG_WATCH_INTERVAL seconds.
-        Compares config.yaml mtime + mcp_servers section against the last
+        Compares config.toml mtime + mcp_servers section against the last
         known state.  When a change is detected:
 
         * By default (``mcp.auto_reload_on_config_change: true``) it
@@ -11321,13 +11321,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
           **invalidates the provider prompt cache** (the next message
           re-sends the full input prefix, expensive on long-context /
           high-reasoning models).  This stops silent cache-breaking reloads
-          when config.yaml is rewritten frequently by external tooling or
+          when config.toml is rewritten frequently by external tooling or
           other Son of Anton instances.
         """
 
-        import yaml as _yaml
+        import tomllib
 
-        CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
+        CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.toml stat() calls
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -11351,7 +11351,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._config_mtime = mtime
         try:
             with open(cfg_path, encoding="utf-8") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+                new_cfg = tomllib.loads(f.read()) or {}
         except Exception:
             return
 
@@ -11359,7 +11359,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Expand ${VAR} templates so the comparison is consistent with the
         # init snapshot (self._config_mcp_servers), which was populated from
         # the deep-merged + expanded config.  Without this, any
-        # save_config_value() that rewrites config.yaml (even for unrelated
+        # save_config_value() that rewrites config.toml (even for unrelated
         # keys) triggers a false-positive MCP reload because the raw yaml
         # still has "${POWERMEM_API_KEY}" while the snapshot has the
         # expanded value.
@@ -11533,7 +11533,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if choice == "always":
             if save_config_value("approvals.destructive_slash_confirm", False):
                 print("Future /clear, /new, /reset, and /undo will run without confirmation.")
-                print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.")
+                print("   Re-enable via `approvals.destructive_slash_confirm: true` in config.toml.")
             else:
                 print("Couldn't persist opt-out — proceeding once.")
 
@@ -11599,7 +11599,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if choice == "always":
             if save_config_value("approvals.mcp_reload_confirm", False):
                 print("Future /reload-mcp calls will run without confirmation.")
-                print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
+                print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.toml.")
             else:
                 print("Couldn't persist opt-out — reloading once.")
 
@@ -11607,7 +11607,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._reload_mcp()
 
     def _reload_mcp(self):
-        """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
+        """Reload MCP servers: disconnect all, re-read config.toml, reconnect.
 
         After reconnecting, refreshes the agent's tool list so the model
         sees the updated tools on the next turn.
@@ -11625,7 +11625,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Shutdown existing connections
             shutdown_mcp_servers()
 
-            # Reconnect (reads config.yaml fresh)
+            # Reconnect (reads config.toml fresh)
             new_tools = discover_mcp_tools()
 
             # Compute what changed
@@ -11872,7 +11872,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # that takes longer than the threshold while we're in the
                 # noisiest progress mode, print a one-time hint about
                 # /verbose.  Latched on self so it fires at most once per
-                # process; persisted to config.yaml so it never fires again
+                # process; persisted to config.toml so it never fires again
                 # across processes either.
                 try:
                     if (
@@ -11889,7 +11889,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         if not is_seen(CLI_CONFIG, TOOL_PROGRESS_FLAG):
                             self._long_tool_hint_fired = True
                             _cprint(f"  {_DIM}{tool_progress_hint_cli()}{_RST}")
-                            mark_seen(_son_of_anton_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                            mark_seen(_son_of_anton_home / "config.toml", TOOL_PROGRESS_FLAG)
                             CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
                 except Exception:
                     pass

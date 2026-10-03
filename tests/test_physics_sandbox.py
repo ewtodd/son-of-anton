@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from physics_intern.utils.sandbox import (
+from autophysicist.utils.sandbox import (
     SandboxPolicy,
     execute_python,
     resolve_interpreter,
@@ -37,7 +37,7 @@ def _policy(tmp_path: Path, **kwargs) -> SandboxPolicy:
 def test_resolve_interpreter_is_an_existing_executable(monkeypatch) -> None:
     monkeypatch.delenv("SON_OF_ANTON_PHYSICS_PYTHON", raising=False)
     monkeypatch.delenv("SON_OF_ANTON_PYTHON", raising=False)
-    monkeypatch.setattr("physics_intern.utils.sandbox._physics_config", dict)
+    monkeypatch.setattr("autophysicist.utils.sandbox._physics_config", dict)
     interpreter = resolve_interpreter()
     assert interpreter != "python"
     assert os.path.exists(interpreter), (
@@ -52,7 +52,7 @@ def test_config_python_wins_over_environment(monkeypatch, tmp_path) -> None:
     fake.chmod(0o755)
     monkeypatch.setenv("SON_OF_ANTON_PYTHON", sys.executable)
     monkeypatch.setattr(
-        "physics_intern.utils.sandbox._physics_config",
+        "autophysicist.utils.sandbox._physics_config",
         lambda: {"python": str(fake)},
     )
     assert resolve_interpreter() == str(fake)
@@ -62,7 +62,7 @@ def test_nonexistent_configured_interpreter_falls_through(monkeypatch) -> None:
     monkeypatch.delenv("SON_OF_ANTON_PHYSICS_PYTHON", raising=False)
     monkeypatch.setenv("SON_OF_ANTON_PYTHON", sys.executable)
     monkeypatch.setattr(
-        "physics_intern.utils.sandbox._physics_config",
+        "autophysicist.utils.sandbox._physics_config",
         lambda: {"python": "/nonexistent/python3"},
     )
     assert resolve_interpreter() == sys.executable
@@ -191,7 +191,7 @@ def test_sandbox_off_is_opt_in_and_reported(tmp_path: Path) -> None:
 
 def test_missing_bwrap_fails_closed(tmp_path: Path, monkeypatch) -> None:
     """With no bwrap and mode=auto the run must refuse, not silently unconfine."""
-    monkeypatch.setattr("physics_intern.utils.sandbox.bwrap_path", lambda: None)
+    monkeypatch.setattr("autophysicist.utils.sandbox.bwrap_path", lambda: None)
     script = tmp_path / "s.py"
     script.write_text("print('should not run')\n")
     result = execute_python(
@@ -213,14 +213,14 @@ def test_missing_bwrap_fails_closed(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_notes_only_appear_for_libraries_that_are_present() -> None:
-    from physics_intern.utils.runtime_notes import notes_for
+    from autophysicist.utils.runtime_notes import notes_for
 
     assert notes_for({"numpy": "2.0"}) == ""
     assert "analysis_utilities" in notes_for({"analysis_utilities": "26.8.27"})
 
 
 def test_extra_notes_are_appended() -> None:
-    from physics_intern.utils.runtime_notes import notes_for
+    from autophysicist.utils.runtime_notes import notes_for
 
     assert "house rule" in notes_for({}, extra="house rule")
     combined = notes_for({"analysis_utilities": "1"}, extra="house rule")
@@ -228,10 +228,10 @@ def test_extra_notes_are_appended() -> None:
 
 
 def test_guidance_reaches_the_subagent_instructions(monkeypatch) -> None:
-    from physics_intern.autophysicist.subagent import code_execution_suffix
+    from autophysicist.subagent import code_execution_suffix
 
     monkeypatch.setattr(
-        "physics_intern.utils.sandbox.runtime_summary",
+        "autophysicist.utils.sandbox.runtime_summary",
         lambda _i=None: {
             "interpreter": "x",
             "python_version": "3.12",
@@ -246,10 +246,10 @@ def test_guidance_reaches_the_subagent_instructions(monkeypatch) -> None:
 
 
 def test_no_guidance_when_the_library_is_absent(monkeypatch) -> None:
-    from physics_intern.autophysicist.subagent import code_execution_suffix
+    from autophysicist.subagent import code_execution_suffix
 
     monkeypatch.setattr(
-        "physics_intern.utils.sandbox.runtime_summary",
+        "autophysicist.utils.sandbox.runtime_summary",
         lambda _i=None: {
             "interpreter": "x",
             "python_version": "3.12",
@@ -279,7 +279,7 @@ def test_a_shell_is_available_in_the_sandbox(tmp_path: Path) -> None:
 
 def test_pyroot_notes_appear_when_root_is_present() -> None:
     """Every failed script in the first fast run guessed at the C++ API."""
-    from physics_intern.utils.runtime_notes import notes_for
+    from autophysicist.utils.runtime_notes import notes_for
 
     note = notes_for({"ROOT": "6.40.00"})
     assert "GetListOfBranches" in note
@@ -288,7 +288,7 @@ def test_pyroot_notes_appear_when_root_is_present() -> None:
 
 
 def test_both_notes_compose() -> None:
-    from physics_intern.utils.runtime_notes import notes_for
+    from autophysicist.utils.runtime_notes import notes_for
 
     note = notes_for({"ROOT": "6.40.00", "analysis_utilities": "26.8.27"})
     assert "GetListOfBranches" in note and "load_tree_data" in note
@@ -300,7 +300,7 @@ def test_the_guidance_states_the_real_timeout(monkeypatch) -> None:
     The first run to get this far timed out twice on byte-identical scripts,
     reading a multi-GB file in full under a 60 s limit.
     """
-    from physics_intern.utils.runtime_notes import notes_for
+    from autophysicist.utils.runtime_notes import notes_for
 
     note = notes_for({"analysis_utilities": "26.8.27"}, timeout=900)
     # The note is wrapped and comment-prefixed, so compare on normalised text.
@@ -312,10 +312,10 @@ def test_the_guidance_states_the_real_timeout(monkeypatch) -> None:
 
 def test_the_code_execution_rules_state_the_real_timeout(monkeypatch) -> None:
     """The sub-agent's rule 7 carries the real number, not a placeholder."""
-    from physics_intern.autophysicist.subagent import code_execution_suffix
+    from autophysicist.subagent import code_execution_suffix
 
     monkeypatch.setattr(
-        "physics_intern.utils.sandbox.runtime_summary",
+        "autophysicist.utils.sandbox.runtime_summary",
         lambda _i=None: {
             "interpreter": "x",
             "python_version": "3.12",
@@ -335,7 +335,7 @@ def test_the_notes_warn_about_raw_waveforms() -> None:
     plausible. The agent is told, and pointed at the lab's implementation
     rather than left to hand-roll it.
     """
-    from physics_intern.utils.runtime_notes import notes_for
+    from autophysicist.utils.runtime_notes import notes_for
 
     note = " ".join(notes_for({"analysis_utilities": "26.8.27"}).split())
     assert "goes NEGATIVE" in note

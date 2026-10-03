@@ -1,14 +1,16 @@
 ---
-name: relay-coding
-description: Drive a headless coding session from a chat surface.
-version: 1.0.0
-author: Ethan Todd
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [gateway, signal, discord, slack, sessions, coding, relay]
-    category: software-development
+name = "relay-coding"
+description = "Drive a headless coding session from a chat surface."
+version = "1.0.0"
+author = "Ethan Todd"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["gateway", "signal", "discord", "slack", "sessions", "coding", "relay"]
+category = "software-development"
 ---
 
 # Relay Coding

@@ -164,10 +164,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             rules = pair.config.systemd.tmpfiles.rules;
 
             # Activation runs as root, so every file it CREATES is root-owned
-            # until something says otherwise. config.yaml only ever inherited
+            # until something says otherwise. config.toml only ever inherited
             # the right owner by having the merge rewrite a file that already
             # had it, and .nix-managed.json is new on every install — a 0600
-            # root:root config.yaml is unreadable by the service that needs it.
+            # root:root config.toml is unreadable by the service that needs it.
             activation = lib.concatStringsSep "\n" (
               map (v: if builtins.isString v then v else v.text) (
                 builtins.attrValues (
@@ -182,11 +182,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
           # Everything the merge path writes must be chowned to the instance.
           assert lib.hasInfix
-            "chown e-work:son-of-anton /home/e-work/.son-of-anton/config.yaml"
+            "chown e-work:son-of-anton /home/e-work/.son-of-anton/config.toml"
             activation;
           assert lib.hasInfix "/home/e-work/.son-of-anton/.nix-managed.json" activation;
           assert lib.hasInfix
-            "chown e-play:son-of-anton /home/e-play/.son-of-anton/config.yaml"
+            "chown e-play:son-of-anton /home/e-play/.son-of-anton/config.toml"
             activation;
 
           assert units ? "son-of-anton-work" && units ? "son-of-anton-play";
@@ -296,8 +296,8 @@ import agent.prompt_builder
 import plugins.platforms.discord.adapter
 import plugins.platforms.slack.adapter
 import gateway.platforms.signal
-import physics_intern.run
-import physics_intern.autophysicist.runner
+import autophysicist.run
+import autophysicist.runner
 import providers
 assert providers.get_provider_profile('custom') is not None, 'bundled provider profile (custom) missing'
 print('imports ok')

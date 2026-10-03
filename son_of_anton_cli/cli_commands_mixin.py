@@ -60,7 +60,7 @@ class CLICommandsMixin:
         if not mgr.enabled:
             print("  Checkpoints are not enabled.")
             print("  Enable with: son-of-anton --checkpoints")
-            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            print("  Or in config.toml: checkpoints: { enabled: true }")
             return
 
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -253,7 +253,7 @@ class CLICommandsMixin:
         if not mgr.enabled:
             print("  Checkpoints are not enabled, so there's no session baseline.")
             print("  Enable with: son-of-anton --checkpoints")
-            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            print("  Or in config.toml: checkpoints: { enabled: true }")
             print("  (Plain /diff still works — it uses git directly.)")
             return
 
@@ -1821,7 +1821,7 @@ class CLICommandsMixin:
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
             print("\n  Usage: /skin <name>")
-            print(f"  Custom skins: drop a YAML file in {display_son_of_anton_home()}/skins/\n")
+            print(f"  Custom skins: drop a TOML file in {display_son_of_anton_home()}/skins/\n")
             return
 
         new_skin = parts[1].strip().lower()
@@ -2172,7 +2172,7 @@ class CLICommandsMixin:
             )
             _cprint(f"  Message timestamps: {state}")
         else:
-            _cprint("  Failed to save timestamps setting to config.yaml")
+            _cprint("  Failed to save timestamps setting to config.toml")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
@@ -2180,7 +2180,7 @@ class CLICommandsMixin:
         Usage:
             /reasoning              Show current effort level and display state
             /reasoning <level>      Set effort for this session only (none, minimal, low, medium, high, xhigh, max, ultra)
-            /reasoning <level> --global  Persist reasoning effort to config.yaml
+            /reasoning <level> --global  Persist reasoning effort to config.toml
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
@@ -2208,7 +2208,7 @@ class CLICommandsMixin:
         arg = parts[1].strip().lower()
         arg_tokens = arg.split()
         # Session scope is the default; --global opts into persisting to
-        # config.yaml. --session is accepted as an explicit no-op for parity
+        # config.toml. --session is accepted as an explicit no-op for parity
         # with /model and the gateway /reasoning handler.
         explicit_global = "--global" in arg_tokens
         if explicit_global or "--session" in arg_tokens:
@@ -2348,7 +2348,7 @@ class CLICommandsMixin:
         """Handle /wake [on|off|status] — the 'Hey Son of Anton' hotword listener.
 
         The toggle IS the config: an explicit on/off (or bare toggle) also
-        writes ``wake_word.enabled`` to config.yaml so the choice persists
+        writes ``wake_word.enabled`` to config.toml so the choice persists
         across sessions. Startup auto-arm (_maybe_start_wake_word) only reads.
         """
         from cli import _cprint

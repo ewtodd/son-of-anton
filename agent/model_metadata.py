@@ -16,12 +16,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
-import yaml
-
 if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
     import requests
 
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, atomic_toml_write, base_url_host_matches, base_url_hostname, fast_toml_load
 
 from son_of_anton_constants import OPENROUTER_MODELS_URL
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
@@ -395,7 +393,7 @@ def _warn_context_length_fallback(model: str, base_url: str) -> None:
     logger.warning(
         "Could not determine context length for model %r (base_url=%s) "
         "— falling back to %s tokens. Set model.context_length in "
-        "config.yaml to override.",
+        "config.toml to override.",
         model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
     )
 
@@ -1641,7 +1639,7 @@ def _resolve_endpoint_context_length(
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
     from son_of_anton_constants import get_son_of_anton_home
-    return get_son_of_anton_home() / "context_length_cache.yaml"
+    return get_son_of_anton_home() / "context_length_cache.toml"
 
 
 def _load_context_cache() -> Dict[str, int]:
@@ -1651,7 +1649,7 @@ def _load_context_cache() -> Dict[str, int]:
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = fast_toml_load(f) or {}
         return data.get("context_lengths") or {}
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
@@ -1693,10 +1691,10 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
         # Atomic write (temp file + fsync + os.replace): a plain truncating
         # ``open(path, "w")`` leaves the file empty/partial if the process is
         # killed mid-dump, and the next _load_context_cache() swallows the
-        # resulting YAML error and returns {} — silently wiping EVERY cached
+        # resulting TOML error and returns {} — silently wiping EVERY cached
         # context length. It also exposes torn reads to a concurrent process
         # reading between truncate and dump-complete.
-        atomic_yaml_write(path, {"context_lengths": cache})
+        atomic_toml_write(path, {"context_lengths": cache})
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
@@ -1745,7 +1743,7 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     try:
         # Atomic write — see save_context_length() for why a plain truncating
         # open() here risks wiping the entire cache on an interrupted dump.
-        atomic_yaml_write(path, {"context_lengths": cache})
+        atomic_toml_write(path, {"context_lengths": cache})
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 
@@ -2903,7 +2901,7 @@ def get_model_context_length(
     # Gating this step on the ARGUMENT meant it only ran for callers that
     # happened to thread the list through — one of the three call sites did.
     # The rest (the CLI's @-reference sizing, the context compactor) skipped
-    # straight past a context_length sitting in config.yaml and fell through to
+    # straight past a context_length sitting in config.toml and fell through to
     # the catalog's generic 128K. The compactor is the worst place for that:
     # it sizes compaction against a window eight times smaller than the real
     # one, so it compacts a conversation that had plenty of room left.
@@ -3090,7 +3088,7 @@ def get_model_context_length(
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
+                "in config.toml to override.",
                 model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
             # 3b. Before falling back to the hard 256K default, consult the

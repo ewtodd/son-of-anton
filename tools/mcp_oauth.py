@@ -24,7 +24,7 @@ This module provides the glue:
     - ``build_oauth_auth()``: entry point called by ``mcp_tool.py`` that wires
       everything together and returns the ``httpx.Auth`` object.
 
-Configuration in config.yaml::
+Configuration in config.toml::
 
     mcp_servers:
       my_server:
@@ -1054,7 +1054,7 @@ def _make_callback_waiter(
                     "an approval prompt, the authorization server rejected "
                     f"Son of Anton' Client ID Metadata Document ({cimd_url}); set "
                     "``cimd: false`` under that server's ``oauth:`` block in "
-                    "config.yaml to authorize via dynamic client registration "
+                    "config.toml to authorize via dynamic client registration "
                     "instead."
                 )
             raise OAuthNonInteractiveError(
@@ -1109,7 +1109,7 @@ def _paste_callback_reader(result: dict) -> None:
         print(
             "  OAuth skipped. Run `son-of-anton mcp login <server>` later to "
             "authenticate, or set ``enabled: false`` on that server in "
-            "config.yaml to disable persistently.",
+            "config.toml to disable persistently.",
             file=sys.stderr,
         )
         return
@@ -1457,7 +1457,7 @@ def _maybe_use_cimd(
     if not _is_valid_cimd_url(url):
         return None
 
-    # A client pinned in config.yaml is the user's explicit choice, and a
+    # A client pinned in config.toml is the user's explicit choice, and a
     # secret means they want a confidential client — the document forbids
     # shared secrets (draft section 4.1).
     if cfg.get("client_id") or cfg.get("client_secret"):
@@ -1521,10 +1521,10 @@ def token_request_user_agent(cfg: dict) -> str | None:
     Some authorization servers and network protection layers (WAFs) reject
     the default python-httpx User-Agent on the token endpoint. The value is
     opt-in and per-server; anything that is not a non-empty string is
-    treated as unset so a null/empty YAML value never sends a blank header.
+    treated as unset so a null/empty TOML value never sends a blank header.
     Applied ONLY to authorization-code exchange and refresh-token requests —
     never to MCP traffic or discovery, and no other headers are configurable
-    (arbitrary token headers risk secrets landing in config.yaml).
+    (arbitrary token headers risk secrets landing in config.toml).
     """
     ua = cfg.get("user_agent")
     if isinstance(ua, str):
@@ -1743,7 +1743,7 @@ def _invalidate_tokens_on_client_change(
     """Drop cached tokens when the configured OAuth client identity changes.
 
     Tokens are minted for a specific ``client_id``: after the user edits
-    ``oauth.client_id`` / ``oauth.client_secret`` in config.yaml (or switches
+    ``oauth.client_id`` / ``oauth.client_secret`` in config.toml (or switches
     from dynamic registration to a pre-registered client), the old tokens are
     unusable — the token endpoint rejects their refresh with
     ``invalid_client``. Pre-registered clients are deliberately exempt from
@@ -1890,7 +1890,7 @@ def build_oauth_auth(
     Args:
         server_name: Server key in mcp_servers config (used for storage).
         server_url: MCP server endpoint URL.
-        oauth_config: Optional dict from the ``oauth:`` block in config.yaml.
+        oauth_config: Optional dict from the ``oauth:`` block in config.toml.
 
     Returns:
         An ``OAuthClientProvider`` instance, or None if the MCP SDK lacks

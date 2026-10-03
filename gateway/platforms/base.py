@@ -607,7 +607,7 @@ def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> P
 # enforce this cap, so the protection holds regardless of which platform
 # adapter or code path produced the bytes.
 #
-# Configurable via ``gateway.max_inbound_media_bytes`` in config.yaml.
+# Configurable via ``gateway.max_inbound_media_bytes`` in config.toml.
 # ``0`` disables the cap. Default 128 MiB — generous enough for ordinary
 # photos/voice notes/short clips while still bounding a hostile upload.
 # ---------------------------------------------------------------------------
@@ -617,7 +617,7 @@ DEFAULT_INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
 def get_inbound_media_max_bytes() -> int:
     """Return the max inbound image/audio/video bytes allowed in memory.
 
-    Reads ``gateway.max_inbound_media_bytes`` from config.yaml. ``0`` (or a
+    Reads ``gateway.max_inbound_media_bytes`` from config.toml. ``0`` (or a
     negative / unparseable value) disables the cap. Non-fatal if config is
     unreadable — falls back to the default.
     """
@@ -1193,7 +1193,7 @@ def _media_delivery_denied_paths() -> List[Path]:
         "auth.json",
         "auth.lock",
         "credentials",
-        "config.yaml",
+        "config.toml",
         # Anthropic PKCE / OAuth refresh credential store.
         ".anthropic_oauth.json",
         # Google Workspace skill: auto-refreshing OAuth token (mtime bumps
@@ -1499,7 +1499,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     will hand the agent any file the user uploads, and the agent can hand
     back any file that isn't a credential.
 
-    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
+    Strict mode (opt-in via ``gateway.strict`` in ``config.toml`` or
     ``SON_OF_ANTON_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
     Son of Anton-managed cache, under an operator-allowlisted root
     (``SON_OF_ANTON_MEDIA_ALLOW_DIRS``), or be freshly produced inside the

@@ -7,10 +7,10 @@ directory layout mirrors `plugins/platforms/`:
 plugins/model-providers/
 ├── openrouter/
 │   ├── __init__.py      # registers the ProviderProfile
-│   └── plugin.yaml      # manifest: name, kind, version, description
+│   └── plugin.toml      # manifest: name, kind, version, description
 ├── anthropic/
 │   ├── __init__.py
-│   └── plugin.yaml
+│   └── plugin.toml
 └── ...
 ```
 
@@ -47,7 +47,7 @@ bundled plugins of the same name — last-writer-wins in
    register_provider(my_provider)
    ```
 
-2. Create `plugins/model-providers/<your_provider>/plugin.yaml`:
+2. Create `plugins/model-providers/<your_provider>/plugin.toml`:
 
    ```yaml
    name: your-provider-profile

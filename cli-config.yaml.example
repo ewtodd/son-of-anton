@@ -1,5 +1,5 @@
 # Son of Anton Agent CLI Configuration
-# Copy settings from this example into ~/.son-of-anton/config.yaml, or use
+# Copy settings from this example into ~/.son-of-anton/config.toml, or use
 # `son-of-anton config set <section.key> <value>` to update the active profile.
 # Only documented secret environment variables in .env take precedence over
 # their corresponding settings.

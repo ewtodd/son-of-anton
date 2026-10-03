@@ -72,7 +72,7 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
 
     GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
-    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``
+    previous provider. Reject non-loopback URLs unless the TOML provider is already ``custom``
     (or one of the local-server aliases that resolve to ``custom`` — ollama, vllm, llamacpp, …),
     so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
     """
@@ -368,7 +368,7 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "codex_responses"
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        # Honour model.base_url from config.yaml when the configured provider
+        # Honour model.base_url from config.toml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.
         # Only override when the pool entry has no explicit base_url (i.e. it
         # fell back to the hardcoded default).  Env var overrides win (#6039).
@@ -903,7 +903,7 @@ def _resolve_named_custom_runtime(
     # directly so the alias's base_url actually takes effect.
     #
     # GitHub #27132: provider aliases that resolve to "custom" at runtime
-    # (ollama, vllm, llamacpp, …) are treated identically here, so a YAML
+    # (ollama, vllm, llamacpp, …) are treated identically here, so a TOML
     # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
     # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
@@ -1112,7 +1112,7 @@ def _resolve_openrouter_runtime(
     env_custom_base_url = _getenv("CUSTOM_BASE_URL", "").strip()
 
     # Use config base_url when available and the provider context matches.
-    # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
+    # OPENAI_BASE_URL env var is no longer consulted — config.toml is
     # the single source of truth for endpoint URLs.
     use_config_base_url = False
     if cfg_base_url.strip() and not explicit_base_url:
@@ -1376,7 +1376,7 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
-    # If provider is "auto" (or unset) but config.yaml has an explicit base_url
+    # If provider is "auto" (or unset) but config.toml has an explicit base_url
     # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
     # route through the OpenAI-compatible resolver instead of letting
     # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
@@ -1580,7 +1580,7 @@ def resolve_runtime_provider(
                 provider=provider,
                 code="missing_api_key",
             )
-        # Honour model.base_url from config.yaml when the configured provider
+        # Honour model.base_url from config.toml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
         # (China endpoint) still get the hardcoded api.minimax.io default (#6039).

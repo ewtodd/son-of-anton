@@ -73,7 +73,7 @@ from son_of_anton_cli.fallback_config import get_fallback_chain
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
 #
 # These are the defaults; `agent.agent_cache.max_size` /
-# `agent.agent_cache.idle_ttl_secs` in config.yaml override them per
+# `agent.agent_cache.idle_ttl_secs` in config.toml override them per
 # deployment.  Neither bound knows how many BYTES a cached agent holds, so
 # _sweep_agent_cache_under_pressure() adds the missing memory-pressure valve
 # (see gateway/agent_cache_pressure.py).
@@ -336,7 +336,7 @@ _COMPACTION_PROGRESS_STATUS_RE = re.compile(
 def _gateway_compaction_progress_notices_enabled() -> bool:
     """True when the user opted into routine compaction progress notices.
 
-    Reads ``compaction.progress_notices`` from the gateway's raw YAML config
+    Reads ``compaction.progress_notices`` from the gateway's raw TOML config
     (#52995). Default False — routine compaction stays silent-by-design on
     chat platforms unless explicitly enabled. Read live (mtime-cached) so a
     config edit on a running gateway takes effect on the next status.
@@ -1011,7 +1011,7 @@ def _resolve_gateway_display_bool(
 # (30 min default) plus runtime slack — a legitimate long-running turn that
 # gets interrupted near its timeout boundary and is resumed shortly after
 # is still classified fresh.  Override via
-# ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
+# ``config.toml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 # Default bound for how long ``_finish_startup_restore`` waits on boot
@@ -1019,7 +1019,7 @@ _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 # ``_startup_restore_drain_timeout_secs``).  30s is comfortably longer than a
 # normal resume turn's first response yet short enough that one pathologically
 # long resumed turn can't hold every channel's inbound queued for minutes.
-# Override via ``config.yaml`` ``agent.gateway_startup_restore_drain_timeout``.
+# Override via ``config.toml`` ``agent.gateway_startup_restore_drain_timeout``.
 _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT = 30.0
 
 
@@ -1063,7 +1063,7 @@ def _auto_continue_freshness_window() -> float:
     Thin wrapper that delegates to the canonical implementation in
     ``gateway.session`` (the single source of truth shared with the
     routing-time zombie gate in ``get_or_create_session``).  Reads
-    ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.yaml``
+    ``SON_OF_ANTON_AUTO_CONTINUE_FRESHNESS`` (bridged from ``config.toml``
     ``agent.gateway_auto_continue_freshness`` at gateway startup, same
     pattern as ``SON_OF_ANTON_AGENT_TIMEOUT``).  Falls back to the module default
     when unset or malformed.  Non-positive values disable the freshness gate
@@ -1095,7 +1095,7 @@ def _startup_restore_drain_timeout_secs() -> float:
     gate and let the slow turn finish in the background.
 
     Reads ``SON_OF_ANTON_STARTUP_RESTORE_DRAIN_TIMEOUT`` (bridged from
-    ``config.yaml`` ``agent.gateway_startup_restore_drain_timeout`` at gateway
+    ``config.toml`` ``agent.gateway_startup_restore_drain_timeout`` at gateway
     startup, same pattern as the other ``agent.*`` knobs).  Non-positive
     disables the bound (restores the historical "wait forever" behaviour).
     """
@@ -1402,7 +1402,7 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
     if raw is None:
         # Top-level ``slack.ignored_channels`` config flows through the
-        # plugin's YAML→env bridge (SLACK_IGNORED_CHANNELS) rather than
+        # plugin's TOML→env bridge (SLACK_IGNORED_CHANNELS) rather than
         # PlatformConfig.extra — honor it here too (#46925).
         raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
@@ -1427,7 +1427,7 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
 
     Default OFF: injecting a ``[Tue 2026-04-28 13:40:53 CEST]`` prefix onto
     every user message changes what the model sees for all gateway users, so
-    it must be explicitly enabled in config.yaml under
+    it must be explicitly enabled in config.toml under
     ``gateway.message_timestamps.enabled``.
     """
     if not isinstance(user_config, dict):
@@ -1958,7 +1958,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     """Reload .env for fresh credentials without letting stale .env override config.
 
     Gateway processes are long-lived, so per-turn code reloads ~/.son-of-anton/.env to
-    pick up rotated API keys. config.yaml remains authoritative for agent budget
+    pick up rotated API keys. config.toml remains authoritative for agent budget
     settings such as agent.max_turns; otherwise a stale SON_OF_ANTON_MAX_ITERATIONS in
     .env can replace the startup bridge on later turns.
 
@@ -1971,8 +1971,8 @@ def _reload_runtime_env_preserving_config_authority() -> None:
 
 
 def _bridge_max_turns_from_config(home: "Path") -> None:
-    """Bridge config.yaml agent.max_turns into SON_OF_ANTON_MAX_ITERATIONS (a global)."""
-    config_path = home / 'config.yaml'
+    """Bridge config.toml agent.max_turns into SON_OF_ANTON_MAX_ITERATIONS (a global)."""
+    config_path = home / 'config.toml'
     if not config_path.exists():
         return
     try:
@@ -2000,7 +2000,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         raw = agent_cfg["max_turns"]
         # Preserve the raw value's spelling (e.g. "none", "unlimited", "120")
         # so resolve_turn_limit() in _current_max_iterations can interpret it.
-        # Skip bridging when the YAML value is Python None (from `null` or bare
+        # Skip bridging when the TOML value is Python None (from `null` or bare
         # `key:`) — this preserves "absent = default" semantics downstream.
         # Without this guard, str(None) → "None" → resolve_turn_limit maps it
         # to the unlimited sentinel instead of the default (90/500).
@@ -2009,7 +2009,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         elif "SON_OF_ANTON_MAX_ITERATIONS" in os.environ:
             # Clear stale bridge so downstream resolver applies its default.
             del os.environ["SON_OF_ANTON_MAX_ITERATIONS"]
-    # config-authoritative knobs for the session-search index (config.yaml
+    # config-authoritative knobs for the session-search index (config.toml
     # sessions.* wins over stale env; env stays the cross-process carrier).
     sessions_cfg = cfg.get("sessions", {})
     if isinstance(sessions_cfg, dict):
@@ -2076,9 +2076,9 @@ _cfg: dict = {}
 
 
 def _bridge_gateway_config_to_env() -> None:
-    """Bridge config.yaml values into the environment so os.getenv() picks them up.
+    """Bridge config.toml values into the environment so os.getenv() picks them up.
 
-    Gateway-process behavior: config.yaml is authoritative for terminal
+    Gateway-process behavior: config.toml is authoritative for terminal
     settings and overrides .env.
 
     Runs at import time, but ONLY in a real gateway process (see
@@ -2090,7 +2090,7 @@ def _bridge_gateway_config_to_env() -> None:
     exactly as it was while leaving the CLI's terminal contract untouched.
     """
     global _cfg
-    _config_path = _son_of_anton_home / 'config.yaml'
+    _config_path = _son_of_anton_home / 'config.toml'
     if _config_path.exists():
         try:
             if not _IS_GATEWAY_PROCESS:
@@ -2107,7 +2107,7 @@ def _bridge_gateway_config_to_env() -> None:
             # Managed scope: overlay administrator-pinned values BEFORE bridging to
             # env vars, so a managed timezone / redact_secrets / max_turns / terminal
             # setting wins over the user's value at the env layer too. This bridge
-            # reads config.yaml directly (not via load_config), so without the
+            # reads config.toml directly (not via load_config), so without the
             # overlay every SON_OF_ANTON_*/TERMINAL_* env var below would carry the user's
             # value even when an administrator pinned it. Fail-open via the helper.
             try:
@@ -2120,7 +2120,7 @@ def _bridge_gateway_config_to_env() -> None:
                 if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                     os.environ[_key] = str(_val)
             # Terminal config is nested — bridge to TERMINAL_* env vars.
-            # config.yaml overrides .env for these since it's the documented config path.
+            # config.toml overrides .env for these since it's the documented config path.
             _terminal_cfg = _cfg.get("terminal", {})
             if _terminal_cfg and isinstance(_terminal_cfg, dict):
                 _terminal_backend = str(
@@ -2146,7 +2146,7 @@ def _bridge_gateway_config_to_env() -> None:
                         # Skip cwd placeholder values (".", "auto", "cwd") — the
                         # gateway resolves these to Path.home() later (line ~255).
                         # Writing the raw placeholder here would just be noise.
-                        # Only bridge explicit absolute paths from config.yaml.
+                        # Only bridge explicit absolute paths from config.toml.
                         if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
                             continue
                         # Expand shell tilde in the local cwd so subprocess.Popen
@@ -2162,7 +2162,7 @@ def _bridge_gateway_config_to_env() -> None:
                             os.environ[_env_var] = json.dumps(_val)
                         else:
                             os.environ[_env_var] = str(_val)
-            # Compaction config is read directly from config.yaml by run_agent.py
+            # Compaction config is read directly from config.toml by run_agent.py
             # and auxiliary_client.py — no env var bridging needed.
             # Auxiliary model/direct-endpoint overrides (vision, web_extract,
             # approval, plus any plugin-registered auxiliary tasks).
@@ -2203,7 +2203,7 @@ def _bridge_gateway_config_to_env() -> None:
                         os.environ[f"AUXILIARY_{_upper}_BASE_URL"] = _base_url
                     if _api_key:
                         os.environ[f"AUXILIARY_{_upper}_API_KEY"] = _api_key
-            # config.yaml is the documented, authoritative source for these
+            # config.toml is the documented, authoritative source for these
             # settings — it unconditionally wins over .env values. Previously
             # the guards below read `if X not in os.environ` and let stale
             # .env entries (e.g. SON_OF_ANTON_MAX_ITERATIONS=60 written by an old
@@ -2234,7 +2234,7 @@ def _bridge_gateway_config_to_env() -> None:
                         _agent_cfg["session_stall_timeout"]
                     )
                 if "reconnect_attention_after" in _agent_cfg:
-                    # Internal bridge only — config.yaml (agent.reconnect_attention_after)
+                    # Internal bridge only — config.toml (agent.reconnect_attention_after)
                     # is the documented, user-facing setting.
                     os.environ["SON_OF_ANTON_RECONNECT_ATTENTION_AFTER_SECONDS"] = str(
                         _agent_cfg["reconnect_attention_after"]
@@ -2279,7 +2279,7 @@ def _bridge_gateway_config_to_env() -> None:
                     os.environ["SON_OF_ANTON_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(
                         _display_cfg["busy_steer_ack_enabled"]
                     )
-            # Timezone: bridge config.yaml → SON_OF_ANTON_TIMEZONE env var.
+            # Timezone: bridge config.toml → SON_OF_ANTON_TIMEZONE env var.
             _tz_cfg = _cfg.get("timezone", "")
             if _tz_cfg and isinstance(_tz_cfg, str):
                 os.environ["SON_OF_ANTON_TIMEZONE"] = _tz_cfg.strip()
@@ -2305,7 +2305,7 @@ def _bridge_gateway_config_to_env() -> None:
                 # connect path + Discord adapter ready-wait both read (#19776).
                 # Unlike the agent.*/display.* bridges above (config-authoritative),
                 # this env var is the manual-override escape hatch, so it WINS if
-                # already set explicitly; otherwise config.yaml supplies the value.
+                # already set explicitly; otherwise config.toml supplies the value.
                 if (
                     "platform_connect_timeout" in _gateway_cfg
                     and not os.environ.get("SON_OF_ANTON_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
@@ -2316,19 +2316,19 @@ def _bridge_gateway_config_to_env() -> None:
         except Exception as _bridge_err:
             # Previously this was silent (`except Exception: pass`), which
             # hid partial bridge failures and let .env defaults shadow
-            # config.yaml values — users observed max_turns=500 in config
+            # config.toml values — users observed max_turns=500 in config
             # but a 60-iteration cap in practice. Surface the failure to
             # stderr so operators see it even though `logger` is not yet
             # initialized at module-import time (logger is defined further
             # down this module).
             print(
-                f"  Warning: config.yaml → env bridge failed: "
+                f"  Warning: config.toml → env bridge failed: "
                 f"{type(_bridge_err).__name__}: {_bridge_err}",
                 file=sys.stderr,
             )
             print(
                 "  Gateway will fall back to .env values, which may not match "
-                "your current config.yaml. Run `son-of-anton doctor` to investigate.",
+                "your current config.toml. Run `son-of-anton doctor` to investigate.",
                 file=sys.stderr,
             )
 
@@ -2369,7 +2369,7 @@ os.environ["SON_OF_ANTON_QUIET"] = "1"
 # silent pending_approval with no Approve/Deny UI.
 
 # Set terminal working directory for messaging platforms.
-# config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
+# config.toml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
 # by the config bridge above).  Placeholder values are resolved per-backend —
 # see gateway/cwd_placeholder.py for the contract (local vs other backends).
 # MESSAGING_CWD is a backward-compat fallback.
@@ -2560,14 +2560,14 @@ _UNSET = object()
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
-    Provider is read from ``config.yaml`` ``model.provider`` (the single
+    Provider is read from ``config.toml`` ``model.provider`` (the single
     source of truth). ``resolve_runtime_provider()`` falls through to env
     var lookups internally for legacy compatibility, but the gateway does
-    not consult environment variables for behavioral config — config.yaml
+    not consult environment variables for behavioral config — config.toml
     is authoritative.
 
     If the primary provider fails with an authentication error, attempt to
-    resolve credentials using the fallback provider chain from config.yaml
+    resolve credentials using the fallback provider chain from config.toml
     before giving up.
     """
     from son_of_anton_cli.runtime_provider import (
@@ -3317,7 +3317,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
         line = line.strip()
         if line.startswith("name:"):
             raw = line.split(":", 1)[1].strip()
-            # Strip YAML quote wrappers if present
+            # Strip TOML quote wrappers if present
             if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
                 raw = raw[1:-1]
             declared_name = raw.strip()
@@ -3398,7 +3398,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
 
 def _platform_config_key(platform: "Platform") -> str:
-    """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
+    """Map a Platform enum to its config.toml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
@@ -3411,20 +3411,20 @@ def _gateway_config_home() -> Path:
 
 
 def _load_gateway_config(config_path: "Path | None" = None) -> dict:
-    """Load and parse a gateway config.yaml, returning {} on any error.
+    """Load and parse a gateway config.toml, returning {} on any error.
 
     Defaults to the active gateway home (so tests that monkeypatch
     ``_son_of_anton_home`` still see their fixture). Callers handling multiplexed
     profile routes may pass that profile's explicit config path. The canonical
-    path shares the mtime-keyed raw-yaml cache from
+    path shares the mtime-keyed raw-config cache from
     ``son_of_anton_cli.config.read_raw_config``.
 
     Managed scope is overlaid on the result (via the shared helper) so the
     gateway honors administrator-pinned values — neither read_raw_config nor a
-    direct yaml.safe_load carries the managed merge on its own. Fail-open.
+    direct TOML parse carries the managed merge on its own. Fail-open.
     """
     if config_path is None:
-        config_path = _gateway_config_home() / 'config.yaml'
+        config_path = _gateway_config_home() / 'config.toml'
     raw: dict = {}
     used_canonical = False
     try:
@@ -3442,14 +3442,14 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     if not used_canonical:
         try:
             if config_path.exists():
-                import yaml
+                import tomllib
                 with open(config_path, 'r', encoding='utf-8') as f:
-                    raw = yaml.safe_load(f) or {}
+                    raw = tomllib.loads(f.read()) or {}
         except Exception:
             logger.debug("Could not load gateway config from %s", config_path)
             raw = {}
 
-    # Overlay managed scope. read_raw_config() returns the user's raw YAML
+    # Overlay managed scope. read_raw_config() returns the user's raw TOML
     # WITHOUT the managed merge (that lives in load_config/_load_config_impl),
     # so the overlay is required on both paths for the gateway to honor pinned
     # values. Helper is fail-open and a no-op when no managed scope exists.
@@ -3462,7 +3462,7 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
         return {}
     # Canonicalize model-id aliases (model.name / model.model → model.default)
     # and migrate stale root-level provider/base_url into the model section.
-    # The gateway bypasses load_config() (it reads raw YAML for speed), so the
+    # The gateway bypasses load_config() (it reads raw TOML for speed), so the
     # normalization that load_config() applies must be replayed here or the
     # gateway would resolve an empty model for ``model: {name: <id>}`` configs
     # while the CLI resolves it correctly. See issue #34500. Fail-open.
@@ -3477,7 +3477,7 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
     """Translate gateway checkpoint config into ``AIAgent`` constructor args.
 
-    The gateway reads raw YAML instead of ``load_config()``, so checkpoint
+    The gateway reads raw TOML instead of ``load_config()``, so checkpoint
     defaults must be supplied here.  Keep legacy ``checkpoints: true`` configs
     working while giving every gateway-created agent the same limits.
     """
@@ -3507,7 +3507,7 @@ def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
     Runtime helpers should honor the same env-template expansion documented for
-    ``config.yaml`` while still respecting tests that monkeypatch
+    ``config.toml`` while still respecting tests that monkeypatch
     ``gateway.run._son_of_anton_home``. Build on ``_load_gateway_config()`` rather
     than calling the canonical loader directly so both behaviors stay aligned.
 
@@ -3524,13 +3524,13 @@ def _load_gateway_runtime_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read the gateway's model from config.yaml — single source of truth.
+    """Read the gateway's model from config.toml — single source of truth.
 
     ``gateway.model`` wins over ``model.default`` when set. One
     SON_OF_ANTON_HOME is now shared by a Signal service and that account's own
     CLI (that shared home is what makes a Signal session resumable from the
     terminal), so the two surfaces need separate defaults out of ONE
-    config.yaml: ``model.default`` is what the CLI opens with, ``gateway.model``
+    config.toml: ``model.default`` is what the CLI opens with, ``gateway.model``
     is what the service answers with. Unset, both get ``model.default`` and
     nothing changes.
 
@@ -4036,7 +4036,7 @@ _RECONNECT_BACKOFF_CAP = 300
 # owners and fleet monitoring can distinguish hour one from week three.
 # A dead bot token, a revoked Discord intent, or a deterministically crashing
 # sidecar all present as "retrying" forever without this signal.
-# User-facing setting: agent.reconnect_attention_after in config.yaml
+# User-facing setting: agent.reconnect_attention_after in config.toml
 # (bridged to this env var above). 0 disables.
 _RECONNECT_ATTENTION_AFTER_SECONDS = _float_env(
     "SON_OF_ANTON_RECONNECT_ATTENTION_AFTER_SECONDS", 7200
@@ -4148,7 +4148,7 @@ class TurnRunner:
                     if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
                         ctx.long_tool_hint_fired[0] = True
                         ctx.progress_queue.put(tool_progress_hint_gateway())
-                        mark_seen(_son_of_anton_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                        mark_seen(_son_of_anton_home / "config.toml", TOOL_PROGRESS_FLAG)
             except Exception as _hint_err:
                 logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
             return
@@ -5144,7 +5144,7 @@ class TurnRunner:
         # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
         
-        # Combine platform context, YAML channel_prompts hint for this chat,
+        # Combine platform context, TOML channel_prompts hint for this chat,
         # channel_overrides system_prompt (or global ephemeral), and gateway
         # ephemeral prompt from _get_system_prompt_for_channel.
         combined_ephemeral = ctx.context_prompt or ""
@@ -5468,7 +5468,7 @@ class TurnRunner:
                         reused_cached_agent = True
 
         # Lock released — refresh the fallback chain from disk for the
-        # reused agent OUTSIDE the cache lock (config.yaml read is disk
+        # reused agent OUTSIDE the cache lock (config.toml read is disk
         # I/O; the idle-sweep watcher contends on this lock and stalls
         # Discord heartbeats — same reasoning as #52197).  A chain
         # configured after this agent was cached (or after gateway start)
@@ -6552,7 +6552,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._session_db_init_error: Optional[str] = None
         _gateway_runner_ref = _weakref.ref(self)
 
-        # Load ephemeral config from config.yaml / env vars.
+        # Load ephemeral config from config.toml / env vars.
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
@@ -7869,7 +7869,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _restart_loop_guard_config(self) -> tuple:
         """Return ``(max_restarts, window_seconds, max_gap_seconds)`` for the
         auto-resume restart-loop breaker (#30719, defense-3), read from
-        ``gateway.restart_loop_guard`` in config.yaml with the module defaults
+        ``gateway.restart_loop_guard`` in config.toml with the module defaults
         as fallback. ``max_restarts <= 0`` disables the breaker.
 
         ``max_gap_seconds`` is the longest spacing between two consecutive
@@ -8492,7 +8492,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Load ephemeral prefill messages from config or env var.
         
         Checks SON_OF_ANTON_PREFILL_MESSAGES_FILE env var first, then falls back to
-        the top-level prefill_messages_file key in ~/.son-of-anton/config.yaml.
+        the top-level prefill_messages_file key in ~/.son-of-anton/config.toml.
         agent.prefill_messages_file is accepted as a legacy fallback.
         Relative paths are resolved from ~/.son-of-anton/.
         """
@@ -8526,7 +8526,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Load ephemeral system prompt from config or env var.
 
         Checks SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT env var first, then
-        ``display.personality`` / ``agent.system_prompt`` in config.yaml.
+        ``display.personality`` / ``agent.system_prompt`` in config.toml.
         """
         from son_of_anton_cli.config import resolve_ephemeral_system_prompt_from_config
 
@@ -8603,12 +8603,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     @staticmethod
     def _load_reasoning_config(model: str = "") -> dict | None:
-        """Load reasoning effort from config.yaml, respecting per-model overrides.
+        """Load reasoning effort from config.toml, respecting per-model overrides.
 
         Thin wrapper over the shared chokepoint
         :func:`son_of_anton_constants.resolve_reasoning_config` (per-model
         override > per-route custom declaration > model section > global
-        ``agent.reasoning_effort``; YAML boolean False = disabled).
+        ``agent.reasoning_effort``; TOML boolean False = disabled).
         Closes #21256.
 
         Args:
@@ -8624,7 +8624,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Parse `/reasoning` args into `(value, persist_global)`.
 
         `/reasoning <level>` is session-scoped by default. `--global` may be
-        supplied in any position to persist the change to config.yaml.
+        supplied in any position to persist the change to config.toml.
         """
         import shlex
 
@@ -8740,9 +8740,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     @staticmethod
     def _load_service_tier() -> str | None:
-        """Load Priority Processing setting from config.yaml.
+        """Load Priority Processing setting from config.toml.
 
-        Reads agent.service_tier from config.yaml. Accepted values mirror the CLI:
+        Reads agent.service_tier from config.toml. Accepted values mirror the CLI:
         "fast"/"priority"/"on" => "priority", while "normal"/"off" disables it.
         Returns None when unset or unsupported.
         """
@@ -8759,7 +8759,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     @staticmethod
     def _load_show_reasoning() -> bool:
-        """Load show_reasoning toggle from config.yaml display section."""
+        """Load show_reasoning toggle from config.toml display section."""
         cfg = _load_gateway_runtime_config()
         return is_truthy_value(
             cfg_get(cfg, "display", "show_reasoning"),
@@ -8936,7 +8936,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     @staticmethod
     def _load_provider_routing() -> dict:
-        """Load OpenRouter provider routing preferences from config.yaml."""
+        """Load OpenRouter provider routing preferences from config.toml."""
         try:
             # Canonical gateway loader (fail-open): managed overlay + ${VAR}
             # expansion now apply to provider_routing too.
@@ -8948,7 +8948,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     @staticmethod
     def _load_fallback_model() -> list | None:
-        """Load fallback provider chain from config.yaml.
+        """Load fallback provider chain from config.toml.
 
         Returns the merged effective chain from ``fallback_providers`` plus any
         legacy ``fallback_model`` entries. ``fallback_providers`` stays first
@@ -8974,14 +8974,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         reached messaging sessions even though the same process's cron jobs
         fell back correctly. Fixes #60955.
 
-        A TRANSIENT read/parse failure (user mid-edit of config.yaml with a
+        A TRANSIENT read/parse failure (user mid-edit of config.toml with a
         non-atomic write) keeps the last known-good chain instead of wiping a
         cached agent's working fallback for that turn.  Only a successful read
         that genuinely lacks the key clears the chain.
         """
         try:
             from son_of_anton_cli.config import read_user_config_raw
-            cfg_path = _son_of_anton_home / "config.yaml"
+            cfg_path = _son_of_anton_home / "config.toml"
             if not cfg_path.exists():
                 self._fallback_model = None
                 return self._fallback_model
@@ -9005,7 +9005,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             # Transient failure — keep last known-good chain.
             logger.debug(
-                "fallback_providers refresh: config.yaml read failed; "
+                "fallback_providers refresh: config.toml read failed; "
                 "keeping last known-good chain", exc_info=True,
             )
             return self._fallback_model
@@ -9706,7 +9706,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
-        # queue/interrupt knob.  Flag is persisted to config.yaml so it never
+        # queue/interrupt knob.  Flag is persisted to config.toml so it never
         # fires again on this install.
         try:
             from agent.onboarding import (
@@ -9729,7 +9729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     f"{message}\n\n"
                     f"{busy_input_hint_gateway(_hint_mode)}"
                 )
-                mark_seen(_son_of_anton_home / "config.yaml", BUSY_INPUT_FLAG)
+                mark_seen(_son_of_anton_home / "config.toml", BUSY_INPUT_FLAG)
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
@@ -11316,7 +11316,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
         """Arm the selector floor and out-of-loop watchdog before adapters.
 
-        Disabled entirely with ``gateway.loop_watchdog: false`` in config.yaml
+        Disabled entirely with ``gateway.loop_watchdog: false`` in config.toml
         (no env override — config-only knob, #69089).
         """
         config = getattr(self, "config", None)
@@ -11491,12 +11491,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception as _e:
             logger.debug("check_systemd_timing_alignment failed: %s", _e)
         # Log the resolved max_iterations budget so operators can verify the
-        # config.yaml → env bridge did the right thing at a glance (instead
+        # config.toml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
             _effective_max_iter = int(os.getenv("SON_OF_ANTON_MAX_ITERATIONS", "500"))
             logger.info(
-                "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
+                "Agent budget: max_iterations=%d (agent.max_turns from config.toml, "
                 "or SON_OF_ANTON_MAX_ITERATIONS from .env, or default 500)",
                 _effective_max_iter,
             )
@@ -11520,7 +11520,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "Secret redaction: DISABLED (SON_OF_ANTON_REDACT_SECRETS=%s). "
                     "API keys and tokens may appear verbatim in chat output, "
                     "session JSONs, and logs. Set security.redact_secrets: true "
-                    "in config.yaml to re-enable.",
+                    "in config.toml to re-enable.",
                     _redact_raw,
                 )
         except Exception:
@@ -11682,10 +11682,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "relay adapter registration failed at gateway startup", exc_info=True,
             )
 
-        # Register declarative shell hooks from cli-config.yaml.  Gateway
+        # Register declarative shell hooks from cli-config.toml.  Gateway
         # has no TTY, so consent has to come from one of the three opt-in
         # channels (--accept-hooks on launch, SON_OF_ANTON_ACCEPT_HOOKS env var,
-        # or hooks_auto_accept: true in config.yaml).  We pass
+        # or hooks_auto_accept: true in config.toml).  We pass
         # accept_hooks=False here and let register_from_config resolve
         # the effective value from env + config itself — the CLI-side
         # registration already honored --accept-hooks, and re-reading
@@ -11809,7 +11809,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if _pval not in _builtin_names:
                     logger.warning(
                         "No adapter for '%s' -- is the plugin installed? "
-                        "(platform is enabled in config.yaml but no plugin registered it)",
+                        "(platform is enabled in config.toml but no plugin registered it)",
                         _pval,
                     )
                 else:
@@ -12063,7 +12063,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     # Fall through to the normal "running" state — reconnect
                     # watcher takes it from here.
                 # All enabled platforms had no adapter (missing library or credentials).
-                # In fleet deployments the same config.yaml is shared across nodes that
+                # In fleet deployments the same config.toml is shared across nodes that
                 # may only have credentials for a subset of platforms.  Rather than
                 # failing hard, degrade gracefully and allow cron jobs to run (#5196).
                 logger.warning(
@@ -17203,7 +17203,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             f"Session automatically reset ({reason_text}). "
                             f"Conversation history cleared.\n"
                             f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
+                            f"Adjust reset timing in config.toml under session_reset."
                         )
                         try:
                             # Still off-loop: resolution can do blocking work
@@ -17329,7 +17329,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 get_model_context_length_async,
             )
 
-            # Read model + compaction config from config.yaml.
+            # Read model + compaction config from config.toml.
             # NOTE: hygiene threshold is intentionally HIGHER than the agent's
             # own compactor (0.85 vs 0.50).  Hygiene is a safety net for
             # sessions that grew too large between turns — it fires pre-agent
@@ -18051,7 +18051,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                             f"Configured compaction model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
                                             "model — context is intact — but you may want to "
-                                            "check `auxiliary.compaction.model` in config.yaml."
+                                            "check `auxiliary.compaction.model` in config.toml."
                                         )
                                         try:
                                             _adapter = self._adapter_for_source(source)
@@ -18093,7 +18093,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # for a consent-gated directive that offers to build a user
             # profile and persists confirmed facts via memory(target="user").
             # The offer fires at most once (onboarding.seen flag); set
-            # onboarding.profile_build: off in config.yaml to disable.
+            # onboarding.profile_build: off in config.toml to disable.
             try:
                 from agent.onboarding import (
                     PROFILE_BUILD_FLAG,
@@ -18108,7 +18108,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG)
                 ):
                     turn_sidecar_notes.append(profile_build_directive().strip())
-                    mark_seen(_son_of_anton_home / "config.yaml", PROFILE_BUILD_FLAG)
+                    mark_seen(_son_of_anton_home / "config.toml", PROFILE_BUILD_FLAG)
                 else:
                     turn_sidecar_notes.append(_intro_note)
             except Exception as _pb_err:
@@ -18133,7 +18133,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 home_env = ""
             if not home_env:
                 home_env = (os.getenv(env_key) or "").strip() if env_key else ""
-            # Also honor in-memory / yaml home_channel on this platform.
+            # Also honor in-memory / configured home_channel on this platform.
             try:
                 if not home_env and self.config.get_home_channel(source.platform):
                     home_env = "set"
@@ -20409,7 +20409,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # Shutdown existing connections
             await loop.run_in_executor(None, shutdown_mcp_servers)
 
-            # Reconnect by discovering tools (reads config.yaml fresh)
+            # Reconnect by discovering tools (reads config.toml fresh)
             new_tools = await loop.run_in_executor(None, discover_mcp_tools)
 
             # Compute what changed
@@ -20576,7 +20576,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     else:
                         logger.warning(
                             "Could not persist destructive_slash_confirm=false "
-                            "(session=%s); config.yaml is not writable",
+                            "(session=%s); config.toml is not writable",
                             session_key,
                         )
                 except Exception as exc:
@@ -20589,7 +20589,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     note = (
                         "\n\nFuture /clear, /new, /reset, and /undo will run "
                         "without confirmation. Re-enable via "
-                        "`approvals.destructive_slash_confirm: true` in config.yaml."
+                        "`approvals.destructive_slash_confirm: true` in config.toml."
                     )
                 else:
                     # The user did approve this run, so the action still goes
@@ -20597,10 +20597,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     # will be back next time. Say so rather than promising an
                     # opt-out that was never written.
                     note = (
-                        "\n\nCould not save that preference (config.yaml is not "
+                        "\n\nCould not save that preference (config.toml is not "
                         "writable), so /clear, /new, /reset, and /undo will ask "
                         "again next time. To silence it permanently, set "
-                        "`approvals.destructive_slash_confirm: false` in config.yaml."
+                        "`approvals.destructive_slash_confirm: false` in config.toml."
                     )
                 if isinstance(result, str):
                     return result + note
@@ -20696,7 +20696,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return message
 
     def _read_user_config(self) -> Dict[str, Any]:
-        """Read the user's raw config.yaml (cached) for gate lookups.
+        """Read the user's raw config.toml (cached) for gate lookups.
 
         Used by slash-confirm gates that must reflect on-disk state changes
         (e.g. a prior "Always Approve" click) without a gateway restart.
@@ -21528,7 +21528,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         agent/image_routing.py for the full decision table.
 
         Gateway sessions can have /model overrides that live outside
-        config.yaml. Image preprocessing runs before AIAgent sets the
+        config.toml. Image preprocessing runs before AIAgent sets the
         auxiliary_client runtime globals, so resolve the same per-session
         runtime bundle the upcoming agent turn will use instead of consulting
         only the persisted default model.
@@ -23165,7 +23165,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         The live tool registry generation is included too.  MCP reloads and
         dynamic MCP tool-list changes mutate the registry without necessarily
-        changing config.yaml.  Cached AIAgent instances freeze their tool
+        changing config.toml.  Cached AIAgent instances freeze their tool
         schemas at construction time, so a registry generation change must
         rebuild the agent before the next turn.
         """
@@ -23226,7 +23226,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         that should invalidate the cache when they change.  Callers pass
         the output of ``_extract_cache_busting_config(user_config)`` so
         edits to model.context_length, compaction.*, or a per-model
-        custom-provider context_length in config.yaml are picked up on the
+        custom-provider context_length in config.toml are picked up on the
         next gateway message without a manual restart.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
@@ -23503,7 +23503,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         The gateway /model command stores per-session overrides in
         ``_session_model_overrides``.  These must take precedence over
-        config.yaml defaults so the switched model is actually used for
+        config.toml defaults so the switched model is actually used for
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
@@ -24688,7 +24688,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Return the proxy URL if proxy mode is configured, else None.
 
         Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
-        then ``gateway.proxy_url`` in config.yaml.
+        then ``gateway.proxy_url`` in config.toml.
         """
         url = os.getenv("GATEWAY_PROXY_URL", "").strip()
         if url:
@@ -24766,7 +24766,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Forward the message to a remote Son of Anton API server instead of
         running a local AIAgent.
 
-        When ``GATEWAY_PROXY_URL`` (or ``gateway.proxy_url`` in config.yaml)
+        When ``GATEWAY_PROXY_URL`` (or ``gateway.proxy_url`` in config.toml)
         is set, the gateway becomes a thin relay: it handles platform I/O
         (encryption, threading, media) and delegates all agent work to the
         remote server via ``POST /v1/chat/completions`` with SSE streaming.
@@ -25686,7 +25686,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         # Periodic "still working" notifications for long-running tasks.
         # Fires every N seconds so the user knows the agent hasn't died.
-        # Config: agent.gateway_notify_interval in config.yaml, or
+        # Config: agent.gateway_notify_interval in config.toml, or
         # SON_OF_ANTON_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("SON_OF_ANTON_AGENT_NOTIFY_INTERVAL", 180)
@@ -25836,7 +25836,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # but a hung API call or stuck tool with no activity for the
             # configured duration is caught and killed.  (#4815)
             #
-            # Config: agent.gateway_timeout in config.yaml, or
+            # Config: agent.gateway_timeout in config.toml, or
             # SON_OF_ANTON_AGENT_TIMEOUT env var (env var takes precedence).
             # Default 1800s (30 min inactivity).  0 = unlimited.
             _agent_timeout_raw = _float_env("SON_OF_ANTON_AGENT_TIMEOUT", 1800)
@@ -26107,7 +26107,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         "The agent may have been waiting on an API response."
                     )
                 _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
+                    "To increase the limit, set agent.gateway_timeout in config.toml "
                     "(value in seconds, 0 = no limit) and restart the gateway.\n"
                     "Try again, or use /reset to start fresh."
                 )
@@ -27739,9 +27739,9 @@ def main():
     
     config = None
     if args.config:
-        import yaml
+        import tomllib
         with open(args.config, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = tomllib.loads(f.read()) or {}
             config = GatewayConfig.from_dict(data)
     
     # start_gateway() performs the full graceful teardown (adapters

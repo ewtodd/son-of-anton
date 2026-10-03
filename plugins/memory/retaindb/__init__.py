@@ -12,7 +12,7 @@ Features:
 - Shared file store tools (upload, list, read, ingest, delete)
 - Explicit memory tools (profile, search, context, remember, forget)
 
-Config (env vars or son-of-anton config.yaml under retaindb:):
+Config (env vars or son-of-anton config.toml under retaindb:):
   RETAINDB_API_KEY     — API key (required)
   RETAINDB_BASE_URL    — API endpoint (default: https://api.retaindb.com)
   RETAINDB_PROJECT     — Project identifier (optional — defaults to "default")
@@ -45,12 +45,12 @@ _ASYNC_SHUTDOWN = object()
 
 
 def _load_retaindb_config() -> Dict[str, Any]:
-    """Return the ``memory.retaindb`` block from config.yaml (empty on any error).
+    """Return the ``memory.retaindb`` block from config.toml (empty on any error).
 
     Non-secret fields (``base_url``, ``project``) are persisted here by the
     Dashboard; the runtime must read them back when the matching env var is
     unset. The secret ``api_key`` continues to come through profile-scoped
-    secret resolution rather than config.yaml.
+    secret resolution rather than config.toml.
     """
     try:
         from son_of_anton_cli.config import load_config_readonly
@@ -562,8 +562,8 @@ class RetainDBMemoryProvider(MemoryProvider):
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        # Non-secret fields fall back to config.yaml (written by the Dashboard)
-        # when the env var is unset: env -> config.yaml -> default.
+        # Non-secret fields fall back to config.toml (written by the Dashboard)
+        # when the env var is unset: env -> config.toml -> default.
         provider_config = _load_retaindb_config()
         api_key = get_secret("RETAINDB_API_KEY", "") or ""
         base_url_raw = (
@@ -573,7 +573,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         )
         base_url = re.sub(r"/+$", "", base_url_raw)
 
-        # Project resolution: RETAINDB_PROJECT > config.yaml project > son-of-anton-<profile> > "default"
+        # Project resolution: RETAINDB_PROJECT > config.toml project > son-of-anton-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.
         explicit = os.environ.get("RETAINDB_PROJECT") or _config_str(provider_config.get("project"))
         if explicit:

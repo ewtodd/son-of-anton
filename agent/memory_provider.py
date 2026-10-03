@@ -356,7 +356,7 @@ class MemoryProvider(ABC):
         ``values`` contains only non-secret fields (secrets go to .env).
         ``son_of_anton_home`` is the active SON_OF_ANTON_HOME directory path.
 
-        Providers with native config files (JSON, YAML) should override
+        Providers with native config files (JSON, TOML) should override
         this to write to their expected location. Providers that use only
         env vars can leave the default (no-op).
 

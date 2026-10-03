@@ -161,8 +161,8 @@ son-of-anton/
 │   ├── model-providers/  # Inference backend plugins (custom)
 │   ├── platforms/        # discord, slack adapters
 │   └── web/              # Web-search provider plugins (exa, tavily, firecrawl, ...)
-├── physics_intern/       # Vendored physics mode (Autophysicist)
-│   ├── llm.py            # OpenAI-compatible layer resolving endpoints from config.yaml
+├── autophysicist/       # Vendored physics mode (Autophysicist)
+│   ├── llm.py            # OpenAI-compatible layer resolving endpoints from config.toml
 │   └── verification/     # Experimental verification (RESULTS.txt, formal eval)
 ├── problems/             # Toy physics problems (cobalt_calibration, bromine_halflife, ...)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
@@ -171,7 +171,7 @@ son-of-anton/
 └── tests/                # Pytest suite (small, focused set — see "Testing")
 ```
 
-**User config:** `~/.son-of-anton/config.yaml` (settings), `~/.son-of-anton/.env` (secrets only).
+**User config:** `~/.son-of-anton/config.toml` (settings), `~/.son-of-anton/.env` (secrets only).
 **Logs:** `~/.son-of-anton/logs/` — `agent.log` (INFO+), `errors.log` (WARNING+),
 `gateway.log` when running the gateway. Profile-aware via `get_son_of_anton_home()`.
 Browse with `son-of-anton logs [--follow] [--level ...] [--session ...]`.
@@ -281,12 +281,12 @@ subclasses `SonOfAntonCLI`), so every CLI option applies to it unchanged.
   used by the agent loop (`agent/conversation_loop.py`,
   `agent/tool_executor.py`) while streaming; the TUI shows the same
   activity in its transcript.
-- `load_cli_config()` in cli.py merges hardcoded defaults + user config YAML.
+- `load_cli_config()` in cli.py merges hardcoded defaults + user config TOML.
 - **Skin engine** (`son_of_anton_cli/skin_engine.py`) — data-driven theming;
   initialized from `display.skin` at startup. Skins are pure data (colors,
   spinner faces/verbs, tool prefix, branding) — built-ins: `default`,
   `ares`, `mono`, `slate`, `daylight`, `warm-lightmode`, `poseidon`,
-  `sisyphus`, `charizard`, plus user skins in `~/.son-of-anton/skins/*.yaml`.
+  `sisyphus`, `charizard`, plus user skins in `~/.son-of-anton/skins/*.toml`.
   `/skin <name>` switches live.
 - `process_command()` dispatches on the canonical command name resolved via
   `resolve_command()` from the central registry (`son_of_anton_cli/commands.py`).
@@ -352,17 +352,17 @@ alternation stays intact.
 
 ---
 
-## Physics Mode (physics_intern/)
+## Physics Mode (autophysicist/)
 
-- `physics_intern/llm.py` resolves endpoints in order: `physics.base_url` (config.yaml) →
+- `autophysicist/llm.py` resolves endpoints in order: `physics.base_url` (config.toml) →
   provider defaults (openai → `api.openai.com`) →
   `custom_providers.<provider>.base_url` → `http://127.0.0.1:8080/v1`. Retry +
   context-length detection included.
 - Autophysicist is a callable `run_autophysicist(...)`; runs are driven
   explicitly by the `son-of-anton problem run` subcommand
-  (`son_of_anton_cli/subcommands/problem.py` → `physics_intern.run.run_problem`),
+  (`son_of_anton_cli/subcommands/problem.py` → `autophysicist.run.run_problem`),
   and chat agents (CLI or gateway) invoke it through their terminal.
-- **Experimental verification** (`physics_intern/verification/experimental.py`): numeric
+- **Experimental verification** (`autophysicist/verification/experimental.py`): numeric
   `checks` against a problem spec, workspace `RESULTS.txt` (`key = value`), optional
   checker script, `FORMAL_EVAL.md`. Toy problems live in `problems/` (data synthesized by
   the model — real UM-ANSG data is private).
@@ -378,7 +378,7 @@ a known limitation, not a bug.
 
 Before adding any tool, settle the footprint question first (see "The Footprint Ladder"):
 most capabilities should NOT be core tools. For custom or local-only tools, use the plugin
-route: create `~/.son-of-anton/plugins/<name>/plugin.yaml` and
+route: create `~/.son-of-anton/plugins/<name>/plugin.toml` and
 `~/.son-of-anton/plugins/<name>/__init__.py`, then register tools with
 `ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be enabled
 or disabled without touching `tools/` or `toolsets.py`.
@@ -435,7 +435,7 @@ When adding a dependency to `pyproject.toml`: pin `>=current,<next_major` (post-
 
 ## Adding Configuration
 
-### config.yaml options:
+### config.toml options:
 1. Add to `DEFAULT_CONFIG` in `son_of_anton_cli/config_defaults.py`.
 2. Bump `_config_version` ONLY for migrations that transform existing user config.
    Adding a new key to an existing section is handled by the deep-merge — no bump needed.
@@ -445,23 +445,23 @@ When adding a dependency to `pyproject.toml`: pin `>=current,<next_major` (post-
    (`description`, `prompt`, `url`, `password`, `category`).
 
 Non-secret settings (timeouts, thresholds, feature flags, paths, display prefs) belong in
-`config.yaml`, not `.env`. If internal code needs an env var mirror, bridge it from
-config.yaml in code.
+`config.toml`, not `.env`. If internal code needs an env var mirror, bridge it from
+config.toml in code.
 
 ### Config loaders (three paths — know which one you're in):
 
 | Loader | Used by | Location |
 |--------|---------|----------|
-| `load_cli_config()` | CLI mode | `cli.py` — merges CLI-specific defaults + user YAML |
-| `load_config()` | `son-of-anton tools`, `son-of-anton setup`, most subcommands | `son_of_anton_cli/config.py` — merges `DEFAULT_CONFIG` + user YAML |
-| Direct YAML load | Gateway runtime | `gateway/run.py` + `gateway/config.py` — reads user YAML raw |
+| `load_cli_config()` | CLI mode | `cli.py` — merges CLI-specific defaults + user TOML |
+| `load_config()` | `son-of-anton tools`, `son-of-anton setup`, most subcommands | `son_of_anton_cli/config.py` — merges `DEFAULT_CONFIG` + user TOML |
+| Direct TOML load | Gateway runtime | `gateway/run.py` + `gateway/config.py` — reads user TOML raw |
 
 If a new key is visible in the CLI but not the gateway (or vice versa), you're on the
 wrong loader.
 
 ### Working directory:
 - **CLI** — the process's current directory (`os.getcwd()`).
-- **Messaging** — `terminal.cwd` from `config.yaml`; the gateway bridges this to the
+- **Messaging** — `terminal.cwd` from `config.toml`; the gateway bridges this to the
   `TERMINAL_CWD` env var for child tools.
 
 ## Skin/Theme System
@@ -470,9 +470,9 @@ wrong loader.
 Built-ins: `default` (classic gold), `ares` (crimson/bronze), `mono` (grayscale),
 `slate` (cool blue), `daylight` (light bg), `warm-lightmode` (light bg, warm brown/gold),
 `poseidon` (deep blue/seafoam), `sisyphus` (austere grayscale), `charizard`
-(volcanic orange/ember). User skins drop into `~/.son-of-anton/skins/<name>.yaml` and
+(volcanic orange/ember). User skins drop into `~/.son-of-anton/skins/<name>.toml` and
 inherit missing values from `default`. Activate with `/skin <name>` or `display.skin` in
-config.yaml. See the file for the full key list (colors, spinner faces/verbs/wings, tool
+config.toml. See the file for the full key list (colors, spinner faces/verbs/wings, tool
 prefix, branding).
 
 ## Plugins
@@ -505,7 +505,7 @@ existing precedent, not an invitation.)
 
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
-Pluggable memory backends, activated by name via `memory.provider` in config.yaml.
+Pluggable memory backends, activated by name via `memory.provider` in config.toml.
 Built-in providers: **honcho, mem0, supermemory, byterover, hindsight, holographic,
 openviking, retaindb**. Each implements the `MemoryProvider` ABC (see
 `agent/memory_provider.py`), orchestrated by `agent/memory_manager.py`.
@@ -519,7 +519,7 @@ providers are welcome.
 Inference backend profiles, each calling `providers.register_provider(ProviderProfile(...))`
 at module load. The fork ships **custom**; user plugins of the same name
 override bundled ones (last-writer-wins). Local endpoints (llama-swap, ollama, vllm) are
-configured as `custom_providers` in config.yaml — not as registry entries.
+configured as `custom_providers` in config.toml — not as registry entries.
 
 ## Skills
 
@@ -560,7 +560,7 @@ write_file, patch, search_files), vision_analyze, skills (list/view/manage), tod
 session_search, clarify, execute_code, delegate_task, cronjob.
 
 Enable/disable per platform via `son-of-anton tools` (the curses UI) or the
-`tools.<platform>.enabled` / `tools.<platform>.disabled` lists in `config.yaml`.
+`tools.<platform>.enabled` / `tools.<platform>.disabled` lists in `config.toml`.
 
 ## Delegation (`delegate_task`)
 
@@ -684,7 +684,7 @@ features. Add tests when fixing a bug or adding a feature, not as snapshots of c
 
 ### Pre-commit hooks
 
-`.pre-commit-config.yaml` wires the local gates (no CI by design — they are fast):
+`.pre-commit-config.toml` wires the local gates (no CI by design — they are fast):
 
 ```bash
 nix develop -c pre-commit install   # one time

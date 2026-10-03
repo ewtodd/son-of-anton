@@ -1,14 +1,16 @@
 ---
-name: simplify-code
-description: "Parallel 4-agent cleanup of recent code changes."
-version: 1.1.0
-author: Son of Anton Agent (inspired by Claude Code /simplify)
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  son-of-anton:
-    tags: [code-review, cleanup, refactor, delegation, subagent, parallel, simplify]
-    related_skills: [requesting-code-review, test-driven-development, plan]
+name = "simplify-code"
+description = "Parallel 4-agent cleanup of recent code changes."
+version = "1.1.0"
+author = "Son of Anton Agent (inspired by Claude Code /simplify)"
+license = "MIT"
+platforms = ["linux", "macos", "windows"]
+
+[metadata]
+
+[metadata.son-of-anton]
+tags = ["code-review", "cleanup", "refactor", "delegation", "subagent", "parallel", "simplify"]
+related_skills = ["requesting-code-review", "test-driven-development", "plan"]
 ---
 
 # Simplify Code — Parallel Review & Cleanup

@@ -1454,7 +1454,7 @@ class GatewaySlashCommandsMixin:
         """Handle /perm — set the permission mode (default|ask|lockdown|yolo).
 
         Maps onto the approval machinery (approvals.mode +
-        security.lockdown in config.yaml):
+        security.lockdown in config.toml):
 
           default  — smart approvals (the out-of-the-box behaviour)
           ask      — manual approval for every dangerous command
@@ -1492,7 +1492,7 @@ class GatewaySlashCommandsMixin:
           /model <name>                       — switch model (this session only)
           /model <name> --once                — switch for the next turn only
           /model <name> --session             — switch for this session only (explicit)
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name> --global              — switch and persist to config.toml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
           /model auto                         — clear the session pin, re-enable routing
@@ -1555,7 +1555,7 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
-        config_path = _son_of_anton_home / "config.yaml"
+        config_path = _son_of_anton_home / "config.toml"
         try:
             cfg = _load_gateway_config(config_path=config_path)
             if cfg:
@@ -2097,7 +2097,7 @@ class GatewaySlashCommandsMixin:
                     # otherwise ``cfg.setdefault("model", {})`` returns the existing
                     # scalar and the next assignment raises
                     # ``TypeError: 'str' object does not support item assignment``.
-                    # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
+                    # Reproduces when ``config.toml`` has ``model: <name>`` (flat
                     # string) instead of the proper nested ``model: {default: ...}``.
                     raw_model = cfg.get("model")
                     if isinstance(raw_model, dict):
@@ -2668,7 +2668,7 @@ class GatewaySlashCommandsMixin:
             ),
         )
 
-        # config.yaml is canonical because it can persist the authenticated
+        # config.toml is canonical because it can persist the authenticated
         # logical-target provenance required by Relay after a restart.
         try:
             persist_home_channel(home, enabled_if_new=not via_relay)
@@ -2910,11 +2910,11 @@ class GatewaySlashCommandsMixin:
         return t("gateway.background.started", preview=preview, task_id=task_id)
 
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
-        """Save a dot-separated key to config.yaml (shared by /reasoning, /fast
+        """Save a dot-separated key to config.toml (shared by /reasoning, /fast
         and their interactive pickers)."""
         from gateway.run import _son_of_anton_home
         from son_of_anton_cli.config import read_user_config_raw
-        config_path = _son_of_anton_home / "config.yaml"
+        config_path = _son_of_anton_home / "config.toml"
         try:
             # Write-back round-trip: raw read is correct (merged defaults must
             # not be persisted back to the user's file).
@@ -3061,7 +3061,7 @@ class GatewaySlashCommandsMixin:
         Usage:
             /reasoning                       Show current effort level and display state
             /reasoning <level>               Set reasoning effort for this session only
-            /reasoning <level> --global      Persist reasoning effort to config.yaml
+            /reasoning <level> --global      Persist reasoning effort to config.toml
             /reasoning reset                 Clear this session's reasoning override
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
@@ -3150,7 +3150,7 @@ class GatewaySlashCommandsMixin:
 
         Memory entries are small enough to review inline in a chat bubble, so
         the full pending/approve/reject/approval flow works on every platform.
-        Gate changes persist to config.yaml and evict the cached agent so the
+        Gate changes persist to config.toml and evict the cached agent so the
         new setting takes effect on the next message.
         """
         from gateway.run import _son_of_anton_home
@@ -3161,7 +3161,7 @@ class GatewaySlashCommandsMixin:
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
         session_key = self._session_key_for_source(event.source)
-        config_path = _son_of_anton_home / "config.yaml"
+        config_path = _son_of_anton_home / "config.toml"
 
         def _set_approval(enabled: bool):
             # Write-back round-trip: raw read is correct (merged defaults must
@@ -3209,7 +3209,7 @@ class GatewaySlashCommandsMixin:
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
         session_key = self._session_key_for_source(event.source)
-        config_path = _son_of_anton_home / "config.yaml"
+        config_path = _son_of_anton_home / "config.toml"
 
         gate_on = wa.write_approval_enabled(wa.SKILLS)
         wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
@@ -3285,7 +3285,7 @@ class GatewaySlashCommandsMixin:
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.
 
-        Gated by ``display.tool_progress_command`` in config.yaml (default off).
+        Gated by ``display.tool_progress_command`` in config.toml (default off).
         When enabled, cycles the tool progress mode through off → new → all →
         verbose → off for the *current platform*.  The setting is saved to
         ``display.platforms.<platform>.tool_progress`` so each channel can
@@ -3293,7 +3293,7 @@ class GatewaySlashCommandsMixin:
         """
         from gateway.run import _son_of_anton_home, _load_gateway_config, _platform_config_key
 
-        config_path = _son_of_anton_home / "config.yaml"
+        config_path = _son_of_anton_home / "config.toml"
         platform_key = _platform_config_key(event.source.platform)
 
         # --- check config gate ------------------------------------------------

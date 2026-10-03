@@ -5,7 +5,7 @@ Implements ``son-of-anton mcp add/remove/list/test/configure`` for interactive
 MCP server lifecycle management (issue #690 Phase 2).
 
 Relies on tools/mcp_tool.py for connection/discovery and keeps
-configuration in ~/.son-of-anton/config.yaml under the ``mcp_servers`` key.
+configuration in ~/.son-of-anton/config.toml under the ``mcp_servers`` key.
 """
 
 import asyncio
@@ -86,7 +86,7 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
 
 
 def _save_mcp_server(name: str, server_config: dict) -> bool:
-    """Add or update a server entry in config.yaml.
+    """Add or update a server entry in config.toml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is
     rejected. MCP stdio servers are user-chosen local commands, so this blocks
@@ -105,7 +105,7 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
 
 
 def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.yaml.  Returns True if it existed."""
+    """Remove a server from config.toml.  Returns True if it existed."""
     config = load_config()
     servers = config.get("mcp_servers", {})
     if name not in servers:
@@ -118,7 +118,7 @@ def _remove_mcp_server(name: str) -> bool:
 
 
 def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
-    """Replace the WHOLE ``mcp_servers`` map in config.yaml.
+    """Replace the WHOLE ``mcp_servers`` map in config.toml.
 
     Unlike ``_save_mcp_server`` (per-key upsert), this sets the entire map so
     the GUI's mcp.json editor can delete servers, drop an ``enabled: false``
@@ -187,7 +187,7 @@ def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
 
     ``token`` is a one-time provisioning value. It is normalized and written
     only to ``.env``; callers persist the returned interpolation template in
-    ``config.yaml``.
+    ``config.toml``.
     """
     normalized = _strip_bearer_prefix(token)
     if not normalized or normalized.lower() == "bearer":
@@ -633,7 +633,7 @@ def cmd_mcp_add(args):
     server_config["enabled"] = True
     if _save_mcp_server(name, server_config):
         print()
-        _success(f"Saved '{name}' to {display_son_of_anton_home()}/config.yaml ({tool_count}/{total} tools enabled)")
+        _success(f"Saved '{name}' to {display_son_of_anton_home()}/config.toml ({tool_count}/{total} tools enabled)")
         _info("Start a new session to use these tools.")
 
 
@@ -873,7 +873,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             _info(
                 "Some providers (e.g. Google Drive, Atlassian) do not support "
                 "automatic client registration. For those you must create an "
-                "OAuth client yourself and add its credentials to config.yaml:"
+                "OAuth client yourself and add its credentials to config.toml:"
             )
             print()
             print(color("    mcp_servers:", Colors.DIM))

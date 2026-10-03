@@ -1,6 +1,6 @@
 """The compress → compact rename must carry persisted state with it.
 
-Two things outlive a code rename: the user's config.yaml (``compression`` /
+Two things outlive a code rename: the user's config.toml (``compression`` /
 ``auxiliary.compression`` sections, ``context.engine: compressor``) and the
 sessions table (``end_reason = 'compression'`` boundary markers and
 ``agent.compression*`` provenance stamps). Both migrate exactly once, and a

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from physics_intern.utils.api_docs import (
+from autophysicist.utils.api_docs import (
     INDEX_TOOL,
     READ_TOOL,
     ApiDocsToolset,
@@ -212,7 +212,7 @@ def test_the_toolset_declines_to_exist_with_nothing_to_serve(tmp_path) -> None:
 def test_the_composite_merges_sources_without_duplicating_names(
     header_dir: Path,
 ) -> None:
-    from physics_intern.utils.mcp import CompositeToolset
+    from autophysicist.utils.mcp import CompositeToolset
 
     docs = _toolset(header_dir)
     composite = CompositeToolset([docs, docs])

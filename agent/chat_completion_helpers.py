@@ -2504,7 +2504,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
         # causing oversized sessions to overflow the fallback.
         # Also pass _config_context_length so the explicit config override
-        # (model.context_length in config.yaml) is respected — without this,
+        # (model.context_length in config.toml) is respected — without this,
         # the fallback activation drops to 128K even when config says 204800.
         if hasattr(agent, 'context_compactor') and agent.context_compactor:
             from agent.model_metadata import get_model_context_length
@@ -2530,7 +2530,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).
         # Shared chokepoint: per-model override > global reasoning_effort
-        # (YAML boolean False = disabled). Wrapped in try/except because a
+        # (TOML boolean False = disabled). Wrapped in try/except because a
         # config load failure must not kill the swap.
         try:
             from son_of_anton_cli.config import load_config
@@ -3328,7 +3328,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call_chat_completions(stream_attempt_id: int):
         """Stream a chat completions response."""
         import httpx as _httpx
-        # Per-provider / per-model request_timeout_seconds (from config.yaml)
+        # Per-provider / per-model request_timeout_seconds (from config.toml)
         # wins over the SON_OF_ANTON_API_TIMEOUT env default if the user set it.
         _provider_timeout_cfg = get_provider_request_timeout(agent.provider, agent.model)
         _base_timeout = (
@@ -4232,7 +4232,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 "\n⚠  Streaming is not supported for this "
                                 "model/provider. Switching to non-streaming.\n"
                                 "   To avoid this delay, set display.streaming: false "
-                                "in config.yaml\n"
+                                "in config.toml\n"
                             )
                         logger.exception(
                             "Streaming failed before delivery: %s",
@@ -4279,7 +4279,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # local ceiling with SON_OF_ANTON_LOCAL_STREAM_STALE_TIMEOUT (documented in
     # website/docs/reference/environment-variables.md).
     if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        # Read config.yaml ``agent.local_stream_stale_timeout`` (default 900),
+        # Read config.toml ``agent.local_stream_stale_timeout`` (default 900),
         # env var ``SON_OF_ANTON_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch.
         _local_default = 900.0
         try:

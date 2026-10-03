@@ -136,7 +136,7 @@ def is_paused() -> bool:
 # ---------------------------------------------------------------------------
 
 def _load_config() -> Dict[str, Any]:
-    """Read curator.* config from ~/.son-of-anton/config.yaml. Tolerates missing file."""
+    """Read curator.* config from ~/.son-of-anton/config.toml. Tolerates missing file."""
     try:
         from son_of_anton_cli.config import load_config_readonly
         cfg = load_config_readonly()
@@ -417,7 +417,7 @@ CURATOR_DRY_RUN_BANNER = (
     "  • skills_list and skill_view are FINE — read as much as you need.\n"
     "\n"
     "Your output IS the deliverable. Produce the exact same "
-    "human-readable summary and structured YAML block you would "
+    "human-readable summary and structured TOML block you would "
     "produce on a live run — but describe the actions you WOULD take, "
     "not actions you took. A downstream reviewer will read the report "
     "and decide whether to approve a live run with "
@@ -548,7 +548,7 @@ CURATOR_REVIEW_PROMPT = (
     "`absorbed_into=<umbrella>` when you've merged its content into another "
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
-    "guessing from your YAML summary after the fact is fragile.\n"
+    "guessing from your TOML summary after the fact is fragile.\n"
     "  - terminal                       — move LOCAL candidate content into "
     "a support subfile when package integrity requires it; never mv, cp, rm, "
     "patch, or rewrite bundled, hub-installed, or external-dir skills\n\n"
@@ -565,7 +565,7 @@ CURATOR_REVIEW_PROMPT = (
     "block so downstream tooling can distinguish consolidation from "
     "pruning. Format EXACTLY:\n\n"
     "## Structured summary (required)\n"
-    "```yaml\n"
+    "```toml\n"
     "consolidations:\n"
     "  - from: <old-skill-name>\n"
     "    into: <umbrella-skill-name>\n"
@@ -754,14 +754,14 @@ def _classify_removed_skills(
 def _parse_structured_summary(
     llm_final: str,
 ) -> Dict[str, List[Dict[str, str]]]:
-    """Extract the structured YAML block from the curator's final response.
+    """Extract the structured TOML block from the curator's final response.
 
-    The curator prompt requires a fenced ```yaml block under
+    The curator prompt requires a fenced ```toml block under
     ``## Structured summary (required)`` with ``consolidations:`` and
     ``prunings:`` lists. This parses it tolerantly:
 
     - Missing block → returns empty lists (we'll fall back to heuristic).
-    - Malformed YAML → returns empty lists and we rely on heuristic.
+    - Malformed TOML → returns empty lists and we rely on heuristic.
     - Partial block (e.g. only consolidations) → returns what we could parse.
 
     Returns ``{"consolidations": [{"from", "into", "reason"}, ...],
@@ -771,7 +771,7 @@ def _parse_structured_summary(
     if not llm_final or not isinstance(llm_final, str):
         return empty
 
-    # Find the YAML fenced block. We look for ```yaml ... ``` specifically
+    # Find the TOML fenced block. We look for ```toml ... ``` specifically
     # rather than any fenced block so we don't accidentally pick up a code
     # sample the model quoted elsewhere.
     import re
@@ -785,11 +785,9 @@ def _parse_structured_summary(
 
     body = match.group(1)
 
-    # Prefer PyYAML when available — every son-of-anton install already has it
-    # (config.yaml loader). Fall back to a hand parser for paranoia.
     try:
-        import yaml  # type: ignore
-        data = yaml.safe_load(body)
+        import tomllib
+        data = tomllib.loads(body)
     except Exception:
         return empty
 
@@ -841,14 +839,14 @@ def _extract_absorbed_into_declarations(
     to pass ``absorbed_into=<umbrella>`` when consolidating, or
     ``absorbed_into=""`` when truly pruning. This is the single authoritative
     signal for classification — the model's own declaration at the moment of
-    deletion, which beats both post-hoc YAML summary parsing and substring
+    deletion, which beats both post-hoc TOML summary parsing and substring
     heuristics on other tool calls.
 
     Returns ``{skill_name: {"into": "<umbrella>" | "", "declared": True}}``.
     Entries with ``into == ""`` are explicit prunings.
     Skills without a ``skill_manage(delete)`` call, or with one that omitted
     ``absorbed_into``, are not in the returned dict — caller falls back to
-    the existing heuristic/YAML logic for those (backward compat with older
+    the existing heuristic/TOML logic for those (backward compat with older
     curator runs and any callers that don't populate the arg).
     """
     out: Dict[str, Dict[str, Any]] = {}
@@ -1169,7 +1167,7 @@ def _write_run_report(
     # into thinking consolidated skills had been pruned.
     #
     # Classification strategy:
-    # 1. Parse the curator's structured YAML block from its final response.
+    # 1. Parse the curator's structured TOML block from its final response.
     #    The curator is now prompted to emit consolidations/prunings lists
     #    with short rationale. The model has intent visibility the tool
     #    calls don't.
@@ -1186,7 +1184,7 @@ def _write_run_report(
     model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
     destinations = set(after_names) | set(added or [])
     # Authoritative signal: extract per-delete `absorbed_into` declarations
-    # from this run's tool calls. These beat both the YAML summary block and
+    # from this run's tool calls. These beat both the TOML summary block and
     # the substring heuristic — the model is telling us directly, at the
     # moment of deletion, whether each archived skill was consolidated
     # (into=<umbrella>) or pruned (into="").

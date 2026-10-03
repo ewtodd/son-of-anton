@@ -70,7 +70,7 @@ class _RecallResult:
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
+# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.toml.
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
@@ -180,7 +180,7 @@ def _local_runtime_hint(reason: str | None) -> str:
 
     ``local_embedded`` imports ``from hindsight import HindsightEmbedded``, which
     is provided only by the ``hindsight-all`` package (its wheel ships the
-    top-level ``hindsight`` module). ``plugin.yaml`` declares only
+    top-level ``hindsight`` module). ``plugin.toml`` declares only
     ``hindsight-client`` (enough for cloud / local_external), so a user who
     selected local_embedded without going through ``son-of-anton memory setup`` — a
     hand-written config, the legacy ``"mode": "local"`` alias, or a restored

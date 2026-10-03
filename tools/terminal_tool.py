@@ -1238,7 +1238,7 @@ _terminal_config_bridge_attempted = False
 
 
 def _ensure_terminal_env_bridged() -> None:
-    """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
+    """Backfill TERMINAL_* env vars from config.toml when no launcher did.
 
     terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*).
     The CLI (cli.py ``env_mappings``), the gateway (gateway/run.py
@@ -1247,10 +1247,10 @@ def _ensure_terminal_env_bridged() -> None:
     vars at startup — but processes that skip all of those paths (``son-of-anton
     serve`` / the Desktop app backend's in-process agents, the desktop cron
     ticker, ACP) used to silently fall back to the local backend even when
-    config.yaml selects ``terminal.backend: ssh``, running commands on the
+    config.toml selects ``terminal.backend: ssh``, running commands on the
     host the user intended to sandbox (#63141, #54449, #61115, #65696).
 
-    Explicit terminal config keys win: when config.yaml has a ``terminal``
+    Explicit terminal config keys win: when config.toml has a ``terminal``
     section, each key present there overrides its matching env value (which may
     be stale from ``son-of-anton setup``). Environment values for omitted terminal
     keys are preserved. When no terminal section exists, exported/.env values
@@ -1263,7 +1263,7 @@ def _ensure_terminal_env_bridged() -> None:
     try:
         from son_of_anton_cli.config import apply_terminal_config_to_env, read_raw_config
 
-        # If config.yaml has an explicit terminal section, bridge with
+        # If config.toml has an explicit terminal section, bridge with
         # override enabled. The helper only overrides env vars for keys present
         # in that raw section; merged defaults remain backfill-only. Without a
         # terminal section, preserve an existing TERMINAL_ENV selection or
@@ -1272,10 +1272,10 @@ def _ensure_terminal_env_bridged() -> None:
         has_terminal_section = isinstance(raw_config.get("terminal"), dict)
 
         if has_terminal_section:
-            # Explicit terminal keys in config.yaml win over matching env values.
+            # Explicit terminal keys in config.toml win over matching env values.
             apply_terminal_config_to_env(env=None, override=True)
         elif "TERMINAL_ENV" not in os.environ:
-            # No terminal section in config.yaml, TERMINAL_ENV not set —
+            # No terminal section in config.toml, TERMINAL_ENV not set —
             # backfill from config defaults
             apply_terminal_config_to_env(env=None, override=False)
     except Exception:

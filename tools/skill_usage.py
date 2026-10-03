@@ -384,7 +384,7 @@ def list_archived_skill_names() -> List[str]:
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
-    """Parse the `name:` field from a SKILL.md YAML frontmatter."""
+    """Parse the `name:` field from a SKILL.md TOML frontmatter."""
     try:
         text = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
     except OSError:

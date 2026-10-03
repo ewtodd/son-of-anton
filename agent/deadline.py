@@ -11,7 +11,7 @@ grows that list by one.  This module is the shared foundation the call sites
 migrate onto in later phases:
 
 * :func:`resolve_timeout` — one config-first resolution path for timeout
-  values (``timeouts:`` section in config.yaml > legacy env var > default),
+  values (``timeouts:`` section in config.toml > legacy env var > default),
   so new surfaces stop inventing ``SON_OF_ANTON_*_TIMEOUT`` env vars (".env is for
   secrets only") and hardcoded literals stop ignoring user config
   (#63302, #53161, #43272 class).
@@ -163,12 +163,12 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Timeout resolution: config.yaml ``timeouts:`` section > legacy env var >
+# Timeout resolution: config.toml ``timeouts:`` section > legacy env var >
 # registered default.
 # ---------------------------------------------------------------------------
 
 def _timeouts_section() -> dict:
-    """Read the ``timeouts:`` root section from config.yaml (read-only).
+    """Read the ``timeouts:`` root section from config.toml (read-only).
 
     Isolated for testability and so a broken config read can never take down
     the call path the timeout was protecting.
@@ -204,7 +204,7 @@ def resolve_timeout(
     Precedence (established by the ``providers.*.request_timeout_seconds``
     pattern — config wins over the legacy env var):
 
-    1. ``timeouts.<key>`` in config.yaml (dotted key walks nested maps, e.g.
+    1. ``timeouts.<key>`` in config.toml (dotted key walks nested maps, e.g.
        ``tools.concurrent_batch`` reads ``timeouts: {tools: {concurrent_batch: ...}}``)
     2. ``env_var`` when set and non-empty (legacy bridge — internal mechanism
        and back-compat only; new surfaces must not grow new user-facing
@@ -221,7 +221,7 @@ def resolve_timeout(
         # Explicit float() (clamp_timeout would also convert) so that invalid
         # config values FALL THROUGH to the env var / default instead of
         # resolving as unbounded — do not "simplify" this away. bool is
-        # rejected because YAML `true` would silently become a 1-second
+        # rejected because TOML `true` would silently become a 1-second
         # deadline; NaN is rejected for the same fall-through reason.
         if not isinstance(raw, bool):
             try:
@@ -230,7 +230,7 @@ def resolve_timeout(
                     return clamp_timeout(value)
             except (TypeError, ValueError):
                 pass
-        logger.warning("timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw)
+        logger.warning("timeouts.%s: invalid value %r in config.toml; ignoring", key, raw)
 
     if env_var:
         env_raw = os.getenv(env_var, "").strip()

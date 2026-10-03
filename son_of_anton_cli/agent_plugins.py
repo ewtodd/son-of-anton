@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
 
-from agent.skill_utils import yaml_load
+from agent.skill_utils import toml_load
 
 
 PLUGIN_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
@@ -222,16 +222,16 @@ def _discover_skills(
             content = skill_md.read_text(encoding="utf-8")
             content = content.lstrip("\ufeff")
             if not content.startswith("---"):
-                raise ValueError("missing YAML frontmatter")
+                raise ValueError("missing TOML frontmatter")
             end_match = re.search(r"\n---\s*\n", content[3:])
             if end_match is None:
-                raise ValueError("unterminated YAML frontmatter")
+                raise ValueError("unterminated TOML frontmatter")
             try:
-                parsed = yaml_load(content[3 : end_match.start() + 3])
+                parsed = toml_load(content[3 : end_match.start() + 3])
             except Exception as exc:
-                raise ValueError(f"invalid YAML frontmatter: {exc}") from exc
+                raise ValueError(f"invalid TOML frontmatter: {exc}") from exc
             if not isinstance(parsed, dict):
-                raise ValueError("YAML frontmatter must be an object")
+                raise ValueError("TOML frontmatter must be an object")
             frontmatter = parsed
         except (OSError, UnicodeError, ValueError) as exc:
             diagnostics.append(AgentPluginDiagnostic(scope, f"invalid SKILL.md: {exc}"))

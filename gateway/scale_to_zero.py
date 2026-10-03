@@ -20,7 +20,7 @@ no live background work, inbound-quiet) holds AND the dormant quiesce completed.
 Design constraints (decisions.md):
   - Per-instance enable is gated SOLELY by the NAS "Labs" toggle, carried to the
     gateway as the ``SON_OF_ANTON_SCALE_TO_ZERO`` env stamp (D11/Q8=A). NOT a user
-    config key; ``scale_to_zero.idle_timeout_minutes`` IS config.yaml (D2).
+    config key; ``scale_to_zero.idle_timeout_minutes`` IS config.toml (D2).
   - Arm only when messaging is relay-only or absent (D1/F6) AND a wakeUrl is
     registered (§3.4(1)) AND the flag is set.
   - Idle = no in-flight agent turn AND no inbound for N min AND no live
@@ -62,7 +62,7 @@ FLY_MACHINE_ID_ENV = "FLY_MACHINE_ID"
 FLY_API_SOCKET = "/.fly/api"
 
 
-# config.yaml default (D2). Behavioural setting -> config, not env.
+# config.toml default (D2). Behavioural setting -> config, not env.
 # 2 minutes: with the gateway owning the suspend (idle predicate covers agent
 # turns, cron, API runs, and background work; the relay drains + flips before
 # the freeze), a short window is safe — real work always blocks the suspend and
@@ -87,7 +87,7 @@ def scale_to_zero_enabled(environ: Optional[dict] = None) -> bool:
 def parse_idle_timeout_seconds(
     cfg_value: Any, default_minutes: int = DEFAULT_IDLE_TIMEOUT_MINUTES
 ) -> float:
-    """Coerce ``scale_to_zero.idle_timeout_minutes`` (config.yaml, D2) to seconds.
+    """Coerce ``scale_to_zero.idle_timeout_minutes`` (config.toml, D2) to seconds.
 
     Degrades to the default on any non-numeric / non-positive value (never raises,
     never returns <= 0 — a zero/negative timeout would make the gateway go dormant
