@@ -545,7 +545,10 @@ def run_autophysicist(
         )
 
         # Review the iteration from outside before the next one starts. One
-        # call, no tools, and it cannot fail the run.
+        # call, no tools, and it cannot fail the run. In human mode the same
+        # seam takes feedback from the terminal; the Manager sees either kind
+        # through exactly the same channel.
+        block_next_iteration = False
         if critique_every_n and iteration % critique_every_n == 0:
             critique = run_critique(
                 config=config,
@@ -556,10 +559,17 @@ def run_autophysicist(
                 iteration=iteration,
                 result=result,
             )
+            block_next_iteration = bool(getattr(critique, "block_next", False))
             if critique:
+                if (
+                    str(getattr(config, "critic_mode", "model")).strip().lower()
+                    == "human"
+                ):
+                    label = "Human critic"
+                else:
+                    label = f"Critic ({config.model_for_agent('critic')})"
                 console.print(
-                    f"  [cyan]Critic[/cyan] ({config.model_for_agent('critic')}): "
-                    f"{critique.splitlines()[0][:120]}"
+                    f"  [cyan]{label}[/cyan]: {critique.splitlines()[0][:120]}"
                 )
 
         _git_commit(workspace_root, iteration, result)
@@ -575,8 +585,14 @@ def run_autophysicist(
             (workspace_root / "ANSWER.md").write_text(answer_content + "\n")
             break
 
+        if block_next_iteration:
+            console.print(
+                "[yellow]Critic blocked the next iteration — stopping the run.[/yellow]"
+            )
+            break
+
     # --- Formal evaluation ---
-    _run_formal_verification(workspace_root, Path(problem_name + ".yaml"))
+    _run_formal_verification(workspace_root, Path(problem_name + ".toml"))
 
     # --- Final summary ---
     console.rule("[bold]Run Complete[/bold]")

@@ -14,6 +14,7 @@ verdict that gates anything. It must not be able to take the run down with it.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -240,3 +241,125 @@ def test_disabling_the_critic_is_visible() -> None:
     config = Config()
     config.critique_every_n = 0
     assert config.critique_every_n == 0
+
+
+# --- human critic mode -------------------------------------------------------
+
+
+def test_critic_mode_defaults_to_model() -> None:
+    assert Config().critic_mode == "model"
+
+
+def test_critic_mode_is_bridged_from_config(monkeypatch) -> None:
+    from autophysicist.core import models as models_module
+
+    monkeypatch.setattr(
+        models_module, "_physics_config", lambda: {"critic": {"mode": "human"}}
+    )
+    config = Config()
+    models_module.resolve_models(config)
+    assert config.critic_mode == "human"
+
+
+def test_the_verdict_is_parsed_from_an_editor_buffer() -> None:
+    buffer = (
+        "# Iteration 1 review\n"
+        "some scaffold\n"
+        "# --- feedback below this line ---\n"
+        "# ignore comments\n"
+        "The fit window clips the peak.\n"
+        "verdict = stalled\n"
+        "block_next = y\n"
+    )
+    text, verdict, block_next = critic_module._parse_human_response(buffer)
+    assert text == "The fit window clips the peak."
+    assert verdict == "stalled"
+    assert block_next is True
+
+
+def test_human_mode_injects_feedback_and_records_the_verdict(
+    pieces, monkeypatch
+) -> None:
+    memory, scratchpad, root = pieces
+    seen = {}
+
+    def fake_review(review, diff, workspace_root):
+        seen["review"] = review
+        return ("Check the waveform polarity before fitting.", "wrong_approach", True)
+
+    monkeypatch.setattr(critic_module, "_interactive_human_review", fake_review)
+    config = Config()
+    config.critic_mode = "human"
+
+    text = critic_module.run_critique(
+        config=config,
+        problem_text="p",
+        permanent_memory=memory,
+        scratchpad=scratchpad,
+        workspace_root=root,
+        iteration=2,
+        result=_Result(),
+    )
+
+    assert isinstance(text, str)
+    assert text == "Check the waveform polarity before fitting."
+    assert text.block_next is True
+    assert "Iteration 2" in seen["review"]
+    log = (Path(root) / "CRITIQUE_LOG.md").read_text()
+    assert "critic: human" in log
+    record = json.loads(
+        (Path(root) / "CRITIQUE_DATA.jsonl").read_text().splitlines()[0]
+    )
+    assert record["source"] == "human"
+    assert record["verdict"] == "wrong_approach"
+    assert record["block_next"] is True
+    assert record["text_sha256"]
+
+
+def test_human_mode_skips_without_an_editor_or_tty(pieces, monkeypatch) -> None:
+    import io
+
+    memory, scratchpad, root = pieces
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    config = Config()
+    config.critic_mode = "human"
+
+    text = critic_module.run_critique(
+        config=config,
+        problem_text="p",
+        permanent_memory=memory,
+        scratchpad=scratchpad,
+        workspace_root=root,
+        iteration=1,
+        result=_Result(),
+    )
+    assert text == ""
+    assert not (Path(root) / "CRITIQUE_DATA.jsonl").exists()
+
+
+def test_model_critiques_are_recorded_with_their_source(pieces, monkeypatch) -> None:
+    memory, scratchpad, root = pieces
+    monkeypatch.setattr(
+        "autophysicist.llm.call_llm",
+        lambda **kw: _Response("Looks fine."),
+    )
+    config = Config()
+    config.model = "manager-model"
+    config.agent_models = {"critic": "ds4"}
+
+    critic_module.run_critique(
+        config=config,
+        problem_text="p",
+        permanent_memory=memory,
+        scratchpad=scratchpad,
+        workspace_root=root,
+        iteration=4,
+        result=_Result(),
+    )
+    line = (Path(root) / "CRITIQUE_DATA.jsonl").read_text().splitlines()[0]
+    record = json.loads(line)
+    assert record["source"] == "model:ds4"
+    assert record["verdict"] is None
+    assert record["block_next"] is None

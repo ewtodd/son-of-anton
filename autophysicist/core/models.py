@@ -47,6 +47,14 @@ def resolve_models(config, model: str | None = None) -> None:
             config.critique_every_n = max(int(declared_critique), 0)
         except (TypeError, ValueError):
             pass
+    declared_critic = physics.get("critic")
+    critic_mode = ""
+    if isinstance(declared_critic, dict):
+        critic_mode = str(declared_critic.get("mode") or "").strip().lower()
+    if not critic_mode:
+        critic_mode = str(physics.get("critic_mode") or "").strip().lower()
+    if critic_mode in ("model", "human"):
+        config.critic_mode = critic_mode
     if not config.agent_models:
         declared = physics.get("agent_models")
         if isinstance(declared, dict):

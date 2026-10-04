@@ -428,6 +428,17 @@ DEFAULT_CONFIG = {
         # where a slower, more knowledgeable model earns its latency:
         #   agent_models: { critic: deepseek-v4-flash-local }
         "critique_every_n": 1,
+        # Who writes the critique: "model" (default) or "human".
+        #
+        # Human mode is for attended runs. Each critique prints the iteration's
+        # activity and `git diff`, opens $EDITOR for free-text feedback, then
+        # asks for a structured verdict (progress | stalled | wrong_approach |
+        # needs_help) and whether to block the next iteration. The text reaches
+        # the Manager through exactly the same channel as a model critique, so
+        # the Manager cannot tell the two apart. Every critique — model or
+        # human — is also appended to CRITIQUE_DATA.jsonl with its source for
+        # later analysis.
+        "critic": {"mode": "model"},
         "base_url": "",
         "api_key_env": "",
         # Base directory for physics run workspaces. Each run gets its own

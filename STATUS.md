@@ -55,6 +55,16 @@ All of the following is merged to `main` and deployed on e-desktop:
 - **Third-party YAML is only recognized, never parsed.** LSP/media detection
   still recognize `.yaml`/`.yml` for external projects, but nothing in Son of
   Anton parses them.
+- **Human critic mode.** `physics.critic.mode = "human"` for attended runs:
+  each critique renders the iteration's activity and `git diff HEAD`, opens
+  `$EDITOR`, and takes free-text feedback plus a structured verdict
+  (`progress | stalled | wrong_approach | needs_help`) and a block-next flag.
+  The text is injected through exactly the same channel as a model critique,
+  so the Manager cannot tell them apart. Every critique — model or human —
+  lands in `CRITIQUE_DATA.jsonl` (source, verdict, block flag, diff/text
+  hashes) and its provenance appears in the `CRITIQUE_LOG.md` header. No
+  editor and no TTY means the critique is skipped, the same fail-open contract
+  as a failed model critic.
 
 ## Known future work
 
@@ -124,7 +134,7 @@ Ordered by importance. Each item is independently scoped.
 - Repo `git@github.com:ewtodd/son-of-anton.git`, branch `main`. Sole
   authorship, no `Co-authored-by` trailers; the bot commit identity is in the
   repo git config.
-- Tests: `nix develop -c scripts/run_tests.sh` (735 tests, 68 files, ~35s).
+- Tests: `nix develop -c scripts/run_tests.sh` (741 tests, 68 files, ~35s).
   Pre-commit (`nix develop -c pre-commit install`) runs ruff plus that suite.
 - Deployment: `/etc/nixos` host `e-desktop`, flake input `son-of-anton`
   following `main`; bump the input and reactivate. Bifrost on oracle fronts

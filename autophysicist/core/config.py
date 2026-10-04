@@ -60,6 +60,11 @@ class Config:
     reasoning_effort: str = ""
     # Run the critic after every Nth iteration. 0 disables.
     critique_every_n: int = DEFAULTS["critique_every_n"]
+    # Who writes the critique: "model" (default) or "human". Human mode is
+    # attended: the run renders the iteration's activity and diff, opens
+    # $EDITOR, and takes a free-text critique plus a structured verdict.
+    # From physics.critic.mode in config.toml.
+    critic_mode: str = "model"
     workspace_dir: str = ""
     logs_dir: str = ""
     api_key: str = ""
@@ -200,6 +205,7 @@ _CONFIG_FIELDS = frozenset(
         "agent_models",
         "reasoning_effort",
         "critique_every_n",
+        "critic_mode",
     }
 )
 

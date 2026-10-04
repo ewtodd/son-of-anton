@@ -261,6 +261,21 @@ more knowledgeable model earns its latency:
 critic = "deepseek-v4-flash-local"
 ```
 
+For an attended run, `physics.critic.mode = "human"` hands the review to you
+instead. Each critique prints the iteration's activity and `git diff HEAD`,
+opens `$EDITOR` on a review buffer, and asks for free-text feedback plus one
+structured verdict (`progress`, `stalled`, `wrong_approach`, `needs_help`) and
+whether to block the next iteration. The feedback reaches the Manager through
+exactly the same channel as a model critique, so it cannot tell the two apart.
+Every critique — model or human — is also appended to `CRITIQUE_DATA.jsonl`
+with its source and verdict, which makes a human-critic run a labeled dataset
+for later analysis.
+
+```toml
+[physics.critic]
+mode = "human"   # "model" is the default
+```
+
 ### Two models, split by role
 <!---->
 There are two jobs here, not two modes.
