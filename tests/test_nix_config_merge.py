@@ -34,12 +34,14 @@ def merge_module():
 
 def run_merge(merge_module, tmp_path, nix_settings, *, adopt=False, dry_run=False):
     """Invoke the merge the way activation does, returning the resulting config."""
-    nix_json = tmp_path / "nix.json"
-    nix_json.write_text(json.dumps(nix_settings))
+    # The Nix module renders this file with pkgs.formats.toml; feeding JSON
+    # here would hide a parser mismatch until activation (2026-10-03).
+    nix_config = tmp_path / "nix.toml"
+    nix_config.write_text(dump_toml(nix_settings))
     config_path = tmp_path / "config.toml"
     state_path = tmp_path / ".nix-managed.json"
 
-    argv = [str(nix_json), str(config_path), "--state", str(state_path)]
+    argv = [str(nix_config), str(config_path), "--state", str(state_path)]
     if adopt:
         argv.append("--adopt")
     if dry_run:

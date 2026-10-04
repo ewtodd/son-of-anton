@@ -243,7 +243,11 @@ def main() -> int:
         prog="son-of-anton-config-merge",
         description="Merge Nix-declared settings into config.toml on disk.",
     )
-    parser.add_argument("nix_json", type=Path, help="The generated Nix settings.")
+    parser.add_argument(
+        "nix_config",
+        type=Path,
+        help="The generated Nix settings, rendered as TOML by pkgs.formats.toml.",
+    )
     parser.add_argument("config_path", type=Path, help="The config.toml on disk.")
     parser.add_argument(
         "--state",
@@ -265,8 +269,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    with args.nix_json.open(encoding="utf-8") as handle:
-        theirs = json.load(handle)
+    with args.nix_config.open(encoding="utf-8") as handle:
+        theirs = tomllib.loads(handle.read())
     ours = load_config_file(args.config_path)
 
     state = load_state(args.state)
