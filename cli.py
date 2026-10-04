@@ -4737,7 +4737,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Rotating task-oriented composer placeholder (C-09), chosen once per
         # session so it stays stable while the empty input box is on screen.
         try:
-            from son_of_anton_cli.tips import get_random_composer_placeholder
+            from son_of_anton_cli.composer_placeholders import (
+                get_random_composer_placeholder,
+            )
+
             self._composer_placeholder = get_random_composer_placeholder()
         except Exception:
             self._composer_placeholder = ""
@@ -9743,33 +9746,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         deferred_print=_cprint,
                     )
                 _cprint("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
-                # Show a random tip on new session
-                try:
-                    from son_of_anton_cli.tips import get_random_tip
-                    _tip = get_random_tip()
-                    try:
-                        from son_of_anton_cli.skin_engine import get_active_skin
-                        _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
-                    except Exception:
-                        _tip_color = "dim yellow"
-                    cc.print(f"[{_tip_color}]Tip: {_tip}")
-                except Exception:
-                    pass
             else:
                 self.show_banner()
                 print("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
-                # Show a random tip on new session
-                try:
-                    from son_of_anton_cli.tips import get_random_tip
-                    _tip = get_random_tip()
-                    try:
-                        from son_of_anton_cli.skin_engine import get_active_skin
-                        _tip_color = get_active_skin().get_color("banner_dim", "dim yellow")
-                    except Exception:
-                        _tip_color = "dim yellow"
-                    self._console_print(f"[{_tip_color}]Tip: {_tip}")
-                except Exception:
-                    pass
         elif canonical == "history":
             self.show_history()
         elif canonical == "title":

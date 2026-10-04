@@ -328,16 +328,9 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Append a random tip to the reset message
-        try:
-            from son_of_anton_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
-        except Exception:
-            _tip_line = ""
-
         if session_info:
-            return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
-        return EphemeralReply(f"{header}{_tip_line}")
+            return EphemeralReply(f"{header}\n\n{session_info}")
+        return EphemeralReply(header)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

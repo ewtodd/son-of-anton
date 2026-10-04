@@ -233,7 +233,6 @@ header_titled = "New session started: {title}"
 title_rejected = "\nTitle rejected: {error}"
 title_error_untitled = "\n{error} — session started untitled."
 title_empty_untitled = "\nTitle is empty after cleanup — session started untitled."
-tip = "\nTip: {tip}"
 
 [gateway.restart]
 in_progress = "Gateway restart already in progress..."

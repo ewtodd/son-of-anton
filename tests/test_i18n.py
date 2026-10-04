@@ -11,7 +11,6 @@ from agent.i18n import t
 def test_english_catalog_resolves_gateway_keys() -> None:
     for key in (
         "gateway.reset.header_default",
-        "gateway.reset.tip",
         "gateway.reset.header_new",
         "approval.choose_long",
         "gateway.draining",
