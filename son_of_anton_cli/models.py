@@ -119,82 +119,6 @@ def _codex_curated_models() -> list[str]:
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
 
-# Static fallback for xAI when the models.dev disk cache is empty (fresh
-# install, offline first run, etc.). Mirrors the xAI-direct model IDs from
-# $SON_OF_ANTON_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
-# or retires a model, the disk cache picks it up on the next refresh and the
-# fallback here only matters until that refresh lands.
-#
-# Models retired by xAI on May 15, 2026 are excluded — see
-# https://docs.x.ai/developers/migration/may-15-retirement
-# (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
-#  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
-_XAI_STATIC_FALLBACK: list[str] = [
-    "grok-4.6",
-    "grok-build-0.1",
-    "grok-4.5",
-    "grok-4.3",
-    "grok-4.20-0309-reasoning",
-    "grok-4.20-0309-non-reasoning",
-    "grok-4.20-multi-agent-0309",
-]
-
-# Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
-_XAI_CURATED_EXTRAS: list[str] = [
-    "grok-4.6",  # GA 2026-08 — kept until the models.dev disk cache refreshes
-    "grok-4.5",  # GA 2026-07 — kept until the models.dev disk cache refreshes
-    "grok-composer-2.5-fast",
-]
-
-
-_XAI_TOP_MODEL = "grok-4.6"
-
-
-def _xai_promote_top(ids: list[str]) -> list[str]:
-    """Pin the headline xAI model to the top of the curated list."""
-    if _XAI_TOP_MODEL in ids:
-        return [_XAI_TOP_MODEL] + [m for m in ids if m != _XAI_TOP_MODEL]
-    return ids
-
-
-def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
-    """Append Son of Anton-curated xAI models that are missing from models.dev."""
-    out = list(ids)
-    for extra in _XAI_CURATED_EXTRAS:
-        if extra in out:
-            continue
-        # Keep the headline model pinned; slot extras immediately after it.
-        insert_at = 1 if out and out[0] == _XAI_TOP_MODEL else len(out)
-        out.insert(insert_at, extra)
-    return out
-
-
-def _xai_finalize_catalog(ids: list[str]) -> list[str]:
-    return _xai_promote_top(_xai_merge_curated_extras(ids))
-
-
-def _xai_curated_models() -> list[str]:
-    """Offline curated floor for xAI / xAI OAuth pickers.
-
-    Reads $SON_OF_ANTON_HOME/models_dev_cache.json directly (no network). Falls
-    back to ``_XAI_STATIC_FALLBACK`` when the cache is empty or unreadable.
-    """
-    try:
-        from agent.models_dev import _load_disk_cache
-        data = _load_disk_cache()
-        xai = data.get("xai") if isinstance(data, dict) else None
-        models = xai.get("models") if isinstance(xai, dict) else None
-        if isinstance(models, dict) and models:
-            ids = [mid for mid in models.keys() if isinstance(mid, str)]
-            if ids:
-                return _xai_finalize_catalog(sorted(ids))
-    except Exception:
-        # Any failure (missing file, malformed JSON, import error)
-        # falls through to the static list.
-        pass
-    return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
-
-
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         # Anthropic
@@ -274,7 +198,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
-    "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -313,7 +236,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
-    "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-ultra-550b-a55b",
@@ -2871,8 +2793,6 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
-    "xai",
-    "xai-oauth",
 })
 
 
@@ -3207,10 +3127,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        merged = _merge_with_models_dev(normalized, curated_static)
-        if normalized in {"xai", "xai-oauth"}:
-            return _xai_finalize_catalog(merged)
-        return merged
+        return _merge_with_models_dev(normalized, curated_static)
     return curated_static
 
 
