@@ -153,13 +153,8 @@ def _load_web_config() -> dict:
 # constant so the whitelist early-returns and the availability chokepoint
 # stay in sync.
 #
-# NOTE: this intentionally includes ``xai``, which the registry's
-# ``_LEGACY_PREFERENCE`` does NOT — xai availability is probed via
-# ``has_xai_credentials()`` (env var OR auth.json OAuth), not a registered
-# WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
-# a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "keenable"}
+    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "keenable"}
 )
 
 
@@ -382,16 +377,6 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
-    if backend == "xai":
-        # Cheap probe — env var OR auth.json has OAuth tokens. Must not
-        # call resolve_xai_http_credentials() here because the OAuth path
-        # can trigger a network token refresh, and _is_backend_available
-        # runs on every web_search dispatch + every `son-of-anton tools` repaint.
-        try:
-            from tools.xai_http import has_xai_credentials
-            return has_xai_credentials()
-        except Exception:
-            return False
     return False
 
 
@@ -434,7 +419,7 @@ def _rescue_eligible(provider) -> bool:
     """True when a failed call on *provider* should get a one-shot rescue.
 
     Eligible: the call ran a keyed/configured path — either a non-ring
-    backend (searxng, brave-free, xai, custom plugins, managed gateway) or
+    backend (searxng, brave-free, custom plugins, managed gateway) or
     a ring vendor operating in keyed mode. NOT eligible: the call already
     went through the keyless ring (its failure means the ring was walked;
     re-walking would just repeat it).
