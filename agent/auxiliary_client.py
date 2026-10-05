@@ -158,7 +158,6 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from son_of_anton_cli.config import get_son_of_anton_home
-from son_of_anton_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
@@ -1030,19 +1029,6 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding-cn",
 })
 
-# OpenRouter app attribution headers (base — always sent).
-# `X-Title` is the canonical attribution header OpenRouter's dashboard
-# reads; the previous `X-OpenRouter-Title` label was not recognized there.
-_OR_HEADERS_BASE = {
-    "HTTP-Referer": "https://son-of-anton.nousresearch.com",
-    "X-Title": "Son of Anton Agent",
-    "X-OpenRouter-Categories": "productivity,cli-agent",
-}
-
-# Truthy values for boolean env-var parsing.
-_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
-
-
 def _apply_user_default_headers(headers: dict | None) -> dict | None:
     """Merge user-configured ``model.default_headers`` onto resolved headers.
 
@@ -1084,58 +1070,6 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     return merged or headers
 
 
-def build_or_headers(or_config: dict | None = None) -> dict:
-    """Build OpenRouter headers, optionally including response-cache headers.
-
-    Precedence for response cache: env var > config.toml > default (enabled).
-
-    Environment variables:
-        ``SON_OF_ANTON_OPENROUTER_CACHE`` — truthy (``1``/``true``/``yes``/``on``)
-            enables caching; ``0``/``false``/``no``/``off`` disables.
-            Overrides ``openrouter.response_cache`` in config.toml.
-        ``SON_OF_ANTON_OPENROUTER_CACHE_TTL`` — integer seconds (1-86400).
-            Overrides ``openrouter.response_cache_ttl`` in config.toml.
-
-    *or_config* is the ``openrouter`` section from config.toml.  When *None*,
-    falls back to reading config from disk via ``load_config_readonly()``.
-    """
-    headers = dict(_OR_HEADERS_BASE)
-
-    # Resolve config from disk if not provided.
-    if or_config is None:
-        try:
-            from son_of_anton_cli.config import load_config_readonly
-            or_config = load_config_readonly().get("openrouter", {})
-        except Exception:
-            or_config = {}
-
-    # Determine cache enabled: env var overrides config.
-    env_cache = os.environ.get("SON_OF_ANTON_OPENROUTER_CACHE", "").strip().lower()
-    if env_cache:
-        cache_enabled = env_cache in _TRUTHY_ENV_VALUES
-    else:
-        cache_enabled = or_config.get("response_cache", False)
-
-    if not cache_enabled:
-        return headers
-
-    headers["X-OpenRouter-Cache"] = "true"
-
-    # Determine TTL: env var overrides config.
-    env_ttl = os.environ.get("SON_OF_ANTON_OPENROUTER_CACHE_TTL", "").strip()
-    if env_ttl:
-        if env_ttl.isdigit():
-            ttl = int(env_ttl)
-            if 1 <= ttl <= 86400:
-                headers["X-OpenRouter-Cache-TTL"] = str(ttl)
-    else:
-        ttl = or_config.get("response_cache_ttl", 300)
-        if isinstance(ttl, (int, float)) and 1 <= ttl <= 86400:
-            headers["X-OpenRouter-Cache-TTL"] = str(int(ttl))
-
-    return headers
-
-
 # NVIDIA NIM cloud billing attribution.  Keep this host-gated because the
 # nvidia provider also supports local/on-prem NIM endpoints via NVIDIA_BASE_URL.
 _NVIDIA_NIM_CLOUD_HEADERS = {
@@ -1149,7 +1083,6 @@ from son_of_anton_cli import __version__ as _SON_OF_ANTON_VERSION
 
 
 # Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3.6-flash"
 _AUTH_JSON_PATH = get_son_of_anton_home() / "auth.json"
 
 # Codex OAuth endpoint used when a caller explicitly requests
@@ -2056,97 +1989,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 # ── Provider resolution helpers ─────────────────────────────────────────────
-
-
-_paid_lane_warned: set = set()
-
-
-def _is_free_model(model: Optional[str]) -> bool:
-    """True when ``model`` is an OpenRouter free SKU (``:free`` suffix)."""
-    return bool(model) and str(model).strip().endswith(":free")
-
-
-def _aux_openrouter_settings() -> Tuple[bool, str]:
-    """Read free_only and openrouter_model from config in one pass.
-
-    Returns (free_only, model) — defaults (False, _OPENROUTER_MODEL) on any
-    config-read failure.
-    """
-    try:
-        from son_of_anton_cli.config import cfg_get, load_config_readonly
-
-        cfg = load_config_readonly()
-        free_only = bool(cfg_get(cfg, "auxiliary", "free_only", default=False))
-        val = cfg_get(cfg, "auxiliary", "openrouter_model")
-        model = val.strip() if isinstance(val, str) and val.strip() else _OPENROUTER_MODEL
-        return free_only, model
-    except Exception:
-        return False, _OPENROUTER_MODEL
-
-
-def _warn_paid_lane_once(model: str) -> None:
-    """Log a WARNING the first time a non-:free OpenRouter model is engaged."""
-    if model in _paid_lane_warned:
-        return
-    _paid_lane_warned.add(model)
-    logger.warning(
-        "Auxiliary client: PAID lane engaged for auxiliary task — OpenRouter "
-        "fallback model %r is not a :free SKU and may incur real spend. Set "
-        "auxiliary.free_only: true to restrict auxiliary fallbacks to free "
-        "models, or auxiliary.openrouter_model to a :free model.",
-        model,
-    )
-
-
-def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
-    free_only, cfg_model = _aux_openrouter_settings()
-    or_model = model or cfg_model
-    if free_only and not _is_free_model(or_model):
-        logger.warning(
-            "Auxiliary client: auxiliary.free_only is enabled but the "
-            "OpenRouter fallback model %r is not a :free SKU — skipping the "
-            "OpenRouter fallback. Set auxiliary.openrouter_model to a :free "
-            "model (e.g. nvidia/nemotron-3-ultra-550b-a55b:free) or disable "
-            "auxiliary.free_only.",
-            or_model,
-        )
-        _mark_provider_unhealthy("openrouter", ttl=60)
-        return None, None
-    if not _is_free_model(or_model):
-        _warn_paid_lane_once(or_model)
-
-    pool_present, entry = _select_pool_entry("openrouter")
-    if pool_present:
-        or_key = explicit_api_key or _pool_runtime_api_key(entry)
-        if or_key:
-            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
-            logger.debug("Auxiliary client: OpenRouter via pool")
-            return _create_openai_client(api_key=or_key, base_url=base_url,
-                           default_headers=build_or_headers()), or_model
-        # Pool exists but is exhausted (no usable runtime key) — fall through to
-        # the OPENROUTER_API_KEY env-var path rather than failing outright.
-        logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
-
-    or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
-    if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
-        return None, None
-    logger.debug("Auxiliary client: OpenRouter")
-    return _create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), or_model
-
-
-def _describe_openrouter_unavailable() -> str:
-    """Return a more precise OpenRouter auth failure reason for logs."""
-    pool_present, entry = _select_pool_entry("openrouter")
-    if pool_present:
-        if entry is None:
-            return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
-        if not _pool_runtime_api_key(entry):
-            return "OpenRouter credential pool entry is missing a runtime API key"
-    if not _scoped_key_env("OPENROUTER_API_KEY"):
-        return "OPENROUTER_API_KEY not set"
-    return "no usable OpenRouter credentials found"
 
 
 def _read_main_model() -> str:
@@ -5172,19 +5014,6 @@ def resolve_provider_client(
         _tag_effective_provider(routed_client, effective_provider)
         return routed_client, routed_model
 
-    # ── OpenRouter ───────────────────────────────────────────
-    if provider == "openrouter":
-        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
-        if client is None:
-            logger.warning(
-                "resolve_provider_client: openrouter requested but %s",
-                _describe_openrouter_unavailable(),
-            )
-            return None, None
-        final_model = _normalize_resolved_model(model or default, provider)
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
-
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
     if provider == "openai-codex":
         if not model:
@@ -5643,8 +5472,6 @@ def _resolve_strict_vision_backend(
     provider = _normalize_vision_provider(provider)
     if provider == "copilot":
         return resolve_provider_client("copilot", model, is_vision=True)
-    if provider == "openrouter":
-        return _try_openrouter(model=model)
     if provider == "openai-codex":
         # Route through resolve_provider_client so the caller's explicit
         # model is used.  There is no safe default Codex model (shifting
@@ -5928,24 +5755,22 @@ def resolve_vision_provider_client(
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Return the correct max tokens kwarg for the auxiliary client's provider.
 
-    OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
-    models (gpt-4o, gpt-4.1, gpt-5+, o-series) requires 'max_completion_tokens'.
-    The Codex adapter translates max_tokens internally, so we use max_tokens
-    for it as well. Pass ``model`` so third-party OpenAI-compatible endpoints
-    fronting the newer families are also recognised — URL-only detection
-    misses the case where a custom base URL serves e.g. ``gpt-5.4``.
+    OpenAI with newer models (gpt-4o, gpt-4.1, gpt-5+, o-series) requires
+    'max_completion_tokens'. The Codex adapter translates max_tokens internally,
+    so we use max_tokens for it as well. Pass ``model`` so third-party
+    OpenAI-compatible endpoints fronting the newer families are also recognised
+    — URL-only detection misses the case where a custom base URL serves e.g.
+    ``gpt-5.4``.
     """
     custom_base = _current_custom_base_url()
-    or_key = _scoped_key_env("OPENROUTER_API_KEY")
     # Use max_completion_tokens for direct OpenAI-compatible providers that reject
     # max_tokens on newer GPT-4o/o-series/GPT-5-style models.
     _custom_host = base_url_hostname(custom_base) or ""
-    if (not or_key
-            and (
-                _custom_host == "api.openai.com"
-                or _custom_host == "api.githubcopilot.com"
-                or _custom_host.endswith(".githubcopilot.com")
-            )):
+    if (
+        _custom_host == "api.openai.com"
+        or _custom_host == "api.githubcopilot.com"
+        or _custom_host.endswith(".githubcopilot.com")
+    ):
         return {"max_completion_tokens": value}
     # ...and for any caller serving a newer OpenAI-family model by name.
     if model_forces_max_completion_tokens(model):
@@ -6237,17 +6062,8 @@ def cleanup_stale_async_clients() -> None:
         _close_cached_client(client, close_async=True)
 
 
-def _is_openrouter_client(client: Any) -> bool:
-    for obj in (client, getattr(client, "_client", None), getattr(client, "client", None)):
-        if obj and base_url_host_matches(str(getattr(obj, "base_url", "") or ""), "openrouter.ai"):
-            return True
-    return False
-
-
 def _cached_client_accepts_slash_models(client: Any, cached_default: Optional[str]) -> bool:
     """Best-effort check for cached clients that accept ``vendor/model`` IDs."""
-    if _is_openrouter_client(client):
-        return True
     return bool(cached_default and "/" in cached_default)
 
 

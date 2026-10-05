@@ -23,12 +23,10 @@ from son_of_anton_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
     DEFAULT_CODEX_BASE_URL,
-    DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     format_auth_error,
     resolve_provider,
     resolve_codex_runtime_credentials,
-    resolve_xai_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -41,7 +39,6 @@ from son_of_anton_cli.config import (
     normalize_extra_headers,
 )
 from son_of_anton_cli.providers import custom_provider_aliases, custom_provider_slug
-from son_of_anton_constants import OPENROUTER_BASE_URL
 from son_of_anton_cli.providers import is_official_openai_host
 from utils import base_url_host_matches, base_url_hostname, env_int
 
@@ -230,7 +227,7 @@ def _host_derived_api_key(base_url: str) -> str:
     if not sanitized or not sanitized[0].isalpha():
         return ""
     # Don't re-derive env vars already handled by explicit host-gated paths.
-    if sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
+    if sanitized in ("OPENAI", "OLLAMA"):
         return ""
     env_name = f"{sanitized}_API_KEY"
     return (_getenv(env_name, "") or "").strip()
@@ -359,13 +356,6 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
-    elif provider == "xai-oauth":
-        api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
-    elif provider == "openrouter":
-        base_url = base_url or OPENROUTER_BASE_URL
-    elif provider == "xai":
-        api_mode = "codex_responses"
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.toml when the configured provider
@@ -854,7 +844,7 @@ def canonical_custom_identity(
 
     candidate_norm = _normalize_custom_provider_name(candidate)
     # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
+    if not candidate_norm or candidate_norm in {"custom", "auto"}:
         return None
     # Only return it when it actually resolves to a configured custom entry,
     # so we never invent a `custom:<x>` that resolution can't honor.
@@ -925,12 +915,9 @@ def _resolve_named_custom_runtime(
             pool_result["source"] = "direct-alias"
             return pool_result
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-        _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
             (explicit_api_key or "").strip(),
-            # Gate env key fallbacks on authoritative hosts (#28660)
             (_getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
-            (_getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
             # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
             # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
             # intuitive match without configuring `custom_providers` first.
@@ -984,7 +971,6 @@ def _resolve_named_custom_runtime(
         return pool_result
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
@@ -992,7 +978,6 @@ def _resolve_named_custom_runtime(
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (_getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
-        (_getenv("OPENROUTER_API_KEY", "").strip() if _cp_is_openrouter  else ""),
         # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host as a final
         # fallback when key_env wasn't set explicitly.
         _host_derived_api_key(base_url),
@@ -1077,7 +1062,7 @@ def _resolve_named_custom_runtime(
     return result
 
 
-def _resolve_openrouter_runtime(
+def _resolve_custom_endpoint_runtime(
     *,
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
@@ -1108,7 +1093,6 @@ def _resolve_openrouter_runtime(
         except Exception:
             pass
 
-    env_openrouter_base_url = _getenv("OPENROUTER_BASE_URL", "").strip()
     env_custom_base_url = _getenv("CUSTOM_BASE_URL", "").strip()
 
     # Use config base_url when available and the provider context matches.
@@ -1128,57 +1112,26 @@ def _resolve_openrouter_runtime(
         (explicit_base_url or "").strip()
         or env_custom_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
-        or env_openrouter_base_url
-        or OPENROUTER_BASE_URL
     ).rstrip("/")
 
-    # Choose API key based on whether the resolved base_url targets OpenRouter.
-    # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
-    # When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
-    # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
-    # provider (issues #420, #560).
-    _is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
-    # Also treat explicitly-configured OpenRouter mirrors/proxies as OpenRouter
-    # for key selection — if the user set OPENROUTER_BASE_URL or requested
-    # provider=openrouter explicitly, OPENROUTER_API_KEY should still be used.
-    _is_openrouter_context = _is_openrouter_url or (
-        requested_norm == "openrouter"
-        and (env_openrouter_base_url or base_url == env_openrouter_base_url)
-        and base_url == (env_openrouter_base_url or "").rstrip("/")
-    )
-    if _is_openrouter_context:
-        api_key_candidates = [
-            explicit_api_key,
-            _getenv("OPENROUTER_API_KEY"),
-            _getenv("OPENAI_API_KEY"),
-        ]
-    else:
-        # Custom endpoint: use api_key from config when using config base_url (#1760).
-        # When the endpoint is Ollama Cloud, check OLLAMA_API_KEY — it's
-        # the canonical env var for ollama.com authentication. Match on
-        # HOST, not substring — a custom base_url whose path contains
-        # "ollama.com" (e.g. http://127.0.0.1/ollama.com/v1) or whose
-        # hostname is a look-alike (ollama.com.attacker.test) must not
-        # receive the Ollama credential. See GHSA-76xc-57q6-vm5m.
-        _is_ollama_url    = base_url_host_matches(base_url, "ollama.com")
-        _is_openai_url    = base_url_host_matches(base_url, "openai.com")
-        _is_openai_azure  = base_url_host_matches(base_url, "openai.azure.com")
-        # Gate each provider key on its own host — sending OPENAI_API_KEY or
-        # OPENROUTER_API_KEY to an unrelated custom endpoint (DeepSeek, Groq,
-        # Mistral, …) leaks credentials and causes 401s (issue #28660).
-        # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
-        api_key_candidates = [
-            explicit_api_key,
-            (cfg_api_key if use_config_base_url else ""),
-            (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
-            (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
-            (_getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),
-            # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
-            # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
-            # intuitive match. Helper returns "" for IPs/loopback and for env
-            # vars already handled by the explicit host-gated paths above.
-            _host_derived_api_key(base_url),
-        ]
+    # Choose API key based on the resolved endpoint host.
+    # When hitting a custom endpoint, prefer the config's api_key and
+    # host-gated env-var keys so the right credential reaches the right
+    # provider (issues #28660, GHSA-76xc-57q6-vm5m).
+    _is_ollama_url    = base_url_host_matches(base_url, "ollama.com")
+    _is_openai_url    = base_url_host_matches(base_url, "openai.com")
+    _is_openai_azure  = base_url_host_matches(base_url, "openai.azure.com")
+    api_key_candidates = [
+        explicit_api_key,
+        (cfg_api_key if use_config_base_url else ""),
+        (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
+        (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
+        # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
+        # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
+        # intuitive match. Helper returns "" for IPs/loopback and for env
+        # vars already handled above.
+        _host_derived_api_key(base_url),
+    ]
     api_key = next(
         (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),
         "",
@@ -1186,11 +1139,8 @@ def _resolve_openrouter_runtime(
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
-    # When "custom" was explicitly requested, preserve that as the provider
-    # name instead of silently relabeling to "openrouter" (#2562).
-    # Also provide a placeholder API key for local servers that don't require
-    # authentication — the OpenAI SDK requires a non-empty api_key string.
-    effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    # "custom" is the standard OpenAI-compatible endpoint provider.
+    effective_provider = "custom"
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
@@ -1203,7 +1153,7 @@ def _resolve_openrouter_runtime(
         if pool_result:
             return pool_result
 
-    if effective_provider == "custom" and not api_key and not _is_openrouter_url:
+    if effective_provider == "custom" and not api_key:
         api_key = "no-key-required"
 
     return {
@@ -1284,9 +1234,7 @@ def _resolve_explicit_runtime(
                     base_url = normalize_actual_base_url(base_url)
 
         api_mode = "chat_completions"
-        if provider == "xai":
-            api_mode = "codex_responses"
-        elif provider == "actual":
+        if provider == "actual":
             api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1387,17 +1335,16 @@ def resolve_runtime_provider(
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
         if cfg_base_url and cfg_provider in ("auto", ""):
             # Check that base_url isn't one of the well-known cloud API roots
-            # (OpenRouter, Anthropic, OpenAI). If it's something else (Ollama,
+            # (Anthropic, OpenAI). If it's something else (Ollama,
             # LM Studio, vLLM, …) we honour it directly. The full detection
-            # logic lives in _resolve_openrouter_runtime; we just skip the
+            # logic lives in _resolve_custom_endpoint_runtime; we just skip the
             # resolve_provider() call so env-var credentials don't shadow it.
             # Match on HOST, not substring, so a look-alike base_url
             # (e.g. http://api.anthropic.com.attacker.test/v1, or one whose
             # path merely contains "openai.com") cannot evade the bypass and
             # leak a cloud credential. Mirrors the host-gating used for
-            # API-key selection in _resolve_openrouter_runtime.
+            # API-key selection in _resolve_custom_endpoint_runtime.
             _known_cloud_hosts = (
-                "openrouter.ai",
                 "anthropic.com",
                 "openai.com",
             )
@@ -1405,7 +1352,7 @@ def resolve_runtime_provider(
                 base_url_host_matches(cfg_base_url, host)
                 for host in _known_cloud_hosts
             ):
-                runtime = _resolve_openrouter_runtime(
+                runtime = _resolve_custom_endpoint_runtime(
                     requested_provider=requested_provider,
                     explicit_api_key=explicit_api_key,
                     explicit_base_url=explicit_base_url,
@@ -1451,25 +1398,7 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
-    should_use_pool = provider != "openrouter"
-    if provider == "openrouter":
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
-        env_openai_base_url = _getenv("OPENAI_BASE_URL", "").strip()
-        env_openrouter_base_url = _getenv("OPENROUTER_BASE_URL", "").strip()
-        has_custom_endpoint = bool(
-            explicit_base_url
-            or env_openai_base_url
-            or env_openrouter_base_url
-        )
-        if cfg_base_url and cfg_provider in {"auto", "custom"}:
-            has_custom_endpoint = True
-        has_runtime_override = bool(explicit_api_key or explicit_base_url)
-        should_use_pool = (
-            requested_provider in {"openrouter", "auto"}
-            and not has_custom_endpoint
-            and not has_runtime_override
-        )
+    should_use_pool = True
 
     try:
         pool = load_pool(provider) if should_use_pool else None
@@ -1525,24 +1454,6 @@ def resolve_runtime_provider(
             logger.info("Auto-detected Codex provider but credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "xai-oauth":
-        try:
-            creds = resolve_xai_oauth_runtime_credentials()
-            return {
-                "provider": "xai-oauth",
-                "api_mode": "codex_responses",
-                "base_url": (creds.get("base_url") or "").rstrip("/") or DEFAULT_XAI_OAUTH_BASE_URL,
-                "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "son-of-anton-auth-store"),
-                "last_refresh": creds.get("last_refresh"),
-                "requested_provider": requested_provider,
-            }
-        except AuthError:
-            if requested_provider != "auto":
-                raise
-            logger.info("Auto-detected xAI OAuth provider but credentials failed; "
-                        "falling through to next provider.")
-
     if provider == "minimax-oauth":
         pconfig = PROVIDER_REGISTRY.get(provider)
     # Anthropic (native Messages API)
@@ -1592,9 +1503,7 @@ def resolve_runtime_provider(
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)
         api_mode = "chat_completions"
-        if provider == "xai":
-            api_mode = "codex_responses"
-        elif provider == "actual":
+        if provider == "actual":
             api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1641,7 +1550,7 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    runtime = _resolve_openrouter_runtime(
+    runtime = _resolve_custom_endpoint_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,

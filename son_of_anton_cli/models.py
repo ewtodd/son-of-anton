@@ -1661,23 +1661,9 @@ def fetch_ai_gateway_pricing(
     return _cache_catalog(cache_key, result)
 
 
-def _resolve_openrouter_api_key() -> str:
-    """Best-effort OpenRouter API key for pricing fetch."""
-    return os.getenv("OPENROUTER_API_KEY", "").strip()
-
-
-_DEFAULT_NOUS_INFERENCE_BASE = "https://inference-api.nousresearch.com"
-
-
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
+    """Return live pricing for providers that support it (nous, ai-gateway, novita)."""
     normalized = normalize_provider(provider)
-    if normalized == "openrouter":
-        return fetch_models_with_pricing(
-            api_key=_resolve_openrouter_api_key(),
-            base_url="https://openrouter.ai/api",
-            force_refresh=force_refresh,
-        )
     if normalized == "ai-gateway":
         return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "novita":
@@ -1856,8 +1842,6 @@ def list_available_providers() -> list[dict[str, str]]:
             if pid == "custom":
                 custom_base_url = _get_custom_base_url() or ""
                 has_creds = bool(custom_base_url.strip())
-            elif pid == "openrouter":
-                has_creds = has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
             else:
                 status = get_auth_status(pid)
                 has_creds = bool(status.get("logged_in") or status.get("configured"))
@@ -2778,24 +2762,6 @@ def _resolve_copilot_catalog_api_key() -> str:
 # Also excluded: providers that already have dedicated live-endpoint
 # branches below (copilot, anthropic, ai-gateway, ollama-cloud, custom,
 # stepfun, openai-codex) — those paths handle freshness themselves.
-_MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
-    "opencode-go",
-    "opencode-zen",
-    "kilocode",
-    "fireworks",
-    "mistral",
-    "togetherai",
-    "cohere",
-    "perplexity",
-    "groq",
-    "nvidia",
-    "huggingface",
-    "zai",
-    "gemini",
-    "google",
-})
-
-
 def _model_dedup_key(model_id: str) -> str:
     """Case-insensitive dedup key that also folds picker-search aliases.
 
@@ -2812,43 +2778,6 @@ def _model_dedup_key(model_id: str) -> str:
         return model_alias_canonical(key)
     except Exception:
         return key
-
-
-def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
-    """Merge curated list with fresh models.dev entries for a preferred provider.
-
-    Returns models.dev entries first (in models.dev order), then any
-    curated-only entries appended. Preserves case for curated fallbacks
-    (e.g. ``MiniMax-M2.7``) while trusting models.dev for newer variants.
-
-    If models.dev is unreachable or returns nothing, the curated list is
-    returned unchanged — this is the offline/CI fallback path.
-    """
-    try:
-        from agent.models_dev import list_agentic_models
-        mdev = list_agentic_models(provider)
-    except Exception:
-        mdev = []
-
-    if not mdev:
-        return list(curated)
-
-    # Case-insensitive dedup while preserving order and curated casing.
-    seen_lower: set[str] = set()
-    merged: list[str] = []
-    for mid in mdev:
-        key = str(mid).lower()
-        if key in seen_lower:
-            continue
-        seen_lower.add(key)
-        merged.append(mid)
-    for mid in curated:
-        key = str(mid).lower()
-        if key in seen_lower:
-            continue
-        seen_lower.add(key)
-        merged.append(mid)
-    return merged
 
 
 def _openai_discovery_base_url(provider: str) -> str:
@@ -2880,10 +2809,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     """Return the best known model catalog for a provider.
 
     Tries live API endpoints for providers that support them (Codex, Nous),
-    falling back to static lists. For providers in ``_MODELS_DEV_PREFERRED``
-    (opencode-go/zen, xiaomi, deepseek, smaller inference providers, etc.),
-    models.dev entries are merged on top of curated so new models released
-    on the platform appear in ``/model`` without a Son of Anton release.
+    falling back to static lists.
     """
     requested = str(provider or "").strip().lower()
     if requested == "ollama":
@@ -3049,7 +2975,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 str(model_cfg.get("api_key", "") or "").strip()
                 or os.getenv("CUSTOM_API_KEY", "")
                 or os.getenv("OPENAI_API_KEY", "")
-                or os.getenv("OPENROUTER_API_KEY", "")
             )
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
             live = fetch_api_models(api_key, base_url, api_mode=api_mode)
@@ -3057,8 +2982,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
-    # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge
-    # below — bedrock is not expected to appear in that table.
 
     # OpenCode Free: curated keyless list only. models.dev's cost.input==0
     # filter lags reality (deepseek-v4-flash-free stayed "free" there after
@@ -3126,8 +3049,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         pass
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
-    if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
     return curated_static
 
 

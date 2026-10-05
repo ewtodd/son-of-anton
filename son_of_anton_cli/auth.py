@@ -87,7 +87,7 @@ from son_of_anton_cli.config import (
     read_raw_config,
     require_readable_config_before_write,
 )
-from son_of_anton_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from son_of_anton_constants import secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_toml_write, env_float, is_truthy_value
 
@@ -267,10 +267,10 @@ try:
             continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
-        # openrouter/custom are aggregator/user-supplied and handled outside
-        # the registry — adding them here breaks runtime_provider resolution
-        # that relies on `openrouter not in PROVIDER_REGISTRY`).
-        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+        # custom is user-supplied and handled outside the registry — adding
+        # them here breaks runtime_provider resolution that relies on
+        # `custom not in PROVIDER_REGISTRY`).
+        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "custom"}:
             continue
         _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
         _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
@@ -1701,14 +1701,13 @@ def resolve_provider(
 
     Priority (when requested="auto" or None) — explicit user intent wins over a
     stale logged-in OAuth provider (#29285):
-    1. Explicit CLI api_key/base_url -> "openrouter"
+    1. Explicit CLI api_key/base_url -> "custom"
     2. config.toml `model.provider`
-    3. OPENAI_API_KEY / OPENROUTER_API_KEY env vars -> "openrouter"
-    4. OpenRouter credential pool
-    5. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
-    6. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
-    7. AWS Bedrock credential chain
-    8. Error (no provider configured)
+    3. OPENAI_API_KEY env var -> "custom"
+    4. Provider-specific API keys (GLM, Kimi, MiniMax, ...) -> that provider
+    5. auth.json `active_provider` (logged-in OAuth) — last-resort fallback
+    6. AWS Bedrock credential chain
+    7. Error (no provider configured)
     """
     normalized = (requested or "auto").strip().lower()
 
@@ -1716,9 +1715,6 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-        "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-        "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
-        "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -1761,8 +1757,6 @@ def resolve_provider(
         pass
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
-    if normalized == "openrouter":
-        return "openrouter"
     if normalized == "custom":
         return "custom"
     if normalized in PROVIDER_REGISTRY:
@@ -1777,15 +1771,15 @@ def resolve_provider(
             msg += " Check 'son-of-anton model' for available providers, or run 'son-of-anton doctor' to diagnose config issues."
         raise AuthError(msg, code="invalid_provider")
 
-    # Explicit one-off CLI creds always mean openrouter/custom
+    # Explicit one-off CLI creds always mean the standard endpoint
     if explicit_api_key or explicit_base_url:
-        return "openrouter"
+        return "custom"
 
     # Provider precedence for the auto-path (#29285): explicit user intent must
     # win over a stale logged-in OAuth `active_provider`. Order matches the
     # docstring: 1. explicit CLI creds  2. config.toml `model.provider`
-    # 3. OPENAI/OPENROUTER env keys  4. OpenRouter pool  5. provider-specific
-    # env keys  6. auth.json `active_provider` (OAuth)  7. Bedrock  8. error.
+    # 3. OPENAI env key  4. provider-specific env keys
+    # 5. auth.json `active_provider` (OAuth)  6. Bedrock  7. error.
     # The normal chat/gateway path resolves config.provider upstream in
     # resolve_requested_provider() before ever reaching "auto"; this duplicate
     # check is the safety net for the lone direct caller (main.py resolve_provider
@@ -1822,25 +1816,8 @@ def resolve_provider(
         def _scoped_key_env(name: str) -> str:
             return os.getenv(name) or ""
 
-    if has_usable_secret(_scoped_key_env("OPENAI_API_KEY")) or has_usable_secret(
-        _scoped_key_env("OPENROUTER_API_KEY")
-    ):
-        return "openrouter"
-
-    # Auto-detect an OpenRouter credential added via `son-of-anton auth add openrouter`
-    # (manual pool entry, no env var). Without this, a key that only lives in
-    # the credential pool is invisible to auto-detection — the user sees
-    # `son-of-anton auth list` showing the credential while requests go out with no
-    # Authorization header ("HTTP 401: Missing Authentication header"). The
-    # env-var check above only covers keys exported as OPENROUTER_API_KEY /
-    # OPENAI_API_KEY. See issue #42130.
-    try:
-        from agent.credential_pool import load_pool as _load_pool
-
-        if _load_pool("openrouter").has_credentials():
-            return "openrouter"
-    except Exception as e:
-        logger.debug("Could not check OpenRouter credential pool: %s", e)
+    if has_usable_secret(_scoped_key_env("OPENAI_API_KEY")):
+        return "custom"
 
     # Determine the logged-in OAuth provider up front so the env-key loop below
     # can WARN when an exported API key preempts it (#29285 transparency). The
@@ -4904,8 +4881,6 @@ def _reset_config_provider() -> Path:
     model = config.get("model")
     if isinstance(model, dict):
         model["provider"] = "auto"
-        if "base_url" in model:
-            model["base_url"] = OPENROUTER_BASE_URL
     atomic_toml_write(config_path, config, sort_keys=False)
     return config_path
 

@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from son_of_anton_constants import OPENROUTER_BASE_URL
 from son_of_anton_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.credential_persistence import (
@@ -2374,27 +2373,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if secret_source:
             payload["secret_source"] = secret_source
         return payload
-
-    if provider == "openrouter":
-        # Prefer ~/.son-of-anton/.env over os.environ
-        token = _get_env_prefer_dotenv("OPENROUTER_API_KEY")
-        if token:
-            source = "env:OPENROUTER_API_KEY"
-            if _is_source_suppressed(provider, source):
-                return changed, active_sources
-            active_sources.add(source)
-            changed |= _upsert_entry(
-                entries,
-                provider,
-                source,
-                _env_payload(
-                    source=source,
-                    env_var="OPENROUTER_API_KEY",
-                    token=token,
-                    base_url=OPENROUTER_BASE_URL,
-                ),
-            )
-        return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:

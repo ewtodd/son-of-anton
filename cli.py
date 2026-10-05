@@ -4466,15 +4466,14 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.base_url = (
             base_url
             or CLI_CONFIG["model"].get("base_url", "")
-            or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
-        # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
-        # custom endpoint → prefer OPENAI_API_KEY (issue #560).
+        # Match key to resolved base_url: official OpenAI host → OPENAI_API_KEY,
+        # custom endpoint → OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.
-        if self.base_url and base_url_host_matches(self.base_url, "openrouter.ai"):
-            self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if self.base_url and base_url_host_matches(self.base_url, "openai.com"):
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         else:
-            self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         # Max turns priority: CLI arg > config file > env var > default
         # All paths go through resolve_turn_limit() so that agent.max_turns
         # accepts "none"/"unlimited" (→ sys.maxsize) in addition to ints.

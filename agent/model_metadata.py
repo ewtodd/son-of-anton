@@ -21,7 +21,6 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_toml_write, base_url_host_matches, base_url_hostname, fast_toml_load
 
-from son_of_anton_constants import OPENROUTER_MODELS_URL
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -1189,12 +1188,17 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
 
 
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Fetch model metadata from OpenRouter (cached for 1 hour)."""
+    """Return model metadata (context length, pricing).
+
+    The OpenRouter model catalog is no longer used; metadata for the
+    standard endpoint comes from config.toml ``model_overrides`` or the
+    endpoint's own ``/models`` listing (``fetch_endpoint_model_metadata``).
+    An on-disk cache from a previous build is honoured if present.
+    """
     global _model_metadata_cache, _model_metadata_cache_time
 
-    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+    if not force_refresh and _model_metadata_cache:
         return _model_metadata_cache
-
     if not force_refresh:
         disk_age = _model_metadata_disk_cache_age_seconds()
         if disk_age is not None and disk_age < _MODEL_CACHE_TTL:
@@ -1203,50 +1207,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache = disk_cache
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
-
-    try:
-        _ensure_requests()
-        # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
-        # retry stage through proxies that 403 CONNECT, ballooning to minutes
-        # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=_resolve_requests_verify())
-        response.raise_for_status()
-        data = response.json()
-
-        cache = {}
-        for model in data.get("data", []):
-            model_id = model.get("id", "")
-            entry = {
-                "context_length": model.get("context_length", 128000),
-                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
-                "name": model.get("name", model_id),
-                "pricing": model.get("pricing", {}),
-            }
-            _add_model_aliases(cache, model_id, entry)
-            canonical = model.get("canonical_slug", "")
-            if canonical and canonical != model_id:
-                _add_model_aliases(cache, canonical, entry)
-
-        _model_metadata_cache = cache
-        _model_metadata_cache_time = time.time()
-        _save_model_metadata_disk_cache(cache)
-        logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
-        return cache
-
-    except Exception as e:
-        logger.warning("Failed to fetch model metadata from OpenRouter: %s", e)
-        if _model_metadata_cache:
-            return _model_metadata_cache
-        disk_cache = _load_model_metadata_disk_cache()
-        if disk_cache:
-            _model_metadata_cache = disk_cache
-            disk_age = _model_metadata_disk_cache_age_seconds()
-            if disk_age is not None:
-                _model_metadata_cache_time = time.time() - min(disk_age, _MODEL_CACHE_TTL)
-            else:
-                _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
-            return _model_metadata_cache
-        return {}
+    return _model_metadata_cache or {}
 
 
 def fetch_endpoint_model_metadata(

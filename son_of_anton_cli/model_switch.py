@@ -2532,8 +2532,7 @@ def list_authenticated_providers(
     )
     from son_of_anton_cli.auth import PROVIDER_REGISTRY
     from son_of_anton_cli.models import (
-        _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
+        _PROVIDER_MODELS, cached_provider_model_ids,
         clear_provider_models_cache,
     )
 
@@ -2719,8 +2718,6 @@ def list_authenticated_providers(
         model_ids = cached_provider_model_ids(son_of_anton_id)
         if not model_ids:
             model_ids = curated.get(son_of_anton_id, [])
-            if son_of_anton_id in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(son_of_anton_id, model_ids)
         # A providers.<built-in>.models block extends the provider's discovered
         # catalog. Section 3 cannot emit it later because this built-in row owns
         # the slug, so merge declarations here before applying max_models.
@@ -2854,8 +2851,6 @@ def list_authenticated_providers(
             model_ids = cached_provider_model_ids(son_of_anton_slug)
             if not model_ids:
                 model_ids = curated.get(son_of_anton_slug, []) or curated.get(pid, [])
-                if son_of_anton_slug in _MODELS_DEV_PREFERRED:
-                    model_ids = _merge_with_models_dev(son_of_anton_slug, model_ids)
         total = len(model_ids)
         if son_of_anton_slug in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
