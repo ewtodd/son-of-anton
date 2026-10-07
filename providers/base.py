@@ -21,12 +21,15 @@ logger = logging.getLogger(__name__)
 OMIT_TEMPERATURE = object()
 
 
-def _profile_user_agent() -> str:
+def profile_user_agent() -> str:
     """Return a ``son-of-anton-cli/<version>`` UA string, with a stable fallback.
 
-    Used by ``ProviderProfile.fetch_models`` so the catalog probe is not
-    served the default ``Python-urllib/<ver>`` UA — some providers
-    (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
+    Used both for ``ProviderProfile.fetch_models`` (so catalog probes are not
+    served the default ``Python-urllib/<ver>`` UA — some providers such as
+    OpenCode Zen sit behind a WAF that returns 403 for that) and for client
+    attribution headers (a gateway in front of local engines identifies
+    callers by User-Agent; the stock OpenAI SDK UA reads as a generic API
+    client, not as son-of-anton).
     """
     try:
         from son_of_anton_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
@@ -252,9 +255,10 @@ class ProviderProfile:
         req.add_header("Accept", "application/json")
         # Some providers (e.g. OpenCode Zen) sit behind a WAF that blocks
         # the default ``Python-urllib/<ver>`` User-Agent.  Set a generic
-        # son-of-anton-cli UA so the catalog endpoint is reachable.
-        req.add_header("User-Agent", _profile_user_agent())
-        for k, v in self.default_headers.items():
+        # son-of-anton-cli UA so the catalog endpoint is reachable; profile
+        # headers win if they name a User-Agent themselves.
+        headers = { "User-Agent": profile_user_agent(), **self.default_headers }
+        for k, v in headers.items():
             req.add_header(k, v)
 
         try:

@@ -508,20 +508,63 @@ __all__ = [
 # ---------------------------------------------------------------------------
 #
 # Three forked policy sites converged here:
-#   * agent/codex_responses_adapter.py `_deterministic_call_id` — hash
+#   * `_deterministic_call_id` in the former codex_responses_adapter — hash
 #     synthesis when a provider omits call_id (fa3ab2ffd0 → e45f2b39e2).
 #   * run_agent.AIAgent._get_tool_call_id_static — `call_id or id`
 #     coalescing for dicts and SDK objects.
 #   * run_agent.AIAgent._uniquify_tool_call_ids — duplicate-id repair with
 #     deterministic `_d<n>` suffixes (#58327 loss class).
 #
-# NOT consolidated (different scheme on purpose):
-#   agent/transports/codex_event_projector._deterministic_call_id maps codex
-#   app-server ITEM ids (`codex_<type>_<item_id>`), not chat tool-call
-#   content; merging the two would change ids and invalidate prompt caches.
-#
 # HARD INVARIANT: everything here must stay deterministic (never uuid4) and
 # byte-identical for existing inputs — these ids feed prompt-cache prefixes.
+
+
+def summarize_message_for_log(content: Any, *, sep: str = " ") -> str:
+    """Flatten message content to a plain-text summary.
+
+    Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
+    parts from the API server.  Several consumers want a plain string:
+
+    - Logging, spinner previews, and trajectory files (the default ``sep=" "``).
+    - External memory providers, which feed the text to regexes
+      (``sanitize_context``) and text APIs — a raw list crashes the sync with
+      ``expected string or bytes-like object, got 'list'`` (use ``sep="\\n"``).
+
+    Text parts are joined with ``sep``; images become a ``[N image(s)]`` marker
+    so the turn isn't recorded as if the attachment never existed.  Returns an
+    empty string for empty lists and ``str(content)`` for unexpected scalar
+    types.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_bits: list = []
+        image_count = 0
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    text_bits.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").strip().lower()
+            if ptype in {"text", "input_text", "output_text"}:
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    text_bits.append(text)
+            elif ptype in {"image_url", "input_image"}:
+                image_count += 1
+        summary = sep.join(text_bits).strip()
+        if image_count:
+            note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
+            summary = f"{note} {summary}" if summary else note
+        return summary
+    try:
+        return str(content)
+    except Exception:
+        return ""
 
 
 def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:

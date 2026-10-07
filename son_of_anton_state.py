@@ -9193,17 +9193,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _reasoning_json_text(value: Any) -> Optional[str]:
         """Serialize a structured reasoning field for its TEXT column.
 
-        ``reasoning_details`` / ``codex_reasoning_items`` / ``codex_message_items``
-        arrive as list/dict structures from the live runtime, but callers that
-        round-trip stored rows — ``get_messages`` straight into
-        ``replace_messages``, e.g. the POST /api/sessions/{id}/fork handler —
-        hand back the raw TEXT these columns already hold, because
-        ``get_messages`` only deserializes ``content`` and ``tool_calls``.
-        Re-dumping that TEXT double-encodes it, and the forked session's next
-        ``get_messages_as_conversation`` json.loads then yields the inner
-        string instead of the original list, so every reasoning-replay consumer
-        (all of which check ``isinstance(..., list)``) silently drops it.
-        Strings are therefore stored as-is; structures are dumped.
+        ``reasoning_details`` arrives as a list/dict structure from the live
+        runtime, but callers that round-trip stored rows — ``get_messages``
+        straight into ``replace_messages``, e.g. the
+        POST /api/sessions/{id}/fork handler — hand back the raw TEXT this
+        column already holds, because ``get_messages`` only deserializes
+        ``content`` and ``tool_calls``. Re-dumping that TEXT double-encodes
+        it, and the forked session's next ``get_messages_as_conversation``
+        json.loads then yields the inner string instead of the original list,
+        so every reasoning-replay consumer (all of which check
+        ``isinstance(..., list)``) silently drops it. Strings are therefore
+        stored as-is; structures are dumped.
         """
         if not value:
             return None
@@ -9224,8 +9224,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reasoning: str = None,
         reasoning_content: str = None,
         reasoning_details: Any = None,
-        codex_reasoning_items: Any = None,
-        codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
         effect_disposition: Optional[str] = None,
@@ -9262,8 +9260,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         display_metadata_json = self._encode_display_metadata(display_metadata)
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = self._reasoning_json_text(reasoning_details)
-        codex_items_json = self._reasoning_json_text(codex_reasoning_items)
-        codex_message_items_json = self._reasoning_json_text(codex_message_items)
         # tool_calls may arrive as a Python list (from the live agent) or
         # as a JSON string (from import/export). Parse first to avoid
         # double-encoding.
@@ -9303,9 +9299,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_content, reasoning_details,
+                   platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -9320,8 +9316,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     _scrub_surrogates(reasoning),
                     _scrub_surrogates(reasoning_content),
                     reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
                     1,
@@ -9704,15 +9698,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (TypeError, ValueError):
                     logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
             reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
-            codex_reasoning_items = (
-                msg.get("codex_reasoning_items") if role == "assistant" else None
-            )
-            codex_message_items = (
-                msg.get("codex_message_items") if role == "assistant" else None
-            )
             reasoning_details_json = self._reasoning_json_text(reasoning_details)
-            codex_items_json = self._reasoning_json_text(codex_reasoning_items)
-            codex_message_items_json = self._reasoning_json_text(codex_message_items)
             # tool_calls may arrive as a Python list (from the live agent)
             # or as a JSON string (from import_sessions / export_session,
             # which store it as TEXT). json.dumps on an already-serialized
@@ -9734,9 +9720,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cur = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_content, reasoning_details,
+                   platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -9751,8 +9737,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
                     _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
                     reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
@@ -10473,7 +10457,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
-        "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
+        "platform_message_id, observed, timestamp, "
         "api_content, display_kind, display_metadata"
     )
 

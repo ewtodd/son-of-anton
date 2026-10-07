@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import os
 
-from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates

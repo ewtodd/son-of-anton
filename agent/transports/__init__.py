@@ -35,10 +35,9 @@ def get_transport(api_mode: str):
         _discover_transports()
     cls = _REGISTRY.get(api_mode)
     if cls is None:
-        # The registry can be partially populated when a specific transport
-        # module was imported directly (for example chat_completions before
-        # codex).  Discover on misses, not only when the registry is empty, so
-        # test/order-dependent imports do not make valid api_modes unavailable.
+        # The registry may have been populated only via a direct module
+        # import; rediscover on misses so test/order-dependent imports do
+        # not make valid api_modes unavailable.
         _discover_transports()
         cls = _REGISTRY.get(api_mode)
     if cls is None:
@@ -50,10 +49,6 @@ def _discover_transports() -> None:
     """Import all transport modules to trigger auto-registration."""
     global _discovered
     _discovered = True
-    try:
-        import agent.transports.codex  # noqa: F401
-    except ImportError:
-        pass
     try:
         import agent.transports.chat_completions  # noqa: F401
     except ImportError:

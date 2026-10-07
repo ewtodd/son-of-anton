@@ -15,7 +15,7 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
 from typing import Any
 
 from providers import register_provider
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, profile_user_agent
 
 
 class CustomProfile(ProviderProfile):
@@ -151,6 +151,11 @@ custom = CustomProfile(
     ),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured
+    # Local endpoints are usually fronted by a gateway (e.g. Bifrost) that
+    # attributes callers by User-Agent. Without this the stock OpenAI SDK UA
+    # makes every request look like a generic API client; the SDK forwards a
+    # caller-supplied default_headers User-Agent as-is.
+    default_headers={"User-Agent": profile_user_agent()},
     # Without this, no max_tokens is sent and Ollama falls back to its internal
     # num_predict=128, truncating responses after a few tokens (#39281). This is
     # only a floor used when the user hasn't set model.max_tokens — they can

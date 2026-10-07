@@ -5215,12 +5215,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         text = _content_text_for_contains(content).strip()
         # Sibling recovery nudges from agent.conversation_loop's retry loop:
         # same "ephemeral scaffolding, not a real human turn" class as the
-        # markers above (see _CODEX_INCOMPLETE_NUDGE's own docstring there),
-        # imported lazily to avoid a module-load-order cycle (conversation_loop
-        # already imports FROM this module at call time for the same reason).
+        # markers above, imported lazily to avoid a module-load-order cycle
+        # (conversation_loop already imports FROM this module at call time
+        # for the same reason).
         from agent.conversation_loop import (
-            _CODEX_ACK_CONTINUATION_NUDGE,
-            _CODEX_INCOMPLETE_NUDGE,
+            _INTENT_ACK_CONTINUATION_NUDGE,
             _DROPPED_TOOLCALL_NUDGE_CONTENT,
             _EMPTY_TOOL_RESPONSE_NUDGE,
             _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
@@ -5232,8 +5231,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             COMPACTION_CONTINUATION_USER_CONTENT,
             _LEGACY_COMPACTION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST,
-            _CODEX_INCOMPLETE_NUDGE,
-            _CODEX_ACK_CONTINUATION_NUDGE,
+            _INTENT_ACK_CONTINUATION_NUDGE,
             _DROPPED_TOOLCALL_NUDGE_CONTENT,
             _EMPTY_TOOL_RESPONSE_NUDGE,
             _LENGTH_CONTINUATION_NETWORK_STUB,

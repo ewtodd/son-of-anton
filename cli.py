@@ -5750,39 +5750,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pass
             return changed
 
-        if resolved_provider != "openai-codex":
-            return changed
-
-        # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
-        if "/" in current_model:
-            slug = current_model.split("/", 1)[1]
-            if not self._model_is_default:
-                self._console_print(
-                    f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
-                    f"using '{slug}' for OpenAI Codex."
-                )
-            self.model = slug
-            current_model = slug
-            changed = True
-
-        # 2. Replace untouched default with a Codex model
-        if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
-            try:
-                from son_of_anton_cli.codex_models import get_codex_model_ids
-
-                available = get_codex_model_ids(
-                    access_token=self.api_key if self.api_key else None,
-                )
-                if available:
-                    fallback_model = available[0]
-            except Exception:
-                pass
-
-            if current_model != fallback_model:
-                self.model = fallback_model
-                changed = True
-
         return changed
 
     def _on_thinking(self, text: str) -> None:

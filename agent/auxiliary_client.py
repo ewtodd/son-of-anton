@@ -598,8 +598,6 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not suffix:
             return "custom"
         normalized = suffix
-    if normalized == "codex":
-        return "openai-codex"
     if normalized == "main":
         # Resolve to the user's actual main provider so named custom providers
         # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
@@ -631,74 +629,6 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
-# Context window enforced by ChatGPT's Codex OAuth backend for the
-# gpt-5.4 / gpt-5.5 / gpt-5.6 families. The raw OpenAI API and OpenRouter
-# expose 1.05M for the same slugs, but the Codex backend hard-caps at 272K
-# (verified live for 5.4/5.5: a ~330K-token request to
-# chatgpt.com/backend-api/codex/responses is rejected with
-# ``context_length_exceeded`` while ~250K succeeds; gpt-5.6 shares the same
-# 272K Codex cap — see _CODEX_OAUTH_CONTEXT_FALLBACK in model_metadata.py).
-# With a 272K ceiling the default 50% compaction trigger fires at ~136K —
-# wasteful, since the model can hold far more raw context before
-# summarization actually buys anything. We raise the trigger to 85% (~231K)
-# on this exact route so Codex gpt-5.4 / gpt-5.5 / gpt-5.6 sessions use the
-# window they actually have.
-_CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
-
-# gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) with a
-# native 128K context window.  The default 50% compaction trigger fires at
-# ~64K — wasting half the usable window, often before the session has enough
-# turns to summarize meaningfully.  We raise the trigger to 70% (~90K) so
-# spark sessions use more of the window before summarization, while still
-# leaving ~38K headroom for the summary and continued conversation before
-# the 128K hard limit.
-_CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
-
-
-def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4 / gpt-5.5 / gpt-5.6 on the ChatGPT Codex OAuth backend.
-
-    Matches only the Codex OAuth route (provider ``openai-codex``), not the
-    direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
-    larger context window for the same slug and must keep the user's default
-    compaction threshold. ``-pro`` variants and dated snapshots are matched
-    via prefix so the override tracks every 272K-capped family (5.4, 5.5,
-    5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
-    variant. (Name kept for backward compatibility with the
-    ``compaction.codex_gpt55_autoraise`` config key.)
-    """
-    prov = (provider or "").strip().lower()
-    if prov != "openai-codex":
-        return False
-    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return (
-        bare == "gpt-5.4"
-        or bare.startswith("gpt-5.4-")
-        or bare.startswith("gpt-5.4.")
-        or bare == "gpt-5.5"
-        or bare.startswith("gpt-5.5-")
-        or bare.startswith("gpt-5.5.")
-        or bare == "gpt-5.6"
-        or bare.startswith("gpt-5.6-")
-        or bare.startswith("gpt-5.6.")
-    )
-
-
-def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for ``gpt-5.3-codex-spark`` on the ChatGPT Codex OAuth backend.
-
-    The model is Codex-OAuth-only (ChatGPT Pro entitlement) with a native
-    128K context window.  Only the Codex OAuth route (provider
-    ``openai-codex``) is matched — the slug is not available on other
-    routes.
-    """
-    prov = (provider or "").strip().lower()
-    if prov != "openai-codex":
-        return False
-    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return bare == "gpt-5.3-codex-spark"
-
-
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -724,8 +654,6 @@ def _fixed_temperature_for_model(
 def _compaction_threshold_for_model(
     model: Optional[str],
     provider: Optional[str] = None,
-    *,
-    allow_codex_gpt55_autoraise: bool = True,
 ) -> Optional[float]:
     """Return a context-compaction threshold override for specific models.
 
@@ -733,29 +661,14 @@ def _compaction_threshold_for_model(
     consumed before Son of Anton triggers summarization.  Higher values delay
     compaction and preserve more raw context.
 
-    Per-model/route overrides:
+    Per-model overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
-        Codex caps all three families at 272K and the default 50% trigger
-        would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
-        (historical config-key name kept for backward compatibility) so the
-        user can opt back down to the global default (the caller passes the
-        config flag through here).
-      - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
-        has a native 128K window and the default 50% trigger would compact at
-        ~64K — wasting half the usable context. Not gated by the gpt-5.5
-        opt-out flag: 128K is the model's native window, so the raise is
-        unambiguously correct.
 
     Returns a float in (0, 1] to override the global ``compaction.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
-        return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
-    if _is_codex_spark(model, provider):
-        return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None
 
 # Model-family priority for the auxiliary "fast tier", fastest first.
@@ -1085,72 +998,6 @@ from son_of_anton_cli import __version__ as _SON_OF_ANTON_VERSION
 # Default auxiliary models per provider
 _AUTH_JSON_PATH = get_son_of_anton_home() / "auth.json"
 
-# Codex OAuth endpoint used when a caller explicitly requests
-# provider="openai-codex".  There is deliberately no hardcoded default
-# model: the set of models OpenAI accepts on this endpoint for
-# ChatGPT-account auth is an undocumented, shifting allow-list, and
-# pinning one here has drifted silently twice (gpt-5.3-codex → gpt-5.2-codex
-# → gpt-5.4 over 6 weeks in early 2026).  Callers must pass the model
-# they want explicitly (from config.toml model.model, auxiliary.<task>.model,
-# or the user's active Codex model selection).
-_CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-
-
-def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
-    """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
-
-    The Cloudflare layer in front of the Codex endpoint whitelists a small set of
-    first-party originators (``codex_cli_rs``, ``codex_vscode``, ``codex_sdk_ts``,
-    anything starting with ``Codex``). Requests from non-residential IPs (VPS,
-    server-hosted agents) that don't advertise an allowed originator are served
-    a 403 with ``cf-mitigated: challenge`` regardless of auth correctness.
-
-    We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
-    ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
-    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
-    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
-
-    Malformed tokens are tolerated — we drop the account-ID header rather than
-    raise, so a bad token still surfaces as an auth error (401) instead of a
-    crash at client construction.
-    """
-    headers = {
-        "User-Agent": "codex_cli_rs/0.0.0 (Son of Anton Agent)",
-        "originator": "codex_cli_rs",
-    }
-    if not isinstance(access_token, str) or not access_token.strip():
-        return headers
-    try:
-        import base64
-        parts = access_token.split(".")
-        if len(parts) < 2:
-            return headers
-        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-        if isinstance(acct_id, str) and acct_id:
-            headers["ChatGPT-Account-ID"] = acct_id
-    except Exception:
-        pass
-    return headers
-
-
-# Hosts that expose BOTH an Anthropic-style ``…/anthropic`` path and a sibling
-# OpenAI-compatible ``…/v1`` (or vendor-specific OpenAI path). Unconditional
-# ``/anthropic`` → ``/v1`` rewrites break Anthropic-only gateways such as
-# Alibaba Bailian Token Plan (#83642).
-#
-# Matching is anchored to the URL *host* (exact domain or subdomain suffix /
-# ``api.minimax.*`` prefix) — never a substring of the whole URL, so a path
-# that merely contains ``api.minimax`` cannot false-positive.
-_DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = (
-    "minimax.io",
-    "minimax.chat",
-    "minimaxi.com",
-)
-_DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES = ("api.minimax.",)
-
-
 def _is_dual_surface_anthropic_host(url: str) -> bool:
     """True when the URL's host is a known dual-surface (MiniMax-family) host."""
     try:
@@ -1328,521 +1175,6 @@ def _scoped_key_env(name: str) -> str:
         return (os.getenv(name) or "").strip()
 
 
-# ── Codex Responses → chat.completions adapter ─────────────────────────────
-# All auxiliary consumers call client.chat.completions.create(**kwargs) and
-# read response.choices[0].message.content. This adapter translates those
-# calls to the Codex Responses API so callers don't need any changes.
-
-
-class _CodexCompletionsAdapter:
-    """Drop-in shim that accepts chat.completions.create() kwargs and
-    routes them through the Codex Responses streaming API."""
-
-    def __init__(self, real_client: OpenAI, model: str):
-        self._client = real_client
-        self._model = model
-
-    def create(self, **kwargs) -> Any:
-        messages = kwargs.get("messages", [])
-        model = kwargs.get("model", self._model)
-
-        # Separate system/instructions from replayable conversation messages,
-        # then route the rest through the SINGLE shared chat->Responses
-        # converter used by the main agent transport
-        # (agent/transports/codex.py). Maintaining a private conversion loop
-        # here let chat-style messages with role="tool" leak straight into
-        # Responses input[] — which the Responses API rejects with
-        # "Invalid value: 'tool'. Supported values are: 'assistant', 'system',
-        # 'developer', and 'user'." (issue #5709, hit hard by flush_memories()
-        # / compaction replaying real session history that includes assistant
-        # tool_calls + role="tool" results). The shared converter encodes
-        # assistant tool calls as `function_call` items and tool results as
-        # `function_call_output` items with a valid call_id, so every
-        # Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
-        from utils import base_url_host_matches
-
-        instructions = "You are a helpful assistant."
-        replay_messages: List[Dict[str, Any]] = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content") or ""
-            if role == "system":
-                instructions = content if isinstance(content, str) else str(content)
-            else:
-                replay_messages.append(msg)
-
-        # Copilot (githubcopilot.com) binds replayed codex_message_items ids
-        # to a backend "connection" that doesn't survive credential
-        # rotation/gateway restarts — replaying one gets HTTP 401 "input
-        # item ID does not belong to this connection" (#32716). Auxiliary
-        # calls (context compaction, flush_memories, MoA aggregation) go
-        # through this adapter instead of agent/transports/codex.py's
-        # build_kwargs, so they need the same guard applied independently.
-        _host_for_input = str(getattr(self._client, "base_url", "") or "")
-        _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
-        # Auxiliary calls never send ``context_management`` (native
-        # compaction is a main-turn feature), so they must never replay a
-        # compaction checkpoint from the replayed history nor let one
-        # restructure this request — the summarizer/aggregator model is
-        # usually not even the one that minted the blob.
-        input_items = _chat_messages_to_responses_input(
-            replay_messages,
-            is_github_responses=_is_github_for_input,
-            native_compaction_eligible=False,
-        )
-
-        resp_kwargs: Dict[str, Any] = {
-            "model": model,
-            "instructions": instructions,
-            "input": input_items or [{"role": "user", "content": ""}],
-            "store": False,
-        }
-
-        # Preserve the chat.completions timeout contract. This adapter is used
-        # by auxiliary calls such as context compaction; if the timeout is not
-        # forwarded and enforced, a Codex Responses stream can sit behind a
-        # dead-looking CLI until the user force-interrupts the whole session.
-        timeout = kwargs.get("timeout")
-        if timeout is not None:
-            resp_kwargs["timeout"] = timeout
-
-        # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
-        # support max_output_tokens or temperature — omit to avoid 400 errors.
-
-        # Translate extra_body.reasoning (chat.completions shape) into the
-        # Responses API's top-level reasoning + include fields.  Mirrors
-        # agent/transports/codex.py::build_kwargs() so auxiliary callers
-        # that configure reasoning via auxiliary.<task>.extra_body get the
-        # same behavior as the main agent's Codex transport.
-        extra_body = kwargs.get("extra_body") or {}
-        if isinstance(extra_body, dict):
-            reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
-                if reasoning_cfg.get("enabled") is False:
-                    # Reasoning explicitly disabled — do not set reasoning
-                    # or include.  The Codex backend still thinks by
-                    # default, but we honor the caller's intent where the
-                    # API allows it.
-                    pass
-                else:
-                    # Truthy-only check mirrors agent/transports/codex.py
-                    # build_kwargs(): falsy values (None, "", 0) fall back
-                    # to the default rather than being forwarded to the
-                    # Codex backend, which rejects e.g. {"effort": null}
-                    # with a 400.
-                    effort = reasoning_cfg.get("effort") or "medium"
-                    # Same declared vocabulary + shared clamp as the main
-                    # Codex transport (agent.reasoning_effort): per-model —
-                    # "max" is gpt-5.6-only, "minimal"/"ultra" always
-                    # rejected (live-verified, #68365).
-                    from agent.reasoning_effort import (
-                        clamp_effort,
-                        codex_supported_efforts,
-                    )
-
-                    effort = clamp_effort(effort, codex_supported_efforts(model))
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
-
-        # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
-        tools = kwargs.get("tools")
-        if tools:
-            # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
-            # keywords (HTTP 400). Strip them here to match the parity guarantee that
-            # chat_completion_helpers.py provides for the main-agent xAI path.
-            #
-            # Deep-copy before sanitizing — ``list(tools)`` is only a shallow
-            # copy of the outer list, but the sanitizers mutate the inner
-            # parameter dicts in place.  Without a deep copy the caller's
-            # tool registry permanently loses its slash-containing enum
-            # constraints after the first auxiliary xAI call.  See #27907.
-            try:
-                import copy as _copy
-                from tools.schema_sanitizer import (
-                    strip_pattern_and_format,
-                    strip_slash_enum,
-                )
-                tools = _copy.deepcopy(list(tools))
-                tools, _ = strip_pattern_and_format(tools)
-                tools, _ = strip_slash_enum(tools)
-            except Exception as exc:
-                logger.warning(
-                    "Auxiliary client: failed to sanitize tool schemas for "
-                    "Codex/xAI Responses path: %s", exc,
-                )
-            converted = []
-            for t in tools:
-                fn = t.get("function", {}) if isinstance(t, dict) else {}
-                name = fn.get("name")
-                if not name:
-                    continue
-                converted.append({
-                    "type": "function",
-                    "name": name,
-                    "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
-                })
-            if converted:
-                resp_kwargs["tools"] = converted
-
-        # Stable prompt-cache routing for the Codex/Responses aux path, mirroring
-        # the main transport (agent/transports/codex.py::build_kwargs, which sets
-        # prompt_cache_key = _content_cache_key(instructions, tools)). Without
-        # this, MoA acting-aggregator and other auxiliary Responses calls stay
-        # cache-cold while the main Responses transport is warm (issue #53735).
-        # The key is content-addressed from the static prefix (instructions +
-        # tool schemas) so it stays warm across turns/fires. Guard the top-level
-        # field the same way the main transport does: xAI Responses takes the
-        # key in extra_body (not top-level) and GitHub/Copilot Responses opts
-        # out of cache-key routing entirely — for those hosts, skip it here.
-        try:
-            from agent.transports.codex import (
-                _cache_scope_from_session_id,
-                _content_cache_key,
-                _default_prompt_cache_retention_for_request,
-            )
-            from utils import base_url_host_matches
-
-            _host_src = str(getattr(self._client, "base_url", "") or "")
-            _is_xai = base_url_host_matches(_host_src, "x.ai") or base_url_host_matches(_host_src, "api.x.ai")
-            _is_github = (
-                base_url_host_matches(_host_src, "githubcopilot.com")
-                or base_url_host_matches(_host_src, "models.github.ai")
-            )
-            if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
-                # Scope by the owning turn's conversation so two unrelated
-                # sessions with the same instructions/tools (e.g. compaction,
-                # MoA, flush_memories firing back-to-back on different
-                # sessions) don't bucket-share a prompt cache slot (#78941).
-                # Prefer the rotation-stable logical scope threaded through
-                # set_runtime_main() (compaction-lineage root, #79017) and
-                # fall back to the physical session id, mirroring the main
-                # transport (agent/transports/codex.py::build_kwargs).
-                _scope = _cache_scope_from_session_id(
-                    _runtime_main_value("cache_scope")
-                    or _runtime_main_value("session_id")
-                )
-                _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"), _scope)
-                if _cache_key:
-                    resp_kwargs["prompt_cache_key"] = _cache_key
-            if "prompt_cache_retention" not in resp_kwargs:
-                _cache_retention = _default_prompt_cache_retention_for_request(
-                    model,
-                    _host_src,
-                )
-                if _cache_retention:
-                    resp_kwargs["prompt_cache_retention"] = _cache_retention
-        except Exception:
-            logger.debug(
-                "Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True
-            )
-
-        # Stream and collect the response
-        text_parts: List[str] = []
-        tool_calls_raw: List[Any] = []
-        usage = None
-        total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
-        deadline = time.monotonic() + float(total_timeout) if total_timeout else None
-        timed_out = threading.Event()
-        timeout_timer: Optional[threading.Timer] = None
-        # A protected provider call may outlive its owning compaction attempt:
-        # the owner returns promptly on hard cancellation while this adapter is
-        # still blocked in the SDK stream on its isolated worker. Timer threads
-        # do not inherit this worker's thread-local protection state, so freeze
-        # the hard-cancel source here, before creating the timer.
-        protected_cancel_check = (
-            _capture_aux_cancel_check() if _aux_interrupt_protected() else None
-        )
-        attempt_stream_lock = threading.Lock()
-        attempt_stream: List[Any] = []
-
-        def _timeout_message() -> str:
-            return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
-
-        def _close_client_on_timeout() -> None:
-            begin_timeout_cleanup = getattr(
-                protected_cancel_check, "begin_timeout_cleanup", None
-            )
-            if callable(begin_timeout_cleanup):
-                timeout_won = bool(begin_timeout_cleanup())
-            else:
-                timeout_won = not (
-                    callable(protected_cancel_check)
-                    and _captured_aux_cancel_requested(protected_cancel_check)
-                )
-            # Publish transport timeout only after the attempt-local decision is
-            # fixed, so owner polling cannot observe completion in between.
-            timed_out.set()
-            if not timeout_won:
-                # The request owner already hard-cancelled this attempt. The
-                # OpenAI client is process-shared, so closing/evicting it here
-                # would disrupt unrelated sessions. Wake only this attempt's
-                # event stream when responses.create() returned one in time;
-                # otherwise rely on the bounded SDK/provider timeout.
-                with attempt_stream_lock:
-                    stream = attempt_stream[0] if attempt_stream else None
-                close_stream = getattr(stream, "close", None)
-                if callable(close_stream):
-                    try:
-                        close_stream()
-                    except Exception:
-                        logger.debug(
-                            "Codex auxiliary: cancelled attempt stream close "
-                            "during timeout failed",
-                            exc_info=True,
-                        )
-                return
-            close = getattr(self._client, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
-            # The cached auxiliary client wraps this same ``self._client``
-            # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
-            # this instance).  After we close the httpx transport above, the
-            # cache must drop that entry — otherwise the next auxiliary call
-            # (compaction retry, memory flush, etc.) reuses the dead client
-            # and fails fast with a connection error.  See issue #23432.
-            try:
-                _evict_cached_client_instance(self._client)
-            except Exception:
-                logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
-
-        def _check_cancelled() -> None:
-            if deadline is not None and time.monotonic() >= deadline:
-                if not timed_out.is_set():
-                    _close_client_on_timeout()
-                raise TimeoutError(_timeout_message())
-            try:
-                from tools.interrupt import is_interrupted
-                # Honor interrupt protection for atomic aux tasks (compaction):
-                # a mid-flight gateway interrupt must NOT abort the summary call
-                # and trigger a degraded fallback marker (#23975). Explicit host
-                # cancellation has its own frozen exception; timeouts above still
-                # fire and other aux tasks remain interruptible.
-                if _aux_interrupt_cancel_requested():
-                    raise AuxiliaryExplicitCancellation()
-                if is_interrupted() and not _aux_interrupt_protected():
-                    raise InterruptedError("Codex auxiliary Responses stream interrupted")
-            except (InterruptedError, AuxiliaryExplicitCancellation):
-                raise
-            except Exception:
-                # Interrupt state is a best-effort UX hook; never make it a
-                # new failure mode for auxiliary calls.
-                pass
-
-        try:
-            if total_timeout:
-                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
-                timeout_timer.daemon = True
-                timeout_timer.start()
-            _check_cancelled()
-
-            # Event-driven Responses streaming via the low-level
-            # ``responses.create(stream=True)`` path.  The high-level
-            # ``responses.stream(...)`` helper does post-hoc typed
-            # reconstruction from ``response.completed.response.output``,
-            # which the chatgpt.com Codex backend has been observed to
-            # return as ``null`` (gpt-5.5, May 2026) — that crashes the SDK
-            # with ``TypeError: 'NoneType' object is not iterable``.
-            # Consuming raw events and assembling the final response
-            # ourselves from ``response.output_item.done`` makes us
-            # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
-
-            stream_kwargs = dict(resp_kwargs)
-            stream_kwargs["stream"] = True
-
-            def _on_each_event(_event: Any) -> None:
-                # Re-check timeout/cancellation per event, matching the
-                # cadence the old in-line ``_check_cancelled()`` used.
-                # Each SSE event is also forward progress for hosts watching
-                # a progress hook (gateway session hygiene): a reasoning
-                # model streaming a long summary must not look hung.
-                _notify_aux_progress()
-                _check_cancelled()
-
-            event_stream = self._client.responses.create(**stream_kwargs)
-            with attempt_stream_lock:
-                attempt_stream.append(event_stream)
-            # The timer can fire while responses.create() is blocked. If the
-            # cancelled attempt had no stream to close at that instant, close it
-            # now that it is safely attempt-owned; never touch the shared client.
-            if (
-                timed_out.is_set()
-                and callable(protected_cancel_check)
-                and _captured_aux_cancel_requested(protected_cancel_check)
-            ):
-                close_fn = getattr(event_stream, "close", None)
-                if callable(close_fn):
-                    try:
-                        close_fn()
-                    except Exception:
-                        logger.debug(
-                            "Codex auxiliary: late cancelled attempt stream close failed",
-                            exc_info=True,
-                        )
-            try:
-                # Some Codex-compatible hosts accept ``stream=True`` but return
-                # a completed Responses object instead of an SSE iterator. Do
-                # not hand that object to the event consumer: typed Responses
-                # (and compatibility shims such as SimpleNamespace) are not
-                # event streams and may not be iterable at all.
-                if hasattr(event_stream, "output"):
-                    final = event_stream
-                else:
-                    final = _consume_codex_event_stream(
-                        event_stream,
-                        model=str(resp_kwargs.get("model") or model),
-                        on_event=_on_each_event,
-                    )
-            finally:
-                close_fn = getattr(event_stream, "close", None)
-                if callable(close_fn):
-                    try:
-                        close_fn()
-                    except Exception:
-                        pass
-                with attempt_stream_lock:
-                    attempt_stream.clear()
-
-            if final is None:
-                raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
-
-            # Extract text and tool calls from the Responses output.
-            # Items may be SimpleNamespace (raw-event path) or dicts
-            # (some legacy fallback paths), so handle both shapes.
-            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
-                val = getattr(obj, key, None)
-                if val is None and isinstance(obj, dict):
-                    val = obj.get(key, default)
-                return val if val is not None else default
-
-            for item in (getattr(final, "output", None) or []):
-                item_type = _item_get(item, "type")
-                if item_type == "message":
-                    for part in (_item_get(item, "content") or []):
-                        ptype = _item_get(part, "type")
-                        if ptype in {"output_text", "text"}:
-                            text_parts.append(_item_get(part, "text", ""))
-                elif item_type == "function_call":
-                    tool_calls_raw.append(SimpleNamespace(
-                        id=_item_get(item, "call_id", ""),
-                        type="function",
-                        function=SimpleNamespace(
-                            name=_item_get(item, "name", ""),
-                            arguments=_item_get(item, "arguments", "{}"),
-                        ),
-                    ))
-
-            resp_usage = getattr(final, "usage", None)
-            if resp_usage:
-                usage = SimpleNamespace(
-                    prompt_tokens=getattr(resp_usage, "input_tokens", 0)
-                        or (resp_usage.get("input_tokens", 0) if isinstance(resp_usage, dict) else 0),
-                    completion_tokens=getattr(resp_usage, "output_tokens", 0)
-                        or (resp_usage.get("output_tokens", 0) if isinstance(resp_usage, dict) else 0),
-                    total_tokens=getattr(resp_usage, "total_tokens", 0)
-                        or (resp_usage.get("total_tokens", 0) if isinstance(resp_usage, dict) else 0),
-                )
-        except Exception as exc:
-            if timed_out.is_set():
-                raise TimeoutError(_timeout_message()) from exc
-            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
-            raise
-        finally:
-            if timeout_timer is not None:
-                timeout_timer.cancel()
-
-        content = "".join(text_parts).strip() or None
-
-        # Build a response that looks like chat.completions
-        message = SimpleNamespace(
-            role="assistant",
-            content=content,
-            tool_calls=tool_calls_raw or None,
-        )
-        choice = SimpleNamespace(
-            index=0,
-            message=message,
-            finish_reason="stop" if not tool_calls_raw else "tool_calls",
-        )
-        return SimpleNamespace(
-            choices=[choice],
-            model=model,
-            usage=usage,
-        )
-
-
-class _CodexChatShim:
-    """Wraps the adapter to provide client.chat.completions.create()."""
-
-    def __init__(self, adapter: _CodexCompletionsAdapter):
-        self.completions = adapter
-
-
-class CodexAuxiliaryClient:
-    """OpenAI-client-compatible wrapper that routes through Codex Responses API.
-
-    Consumers can call client.chat.completions.create(**kwargs) as normal.
-    Also exposes .api_key and .base_url for introspection by async wrappers.
-    """
-
-    def __init__(self, real_client: OpenAI, model: str):
-        self._real_client = real_client
-        adapter = _CodexCompletionsAdapter(real_client, model)
-        self.chat = _CodexChatShim(adapter)
-        self.api_key = real_client.api_key
-        self.base_url = real_client.base_url
-
-    def close(self):
-        self._real_client.close()
-
-
-class _AsyncCodexCompletionsAdapter:
-    """Async version of the Codex Responses adapter.
-
-    Wraps the sync adapter via asyncio.to_thread() so async consumers
-    (web_tools, session_search) can await it as normal.
-    """
-
-    def __init__(self, sync_adapter: _CodexCompletionsAdapter):
-        self._sync = sync_adapter
-
-    async def create(self, **kwargs) -> Any:
-        import asyncio
-        return await asyncio.to_thread(self._sync.create, **kwargs)
-
-
-class _AsyncCodexChatShim:
-    def __init__(self, adapter: _AsyncCodexCompletionsAdapter):
-        self.completions = adapter
-
-
-class AsyncCodexAuxiliaryClient:
-    """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
-
-    def __init__(self, sync_wrapper: "CodexAuxiliaryClient"):
-        sync_adapter = sync_wrapper.chat.completions
-        async_adapter = _AsyncCodexCompletionsAdapter(sync_adapter)
-        self.chat = _AsyncCodexChatShim(async_adapter)
-        self.api_key = sync_wrapper.api_key
-        self.base_url = sync_wrapper.base_url
-        # Mirror the sync wrapper's _real_client so cache eviction by leaf
-        # OpenAI client (e.g. _close_client_on_timeout in #23482) drops
-        # this async entry too. Without this, sync and async cache entries
-        # diverge on poisoning: the sync entry is evicted but the async
-        # entry keeps reusing the closed transport, failing every
-        # subsequent async aux call with 'Connection error' until the
-        # gateway restarts.
-        self._real_client = sync_wrapper._real_client
-
-
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if the endpoint at ``base_url`` speaks the Anthropic Messages
     protocol instead of OpenAI chat.completions.
@@ -1870,49 +1202,6 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return True
     return False
-
-
-def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Son of Anton auth store.
-
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
-    """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-
-    try:
-        from son_of_anton_cli.auth import _read_codex_tokens
-        data = _read_codex_tokens()
-        tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
-            return None
-
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
-
-        return access_token.strip()
-    except Exception as exc:
-        logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -2605,8 +1894,6 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         custom_base, custom_key, custom_mode = runtime
     if not custom_base or not custom_key:
         return None, None
-    if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
-        return None, None
     model = _read_main_model_for_aux() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
@@ -2618,56 +1905,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     _custom_headers = _apply_user_default_headers(None)
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
-    if custom_mode == "codex_responses":
-        real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
-        return CodexAuxiliaryClient(real_client, model), model
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-
-
-def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
-    """Build a CodexAuxiliaryClient for an explicitly-requested model.
-
-    There is no auto-selection of the Codex model: the ChatGPT-account
-    Codex endpoint's accepted model list is an undocumented, drifting
-    allow-list, so any hardcoded default we pick goes stale.  The caller
-    is responsible for passing the model (e.g. from the user's own
-    ``model.model`` or ``auxiliary.<task>.model`` config).
-
-    Returns (None, None) when no Codex OAuth token is available.
-    """
-    if not model:
-        logger.warning(
-            "Auxiliary client: openai-codex requested without a model; "
-            "pass model explicitly (auxiliary.<task>.model in config.toml)."
-        )
-        return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-        else:
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
-            base_url = _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
-    real_client = _create_openai_client(
-        api_key=codex_token,
-        base_url=base_url,
-        default_headers=_codex_cloudflare_headers(codex_token),
-    )
-    return CodexAuxiliaryClient(real_client, model), model
-
-
-
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2759,8 +1997,6 @@ _AUX_UNHEALTHY_LABEL_ALIASES = {
     "openrouter": "openrouter",
     "custom": "local/custom",
     "local/custom": "local/custom",
-    "openai-codex": "openai-codex",
-    "codex": "openai-codex",
 }
 
 
@@ -3347,8 +2583,6 @@ def _recoverable_pool_provider(
     if normalized not in {"", "auto", "custom"}:
         return normalized
     base = str(getattr(client, "base_url", "") or "")
-    if base_url_host_matches(base, "chatgpt.com"):
-        return "openai-codex"
     if base_url_host_matches(base, "openrouter.ai"):
         return "openrouter"
     if base_url_host_matches(base, "api.anthropic.com"):
@@ -3581,14 +2815,6 @@ def _refresh_provider_credentials(provider: str) -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
     try:
-        if normalized == "openai-codex":
-            from son_of_anton_cli.auth import resolve_codex_runtime_credentials
-
-            creds = resolve_codex_runtime_credentials(force_refresh=True)
-            if not str(creds.get("api_key", "") or "").strip():
-                return False
-            _evict_cached_clients(normalized)
-            return True
         if normalized == "xai-oauth":
             # Preference: pool-level refresh (uses refresh_token from pool entry),
             # then fall back to singleton auth-store resolver.
@@ -3622,15 +2848,13 @@ def _auth_refresh_provider_for_route(
     Auto-routed auxiliary calls keep ``resolved_provider == "auto"`` even
     after _get_cached_client() selects a concrete backend. Infer the backend
     from the selected client's base URL so auth refresh works for auto →
-    Copilot/Codex/Anthropic/Nous routes too. (#20832)
+    Copilot/Anthropic/Nous routes too. (#20832)
     """
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
         return normalized
     if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
         return "copilot"
-    if base_url_host_matches(client_base_url, "chatgpt.com"):
-        return "openai-codex"
     if base_url_host_matches(client_base_url, "api.anthropic.com"):
         return "anthropic"
     return normalized
@@ -4038,7 +3262,6 @@ def _try_payment_fallback(
         skip_labels.add(main_provider.lower())
     # Map common resolved_provider values back to chain labels.
     _alias_to_label = {"openrouter": "openrouter",
-                       "openai-codex": "openai-codex", "codex": "openai-codex",
                        "custom": "local/custom", "local/custom": "local/custom"}
     skip_chain_labels = {_alias_to_label.get(s, s) for s in skip_labels}
 
@@ -4763,7 +3986,7 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 
 
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
-    """Convert a sync client to its async counterpart, preserving Codex routing.
+    """Convert a sync client to its async counterpart.
 
     When ``is_vision=True`` and the underlying base URL is Copilot, the
     resulting async client carries the ``Copilot-Vision-Request: true``
@@ -4774,8 +3997,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
 
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
-    if isinstance(sync_client, CodexAuxiliaryClient):
-        return AsyncCodexAuxiliaryClient(sync_client), model
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
@@ -4823,7 +4044,6 @@ def resolve_provider_client(
     provider: str,
     model: str = None,
     async_mode: bool = False,
-    raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
     api_mode: str = None,
@@ -4834,29 +4054,21 @@ def resolve_provider_client(
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
 
-    The returned client always exposes ``.chat.completions.create()`` — for
-    Codex/Responses API providers, an adapter handles the translation
-    transparently.
+    The returned client always exposes ``.chat.completions.create()``.
 
     Args:
         provider: Provider identifier.  One of:
-            "openrouter", "openai-codex" (or "codex"),
+            "openrouter",
             "zai", "kimi-coding", "minimax", "minimax-cn",
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
             "auto" (full auto-detection chain).
         model: Model slug override.  If None, uses the provider's default
                auxiliary model.
         async_mode: If True, return an async-compatible client.
-        raw_codex: If True, return a raw OpenAI client for Codex providers
-            instead of wrapping in CodexAuxiliaryClient.  Use this when
-            the caller needs direct access to responses.stream() (e.g.,
-            the main agent loop).
         explicit_base_url: Optional direct OpenAI-compatible endpoint.
         explicit_api_key: Optional API key paired with explicit_base_url.
-        api_mode: API mode override.  One of "chat_completions",
-            "codex_responses", or None (auto-detect).  When set to
-            "codex_responses", the client is wrapped in
-            CodexAuxiliaryClient to route through the Responses API.
+        api_mode: API mode override.  Only "chat_completions" is supported;
+            None means auto-detect (which also resolves to chat_completions).
 
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
@@ -4942,51 +4154,13 @@ def resolve_provider_client(
     if not model and provider != "auto":
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
 
-    def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
-        """Decide if a plain OpenAI client should be wrapped for Responses API.
-
-        Returns True when api_mode is explicitly "codex_responses", or when
-        auto-detection (api.openai.com + codex-family model) suggests it.
-        Already-wrapped clients (CodexAuxiliaryClient) are skipped.
-        """
-        if isinstance(client_obj, CodexAuxiliaryClient):
-            return False
-        if raw_codex:
-            return False
-        if provider == "actual":
-            return True
-        if api_mode == "codex_responses":
-            return True
-        # Auto-detect: api.openai.com + codex model name pattern
-        if api_mode and api_mode != "codex_responses":
-            return False  # explicit non-codex mode
-        if base_url_hostname(base_url_str) == "api.openai.com":
-            model_lower = (model_str or "").lower()
-            if "codex" in model_lower:
-                return True
-        return False
-
     def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = "",
                         api_key_str: str = ""):
-        """Wrap a plain OpenAI client in the correct transport adapter.
+        """Hook point for transport adapters (currently a passthrough).
 
-        Handles two cases:
-        - ``CodexAuxiliaryClient`` when the endpoint needs the Responses API
-          (explicit ``api_mode=codex_responses`` or api.openai.com + codex
-          model name).
-        - ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic
-          Messages (explicit ``api_mode=anthropic_messages``, any ``/anthropic``
-          suffix, ``api.kimi.com/coding``, or ``api.anthropic.com``).
-
-        Clients that are already specialized wrappers pass through unchanged.
+        The standard endpoint speaks OpenAI chat.completions, so plain
+        clients are returned unchanged.
         """
-        if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
-            logger.debug(
-                "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
-                "(api_mode=%s, model=%s, base_url=%s)",
-                api_mode or "auto-detected", final_model_str,
-                base_url_str[:60] if base_url_str else "")
-            return CodexAuxiliaryClient(client_obj, final_model_str)
         return client_obj
 
     # ── Auto: try all providers in priority order ────────────────────
@@ -5013,40 +4187,6 @@ def resolve_provider_client(
         )
         _tag_effective_provider(routed_client, effective_provider)
         return routed_client, routed_model
-
-    # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
-    if provider == "openai-codex":
-        if not model:
-            logger.warning(
-                "resolve_provider_client: openai-codex requested without a "
-                "model; pass model explicitly (e.g. model.model in config.toml "
-                "or auxiliary.<task>.model for per-task aux routing)."
-            )
-            return None, None
-        if raw_codex:
-            # Return the raw OpenAI client for callers that need direct
-            # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                logger.warning("resolve_provider_client: openai-codex requested "
-                               "but no Codex OAuth token found (run: son-of-anton model)")
-                return None, None
-            final_model = _normalize_resolved_model(model, provider)
-            raw_client = _create_openai_client(
-                api_key=codex_token,
-                base_url=_CODEX_AUX_BASE_URL,
-                default_headers=_codex_cloudflare_headers(codex_token),
-            )
-            return (raw_client, final_model)
-        # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _build_codex_client(model)
-        if client is None:
-            logger.warning("resolve_provider_client: openai-codex requested "
-                           "but no Codex OAuth token found (run: son-of-anton model)")
-            return None, None
-        final_model = _normalize_resolved_model(model or default, provider)
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":

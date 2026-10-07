@@ -186,12 +186,7 @@ from agent.message_sanitization import (  # noqa: F401
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
 )
-from agent.codex_responses_adapter import (
-    _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
-    _deterministic_call_id as _codex_deterministic_call_id,
-    _split_responses_tool_id as _codex_split_responses_tool_id,
-    _summarize_user_message_for_log,  # also used by _sync_external_memory_for_turn (memory boundary)
-)
+from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.tool_guardrails import (
     ToolGuardrailDecision,
     append_toolguard_guidance,
@@ -334,45 +329,6 @@ def _safe_session_filename_component(session_id: str) -> str:
         raw.encode("utf-8", errors="surrogatepass")
     ).hexdigest()[:12]
     return f"{sanitized}_{digest}"
-
-
-class _StreamErrorEvent(Exception):
-    """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
-
-    Some Codex-style Responses backends (xAI for subscription/quota
-    failures, custom relays under malformed-tool-call conditions) emit a
-    standalone ``type=error`` frame instead of routing the failure
-    through ``response.failed`` or returning an HTTP 4xx.  The fallback
-    streaming path raises this exception so ``_summarize_api_error`` and
-    ``_extract_api_error_context`` see a familiar ``.body`` /
-    ``.status_code`` shape and the entitlement detector can match the
-    underlying provider message ("do not have an active Grok
-    subscription", etc.).
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: Optional[str] = None,
-        param: Optional[str] = None,
-        status_code: Optional[int] = None,
-    ) -> None:
-        super().__init__(message)
-        self.message = message
-        self.code = code
-        self.param = param
-        self.status_code = status_code
-        # OpenAI SDK-shaped body so _extract_api_error_context /
-        # _summarize_api_error / classify_api_error all pick it up.
-        self.body: Dict[str, Any] = {
-            "error": {
-                "message": message,
-                "code": code,
-                "param": param,
-                "type": "error",
-            }
-        }
 
 
 class AIAgent:
@@ -1200,39 +1156,6 @@ class AIAgent:
         except Exception:
             pass
 
-    def _disable_codex_reasoning_replay(
-        self,
-        messages: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, int]:
-        """Disable Responses encrypted reasoning replay and strip cached state.
-
-        Called from the conversation_loop retry path when the provider
-        rejects a replayed ``codex_reasoning_items`` blob with HTTP 400
-        ``invalid_encrypted_content``.  Sets ``self._codex_reasoning_replay_enabled``
-        to ``False`` (consumed by ``codex_responses_adapter._chat_messages_to_responses_input``
-        and ``transports/codex.py`` to drop ``reasoning.encrypted_content``
-        from subsequent requests) and pops ``codex_reasoning_items`` from
-        every assistant message in ``messages`` so they cannot be replayed
-        again later in the session.
-
-        Returns a small stats dict ``{"messages": int, "items": int}``
-        counting what was stripped — purely for diagnostic logging.
-        """
-        stripped_messages = 0
-        stripped_items = 0
-        target_messages = messages if isinstance(messages, list) else []
-
-        for msg in target_messages:
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            items = msg.pop("codex_reasoning_items", None)
-            if isinstance(items, list) and items:
-                stripped_messages += 1
-                stripped_items += len(items)
-
-        self._codex_reasoning_replay_enabled = False
-        return {"messages": stripped_messages, "items": stripped_items}
-
     # Stream-diagnostic class header preserved for backward compat —
     # actual list lives in ``agent.stream_diag.STREAM_DIAG_HEADERS``.
     from agent.stream_diag import STREAM_DIAG_HEADERS as _STREAM_DIAG_HEADERS  # noqa: E402
@@ -1470,67 +1393,6 @@ class AIAgent:
             return True
         return os.getenv("SON_OF_ANTON_API_CALL_STALE_TIMEOUT") is not None
 
-    def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
-        """Return an actionable hint when this request matches a known
-        Codex silent-reject configuration, else ``None``.
-
-        The ChatGPT Codex backend (``chatgpt.com/backend-api/codex``) has
-        historically silently dropped certain model requests: the connection
-        is accepted but no stream events are emitted and no error is raised.
-        The stale-call detector ends the hang, but a generic "timed out"
-        message gives the user no path forward.
-
-        This helper substitutes an actionable hint into the stale-timeout
-        warning when the request matches a known silent-reject pattern.
-        Currently flagged: ``gpt-5.5`` family on the Codex backend.  See
-        son-of-anton #21444 for the symptom history.  The upstream backend
-        behavior has historically come and gone with ChatGPT entitlement
-        changes — the heuristic stays in place as future-proofing even when
-        the symptom is dormant.
-
-        Does NOT fix the backend issue.  Only converts an opaque stale-timeout
-        into actionable text so users learn the workaround in seconds rather
-        than digging through logs.
-        """
-        if self.api_mode != "codex_responses":
-            return None
-        is_codex_backend = (
-            self.provider == "openai-codex"
-            or (
-                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
-                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
-            )
-        )
-        if not is_codex_backend:
-            return None
-        eff_model = (model if model is not None else self.model) or ""
-        model_lower = eff_model.lower()
-        # Match the gpt-5.5 family — bare ``gpt-5.5``, ``gpt-5.5-codex``,
-        # vendor-prefixed variants like ``openai/gpt-5.5``, and any future
-        # ``gpt-5.5-*`` SKU.  Anchor at a word boundary on either side so
-        # unrelated tokens like ``gpt-5.50`` do not match.
-        if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
-            return None
-        return (
-            f"Codex backend appears to be silently rejecting {eff_model!r} "
-            "on chatgpt.com/backend-api/codex (no stream events, no error). "
-            "This is a known backend-side pattern that has affected ChatGPT "
-            "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
-            "or switch to a different model/provider in your fallback chain. "
-            "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
-            "See son-of-anton#21444 for symptom history."
-        )
-
-    def _is_codex_backend(self) -> bool:
-        """Return True for the ChatGPT OAuth Codex Responses backend."""
-        return (
-            getattr(self, "api_mode", None) == "codex_responses"
-            and getattr(self, "_base_url_hostname", "") == "chatgpt.com"
-            and "/backend-api/codex"
-            in (getattr(self, "_base_url_lower", "") or "")
-        )
-
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -1560,40 +1422,6 @@ class AIAgent:
             api_mode=api_mode,
             model=model,
         )
-
-    @staticmethod
-    def _model_requires_responses_api(model: str) -> bool:
-        """Return True for models that require the Responses API path.
-
-        GPT-5.x models are rejected on /v1/chat/completions by both
-        OpenAI and OpenRouter (error: ``unsupported_api_for_model``).
-        Detect these so the correct api_mode is set regardless of
-        which provider is serving the model.
-        """
-        m = model.lower()
-        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
-        if "/" in m:
-            m = m.rsplit("/", 1)[-1]
-        return m.startswith("gpt-5")
-
-    @staticmethod
-    def _provider_model_requires_responses_api(
-        model: str,
-        *,
-        provider: Optional[str] = None,
-    ) -> bool:
-        """Return True when this provider/model pair should use Responses API."""
-        normalized_provider = (provider or "").strip().lower()
-        # Nous serves GPT-5.x models via its OpenAI-compatible chat
-        # completions endpoint; its /v1/responses endpoint returns 404.
-        if normalized_provider == "nous":
-            return False
-        if normalized_provider == "custom":
-            # Generic custom endpoints are conservative by default. They may
-            # relay GPT-5 models without full Responses semantics, so only
-            # direct OpenAI/xAI URL detection should auto-upgrade them.
-            return False
-        return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -1734,18 +1562,14 @@ class AIAgent:
 
         return not self._has_natural_response_ending(visible_text)
 
-    def _looks_like_codex_intermediate_ack(
+    def _looks_like_intermediate_ack(
         self,
-        user_message: str,
         assistant_content: str,
         messages: List[Dict[str, Any]],
-        require_workspace: bool = True,
     ) -> bool:
-        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
-        from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
-        return looks_like_codex_intermediate_ack(
-            self, user_message, assistant_content, messages, require_workspace
-        )
+        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_intermediate_ack``."""
+        from agent.agent_runtime_helpers import looks_like_intermediate_ack
+        return looks_like_intermediate_ack(self, assistant_content, messages)
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
@@ -2272,13 +2096,11 @@ class AIAgent:
                     "tool_calls": tool_calls_data,
                     "tool_call_id": msg.get("tool_call_id"),
                     "finish_reason": msg.get("finish_reason"),
-                    # Reasoning/codex fields are role-gated (assistant-only)
+                    # Reasoning fields are role-gated (assistant-only)
                     # inside _insert_message_rows — pass through untouched.
                     "reasoning": msg.get("reasoning"),
                     "reasoning_content": msg.get("reasoning_content"),
                     "reasoning_details": msg.get("reasoning_details"),
-                    "codex_reasoning_items": msg.get("codex_reasoning_items"),
-                    "codex_message_items": msg.get("codex_message_items"),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
                     # Standalone reference handoffs are always hidden, even
@@ -3423,8 +3245,6 @@ class AIAgent:
         the displayed partial reasoning as plain assistant context, appends the
         correction as a real user message, and retries. During tool execution
         it degrades to ``steer()`` so the tool can finish at a safe boundary.
-        Codex app-server has a native ``turn/steer`` operation and uses it
-        directly instead of cancelling.
 
         Returns ``False`` when there is no live turn or the text is empty, so
         surfaces can fall back to their existing next-turn queue.
@@ -3433,8 +3253,6 @@ class AIAgent:
             return False
         cleaned = text.strip()
 
-        # Codex owns its internal reasoning/tool loop, so use its first-class
-        # active-turn steering protocol rather than interrupting the subprocess.
         # Never kill a tool merely to deliver conversational guidance. The
         # existing steer drain puts it on the final tool result before the next
         # model decision, including delegate_task children.
@@ -4321,22 +4139,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 4c. Close the Codex app-server session. The runtime already drops
-        # it on turn crash / retirement (agent/codex_runtime.py), but hard
-        # teardown had no owner — a /new, /reset, or session expiry left the
-        # app-server child process running until interpreter exit. Clear the
-        # attribute BEFORE close() so a concurrent reader can't grab a
-        # half-closed session, and so a raising close() can't strand a stale
-        # reference behind.
-        try:
-            codex_session = getattr(self, "_codex_session", None)
-            if codex_session is not None:
-                self._codex_session = None
-                codex_session.close()
-        except Exception:
-            pass
-
-        # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # 4c. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
         # be reused.  Drops the reference proactively rather than waiting for
@@ -4551,20 +4354,15 @@ class AIAgent:
         return sanitize_api_messages(messages)
 
     @staticmethod
-    def _is_thinking_only_assistant(
-        msg: Dict[str, Any],
-        *,
-        drop_codex_reasoning_items: bool = True,
-    ) -> bool:
+    def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
 
         "Thinking-only" means the model emitted reasoning (``reasoning`` or
         ``reasoning_content``) but no visible text and no tool_calls. When sent
         back to providers that convert reasoning into thinking blocks (native
-        Anthropic, OpenRouter Anthropic, third-party Anthropic-compatible
-        gateways), the resulting message has only thinking blocks — which
-        Anthropic rejects with HTTP 400 "The final block in an assistant
-        message cannot be `thinking`."
+        Anthropic, third-party Anthropic-compatible gateways), the resulting
+        message has only thinking blocks — which Anthropic rejects with HTTP
+        400 "The final block in an assistant message cannot be `thinking`."
 
         Symmetric with Claude Code's ``filterOrphanedThinkingOnlyMessages``
         (src/utils/messages.ts). We drop the whole turn from the API copy
@@ -4602,18 +4400,6 @@ class AIAgent:
                 return False
         elif content is not None and content != "":
             return False
-        # A native compaction checkpoint makes a carrier never thinking-only,
-        # regardless of api_mode or which reasoning field is populated. The
-        # checkpoint is the server-side stand-in for already-pruned history
-        # and exists in exactly one place; the codex_responses adapter also
-        # surfaces commentary text via msg["reasoning"], so the string branch
-        # below would otherwise drop a carrier before the sidecar is ever
-        # inspected. Checked here — above every reasoning branch — so no
-        # carrier shape can fall into a drop path (#82108 review finding).
-        from agent.native_compaction import has_compaction_checkpoint
-
-        if has_compaction_checkpoint(msg.get("codex_reasoning_items")):
-            return False
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True
@@ -4621,30 +4407,15 @@ class AIAgent:
         rd = msg.get("reasoning_details")
         if isinstance(rd, list) and rd:
             return True
-        # Codex Responses stores encrypted reasoning state under a separate
-        # assistant-message key. Treat only real reasoning items as
-        # thinking-only; empty/junk lists should fall through to the generic
-        # empty-turn handling instead of being dropped here.
-        codex_items = msg.get("codex_reasoning_items")
-        if drop_codex_reasoning_items and isinstance(codex_items, list):
-            return any(
-                isinstance(item, dict) and item.get("type") == "reasoning"
-                for item in codex_items
-            )
         return False
 
     @staticmethod
     def _drop_thinking_only_and_merge_users(
         messages: List[Dict[str, Any]],
-        *,
-        drop_codex_reasoning_items: bool = True,
     ) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
-        return drop_thinking_only_and_merge_users(
-            messages,
-            drop_codex_reasoning_items=drop_codex_reasoning_items,
-        )
+        return drop_thinking_only_and_merge_users(messages)
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
@@ -4726,29 +4497,6 @@ class AIAgent:
         """Forwarder — see ``agent.system_prompt.invalidate_system_prompt``."""
         from agent.system_prompt import invalidate_system_prompt
         invalidate_system_prompt(self)
-
-    @staticmethod
-    def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
-        """Generate a deterministic call_id from tool call content.
-
-        Used as a fallback when the API doesn't provide a call_id.
-        Deterministic IDs prevent cache invalidation — random UUIDs would
-        make every API call's prefix unique, breaking OpenAI's prompt cache.
-        """
-        return _codex_deterministic_call_id(fn_name, arguments, index)
-
-    @staticmethod
-    def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
-        """Split a stored tool id into (call_id, response_item_id)."""
-        return _codex_split_responses_tool_id(raw_id)
-
-    def _derive_responses_function_call_id(
-        self,
-        call_id: str,
-        response_item_id: Optional[str] = None,
-    ) -> str:
-        """Build a valid Responses `function_call.id` (must start with `fc_`)."""
-        return _codex_derive_responses_function_call_id(call_id, response_item_id)
 
     def _thread_identity(self) -> str:
         thread = threading.current_thread()
@@ -5222,105 +4970,6 @@ class AIAgent:
                 exc,
             )
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
-        """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
-        from agent.codex_runtime import run_codex_stream
-        return run_codex_stream(self, api_kwargs, client, on_first_delta)
-
-    def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
-        """Forwarder — see ``agent.codex_runtime.run_codex_create_stream_fallback``."""
-        from agent.codex_runtime import run_codex_create_stream_fallback
-        return run_codex_create_stream_fallback(self, api_kwargs, client)
-
-    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
-        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
-            return False
-
-        # Guard against silent account swap.
-        #
-        # When an agent is using a non-singleton credential — e.g. a manual
-        # pool entry (``son-of-anton auth add xai-oauth``) whose tokens belong to
-        # a different account than the device_code singleton, or an agent
-        # constructed with an explicit ``api_key=`` arg — force-refreshing
-        # the singleton here and adopting its tokens silently re-routes the
-        # rest of the conversation onto the singleton's account.  The
-        # credential pool's reactive recovery (``_recover_with_credential_pool``)
-        # is the right channel for that case; this path is the
-        # singleton-only fallback used when the pool can't recover, and
-        # MUST only fire when the agent really is on singleton tokens.
-        try:
-            if self.provider == "openai-codex":
-                from son_of_anton_cli.auth import resolve_codex_runtime_credentials
-
-                singleton_now = resolve_codex_runtime_credentials(
-                    refresh_if_expiring=False,
-                )
-            else:
-                from son_of_anton_cli.auth import resolve_xai_oauth_runtime_credentials
-
-                singleton_now = resolve_xai_oauth_runtime_credentials(
-                    refresh_if_expiring=False,
-                )
-        except Exception as exc:
-            logger.debug("%s singleton read failed: %s", self.provider, exc)
-            return False
-
-        singleton_key = str(singleton_now.get("api_key") or "").strip()
-        active_key = str(self.api_key or "").strip()
-        if singleton_key and active_key and singleton_key != active_key:
-            logger.debug(
-                "%s singleton tokens differ from the active api_key; "
-                "skipping singleton force-refresh to avoid silent account swap. "
-                "Reactive credential rotation should go through the pool.",
-                self.provider,
-            )
-            return False
-
-        try:
-            if self.provider == "openai-codex":
-                from son_of_anton_cli.auth import resolve_codex_runtime_credentials
-
-                old_key = str(self.api_key or "").strip()
-                creds = resolve_codex_runtime_credentials(force_refresh=force)
-            else:
-                from son_of_anton_cli.auth import resolve_xai_oauth_runtime_credentials
-
-                old_key = str(self.api_key or "").strip()
-                creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
-        except Exception as exc:
-            logger.debug("%s credential refresh failed: %s", self.provider, exc)
-            return False
-
-        api_key = creds.get("api_key")
-        base_url = creds.get("base_url")
-        if not isinstance(api_key, str) or not api_key.strip():
-            return False
-        if not isinstance(base_url, str) or not base_url.strip():
-            return False
-
-        # Defect 2 fix: return False when no NEW token was actually minted.
-        # resolve_codex_runtime_credentials returns the same stale token
-        # when the underlying refresh fails (failure is debug-only).
-        # Comparing the access token (api_key) before/after detects this.
-        new_key = api_key.strip()
-        if old_key and new_key == old_key:
-            logger.debug(
-                "%s credential refresh returned the same token; "
-                "refresh likely failed silently",
-                self.provider,
-            )
-            return False
-
-        self.api_key = api_key.strip()
-        self.base_url = base_url.strip().rstrip("/")
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-
-        if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
-            return False
-
-        return True
-
     def _try_refresh_env_client_credentials(self) -> bool:
         """Adopt ~/.son-of-anton/.env credential/base-url edits at the turn boundary.
 
@@ -5735,75 +5384,12 @@ class AIAgent:
         # on_commentary() (#65919 review).
         return bool(streamed) and visible_content.startswith(streamed)
 
-    def _extract_codex_interim_visible_parts(
-        self,
-        assistant_msg: Dict[str, Any],
-    ) -> List[str]:
-        """Extract visible Codex commentary as one string per message item.
-
-        Codex Responses can keep user-facing mid-turn narration as structured
-        ``phase=commentary`` message items while final answer text remains in
-        assistant ``content``.  Non-streaming gateway surfaces need that
-        commentary through the interim assistant callback before tool calls run.
-        ``phase=analysis`` remains hidden because it is provider scratchpad.
-        """
-        if not getattr(self, "show_commentary", True):
-            # display.show_commentary=false — commentary stays on the
-            # reasoning channel (pre-commentary-channel behavior).
-            return []
-        items = assistant_msg.get("codex_message_items")
-        if not isinstance(items, list):
-            return []
-
-        messages: List[str] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "message":
-                continue
-            phase = item.get("phase")
-            if not isinstance(phase, str) or phase.strip().lower() != "commentary":
-                continue
-            content_parts = item.get("content")
-            if not isinstance(content_parts, list):
-                continue
-            item_parts: List[str] = []
-            for part in content_parts:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") != "output_text":
-                    continue
-                text = part.get("text")
-                if isinstance(text, str) and text.strip():
-                    item_parts.append(text)
-            visible = "".join(item_parts).strip()
-            if visible:
-                visible = self._strip_think_blocks(visible).strip()
-                visible = redact_sensitive_text(visible)
-            if visible:
-                messages.append(visible)
-        return messages
-
-    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
-        """Extract all visible Codex commentary for comparison/fallback."""
-        return "\n\n".join(
-            self._extract_codex_interim_visible_parts(assistant_msg)
-        ).strip()
-
     def _interim_assistant_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
         """Return the exact assistant text eligible for interim delivery.
-
-        Prefer structured Codex commentary over top-level content. A Codex
-        response can contain both commentary and a partial/final-answer message
-        while tools are still pending; treating top-level content as progress
-        in that shape leaks the answer before the tool call runs.
 
         Content may be a string or a structured parts list (e.g. after vision
         turns or context compaction), so flatten it before stripping reasoning.
         """
-        visible = self._extract_codex_interim_visible_text(assistant_msg)
-        if visible:
-            return visible
         content = assistant_msg.get("content")
         return self._strip_think_blocks(flatten_message_text(content)).strip()
 

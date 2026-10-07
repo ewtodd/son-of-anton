@@ -1276,11 +1276,10 @@ def _prepare_resume_pending_message(
 # requirements all behave the same on the gateway as they do in the CLI.
 #
 # ``reasoning`` and ``reasoning_details`` were the original three preserved
-# by PR #2974 (schema v6).  ``reasoning_content``, ``codex_reasoning_items``,
-# ``codex_message_items``, and ``finish_reason`` were added to the DB later
-# but the gateway's replay whitelist was never expanded to match — so any
-# pure-text assistant turn (no ``tool_calls``) silently dropped them on
-# replay, regressing the CLI-vs-gateway behavioural parity.
+# by PR #2974 (schema v6).  ``reasoning_content`` and ``finish_reason`` were
+# added to the DB later but the gateway's replay whitelist was never expanded
+# to match — so any pure-text assistant turn (no ``tool_calls``) silently
+# dropped them on replay, regressing the CLI-vs-gateway behavioural parity.
 #
 # Why each field matters on replay:
 #   * ``reasoning`` / ``reasoning_content``: provider-facing thinking text.
@@ -1292,19 +1291,12 @@ def _prepare_resume_pending_message(
 #   * ``reasoning_details``: opaque structured array (signature,
 #     encrypted_content) used by OpenRouter/Anthropic to maintain reasoning
 #     continuity across turns.
-#   * ``codex_reasoning_items``: encrypted reasoning blobs for the OpenAI
-#     Codex Responses API.
-#   * ``codex_message_items``: exact assistant message items with ``phase``.
-#     OpenAI docs: "preserve and resend phase on all assistant messages —
-#     dropping it can degrade performance."  Required for prefix cache hits.
 #   * ``finish_reason``: informational; cheap to keep so transcripts replay
 #     identically across CLI and gateway.
 _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "reasoning",
     "reasoning_content",
     "reasoning_details",
-    "codex_reasoning_items",
-    "codex_message_items",
     "finish_reason",
 )
 

@@ -25,7 +25,7 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.conversation_compaction import (
     COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -1030,33 +1030,18 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         return _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
 
-# Continuation nudge for Codex/Responses turns that came back with only
-# internal reasoning (no visible content, no tool calls).  When the interim
-# assistant message also carries no encrypted reasoning items and no
-# replayable message items, _chat_messages_to_responses_input emits nothing
-# for it — a bare retry would be byte-identical to the request that just
-# failed, so the model (observed: grok-4.20 on xai-oauth) deterministically
-# repeats the reasoning-only response until the retry budget is exhausted.
-_CODEX_INCOMPLETE_NUDGE = (
-    "[System: Your previous response contained only internal reasoning and "
-    "never produced a visible answer or tool call. Do not keep thinking. "
-    "Produce your final answer as plain text now (or make the tool call "
-    "you were planning).]"
-)
-
-
-# Re-prompt sent after a Codex/Responses turn ends with an acknowledgment-only
-# reply (no tool calls, no final answer) — named so
+# Re-prompt sent after a turn ends with an acknowledgment-only reply
+# (no tool calls, no final answer) — named so
 # agent.context_compactor's _is_synthetic_compaction_user_turn can
-# recognize it by content the same way it recognizes _CODEX_INCOMPLETE_NUDGE.
-_CODEX_ACK_CONTINUATION_NUDGE = (
+# recognize it by content like the other nudges below.
+_INTENT_ACK_CONTINUATION_NUDGE = (
     "[System: Continue now. Execute the required tool calls and only "
     "send your final answer after completing the task.]"
 )
 
 # Re-prompt sent when a provider returns finish_reason="tool_calls" with an
 # empty tool_calls array (dropped-tool-call recovery, see the retry loop
-# below). Named for the same reason as _CODEX_ACK_CONTINUATION_NUDGE — this
+# below). Named for the same reason as _INTENT_ACK_CONTINUATION_NUDGE — this
 # pair is only stripped from the durable transcript once the turn reaches
 # finalization; an interrupt/crash mid-retry can still persist it.
 _DROPPED_TOOLCALL_NUDGE_CONTENT = (
@@ -1775,7 +1760,7 @@ def run_conversation(
     final_response = None
     interrupted = False
     failed = False
-    codex_ack_continuations = 0
+    intent_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -1817,11 +1802,6 @@ def run_conversation(
     # stale prior turn's usage.
     agent._last_turn_usage = None
 
-    # Optional opt-in runtime: if api_mode == codex_app_server, hand the
-    # turn to the codex app-server subprocess (terminal/file ops/patching
-    # all run inside Codex). Default Son of Anton path is bypassed entirely.
-    # See agent/transports/codex_app_server_session.py for the adapter
-    # and references/codex-app-server-runtime.md for the rationale.
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
@@ -2281,10 +2261,7 @@ def run_conversation(
         # a thinking-only turn. Runs on the per-call copy only — the
         # stored conversation history keeps the reasoning block for the
         # UI transcript and session persistence.
-        api_messages = agent._drop_thinking_only_and_merge_users(
-            api_messages,
-            drop_codex_reasoning_items=agent.api_mode != "codex_responses",
-        )
+        api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
         # Normalize message whitespace and tool-call JSON for consistent
         # prefix matching.  Ensures bit-perfect prefixes across turns,
@@ -2563,13 +2540,6 @@ def run_conversation(
                 _sanitize_structure_surrogates(api_kwargs)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
-                if agent.api_mode == "codex_responses":
-                    api_kwargs = agent._get_transport().preflight_kwargs(
-                        api_kwargs,
-                        allow_stream=False,
-                        is_github_responses=False,
-                        sanitize_harmony_tokens=agent._is_codex_backend(),
-                    )
                 try:
                     from son_of_anton_cli.middleware import apply_llm_request_middleware
 
@@ -2734,13 +2704,6 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
-                    if agent.api_mode == "codex_responses":
-                        next_api_kwargs = agent._get_transport().preflight_kwargs(
-                            next_api_kwargs,
-                            allow_stream=False,
-                            is_github_responses=False,
-                            sanitize_harmony_tokens=agent._is_codex_backend(),
-                        )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
@@ -2845,66 +2808,17 @@ def run_conversation(
                 # Validate response shape before proceeding
                 response_invalid = False
                 error_details = []
-                if agent.api_mode == "codex_responses":
-                    _ct_v = agent._get_transport()
-                    if not _ct_v.validate_response(response):
-                        if response is None:
-                            response_invalid = True
-                            error_details.append("response is None")
-                        else:
-                            # Provider returned a terminal failure (e.g. quota exhaustion).
-                            # Treat as invalid so the fallback chain is triggered instead of
-                            # letting the error bubble up outside the retry/fallback loop.
-                            _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
-                            if _codex_resp_status in {"failed", "cancelled"}:
-                                _codex_error_obj = getattr(response, "error", None)
-                                _codex_error_msg = (
-                                    _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
-                                    else str(_codex_error_obj) if _codex_error_obj
-                                    else f"Responses API returned status '{_codex_resp_status}'"
-                                )
-                                logger.warning(
-                                    "Codex response status='%s' (error=%s). Routing to fallback. %s",
-                                    _codex_resp_status, _codex_error_msg,
-                                    agent._client_log_context(),
-                                )
-                                response_invalid = True
-                                error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
-                            else:
-                                # output_text fallback: stream backfill may have failed
-                                # but normalize can still recover from output_text
-                                _out_text = getattr(response, "output_text", None)
-                                _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
-                                if _out_text_stripped:
-                                    logger.debug(
-                                        "Codex response.output is empty but output_text is present "
-                                        "(%d chars); deferring to normalization.",
-                                        len(_out_text_stripped),
-                                    )
-                                else:
-                                    _resp_status = getattr(response, "status", None)
-                                    _resp_incomplete = getattr(response, "incomplete_details", None)
-                                    logger.warning(
-                                        "Codex response.output is empty after stream backfill "
-                                        "(status=%s, incomplete_details=%s, model=%s). %s",
-                                        _resp_status, _resp_incomplete,
-                                        getattr(response, "model", None),
-                                        f"api_mode={agent.api_mode} provider={agent.provider}",
-                                    )
-                                    response_invalid = True
-                                    error_details.append("response.output is empty")
-                else:
-                    _ctv = agent._get_transport()
-                    if not _ctv.validate_response(response):
-                        response_invalid = True
-                        if response is None:
-                            error_details.append("response is None")
-                        elif not hasattr(response, 'choices'):
-                            error_details.append("response has no 'choices' attribute")
-                        elif response.choices is None:
-                            error_details.append("response.choices is None")
-                        else:
-                            error_details.append("response.choices is empty")
+                _ctv = agent._get_transport()
+                if not _ctv.validate_response(response):
+                    response_invalid = True
+                    if response is None:
+                        error_details.append("response is None")
+                    elif not hasattr(response, 'choices'):
+                        error_details.append("response has no 'choices' attribute")
+                    elif response.choices is None:
+                        error_details.append("response.choices is None")
+                    else:
+                        error_details.append("response.choices is empty")
 
                 if response_invalid:
                     agent._invoke_api_request_error_hook(
@@ -3083,41 +2997,15 @@ def run_conversation(
                     continue  # Retry the API call
 
                 # Check finish_reason before proceeding
-                if agent.api_mode == "codex_responses":
-                    status = getattr(response, "status", None)
-                    if isinstance(status, str):
-                        status = status.strip().lower()
-                    incomplete_details = getattr(response, "incomplete_details", None)
-                    incomplete_reason = None
-                    if isinstance(incomplete_details, dict):
-                        incomplete_reason = incomplete_details.get("reason")
-                    else:
-                        incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if incomplete_reason is not None:
-                        incomplete_reason = str(incomplete_reason).strip().lower()
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        # Responses API max-output exhaustion is a normal
-                        # Codex incomplete turn.  Let the Codex-specific
-                        # continuation path below append the incomplete
-                        # assistant state and retry, instead of routing to
-                        # the generic chat-completions length rollback that
-                        # emits "Response truncated due to output length
-                        # limit" and stops gateway turns.
-                        finish_reason = "incomplete"
-                    elif status == "incomplete" and incomplete_reason == "content_filter":
-                        finish_reason = "content_filter"
-                    else:
-                        finish_reason = "stop"
-                else:
-                    _cc_fr = agent._get_transport()
-                    _finish_result = _cc_fr.normalize_response(response)
-                    finish_reason = _finish_result.finish_reason
-                    assistant_message = _finish_result
-                    if agent._should_treat_stop_as_truncated(
-                        finish_reason,
-                        assistant_message,
-                        messages,
-                    ):
+                _cc_fr = agent._get_transport()
+                _finish_result = _cc_fr.normalize_response(response)
+                finish_reason = _finish_result.finish_reason
+                assistant_message = _finish_result
+                if agent._should_treat_stop_as_truncated(
+                    finish_reason,
+                    assistant_message,
+                    messages,
+                ):
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
                             force=True,
@@ -4346,17 +4234,6 @@ def run_conversation(
                         )
                         continue
 
-                if (
-                    agent.api_mode == "codex_responses"
-                    and agent.provider in {"openai-codex", "xai-oauth"}
-                    and status_code == 401
-                    and not _retry.codex_auth_retry_attempted
-                ):
-                    _retry.codex_auth_retry_attempted = True
-                    if agent._try_refresh_codex_client_credentials(force=True):
-                        _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
-                        continue
                 # Thinking block signature recovery.
                 #
                 # Anthropic signs thinking blocks against the full turn
@@ -4407,82 +4284,6 @@ def run_conversation(
                         agent.log_prefix, _api_stripped,
                     )
                     continue
-
-                # ── Invalid encrypted reasoning replay recovery ───────
-                # OpenAI Responses API surfaces (and some compatible relays)
-                # return HTTP 400 ``invalid_encrypted_content`` when a
-                # replayed ``codex_reasoning_items`` blob from a previous
-                # turn fails verification (provider rotated the encryption
-                # key, the route doesn't actually persist reasoning state,
-                # etc.).  Recovery: disable replay for the rest of the
-                # session, strip cached items from history, retry once.
-                # One-shot — if a second 400 fires we fall through to the
-                # normal retry/backoff path.  Only fires for codex_responses
-                # mode with at least one assistant message that has cached
-                # ``codex_reasoning_items``; without replay state, the
-                # error is unrelated to our cache so the normal retry path
-                # handles it (the provider is rejecting something else).
-                if (
-                    classified.reason == FailoverReason.invalid_encrypted_content
-                    and not _retry.invalid_encrypted_content_retry_attempted
-                    and agent.api_mode == "codex_responses"
-                    and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
-                    and any(
-                        isinstance(_m, dict)
-                        and _m.get("role") == "assistant"
-                        and isinstance(_m.get("codex_reasoning_items"), list)
-                        and _m.get("codex_reasoning_items")
-                        for _m in messages
-                    )
-                ):
-                    _retry.invalid_encrypted_content_retry_attempted = True
-                    replay_stats = agent._disable_codex_reasoning_replay(messages)
-                    agent._vprint(
-                        f"{agent.log_prefix}⚠️  Encrypted reasoning replay was rejected by the provider — "
-                        f"disabled replay and stripped {replay_stats['items']} item(s) from "
-                        f"{replay_stats['messages']} message(s), retrying...",
-                        force=True,
-                    )
-                    logger.warning(
-                        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-                        agent.log_prefix,
-                        replay_stats["items"],
-                        replay_stats["messages"],
-                    )
-                    continue
-
-                # ── Native compaction rejection recovery ──────────────
-                # Provider explicitly rejected the ``context_management``
-                # field (structured 400 naming the param). One-shot: turn
-                # native compaction off for the rest of the session and
-                # retry — the next _build_api_kwargs re-resolves the gate
-                # and omits the field, and Son of Anton' local compaction takes
-                # over as the sole owner. Generic 4xx/5xx/timeouts do NOT
-                # match (see is_native_compaction_rejection) and take the
-                # normal retry path.
-                if (
-                    agent.api_mode == "codex_responses"
-                    and not _retry.native_compaction_reject_retry_attempted
-                    and bool(getattr(agent, "codex_responses_native_compaction", False))
-                ):
-                    from agent.native_compaction import is_native_compaction_rejection
-                    if is_native_compaction_rejection(
-                        api_error, getattr(api_error, "status_code", None)
-                    ):
-                        _retry.native_compaction_reject_retry_attempted = True
-                        agent.codex_responses_native_compaction = False
-                        agent._vprint(
-                            f"{agent.log_prefix}⚠️  Provider rejected native compaction "
-                            f"(context_management) — disabled for this session, "
-                            f"local compaction stays active. Retrying...",
-                            force=True,
-                        )
-                        logger.warning(
-                            "%sNative compaction rejection recovery: disabled "
-                            "codex_responses_native for this session and retrying",
-                            agent.log_prefix,
-                        )
-                        continue
 
                 # ── llama.cpp grammar-parse recovery ──────────────────
                 # llama.cpp's ``json-schema-to-grammar`` converter rejects
@@ -5496,26 +5297,17 @@ def run_conversation(
                             unverified=classified.billing_unverified,
                         ):
                             pass
-                        elif _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
-                            if _provider == "openai-codex":
-                                agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
-                                agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
-                                agent._vprint(f"{agent.log_prefix}      2. Then run `son-of-anton auth` to re-authenticate.", force=True)
-                            elif _provider == "xai-oauth":
-                                agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `son-of-anton model`.", force=True)
-                            else:  # nous
-                                agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
-                                agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: son-of-anton portal", force=True)
-                                agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
-                                # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
-                                # the model name even after a successful re-auth.
-                                if isinstance(_model, str) and _model.endswith(":free"):
-                                    agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
-                                    agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
-                                    agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
+                        elif _provider == "nous" and status_code == 401:
+                            agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
+                            agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
+                            agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: son-of-anton portal", force=True)
+                            agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
+                            # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
+                            # the model name even after a successful re-auth.
+                            if isinstance(_model, str) and _model.endswith(":free"):
+                                agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
+                                agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
+                                agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: son-of-anton setup", force=True)
@@ -6164,147 +5956,6 @@ def run_conversation(
             # Reset incomplete scratchpad counter on clean response
             agent._incomplete_scratchpad_retries = 0
 
-            if agent.api_mode == "codex_responses" and finish_reason == "incomplete":
-                agent._codex_incomplete_retries += 1
-
-                interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                interim_has_content = bool((interim_msg.get("content") or "").strip())
-                interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
-                interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
-                interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
-
-                if (
-                    interim_has_content
-                    or interim_has_reasoning
-                    or interim_has_codex_reasoning
-                    or interim_has_codex_message_items
-                ):
-                    last_msg = messages[-1] if messages else None
-                    # Duplicate detection: compare only visible content
-                    # (content + reasoning).  Opaque provider state
-                    # (encrypted reasoning items, message item ids/phases)
-                    # drifts per continuation even when the visible output
-                    # is identical, so including it in the comparison defeats
-                    # dedup and causes message storms (#52711).
-                    last_interim_visible = (
-                        agent._interim_assistant_visible_text(last_msg)
-                        if isinstance(last_msg, dict)
-                        else ""
-                    )
-                    current_interim_visible = agent._interim_assistant_visible_text(interim_msg)
-                    if last_interim_visible or current_interim_visible:
-                        same_visible_output = last_interim_visible == current_interim_visible
-                    else:
-                        # Preserve the existing reasoning-only behavior when
-                        # neither response has text eligible for interim delivery.
-                        same_visible_output = (
-                            (last_msg.get("content") or "") == (interim_msg.get("content") or "")
-                            and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
-                        ) if isinstance(last_msg, dict) else False
-                    visible_duplicate = (
-                        isinstance(last_msg, dict)
-                        and last_msg.get("role") == "assistant"
-                        and last_msg.get("finish_reason") == "incomplete"
-                        and same_visible_output
-                    )
-                    if visible_duplicate:
-                        # Update replay state in-place so the latest provider
-                        # payload is preserved without re-emitting identical
-                        # user-visible commentary.
-                        for _key in (
-                            "content",
-                            "reasoning",
-                            "reasoning_content",
-                            "reasoning_details",
-                            "codex_reasoning_items",
-                            "codex_message_items",
-                        ):
-                            if _key in interim_msg:
-                                if _key == "codex_reasoning_items":
-                                    # Merge instead of overwrite: a native
-                                    # compaction checkpoint captured on the
-                                    # earlier incomplete response is the only
-                                    # copy — the continuation won't re-emit
-                                    # it. See merge_interim_reasoning_items.
-                                    from agent.native_compaction import (
-                                        merge_interim_reasoning_items,
-                                    )
-                                    last_msg[_key] = merge_interim_reasoning_items(
-                                        last_msg.get(_key), interim_msg[_key]
-                                    )
-                                else:
-                                    last_msg[_key] = interim_msg[_key]
-                    else:
-                        append_message(messages, interim_msg)
-                        agent._emit_interim_assistant_message(interim_msg)
-
-                if agent._codex_incomplete_retries < 3:
-                    # When the interim message has nothing the Responses
-                    # input converter will replay (no visible content, no
-                    # encrypted reasoning items, no replayable message
-                    # items — plain-text reasoning only), a bare retry is
-                    # byte-identical to the request that just came back
-                    # incomplete and fails the same way every time
-                    # (observed with grok-4.20 on xai-oauth, whose
-                    # reasoning items lack encrypted_content).  Append a
-                    # user-role nudge so the retry actually differs and
-                    # explicitly asks for the final answer.
-                    interim_replayable = (
-                        interim_has_content
-                        or interim_has_codex_reasoning
-                        or interim_has_codex_message_items
-                    )
-                    if not interim_replayable:
-                        _last_msg = messages[-1] if messages else None
-                        _already_nudged = (
-                            isinstance(_last_msg, dict)
-                            and _last_msg.get("role") == "user"
-                            and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
-                        )
-                        # Alternation guard: the nudge is a user-role message,
-                        # so it may only follow an assistant message. When the
-                        # interim was too empty to append (no content AND no
-                        # reasoning), the last message is still the prior
-                        # user/tool turn — appending the nudge there would
-                        # create a user→user / tool→user sequence that strict
-                        # providers reject.
-                        _last_is_assistant = (
-                            isinstance(_last_msg, dict)
-                            and _last_msg.get("role") == "assistant"
-                        )
-                        if not _already_nudged and _last_is_assistant:
-                            append_message(messages, {
-                                "role": "user",
-                                "content": _CODEX_INCOMPLETE_NUDGE,
-                            })
-                    if not agent.quiet_mode:
-                        agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
-                    # Surface the continuation on the live spinner/status line
-                    # (CLI/TUI/Desktop) and gateway heartbeat: each of these
-                    # retries can spend minutes waiting on the provider, and
-                    # without a distinct notice the user only sees a generic
-                    # thinking spinner ("infinite thinking", #64434).
-                    agent._emit_wait_notice(
-                        f"↻ model returned reasoning with no final answer — "
-                        f"asking it to continue "
-                        f"({agent._codex_incomplete_retries}/3)"
-                    )
-                    agent._session_messages = messages
-                    continue
-
-                agent._codex_incomplete_retries = 0
-                agent._persist_session(messages, conversation_history)
-                return {
-                    "final_response": "Codex response remained incomplete after 3 continuation attempts",
-                    "messages": messages,
-                    "api_calls": api_call_count,
-                    "completed": False,
-                    "partial": True,
-                    "error": "Codex response remained incomplete after 3 continuation attempts",
-                }
-            elif hasattr(agent, "_codex_incomplete_retries"):
-                agent._codex_incomplete_retries = 0
-            
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -7366,7 +7017,7 @@ def run_conversation(
                 _stall_continue_intent = (
                     bool(getattr(agent, "_stall_guards", True))
                     and agent.valid_tool_names
-                    and codex_ack_continuations < 2
+                    and intent_ack_continuations < 2
                     and trailing_continue_intent(
                         agent._strip_think_blocks(final_response or "")
                     )
@@ -7374,28 +7025,26 @@ def run_conversation(
                 if _stall_continue_intent or (
                     _ack_mode != "off"
                     and agent.valid_tool_names
-                    and codex_ack_continuations < 2
-                    and agent._looks_like_codex_intermediate_ack(
-                        user_message=user_message,
+                    and intent_ack_continuations < 2
+                    and agent._looks_like_intermediate_ack(
                         assistant_content=final_response,
                         messages=messages,
-                        require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
                     if _stall_continue_intent:
                         logger.info(
                             "Stall guard: turn ending on trailing continue-"
                             "intent with no tool calls — re-prompting to act "
-                            "(%d/2)", codex_ack_continuations + 1,
+                            "(%d/2)", intent_ack_continuations + 1,
                         )
-                    codex_ack_continuations += 1
+                    intent_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     append_message(messages, interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
 
                     continue_msg = {
                         "role": "user",
-                        "content": _CODEX_ACK_CONTINUATION_NUDGE,
+                        "content": _INTENT_ACK_CONTINUATION_NUDGE,
                     }
                     append_message(messages, continue_msg)
                     agent._session_messages = messages
@@ -7405,7 +7054,7 @@ def run_conversation(
                     final_response = None
                     continue
 
-                codex_ack_continuations = 0
+                intent_ack_continuations = 0
 
                 if truncated_response_parts:
                     final_response = _join_truncated_parts([*truncated_response_parts, final_response])

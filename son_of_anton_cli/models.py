@@ -108,17 +108,6 @@ VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
-def _codex_curated_models() -> list[str]:
-    """Derive the openai-codex curated list from codex_models.py.
-
-    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
-    This keeps the gateway /model picker in sync with the CLI `son-of-anton model`
-    flow without maintaining a separate static list.
-    """
-    from son_of_anton_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
-    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
-
-
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         # Anthropic
@@ -197,7 +186,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
-    "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -667,7 +655,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
-    "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
+    "openai":   ("OpenAI",          "Direct OpenAI API", ["openai-api"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
@@ -2264,7 +2252,6 @@ def should_use_ollama_native_catalog(
         "nous",
         "anthropic",
         "openai",
-        "openai-codex",
         "gemini",
         "ollama-cloud",
     }
@@ -2867,22 +2854,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
         return []
-    if normalized == "openai-codex":
-        from son_of_anton_cli.codex_models import get_codex_model_ids
-
-        # Pass the live OAuth access token so the picker matches whatever
-        # ChatGPT lists for this account right now (new models appear without
-        # a Son of Anton release). Falls back to the hardcoded catalog if no token
-        # or the endpoint is unreachable.
-        access_token = None
-        try:
-            from son_of_anton_cli.auth import resolve_codex_runtime_credentials
-
-            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-            access_token = creds.get("api_key")
-        except Exception:
-            access_token = None
-        return get_codex_model_ids(access_token=access_token)
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -5168,7 +5139,7 @@ def validate_requested_model(
         }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
-    if normalized in {"openai-codex", "xai-oauth"}:
+    if normalized == "xai-oauth":
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:
@@ -5195,18 +5166,17 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            provider_label = "xAI Grok OAuth (SuperGrok / Premium+)"
             # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
             # for entitlement-gated *hidden* slugs the curated listing hasn't
             # caught up with — but those are always the provider's own family
-            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
+            # (xai-oauth -> grok-*). Accepting an
             # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
             # what should be an actionable "did you mean --provider <x>?" error
             # into a confusing success that 400s on the next turn. Only soft-
             # accept names that share the provider's family prefix; reject the
             # rest with guidance to pin the right provider.
             _family_prefixes = {
-                "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
                 "xai-oauth": ("grok-",),
             }.get(normalized, ())
             _lower = requested_for_lookup.strip().lower()

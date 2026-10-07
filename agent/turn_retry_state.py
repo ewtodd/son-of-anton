@@ -2,17 +2,17 @@
 
 The inner retry loop in ``run_conversation`` (``while retry_count <
 max_retries``) makes several distinct recovery attempts on a single model API
-call: a credential-pool 429 retry, a per-provider OAuth refresh (codex,
-anthropic, nous), a long-context compaction restart, a length-
+call: a credential-pool 429 retry, a per-provider OAuth refresh (anthropic,
+nous), a long-context compaction restart, a length-
 continuation restart, and a handful of format-recovery branches (thinking-
 signature stripping, multimodal-tool-content stripping, llama.cpp grammar
-fallback, image shrink, invalid-encrypted-content, 1M-beta header).
+fallback, image shrink, 1M-beta header).
 
 Each of those branches is guarded by a one-shot boolean so it fires at most
 once per attempt. They used to be ~16 bare ``*_attempted`` / ``has_retried_*``
 / ``restart_with_*`` locals declared inline before the loop and threaded
 through its 2,400-line body. ``TurnRetryState`` collapses them into one object
-the loop mutates in place (``state.codex_auth_retry_attempted = True``), giving
+the loop mutates in place (``state.anthropic_auth_retry_attempted = True``), giving
 the recovery bookkeeping a single named, testable home.
 
 Loop-control variables (``retry_count``, ``max_retries``,
@@ -40,12 +40,10 @@ class TurnRetryState:
     """
 
     # ── Per-provider OAuth / credential refresh guards ───────────────────
-    codex_auth_retry_attempted: bool = False
     anthropic_auth_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False
-    invalid_encrypted_content_retry_attempted: bool = False
     native_compaction_reject_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False

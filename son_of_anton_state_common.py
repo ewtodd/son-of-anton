@@ -332,8 +332,6 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning TEXT,
     reasoning_content TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT,
-    codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,

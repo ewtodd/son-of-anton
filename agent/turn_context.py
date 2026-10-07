@@ -581,7 +581,6 @@ def build_turn_context(
     agent._invalid_json_retries = 0
     agent._empty_content_retries = 0
     agent._incomplete_scratchpad_retries = 0
-    agent._codex_incomplete_retries = 0
     agent._thinking_prefill_retries = 0
     agent._post_tool_empty_retried = False
     agent._last_content_with_tools = None

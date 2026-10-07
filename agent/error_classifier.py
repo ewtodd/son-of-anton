@@ -65,7 +65,6 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
-    invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
@@ -1453,26 +1452,7 @@ def _classify_400(
             retryable=True,
         )
 
-    # Invalid encrypted reasoning replay blob (OpenAI Responses API).  Must be
-    # checked BEFORE context_overflow because some surfaces emit messages that
-    # contain context-like phrasing ("encrypted content … could not be
-    # verified") which could otherwise trip the context_overflow heuristics.
-    # ``error_msg`` is lowercased upstream — match accordingly.
     error_code_lower = (error_code or "").lower()
-    if (
-        error_code_lower == "invalid_encrypted_content"
-        or "invalid_encrypted_content" in error_msg
-        or (
-            "encrypted content for item" in error_msg
-            and "could not be verified" in error_msg
-        )
-        or "could not decrypt the provided encrypted_content" in error_msg
-    ):
-        return result_fn(
-            FailoverReason.invalid_encrypted_content,
-            retryable=True,
-            should_fallback=False,
-        )
 
     # Request-validation errors (unsupported / unknown parameter) MUST be
     # checked BEFORE context_overflow.  A GPT-5 model rejecting max_tokens
@@ -1677,13 +1657,6 @@ def _classify_by_error_code(
             FailoverReason.context_overflow,
             retryable=True,
             should_compact=True,
-        )
-
-    if code_lower == "invalid_encrypted_content":
-        return result_fn(
-            FailoverReason.invalid_encrypted_content,
-            retryable=True,
-            should_fallback=False,
         )
 
     return None
@@ -1917,8 +1890,7 @@ def _extract_error_code(body: dict) -> str:
             return code.strip()
 
         # Some providers wrap the real JSON error body as a string inside
-        # error.message — peek into it for a nested code (e.g. Responses API
-        # surfaces ``invalid_encrypted_content`` this way).
+        # error.message — peek into it for a nested code.
         message = error_obj.get("message")
         if isinstance(message, str) and message.strip().startswith("{"):
             import json

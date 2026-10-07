@@ -169,3 +169,17 @@ def test_the_anthropic_wire_cannot_be_selected() -> None:
         "https://api.kimi.com/coding",
     ):
         assert host_mandated_api_mode(url) != "anthropic_messages"
+
+
+def test_custom_profile_identifies_son_of_anton_by_user_agent() -> None:
+    """Gateways (Bifrost) attribute callers by User-Agent.
+
+    The stock OpenAI SDK UA reads as a generic API client, so the custom
+    profile pins a son-of-anton UA in default_headers; the SDK forwards a
+    caller-supplied User-Agent unchanged.
+    """
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("custom")
+    assert profile is not None
+    assert profile.default_headers["User-Agent"].startswith("son-of-anton-cli")

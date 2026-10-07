@@ -9,8 +9,10 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import hashlib
 import json
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
@@ -26,6 +28,55 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+
+# Cron session ids carry a per-fire timestamp; strip it so recurring fires
+# of the same job share a cache scope (see #51395/#52295).
+_CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}$")
+
+
+def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
+    """Normalize a physical session_id into a stable logical cache scope.
+
+    Every non-cron session_id already identifies one conversation/agent
+    instance (main run, a specific child/subagent, a sibling child, ...),
+    so it is used unchanged. Only cron's per-fire timestamp needs stripping.
+    """
+    sid = str(session_id or "")
+    match = _CRON_SESSION_ID_RE.match(sid)
+    return match.group(1) if match else sid
+
+
+def _content_cache_key(
+    instructions: str,
+    tools: Optional[List[Dict[str, Any]]],
+    scope_id: str = "",
+) -> Optional[str]:
+    """Content-address the prompt cache key within a logical cache scope.
+
+    Returns ``pck_<sha256[:24]>`` of (scope_id + instructions + sorted tool
+    schemas), or None when there is nothing static to key on. The cache key
+    is a routing hint only — never a correctness boundary — so two requests
+    sharing a scope, system prompt, and tool set intentionally resolve to the
+    same warm prefix bucket. Sorting tools by name keeps the hash
+    insertion-order independent.
+    """
+    if not instructions and not tools:
+        return None
+    tools_part = ""
+    if tools:
+        sorted_tools = sorted(
+            (t for t in tools if isinstance(t, dict)),
+            key=lambda t: str(t.get("name") or t.get("type") or ""),
+        )
+        tools_part = json.dumps(
+            sorted_tools, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        )
+    # \x00 separators so a scope/instructions/tools boundary can't be forged
+    # by content that happens to contain the same bytes.
+    content = f"{scope_id}\x00{instructions or ''}\x00{tools_part}"
+    digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"pck_{digest}"
 
 
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
@@ -76,12 +127,6 @@ def _add_prompt_cache_key(
         isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
     ):
         return
-
-    # Reuse the Responses transport's single authoritative hash algorithm and
-    # session-scope normalization so equivalent static prefixes route to the
-    # same cache bucket across modes, without concentrating unrelated
-    # sessions into one shared bucket (see #78941).
-    from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
 
     cache_key = _content_cache_key(
         _static_prompt_instructions(messages),

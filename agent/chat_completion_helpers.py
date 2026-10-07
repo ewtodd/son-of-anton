@@ -41,6 +41,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
+    deterministic_call_id as _deterministic_call_id,
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -511,37 +512,6 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
     return _chars(api_payload) // 4
 
 
-def _is_openai_codex_backend(agent) -> bool:
-    base_url_lower = str(getattr(agent, "_base_url_lower", "") or "")
-    base_url_hostname = str(getattr(agent, "_base_url_hostname", "") or "")
-    return (
-        getattr(agent, "provider", None) == "openai-codex"
-        or (
-            base_url_hostname == "chatgpt.com"
-            and "/backend-api/codex" in base_url_lower
-        )
-    )
-
-
-def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
-    """Minimum wall-clock stale timeout for openai-codex by estimated context.
-
-    Gateway/Telegram sessions routinely ship ~15–25k tokens of tools +
-    instructions before the first user message. Subscription-backed Codex can
-    legitimately spend several minutes in backend admission/prefill at that
-    size; the generic 90s non-stream stale default aborts healthy calls. The
-    floor engages above 10k estimated tokens so those gateway-scale payloads
-    are covered; smaller requests keep the generic default.
-    """
-    if est_tokens > 100_000:
-        return 1200.0
-    if est_tokens > 50_000:
-        return 900.0
-    if est_tokens > 10_000:
-        return 600.0
-    return 0.0
-
-
 def _prompt_cache_scope_for_agent(agent) -> "str | None":
     """Rotation-stable logical cache scope for *agent*, or None.
 
@@ -612,31 +582,6 @@ def _estimate_chunk_bytes(chunk: Any) -> int:
     except Exception:
         pass
     return size
-
-
-def _codex_wait_notice_recovery(
-    *,
-    stale_timeout: float,
-    ttfb_enabled: bool,
-    ttfb_timeout: float,
-    last_event_ts: Optional[float],
-    call_start: float,
-    idle_enabled: bool,
-    idle_timeout: float,
-    elapsed: float,
-) -> str:
-    """Describe the earliest enabled Codex watchdog on the call timeline."""
-    deadlines: list[float] = []
-    if math.isfinite(stale_timeout):
-        deadlines.append(stale_timeout)
-    if last_event_ts is None:
-        if ttfb_enabled and math.isfinite(ttfb_timeout):
-            deadlines.append(ttfb_timeout)
-    elif idle_enabled and math.isfinite(idle_timeout):
-        deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
-    if not deadlines or min(deadlines) <= elapsed:
-        return ""
-    return f"; auto-reconnect at {int(min(deadlines))}s"
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
@@ -805,13 +750,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     interrupt, abort, cancellation, and close semantics stay in the callers —
     this helper only issues the request.
     """
-    if agent.api_mode == "codex_responses":
-        request_client = make_client("codex_stream_request")
-        return agent._run_codex_stream(
-            api_kwargs,
-            client=request_client,
-            on_first_delta=getattr(agent, "_codex_on_first_delta", None),
-        )
     if agent.provider == "moa":
         # MoA is a virtual chat-completions provider backed by the
         # in-process MoAClient facade. Do not rebuild a request-local
@@ -1308,120 +1246,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # apply richer recovery (credential rotation, provider fallback).
     _stale_timeout = agent._compute_non_stream_stale_timeout(api_kwargs)
 
-    # ── Codex Responses stream watchdogs ────────────────────────────────
-    # The chatgpt.com/backend-api/codex endpoint has an intermittent failure
-    # mode where it accepts the connection but never emits a single stream
-    # event (observed directly: 0 events, no HTTP status, the socket just
-    # hangs). A fresh reconnect succeeds in ~2s, but the wall-clock stale
-    # timeout (often 180–900s) makes us wait minutes before retrying. While no
-    # stream event has arrived yet we apply a much shorter TTFB cutoff so the
-    # main retry loop can reconnect promptly. Large subscription-backed Codex
-    # requests can legitimately spend tens of seconds in backend admission /
-    # prompt prefill before the first SSE event, so the no-byte TTFB watchdog
-    # is disabled for large chatgpt.com/backend-api/codex requests. A second
-    # failure mode emits an opening SSE frame and then stalls forever in SSL
-    # read; for that we watch the gap since the last Codex stream event. This
-    # matches Codex CLI's stream_idle_timeout model: any valid SSE event is
-    # activity. Operators can tune via SON_OF_ANTON_CODEX_TTFB_TIMEOUT_SECONDS and
-    # SON_OF_ANTON_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each).
-    _codex_watchdog_enabled = agent.api_mode == "codex_responses"
-    _openai_codex_backend = _is_openai_codex_backend(agent)
-    _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
-    if _codex_watchdog_enabled and _openai_codex_backend:
-        _codex_floor = openai_codex_stale_timeout_floor(_est_tokens_for_codex_watchdog)
-        if _codex_floor:
-            _stale_timeout = max(_stale_timeout, _codex_floor)
-
-    # ── Codex absolute hard ceiling (#64507) ──────────────────────────
-    # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
-    # 1200s at >100k tokens) so healthy gateway-scale payloads aren't aborted.
-    # The scaled no-byte TTFB watchdog catches dead streams that never emit a
-    # first byte, but a request that emits SOME bytes and then wedges (the
-    # issue-64507 symptom: vision-inflated request, worker idle, no ended_at)
-    # is only reclaimed at the (high) stale floor. Add a flat, finite hard
-    # ceiling on total request time that ALWAYS applies to openai-codex
-    # requests regardless of the TTFB/stale interaction, so a stalled request
-    # is recovered (retry loop / visible failure) instead of hanging
-    # indefinitely. The default sits ABOVE the maximum stale floor (1200s) so
-    # it never clamps an intentionally-raised timeout for healthy large
-    # requests — it is a backstop against unbounded growth, not a tighter
-    # limit. Tunable via SON_OF_ANTON_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
-    # disable the ceiling entirely; that restores the pre-fix behavior).
-    _codex_hard_timeout = _env_float("SON_OF_ANTON_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
-    if (
-        _codex_watchdog_enabled
-        and _openai_codex_backend
-        and _codex_hard_timeout > 0
-    ):
-        _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
-
-    if _est_tokens_for_codex_watchdog > 100_000:
-        _codex_idle_timeout_default = 180.0
-    elif _est_tokens_for_codex_watchdog > 50_000:
-        _codex_idle_timeout_default = 120.0
-    elif _est_tokens_for_codex_watchdog > 10_000:
-        _codex_idle_timeout_default = 60.0
-    else:
-        _codex_idle_timeout_default = 12.0
-
-    # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
-    # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
-    # killed subscription-backed Codex requests mid-prefill before the backend
-    # had a chance to emit its first SSE event. Default to 120s — long enough to
-    # clear normal backend admission / prompt prefill, short enough to still
-    # reconnect promptly when the socket is genuinely wedged. Set
-    # SON_OF_ANTON_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
-    _ttfb_enabled = _codex_watchdog_enabled
-    _ttfb_timeout = _env_float("SON_OF_ANTON_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
-    if _ttfb_timeout <= 0:
-        _ttfb_enabled = False
-    elif _openai_codex_backend:
-        _ttfb_disable_above = _env_float("SON_OF_ANTON_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
-        _ttfb_strict = os.environ.get("SON_OF_ANTON_CODEX_TTFB_STRICT", "").strip().lower() in {
-            "1", "true", "yes", "on"
-        }
-        if (
-            not _ttfb_strict
-            and _ttfb_disable_above > 0
-            and _est_tokens_for_codex_watchdog >= _ttfb_disable_above
-        ):
-            _large_request_ttfb_timeout = _codex_idle_timeout_default
-            if _ttfb_timeout < _large_request_ttfb_timeout:
-                logger.info(
-                    "Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
-                    "for large request (context=~%s tokens >= %.0f). "
-                    "Set SON_OF_ANTON_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.",
-                    _ttfb_timeout,
-                    _large_request_ttfb_timeout,
-                    f"{_est_tokens_for_codex_watchdog:,}",
-                    _ttfb_disable_above,
-                )
-                _ttfb_timeout = _large_request_ttfb_timeout
-        _ttfb_cap = _env_float("SON_OF_ANTON_CODEX_TTFB_MAX_SECONDS", 120.0)
-        if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
-            logger.info(
-                "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
-                "(context=~%s tokens). Set SON_OF_ANTON_CODEX_TTFB_MAX_SECONDS to tune.",
-                _ttfb_timeout,
-                _ttfb_cap,
-                f"{_est_tokens_for_codex_watchdog:,}",
-            )
-            _ttfb_timeout = _ttfb_cap
-
-    _codex_idle_enabled = _codex_watchdog_enabled
-    _codex_idle_timeout = _env_float(
-        "SON_OF_ANTON_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
-        _codex_idle_timeout_default,
-    )
-    if _codex_idle_timeout <= 0:
-        _codex_idle_enabled = False
-
-    if _codex_watchdog_enabled:
-        # Reset before the worker starts so a marker left over from a previous
-        # call on this agent can't be misread as first-byte for this one.
-        agent._codex_stream_last_event_ts = None
-        agent._codex_stream_last_progress_ts = None
-
     _call_start = time.time()
     agent._touch_activity("waiting for non-streaming API response")
 
@@ -1439,142 +1263,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            try:
-                _recovery = _codex_wait_notice_recovery(
-                    stale_timeout=_stale_timeout,
-                    ttfb_enabled=_ttfb_enabled,
-                    ttfb_timeout=_ttfb_timeout,
-                    last_event_ts=getattr(
-                        agent, "_codex_stream_last_event_ts", None
-                    ),
-                    call_start=_call_start,
-                    idle_enabled=_codex_idle_enabled,
-                    idle_timeout=_codex_idle_timeout,
-                    elapsed=_elapsed,
-                )
-                agent._emit_wait_notice(
-                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                    f"{int(_elapsed)}s with no response yet (provider may be slow "
-                    f"or overloaded{_recovery})"
-                )
-            except Exception:
-                logger.debug("wait-notice construction failed", exc_info=True)
+            agent._emit_wait_notice(
+                f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                f"{int(_elapsed)}s with no response yet (provider may be slow "
+                f"or overloaded)"
+            )
 
         _elapsed = time.time() - _call_start
-
-        # TTFB detector: the Codex stream has produced no event at all and
-        # we're past the first-byte cutoff → the backend opened the
-        # connection but isn't responding. Kill it so the retry loop can
-        # reconnect (a fresh connection typically succeeds in seconds),
-        # instead of waiting out the much longer wall-clock stale timeout.
-        if (
-            _ttfb_enabled
-            and _elapsed > _ttfb_timeout
-            and getattr(agent, "_codex_stream_last_event_ts", None) is None
-        ):
-            _silent_hint: Optional[str] = None
-            _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
-            if callable(_hint_fn):
-                try:
-                    _silent_hint = _hint_fn(model=api_kwargs.get("model"))
-                except Exception:
-                    _silent_hint = None
-            logger.warning(
-                "Codex stream produced no bytes within TTFB cutoff "
-                "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
-                "but sent no stream events. Killing connection so the retry "
-                "loop can reconnect.",
-                _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
-            )
-            if _silent_hint:
-                agent._buffer_status(
-                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting. {_silent_hint}"
-                )
-            else:
-                agent._buffer_status(
-                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting."
-                )
-            try:
-                _close_request_client_once("codex_ttfb_kill")
-            except Exception:
-                pass
-            agent._emit_wait_notice(
-                f"⚠ no response from provider in {int(_elapsed)}s — "
-                f"reconnecting..."
-            )
-            agent._touch_activity(
-                f"codex stream killed after {int(_elapsed)}s with no first byte"
-            )
-            # Wait briefly for the worker to notice the closed connection.
-            t.join(timeout=2.0)
-            if result["error"] is None and result["response"] is None:
-                if _silent_hint:
-                    result["error"] = TimeoutError(
-                        f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
-                    )
-                else:
-                    result["error"] = TimeoutError(
-                        f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s)"
-                    )
-            break
-
-        # Stream-idle detector: the Codex backend emitted at least one SSE
-        # frame, then stopped emitting events. Valid keepalive / in_progress
-        # frames refresh _codex_stream_last_event_ts and should not be killed.
-        _last_codex_event_ts = getattr(agent, "_codex_stream_last_event_ts", None)
-        if (
-            _codex_idle_enabled
-            and _last_codex_event_ts is not None
-            and (time.time() - _last_codex_event_ts) > _codex_idle_timeout
-        ):
-            _event_stale_elapsed = time.time() - _last_codex_event_ts
-            logger.warning(
-                "Codex stream produced no SSE events for %.0fs after first byte "
-                "(threshold %.0fs, model=%s, context=~%s tokens). Killing "
-                "connection so the retry loop can reconnect.",
-                _event_stale_elapsed,
-                _codex_idle_timeout,
-                api_kwargs.get("model", "unknown"),
-                f"{_est_tokens_for_codex_watchdog:,}",
-            )
-            agent._buffer_status(
-                f"⚠️ Codex stream sent no events for {int(_event_stale_elapsed)}s "
-                f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
-                f"Reconnecting."
-            )
-            try:
-                _close_request_client_once("codex_stream_idle_kill")
-            except Exception:
-                pass
-            agent._touch_activity(
-                f"codex stream killed after {int(_event_stale_elapsed)}s with no SSE events"
-            )
-            t.join(timeout=2.0)
-            if result["error"] is None and result["response"] is None:
-                result["error"] = TimeoutError(
-                    f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
-                    f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
-                )
-            break
 
         # Stale-call detector: kill the connection if no response
         # arrives within the configured timeout.
         if _elapsed > _stale_timeout:
-            _silent_hint: Optional[str] = None
-            _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
-            if callable(_hint_fn):
-                try:
-                    _silent_hint = _hint_fn(model=api_kwargs.get("model"))
-                except Exception:
-                    _silent_hint = None
             _report_stale_nonstream_kill(
-                agent, api_kwargs, _elapsed, _stale_timeout, hint=_silent_hint
+                agent, api_kwargs, _elapsed, _stale_timeout
             )
             try:
                 # #67142: routes by client kind — anthropic now aborts the
@@ -1590,27 +1291,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
-                if _silent_hint:
-                    result["error"] = TimeoutError(
-                        f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s). "
-                        f"{_silent_hint}"
-                    )
-                else:
-                    result["error"] = TimeoutError(
-                        f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
-                    )
+                result["error"] = TimeoutError(
+                    f"Non-streaming API call timed out after {int(_elapsed)}s "
+                    f"with no response (threshold: {int(_stale_timeout)}s)"
+                )
             break
 
         if agent._interrupt_requested:
+            # Non-streaming call: a response is either complete or absent,
+            # so an interrupted wait has no "response started" state.
             _record_interrupted_provider_wait(
                 agent,
                 _elapsed,
-                response_started=(
-                    _codex_watchdog_enabled
-                    and getattr(agent, "_codex_stream_last_event_ts", None) is not None
-                ),
+                response_started=False,
             )
             # Mark THIS request cancelled before force-closing so the worker's
             # exception handler recognizes the forced transport error as a
@@ -1657,86 +1350,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # cheap after the first call.
     _cache_scope_id = _prompt_cache_scope_for_agent(agent)
 
-    if agent.api_mode == "codex_responses":
-        _ct = agent._get_transport()
-        is_github_responses = (
-            base_url_host_matches(agent.base_url, "models.github.ai")
-            or base_url_host_matches(agent.base_url, "githubcopilot.com")
-        )
-        is_codex_backend = (
-            agent.provider == "openai-codex"
-            or (
-                agent._base_url_hostname == "chatgpt.com"
-                and "/backend-api/codex" in agent._base_url_lower
-            )
-        )
-        is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
-        _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
-
-        # Native server-side compaction (gpt-5.6 on direct OpenAI API /
-        # ChatGPT Codex routes only) — None on every other route/model, in
-        # which case the request is unchanged from pre-feature behavior.
-        from agent.native_compaction import native_compaction_context_management
-        _context_management = native_compaction_context_management(
-            agent,
-            is_codex_backend=is_codex_backend,
-            is_xai_responses=is_xai_responses,
-            is_github_responses=is_github_responses,
-        )
-
-        # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
-        # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
-        # Most commonly hit when MCP-derived tools carry JSON Schema validation
-        # keywords through. Strip them before building kwargs. See #27197.
-        # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
-        # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
-        # the same opaque message; strip those enums too.
-        #
-        # Deep-copy ``tools_for_api`` before sanitizing: the sanitizers
-        # mutate in place (documented contract on ``strip_slash_enum`` /
-        # ``strip_pattern_and_format``), and ``tools_for_api`` is a direct
-        # reference to ``agent.tools``.  Without the copy, the first xAI
-        # request permanently strips constraints from the shared per-agent
-        # tool registry — every subsequent non-xAI call from the same
-        # agent (auxiliary task routed to Anthropic, OpenRouter fallback,
-        # main-model swap) sees the already-stripped schema.  See #27907.
-        if is_xai_responses:
-            try:
-                import copy as _copy
-                from tools.schema_sanitizer import (
-                    strip_pattern_and_format,
-                    strip_slash_enum,
-                )
-                tools_for_api = _copy.deepcopy(tools_for_api)
-                tools_for_api, _ = strip_pattern_and_format(tools_for_api)
-                tools_for_api, _ = strip_slash_enum(tools_for_api)
-            except Exception as exc:
-                logger.warning(
-                    "%s⚠️ Failed to sanitize tool schemas for xAI: %s",
-                    getattr(agent, "log_prefix", ""), exc,
-                )
-
-        return _ct.build_kwargs(
-            model=agent.model,
-            messages=_msgs_for_codex,
-            tools=tools_for_api,
-            reasoning_config=agent.reasoning_config,
-            session_id=getattr(agent, "session_id", None),
-            cache_scope_id=_cache_scope_id,
-            base_url=agent.base_url,
-            max_tokens=agent.max_tokens,
-            timeout=agent._resolved_api_call_timeout(),
-            request_overrides=agent.request_overrides,
-            provider=getattr(agent, "provider", None),
-            is_github_responses=is_github_responses,
-            is_codex_backend=is_codex_backend,
-            is_xai_responses=is_xai_responses,
-            github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
-            replay_encrypted_reasoning=bool(
-                getattr(agent, "_codex_reasoning_replay_enabled", True)
-            ),
-            context_management=_context_management,
-        )
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()
@@ -2035,51 +1648,22 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if ordered_blocks:
         msg["anthropic_content_blocks"] = ordered_blocks
 
-    # Codex Responses API: preserve encrypted reasoning items for
-    # multi-turn continuity. These get replayed as input on the next turn.
-    codex_items = getattr(assistant_message, "codex_reasoning_items", None)
-    if codex_items:
-        msg["codex_reasoning_items"] = codex_items
-
-    # Codex Responses API: preserve exact assistant message items (with
-    # id/phase) so follow-up turns can replay structured items instead of
-    # flattening to plain text. This is required for prefix cache hits.
-    codex_message_items = getattr(assistant_message, "codex_message_items", None)
-    if codex_message_items:
-        msg["codex_message_items"] = codex_message_items
-
     if assistant_tool_calls:
         tool_calls = []
         for tool_call in assistant_tool_calls:
-            raw_id = getattr(tool_call, "id", None)
-            call_id = getattr(tool_call, "call_id", None)
+            # Chat Completions canonical id. Deterministic fallback when the
+            # provider omits it — random UUIDs would make every API call's
+            # prefix unique and break the provider-side prompt cache.
+            call_id = getattr(tool_call, "id", None)
             if not isinstance(call_id, str) or not call_id.strip():
-                embedded_call_id, _ = agent._split_responses_tool_id(raw_id)
-                call_id = embedded_call_id
-            if not isinstance(call_id, str) or not call_id.strip():
-                if isinstance(raw_id, str) and raw_id.strip():
-                    call_id = raw_id.strip()
-                else:
-                    _fn = getattr(tool_call, "function", None)
-                    _fn_name = getattr(_fn, "name", "") if _fn else ""
-                    _fn_args = getattr(_fn, "arguments", "{}") if _fn else "{}"
-                    call_id = agent._deterministic_call_id(_fn_name, _fn_args, len(tool_calls))
+                _fn = getattr(tool_call, "function", None)
+                _fn_name = getattr(_fn, "name", "") if _fn else ""
+                _fn_args = getattr(_fn, "arguments", "{}") if _fn else "{}"
+                call_id = _deterministic_call_id(_fn_name, _fn_args, len(tool_calls))
             call_id = call_id.strip()
-
-            response_item_id = getattr(tool_call, "response_item_id", None)
-            if not isinstance(response_item_id, str) or not response_item_id.strip():
-                _, embedded_response_item_id = agent._split_responses_tool_id(raw_id)
-                response_item_id = embedded_response_item_id
-
-            response_item_id = agent._derive_responses_function_call_id(
-                call_id,
-                response_item_id if isinstance(response_item_id, str) else None,
-            )
 
             tc_dict = {
                 "id": call_id,
-                "call_id": call_id,
-                "response_item_id": response_item_id,
                 "type": tool_call.type,
                 "function": {
                     "name": tool_call.function.name,
@@ -2271,8 +1855,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return agent._try_activate_fallback(reason)
 
     # Use centralized router for client construction.
-    # raw_codex=True because the main agent needs direct responses.stream()
-    # access for Codex providers.
     try:
         from agent.auxiliary_client import resolve_provider_client
         # Pass base_url and api_key from fallback config so custom
@@ -2303,7 +1885,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
             fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
         fb_client, _resolved_fb_model = resolve_provider_client(
-            fb_provider, model=fb_model, raw_codex=True,
+            fb_provider, model=fb_model,
             explicit_base_url=fb_base_url_hint,
             explicit_api_key=fb_api_key_hint,
             api_mode=fb_api_mode)
@@ -2328,25 +1910,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # not pin api_mode explicitly. An explicit fb.api_mode (even
         # "chat_completions") must never be overridden here.
         fb_base_url = str(fb_client.base_url)
-        _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-
-        if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif _fb_is_azure:
-                # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
-                # support the Responses API. Stay on chat_completions.
-                fb_api_mode = "chat_completions"
-            elif agent._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
-            elif agent._provider_model_requires_responses_api(
-                fb_model,
-                provider=fb_provider,
-            ):
-                # GPT-5.x models usually need Responses API, but keep
-                # provider-specific exceptions like Copilot gpt-5-mini on
-                # chat completions.
-                fb_api_mode = "codex_responses"
 
         old_model = agent.model
         old_provider = agent.provider
@@ -2596,11 +2159,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # ChatCompletionsTransport.convert_messages(), but the summary path
             # hand-builds messages and calls chat.completions.create() directly,
             # bypassing the transport — so mirror that sanitization here:
-            # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers,
+            # tool_name (SQLite FTS bookkeeping),
             # timestamp (preserved on gateway user replay entries for the
             # stale-confirmation expiry check — #47868 rejection class),
             # and every Son of Anton-internal underscore-prefixed scaffolding key.
-            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
+            for schema_foreign in ("tool_name", "timestamp"):
                 api_msg.pop(schema_foreign, None)
             # api_content (the persist-what-you-send sidecar) carries the
             # exact bytes every main-loop call sent for this message —
@@ -2689,100 +2252,92 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     "enabled": True,
                     "effort": "medium"
                 }
-        if agent.api_mode == "codex_responses":
-            codex_kwargs = agent._build_api_kwargs(api_messages)
-            codex_kwargs.pop("tools", None)
-            summary_response = agent._run_codex_stream(codex_kwargs)
-            _ct_sum = agent._get_transport()
-            _cnr_sum = _ct_sum.normalize_response(summary_response)
-            final_response = (_cnr_sum.content or "").strip()
-        else:
-            summary_kwargs = {
-                "model": agent.model,
-                "messages": api_messages,
-            }
-            if _summary_temperature is not None:
-                summary_kwargs["temperature"] = _summary_temperature
-            if agent.max_tokens is not None:
-                summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-            if _lm_reasoning_effort is not None:
-                summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+        summary_kwargs = {
+            "model": agent.model,
+            "messages": api_messages,
+        }
+        if _summary_temperature is not None:
+            summary_kwargs["temperature"] = _summary_temperature
+        if agent.max_tokens is not None:
+            summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+        if _lm_reasoning_effort is not None:
+            summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
-            # Merge the profile's canonical body and reasoning dialect even
-            # when routing is unset: profiles may always emit required
-            # metadata such as Portal tags, and the custom profile's reasoning
-            # control is a top-level reasoning_effort rather than the nested
-            # extra_body.reasoning set above. The summary call bypasses the
-            # transport, so mirror its profile hooks here or a custom route
-            # runs the wrap-up request without the session's reasoning config.
-            profile_extra_body = {}
-            profile_reasoning_extra = {}
-            profile_top_level = {}
-            profile_handles_reasoning = False
-            try:
-                from providers import get_provider_profile
-                from providers.base import ProviderProfile
+        # Merge the profile's canonical body and reasoning dialect even
+        # when routing is unset: profiles may always emit required
+        # metadata such as Portal tags, and the custom profile's reasoning
+        # control is a top-level reasoning_effort rather than the nested
+        # extra_body.reasoning set above. The summary call bypasses the
+        # transport, so mirror its profile hooks here or a custom route
+        # runs the wrap-up request without the session's reasoning config.
+        profile_extra_body = {}
+        profile_reasoning_extra = {}
+        profile_top_level = {}
+        profile_handles_reasoning = False
+        try:
+            from providers import get_provider_profile
+            from providers.base import ProviderProfile
 
-                provider_profile = get_provider_profile(agent.provider)
-                if provider_profile is not None:
-                    profile_extra_body = provider_profile.build_extra_body(
-                        session_id=getattr(agent, "session_id", None),
+            provider_profile = get_provider_profile(agent.provider)
+            if provider_profile is not None:
+                profile_extra_body = provider_profile.build_extra_body(
+                    session_id=getattr(agent, "session_id", None),
+                    model=agent.model,
+                    base_url=agent.base_url,
+                    reasoning_config=agent.reasoning_config,
+                ) or {}
+                profile_reasoning_extra, profile_top_level = (
+                    provider_profile.build_api_kwargs_extras(
+                        reasoning_config=agent.reasoning_config,
+                        supports_reasoning=agent.reasoning_config is not None,
                         model=agent.model,
                         base_url=agent.base_url,
-                        reasoning_config=agent.reasoning_config,
-                    ) or {}
-                    profile_reasoning_extra, profile_top_level = (
-                        provider_profile.build_api_kwargs_extras(
-                            reasoning_config=agent.reasoning_config,
-                            supports_reasoning=agent.reasoning_config is not None,
-                            model=agent.model,
-                            base_url=agent.base_url,
-                        )
                     )
-                    profile_reasoning_extra = profile_reasoning_extra or {}
-                    profile_top_level = profile_top_level or {}
-                    from agent.auxiliary_client import (
-                        _contains_profile_reasoning_fields,
-                    )
+                )
+                profile_reasoning_extra = profile_reasoning_extra or {}
+                profile_top_level = profile_top_level or {}
+                from agent.auxiliary_client import (
+                    _contains_profile_reasoning_fields,
+                )
 
-                    profile_handles_reasoning = (
-                        type(provider_profile).build_api_kwargs_extras
-                        is not ProviderProfile.build_api_kwargs_extras
-                        or _contains_profile_reasoning_fields(profile_extra_body)
-                        or _contains_profile_reasoning_fields(profile_reasoning_extra)
-                        or _contains_profile_reasoning_fields(profile_top_level)
-                    )
-            except Exception:
-                pass
+                profile_handles_reasoning = (
+                    type(provider_profile).build_api_kwargs_extras
+                    is not ProviderProfile.build_api_kwargs_extras
+                    or _contains_profile_reasoning_fields(profile_extra_body)
+                    or _contains_profile_reasoning_fields(profile_reasoning_extra)
+                    or _contains_profile_reasoning_fields(profile_top_level)
+                )
+        except Exception:
+            pass
 
-            summary_kwargs.update(profile_top_level)
-            if profile_handles_reasoning:
-                # The profile owns the reasoning wire shape; the generic
-                # nested form set above must not ride along.
-                summary_extra_body.pop("reasoning", None)
-            if profile_extra_body:
-                summary_extra_body.update(profile_extra_body)
-            summary_extra_body.update(profile_reasoning_extra)
+        summary_kwargs.update(profile_top_level)
+        if profile_handles_reasoning:
+            # The profile owns the reasoning wire shape; the generic
+            # nested form set above must not ride along.
+            summary_extra_body.pop("reasoning", None)
+        if profile_extra_body:
+            summary_extra_body.update(profile_extra_body)
+        summary_extra_body.update(profile_reasoning_extra)
 
-            if summary_extra_body:
-                summary_kwargs["extra_body"] = summary_extra_body
+        if summary_extra_body:
+            summary_kwargs["extra_body"] = summary_extra_body
 
-            # The anthropic_messages branch that used to sit between these two
-            # was removed with the api_mode (801d46d5), leaving this else
-            # dangling on `if summary_extra_body`: a non-empty extra_body
-            # skipped the call entirely and the summary failed with an
-            # UnboundLocalError on final_response. The OpenAI-compatible call
-            # runs on every non-codex turn.
-            summary_client = agent._ensure_primary_openai_client(
-                reason="iteration_limit_summary"
-            )
-            summary_response = _managed_summary_call(
-                summary_kwargs,
-                lambda request: summary_client.chat.completions.create(**request),
-                retry_count=0,
-            )
-            _summary_result = agent._get_transport().normalize_response(summary_response)
-            final_response = (_summary_result.content or "").strip()
+        # The anthropic_messages branch that used to sit between these two
+        # was removed with the api_mode (801d46d5), leaving this else
+        # dangling on `if summary_extra_body`: a non-empty extra_body
+        # skipped the call entirely and the summary failed with an
+        # UnboundLocalError on final_response. The OpenAI-compatible call
+        # runs on every non-codex turn.
+        summary_client = agent._ensure_primary_openai_client(
+            reason="iteration_limit_summary"
+        )
+        summary_response = _managed_summary_call(
+            summary_kwargs,
+            lambda request: summary_client.chat.completions.create(**request),
+            retry_count=0,
+        )
+        _summary_result = agent._get_transport().normalize_response(summary_response)
+        final_response = (_summary_result.content or "").strip()
 
         if final_response:
             if "<think>" in final_response:
@@ -2797,38 +2352,30 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
         else:
             # Retry summary generation
-            if agent.api_mode == "codex_responses":
-                codex_kwargs = agent._build_api_kwargs(api_messages)
-                codex_kwargs.pop("tools", None)
-                retry_response = agent._run_codex_stream(codex_kwargs)
-                _ct_retry = agent._get_transport()
-                _cnr_retry = _ct_retry.normalize_response(retry_response)
-                final_response = (_cnr_retry.content or "").strip()
-            else:
-                summary_kwargs = {
-                    "model": agent.model,
-                    "messages": api_messages,
-                }
-                if _summary_temperature is not None:
-                    summary_kwargs["temperature"] = _summary_temperature
-                if agent.max_tokens is not None:
-                    summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-                if _lm_reasoning_effort is not None:
-                    summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
-                summary_kwargs.update(profile_top_level)
-                if summary_extra_body:
-                    summary_kwargs["extra_body"] = summary_extra_body
+            summary_kwargs = {
+                "model": agent.model,
+                "messages": api_messages,
+            }
+            if _summary_temperature is not None:
+                summary_kwargs["temperature"] = _summary_temperature
+            if agent.max_tokens is not None:
+                summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+            if _lm_reasoning_effort is not None:
+                summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+            summary_kwargs.update(profile_top_level)
+            if summary_extra_body:
+                summary_kwargs["extra_body"] = summary_extra_body
 
-                summary_client = agent._ensure_primary_openai_client(
-                    reason="iteration_limit_summary_retry"
-                )
-                summary_response = _managed_summary_call(
-                    summary_kwargs,
-                    lambda request: summary_client.chat.completions.create(**request),
-                    retry_count=1,
-                )
-                _retry_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_retry_result.content or "").strip()
+            summary_client = agent._ensure_primary_openai_client(
+                reason="iteration_limit_summary_retry"
+            )
+            summary_response = _managed_summary_call(
+                summary_kwargs,
+                lambda request: summary_client.chat.completions.create(**request),
+                retry_count=1,
+            )
+            _retry_result = agent._get_transport().normalize_response(summary_response)
+            final_response = (_retry_result.content or "").strip()
 
             if final_response:
                 if "<think>" in final_response:
@@ -3016,22 +2563,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if should_use_direct_api_call(agent):
         return agent._interruptible_api_call(api_kwargs)
 
-    if agent.api_mode == "codex_responses":
-        # Codex streams internally via _run_codex_stream. The main dispatch
-        # in _interruptible_api_call already calls it; we just need to
-        # ensure on_first_delta reaches it. Store it on the instance
-        # temporarily so _run_codex_stream can pick it up.
-        agent._codex_on_first_delta = on_first_delta
-        _emit_stream_start()
-        try:
-            response = agent._interruptible_api_call(api_kwargs)
-            _emit_stream_end(final_text=_stream_final_text(response), finished=True, error=None)
-            return response
-        except Exception as exc:
-            _emit_stream_end(final_text="", finished=False, error=str(exc))
-            raise
-        finally:
-            agent._codex_on_first_delta = None
 
     # Bedrock Converse uses boto3's converse_stream() with real-time delta
     # callbacks — same UX as Anthropic and chat_completions streaming.

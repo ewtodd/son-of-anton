@@ -240,126 +240,18 @@ def _custom_provider_runtime_ids(value: Any) -> set[str]:
     return {normalized, f"custom:{normalized}"}
 
 
-def _build_codex_gpt5_autoraise_notice(
-    autoraise: Dict[str, Any], context_length: Optional[int] = None
-) -> str:
-    """Build the one-time notice shown when Codex gpt-5.x raises compaction.
-
-    ``autoraise`` is ``{"model": <slug>, "from": <old_ratio>, "to": <new_ratio>}``.
-    ``context_length`` is the live-resolved window from the context compactor
-    (Codex's /models catalog is authoritative and can change server-side, e.g.
-    the gpt-5.6 family's 272K → 372K → 272K shifts in July 2026), so the banner
-    reports what this session actually got rather than a hardcoded cap. The
-    same text is printed inline for CLI users and replayed via
-    ``status_callback`` for gateway users, so it must be self-contained and
-    include the exact opt-back-out command.
-    """
-    model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    if isinstance(context_length, int) and context_length > 0:
-        cap = f"{round(context_length / 1000)}K"
-    else:
-        # Static fallback when the resolved window isn't available:
-        # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6
-        # family is capped at 272K by the Codex OAuth backend.
-        cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
-    from_pct = int(round(autoraise["from"] * 100))
-    to_pct = int(round(autoraise["to"] * 100))
-    return (
-        f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: son-of-anton config set compaction.codex_gpt55_autoraise false"
-    )
-
-
 def _resolve_compaction_threshold(
     global_threshold: float,
     model_cthresh: Optional[float],
-    *,
-    model: Optional[str] = None,
-    is_codex_autoraise: bool,
-) -> tuple[float, Optional[Dict[str, Any]]]:
+) -> float:
     """Combine the user's global compaction threshold with a per-model override.
 
-    Returns ``(effective_threshold, autoraise_notice)``. ``autoraise_notice`` is
-    ``{"model": <slug>, "from": <old>, "to": <new>}`` only when a Codex
-    autoraise (gpt-5.4/5.5 272K family or gpt-5.3-codex-spark) actually raises
-    the threshold, otherwise ``None``.
-
-    The Codex overrides are *autoraises*: they must never LOWER a higher
-    user-configured threshold. A user who already set ``compaction.threshold``
-    above the raised value deliberately keeps more raw context, and silently
-    dropping them would both waste usable window and contradict the feature's
-    purpose (use more of the window). Other overrides (e.g. Arcee Trinity)
-    keep their existing unconditional behaviour.
+    Per-model overrides (e.g. Arcee Trinity) apply unconditionally; with no
+    override the user's global threshold wins.
     """
     if model_cthresh is None:
-        return global_threshold, None
-    if is_codex_autoraise:
-        if model_cthresh <= global_threshold + 1e-9:
-            # Autoraise never lowers; keep the user's higher/equal threshold.
-            return global_threshold, None
-        return model_cthresh, {
-            "model": model,
-            "from": global_threshold,
-            "to": model_cthresh,
-        }
-    return model_cthresh, None
-
-
-def _codex_gpt55_autoraise_notice_marker():
-    """Path to the per-profile marker recording that the autoraise notice ran.
-
-    Lives under ``$SON_OF_ANTON_HOME`` (which is profile-scoped) alongside the other
-    internal markers like ``.container-mode`` — so it is not a user-facing config
-    key, and every profile tracks its own notice state independently.
-    """
-    return get_son_of_anton_home() / ".codex_gpt55_autoraise_notice"
-
-
-def _codex_gpt55_autoraise_notice_state(autoraise: Dict[str, Any]) -> str:
-    """Stable identity for one autoraise notice, keyed on what it displays.
-
-    Uses the model slug plus the same from→to percentages the notice text
-    shows, so an unchanged threshold stays silent across restarts while a
-    later change (the user edits their global ``threshold``, or switches to a
-    different autoraised Codex model) re-notifies once.
-    """
-    model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
-    from_pct = int(round(float(autoraise["from"]) * 100))
-    to_pct = int(round(float(autoraise["to"]) * 100))
-    return f"{model}:{from_pct}:{to_pct}"
-
-
-def _codex_gpt55_autoraise_notice_seen(autoraise: Dict[str, Any]) -> bool:
-    """True if this exact autoraise notice was already shown for this profile.
-
-    A missing/unreadable marker (or one recording a different threshold) reads
-    as unseen, so the notice shows.
-    """
-    try:
-        current = _codex_gpt55_autoraise_notice_state(autoraise)
-        return _codex_gpt55_autoraise_notice_marker().read_text(
-            encoding="utf-8"
-        ).strip() == current
-    except (OSError, KeyError, TypeError, ValueError):
-        return False
-
-
-def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, Any]) -> None:
-    """Persist that the autoraise notice was shown for this profile/config state.
-
-    Best-effort: a read-only or missing ``$SON_OF_ANTON_HOME`` just means the notice
-    may show again next init, which is preferable to breaking agent init.
-    """
-    try:
-        marker = _codex_gpt55_autoraise_notice_marker()
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(
-            _codex_gpt55_autoraise_notice_state(autoraise), encoding="utf-8"
-        )
-    except (OSError, KeyError, TypeError, ValueError):
-        pass
+        return global_threshold
+    return model_cthresh
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -556,7 +448,7 @@ def init_agent(
         api_key (str): API key for authentication (optional, uses env var if not provided)
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
         requested_provider (str): Original provider identity before runtime canonicalization
-        api_mode (str): API mode override: "chat_completions" or "codex_responses"
+        api_mode (str): API mode override (advanced; only "chat_completions" is supported)
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
@@ -645,42 +537,8 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses"}:
-        agent.api_mode = api_mode
-    elif agent.provider == "openai-codex":
-        agent.api_mode = "codex_responses"
-    elif agent.provider in {"xai", "xai-oauth"}:
-        agent.api_mode = "codex_responses"
-    elif (provider_name is None) and (
-        agent._base_url_hostname == "chatgpt.com"
-        and "/backend-api/codex" in agent._base_url_lower
-    ):
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-    elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
-        agent.api_mode = "codex_responses"
-        agent.provider = "xai"
-    else:
-        # Host-mandated wire check — LAST, so the elif chain's provider-slug
-        # rewrites (e.g. api.anthropic.com → provider="anthropic", #63425)
-        # always run first. Covers api.meta.ai → codex_responses for prompt
-        # caching (0% on chat vs 93-99% on responses) and future mandates.
-        # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai
-        # base_url) intentionally falls through to chat_completions here. The wire
-        # protocol for Meta is URL-driven BY DESIGN, not provider-name-driven, because
-        # user config `providers.meta` may point at any OpenAI-compatible endpoint, and
-        # forcing `codex_responses` on the provider name alone would break custom endpoints
-        # named "meta" that do not host the Responses API.
-        try:
-            from son_of_anton_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
-
-            _mandated = _host_mandated_api_mode(base_url or "")
-        except Exception:
-            _mandated = None
-        if _mandated is not None:
-            agent.api_mode = _mandated
-        else:
-            agent.api_mode = "chat_completions"
+    # The wire is always OpenAI-compatible chat completions.
+    agent.api_mode = "chat_completions"
 
     # Credential-pool validation runs AFTER provider auto-detection so
     # a pool scoped to e.g. "anthropic" is not rejected when the agent
@@ -701,7 +559,7 @@ def init_agent(
             agent._credential_pool = None
 
     # Eagerly warm the transport cache so import errors surface at init,
-    # not mid-conversation.  Also validates the api_mode is registered.
+    # not mid-conversation.
     try:
         agent._get_transport()
     except Exception:
@@ -717,39 +575,6 @@ def init_agent(
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
         pass
-
-    # GPT-5.x models usually require the Responses API path, but some
-    # providers have exceptions (for example Copilot's gpt-5-mini still
-    # uses chat completions). Also auto-upgrade for direct OpenAI URLs
-    # (api.openai.com) since all newer tool-calling models prefer
-    # Responses there. ACP runtimes are excluded: CopilotACPClient
-    # handles its own routing and does not implement the Responses API
-    # surface.
-    # When api_mode was explicitly provided, respect it — the user
-    # knows what their endpoint supports (#10473).
-    # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
-    # does NOT support the Responses API — skip the upgrade for Azure
-    # (openai.azure.com), even though it looks OpenAI-compatible.
-    if (
-        api_mode is None
-        and agent.api_mode == "chat_completions"
-        and agent.provider != "copilot-acp"
-        and not str(agent.base_url or "").lower().startswith("acp://copilot")
-        and not str(agent.base_url or "").lower().startswith("acp+tcp://")
-        and not agent._is_azure_openai_url()
-        and (
-            agent._is_direct_openai_url()
-            or agent._provider_model_requires_responses_api(
-                agent.model,
-                provider=agent.provider,
-            )
-        )
-    ):
-        agent.api_mode = "codex_responses"
-        # Invalidate the eager-warmed transport cache — api_mode changed
-        # from chat_completions to codex_responses after the warm at __init__.
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
 
     agent.tool_progress_callback = tool_progress_callback
     agent.tool_start_callback = tool_start_callback
@@ -984,7 +809,7 @@ def init_agent(
     # assistant message.
     agent._current_streamed_assistant_text = ""
     # Completed interim messages delivered during the current user turn.
-    # Unlike token-stream tracking, this spans Codex continuation/tool calls so
+    # Unlike token-stream tracking, this spans continuation/tool calls so
     # repeated commentary is not re-sent before normalization can deduplicate it.
     agent._delivered_interim_texts: set[str] = set()
 
@@ -1016,10 +841,8 @@ def init_agent(
     agent._anthropic_image_fallback_cache: Dict[str, str] = {}
 
     # Initialize LLM client via centralized provider router.
-    # The router handles auth resolution, base URL, headers, and
-    # Codex/Anthropic wrapping for all known providers.
-    # raw_codex=True because the main agent needs direct responses.stream()
-    # access for Codex Responses API streaming.
+    # The router handles auth resolution, base URL, and headers
+    # for the standard OpenAI-compatible endpoint.
 
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,
@@ -1079,7 +902,7 @@ def init_agent(
         # No explicit creds — use the centralized provider router
         from agent.auxiliary_client import resolve_provider_client
         _routed_client, _ = resolve_provider_client(
-            agent.provider or "auto", model=agent.model, raw_codex=True)
+            agent.provider or "auto", model=agent.model)
         if _routed_client is not None:
             client_kwargs = {
                 "api_key": _routed_client.api_key,
@@ -1130,7 +953,7 @@ def init_agent(
                         from son_of_anton_cli.fallback_config import resolve_entry_api_key
                         _fb_explicit_key = resolve_entry_api_key(_fb)
                         _fb_client, _fb_model = resolve_provider_client(
-                            _fb["provider"], model=_fb["model"], raw_codex=True,
+                            _fb["provider"], model=_fb["model"],
                             explicit_base_url=_fb.get("base_url"),
                             explicit_api_key=_fb_explicit_key,
                         )
@@ -1397,13 +1220,6 @@ def init_agent(
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
-    # Responses encrypted reasoning replay state.  Some OpenAI-compatible
-    # routes accept GPT-5 Responses requests but later reject replayed
-    # encrypted reasoning blobs (HTTP 400 ``invalid_encrypted_content``).
-    # When that happens we disable replay for the rest of the session and
-    # fall back to stateless continuity.  See
-    # agent/conversation_loop.py's invalid_encrypted_content retry branch.
-    agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
     
@@ -1483,9 +1299,9 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
-    # Codex commentary visibility (display.show_commentary, default true).
-    # When true, completed Codex phase=commentary messages are delivered as
-    # visible mid-turn updates through the interim message path. When false,
+    # Commentary visibility (display.show_commentary, default true).
+    # When true, completed mid-turn commentary messages are delivered as
+    # visible updates through the interim message path.  When false,
     # commentary falls back to the reasoning channel (visible only with
     # show_reasoning enabled).
     agent.show_commentary = True
@@ -1700,10 +1516,10 @@ def init_agent(
         agent._empty_guard_cost_threshold_usd,
     ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
 
-    # Intent-ack continuation config: "auto" (default — codex_responses only,
-    # the historical gate), true (all api_modes), false (never), or a list of
-    # model-name substrings.  Resolved against the active api_mode/model in the
-    # conversation loop's intent-ack block.
+    # Intent-ack continuation config: false/"off" (default — never),
+    # true/"always" (any ack + action verb), or a list of model-name
+    # substrings.  Resolved against the active model in the conversation
+    # loop's intent-ack block.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
     # Runtime anti-stall guards (identical-call loop-breaker notice on tool
@@ -1789,47 +1605,14 @@ def init_agent(
     if not isinstance(_compaction_cfg, dict):
         _compaction_cfg = {}
     compaction_threshold = float(_compaction_cfg.get("threshold", 0.50))
-    # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
-    # raise to 85% (the Codex backend caps both families at 272K, so the
-    # default 50% would compact at ~136K — half the usable context). Gated by
-    # an opt-out config flag so the user can fall back to the global threshold;
-    # when the override fires we stash a one-time notification (replayed on the
-    # first turn) that tells the user what changed and how to revert. The
-    # notice has its own display gate so users can keep the threshold
-    # autoraise without getting the banner on gateway turns.
-    _codex_gpt55_autoraise = str(
-        _compaction_cfg.get("codex_gpt55_autoraise", True)
-    ).lower() in {"true", "1", "yes"}
-    _codex_gpt55_autoraise_notice = str(
-        _compaction_cfg.get("codex_gpt55_autoraise_notice", True)
-    ).lower() in {"true", "1", "yes"}
-    agent._compaction_threshold_autoraised = None
+    # Per-model compaction-threshold override (e.g. Arcee Trinity).
     try:
         from agent.auxiliary_client import (
             _compaction_threshold_for_model as _cthresh_fn,
-            _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
-            _is_codex_spark as _is_codex_spark_fn,
         )
-        _model_cthresh = _cthresh_fn(
-            agent.model,
-            agent.provider,
-            allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
-        )
-        # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
-        # apply only when they RAISE (never lower a user's higher global
-        # threshold). The notice is populated only when it actually fires, and
-        # carries the model slug so the banner names the right family. Arcee
-        # Trinity keeps its long-standing unconditional behaviour.
-        compaction_threshold, agent._compaction_threshold_autoraised = (
-            _resolve_compaction_threshold(
-                compaction_threshold,
-                _model_cthresh,
-                model=agent.model,
-                is_codex_autoraise=(
-                    _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
-                    or _is_codex_spark_fn(agent.model, agent.provider)
-                ),
-            )
+        compaction_threshold = _resolve_compaction_threshold(
+            compaction_threshold,
+            _cthresh_fn(agent.model, agent.provider),
         )
     except Exception:
         pass
@@ -2011,31 +1794,6 @@ def init_agent(
             2000,
         ),
     )
-    # Native OpenAI Responses server-side compaction (opt-in). Only ever
-    # engages for gpt-5.6-family models on api.openai.com or the ChatGPT
-    # Codex backend — the per-request gate lives in agent/native_compaction.py.
-    # Shared truthy coercion: "false"/"off"/"no" strings stay disabled
-    # (bool("false") is True — #82777).
-    from utils import is_truthy_value as _is_truthy
-
-    codex_responses_native_compaction = _is_truthy(
-        _compaction_cfg.get("codex_responses_native", False)
-    )
-    _native_threshold_raw = _compaction_cfg.get(
-        "codex_responses_compact_threshold", 200_000
-    )
-    try:
-        if isinstance(_native_threshold_raw, bool):
-            raise ValueError
-        codex_responses_compact_threshold = int(_native_threshold_raw)
-        if codex_responses_compact_threshold <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        _ra().logger.warning(
-            "Invalid compaction.codex_responses_compact_threshold=%r; using 200000.",
-            _native_threshold_raw,
-        )
-        codex_responses_compact_threshold = 200_000
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().
@@ -2410,12 +2168,6 @@ def init_agent(
 
     if _selected_engine is not None:
         agent.context_compactor = _selected_engine
-        # External engines own compaction policy: the host compaction
-        # threshold (including the Codex gpt-5.5 autoraise above) only
-        # configures the built-in ContextCompactor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does
-        # not apply. Drop it. (#44439)
-        agent._compaction_threshold_autoraised = None
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
@@ -2488,8 +2240,6 @@ def init_agent(
         _cc._micro_compact_defrag_threshold_tokens = (
             compaction_micro_compact_defrag_tokens
         )
-    agent.codex_responses_native_compaction = codex_responses_native_compaction
-    agent.codex_responses_compact_threshold = codex_responses_compact_threshold
     agent.max_compaction_attempts = compaction_max_attempts
     agent.compaction_idle_compact_after_seconds = (
         compaction_idle_compact_after_seconds
@@ -2650,21 +2400,6 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
-    # Codex gpt-5.x autoraise notice: show at most once per profile/config
-    # state. Without the persisted marker the notice re-fires on every agent
-    # init — and the gateway rebuilds the agent per inbound message, so Discord
-    # etc. saw it repeatedly (#54432). A change in the raised threshold (or the
-    # autoraised model) updates the marker state and re-notifies once. The
-    # config display gate (compaction.codex_gpt55_autoraise_notice) still
-    # suppresses the banner entirely without disabling the threshold autoraise.
-    _autoraise = getattr(agent, "_compaction_threshold_autoraised", None) or {}
-    _show_autoraise_notice = (
-        bool(_autoraise)
-        and compaction_enabled
-        and _codex_gpt55_autoraise_notice
-        and not _codex_gpt55_autoraise_notice_seen(_autoraise)
-    )
-
     if not agent.quiet_mode:
         if compaction_enabled:
             # Report the active engine's own threshold — for a plugin engine
@@ -2680,33 +2415,11 @@ def init_agent(
             print(f"📊 Context limit: {agent.context_compactor.context_length:,} tokens (compact at {int(_active_threshold_pct*100)}% = {agent.context_compactor.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {agent.context_compactor.context_length:,} tokens (auto-compaction disabled)")
-        # Notice with the exact opt-back-out command. Printed inline at startup
-        # for CLI users; gateway users get the same text replayed via
-        # _compaction_warning on turn 1 (set below).
-        if _show_autoraise_notice:
-            print(_build_codex_gpt5_autoraise_notice(
-                _autoraise,
-                context_length=getattr(agent.context_compactor, "context_length", None),
-            ))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compaction_warning and replayed in the first run_conversation().
     agent._compaction_warning = None
-    # Gateway parity for the Codex gpt-5.x autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    if _show_autoraise_notice:
-        agent._compaction_warning = _build_codex_gpt5_autoraise_notice(
-            _autoraise,
-            context_length=getattr(agent.context_compactor, "context_length", None),
-        )
-
-    # Mark shown so repeated inits in this profile (e.g. every gateway message)
-    # stay silent. Recorded once, whether the notice went to the CLI print or
-    # the gateway replay slot.
-    if _show_autoraise_notice:
-        _record_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compaction threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent
