@@ -543,7 +543,7 @@ def load_cli_config() -> Dict[str, Any]:
                         defaults[key] = file_config[key]
             
             # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
+            # (e.g. platform_toolsets, memory, honcho, etc.)
             for key in file_config:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
@@ -4583,29 +4583,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             CLI_CONFIG["agent"].get("service_tier", "")
         )
         
-        # OpenRouter provider routing preferences
-        pr = CLI_CONFIG.get("provider_routing", {}) or {}
-        self._provider_sort = pr.get("sort")
-        self._providers_only = pr.get("only")
-        self._providers_ignore = pr.get("ignore")
-        self._providers_order = pr.get("order")
-        self._provider_require_params = pr.get("require_parameters", False)
-        self._provider_data_collection = pr.get("data_collection")
 
-        # OpenRouter Pareto Code router knob — coding-score floor (0.0-1.0).
-        # Only applied when model.model == "openrouter/pareto-code".
-        # Empty string / None / out-of-range = unset (let OR pick strongest coder).
-        _or_cfg = CLI_CONFIG.get("openrouter", {}) or {}
-        _raw_score = _or_cfg.get("min_coding_score")
-        self._openrouter_min_coding_score: Optional[float] = None
-        if _raw_score not in {None, ""}:
-            try:
-                _f = float(_raw_score)
-                if 0.0 <= _f <= 1.0:
-                    self._openrouter_min_coding_score = _f
-            except (TypeError, ValueError):
-                pass
-        
         # Fallback provider chain — tried in order when primary fails after retries.
         # Merge new ``fallback_providers`` entries with any legacy
         # ``fallback_model`` entries so old configs still participate.

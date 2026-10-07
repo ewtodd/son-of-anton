@@ -56,13 +56,6 @@ class _SummaryAgent:
         self._cached_system_prompt = "system"
         self.ephemeral_system_prompt = ""
         self.prefill_messages = []
-        self.providers_allowed = None
-        self.providers_ignored = None
-        self.providers_order = None
-        self.provider_sort = None
-        self.provider_require_parameters = False
-        self.provider_data_collection = None
-        self.openrouter_min_coding_score = None
         self.extra_body_supported = False
         self.created: list[dict] = []
 
@@ -83,9 +76,6 @@ class _SummaryAgent:
 
     def _supports_reasoning_extra_body(self):
         return self.extra_body_supported
-
-    def _is_openrouter_url(self):
-        return self.provider == "openrouter"
 
     def _ensure_primary_openai_client(self, reason=""):
         return _StubClient(self)

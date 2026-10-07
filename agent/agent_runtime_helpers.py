@@ -1300,15 +1300,7 @@ def try_recover_primary_transport(
     if error_type not in _TRANSIENT_TRANSPORT_ERRORS:
         return False
 
-    # Skip for aggregator providers — they manage their own retry infra
-    if agent._is_openrouter_url():
-        return False
     provider_lower = (agent.provider or "").strip().lower()
-    # Portal OpenAI-wire traffic still rides aggregator retry infra, so one
-    # more rebuilt OpenAI client won't help. Portal Claude on the native
-    # Messages route holds a local Anthropic SDK client whose connection
-    # pool *does* need the rebuild every other anthropic_messages provider
-    # already gets — don't blanket-skip the dual-wire path.
     if (
         provider_lower in {"nous", "nous-portal", "nousresearch"}
     ):

@@ -542,42 +542,6 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     return 0.0
 
 
-def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
-    """Return a normalized OpenRouter provider.sort value or None."""
-    if not isinstance(raw_sort, str):
-        return None
-    sort_value = raw_sort.strip().lower()
-    if not sort_value:
-        return None
-    if sort_value in _OPENROUTER_PROVIDER_SORT_VALUES:
-        return sort_value
-    logger.warning(
-        "Ignoring invalid OpenRouter provider.sort value %r (allowed: %s)",
-        raw_sort,
-        ", ".join(sorted(_OPENROUTER_PROVIDER_SORT_VALUES)),
-    )
-    return None
-
-
-def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
-    """Build the validated provider-routing object shared by request paths."""
-    preferences: Dict[str, Any] = {}
-    if agent.providers_allowed:
-        preferences["only"] = agent.providers_allowed
-    if agent.providers_ignored:
-        preferences["ignore"] = agent.providers_ignored
-    if agent.providers_order:
-        preferences["order"] = agent.providers_order
-    provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
-    if provider_sort:
-        preferences["sort"] = provider_sort
-    if agent.provider_require_parameters:
-        preferences["require_parameters"] = True
-    if agent.provider_data_collection:
-        preferences["data_collection"] = agent.provider_data_collection
-    return preferences
-
-
 def _prompt_cache_scope_for_agent(agent) -> "str | None":
     """Rotation-stable logical cache scope for *agent*, or None.
 
@@ -1778,7 +1742,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     _ct = agent._get_transport()
 
     # Provider detection flags
-    _is_or = agent._is_openrouter_url()
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
         or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
@@ -1802,9 +1765,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     except Exception:
         _omit_temp = False
         _fixed_temp = None
-
-    # Provider preferences (aggregator profile decides whether to emit them).
-    _prefs = _provider_preferences_for_agent(agent)
 
     # Anthropic-compatible max-output fallback (last resort only — applied in
     # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
@@ -1861,9 +1821,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             cache_scope_id=_cache_scope_id,
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
-            # Context forwarded to profile hooks:
-            provider_preferences=_prefs or None,
-            openrouter_min_coding_score=agent.openrouter_min_coding_score,
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
         )
@@ -1892,7 +1849,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         session_id=getattr(agent, "session_id", None),
         cache_scope_id=_cache_scope_id,
         model_lower=(agent.model or "").lower(),
-        is_openrouter=_is_or,
         is_github_models=_is_gh,
         is_nvidia_nim=_is_nvidia,
         is_kimi=_is_kimi,
@@ -1900,8 +1856,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         ollama_num_ctx=agent._ollama_num_ctx,
-        provider_preferences=_prefs or None,
-        openrouter_min_coding_score=agent.openrouter_min_coding_score,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
         supports_reasoning=agent._supports_reasoning_extra_body(),
@@ -2761,7 +2715,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # extra_body.reasoning set above. The summary call bypasses the
             # transport, so mirror its profile hooks here or a custom route
             # runs the wrap-up request without the session's reasoning config.
-            provider_preferences = _provider_preferences_for_agent(agent)
             profile_extra_body = {}
             profile_reasoning_extra = {}
             profile_top_level = {}
@@ -2774,7 +2727,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if provider_profile is not None:
                     profile_extra_body = provider_profile.build_extra_body(
                         session_id=getattr(agent, "session_id", None),
-                        provider_preferences=provider_preferences or None,
                         model=agent.model,
                         base_url=agent.base_url,
                         reasoning_config=agent.reasoning_config,
@@ -2811,32 +2763,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if profile_extra_body:
                 summary_extra_body.update(profile_extra_body)
             summary_extra_body.update(profile_reasoning_extra)
-            if provider_preferences and "provider" not in profile_extra_body and (
-                (agent.provider or "").strip().lower() == "openrouter"
-                or agent._is_openrouter_url()
-            ):
-                summary_extra_body["provider"] = provider_preferences
-
-            # Pareto Code router plugin — model-gated. Same shape as
-            # the main-loop emission so summary calls on
-            # openrouter/pareto-code respect the user's coding-score floor.
-            if (
-                agent.model == "openrouter/pareto-code"
-                and (
-                    (agent.provider or "").strip().lower() == "openrouter"
-                    or agent._is_openrouter_url()
-                )
-                and agent.openrouter_min_coding_score is not None
-                and agent.openrouter_min_coding_score != ""
-            ):
-                try:
-                    _ps = float(agent.openrouter_min_coding_score)
-                except (TypeError, ValueError):
-                    _ps = None
-                if _ps is not None and 0.0 <= _ps <= 1.0:
-                    summary_extra_body["plugins"] = [
-                        {"id": "pareto-router", "min_coding_score": _ps}
-                    ]
 
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body

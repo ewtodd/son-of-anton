@@ -5180,7 +5180,6 @@ class TurnRunner:
                 "tools": [],
             }
 
-        pr = self._runner._provider_routing
         reasoning_config = self._runner._resolve_session_reasoning_config(
             source=ctx.source,
             session_key=ctx.session_key,
@@ -5515,12 +5514,6 @@ class TurnRunner:
                 reasoning_config=reasoning_config,
                 service_tier=self._runner._service_tier,
                 request_overrides=turn_route.get("request_overrides"),
-                providers_allowed=pr.get("only"),
-                providers_ignored=pr.get("ignore"),
-                providers_order=pr.get("order"),
-                provider_sort=pr.get("sort"),
-                provider_require_parameters=pr.get("require_parameters", False),
-                provider_data_collection=pr.get("data_collection"),
                 session_id=ctx.session_id,
                 platform=platform_key,
                 user_id=ctx.source.user_id,
@@ -6567,7 +6560,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
-        self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection.
@@ -8933,18 +8925,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
             return "concise"
         return mode
-
-    @staticmethod
-    def _load_provider_routing() -> dict:
-        """Load OpenRouter provider routing preferences from config.toml."""
-        try:
-            # Canonical gateway loader (fail-open): managed overlay + ${VAR}
-            # expansion now apply to provider_routing too.
-            cfg = _load_gateway_runtime_config()
-            return cfg.get("provider_routing", {}) or {}
-        except Exception:
-            pass
-        return {}
 
     @staticmethod
     def _load_fallback_model() -> list | None:
@@ -19969,7 +19949,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
 
-            pr = self._provider_routing
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source, model=model
@@ -20008,12 +19987,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
                     platform=platform_key,
                     user_id=source.user_id,

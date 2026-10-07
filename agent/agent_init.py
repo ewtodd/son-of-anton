@@ -39,7 +39,6 @@ from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
-    fetch_model_metadata,
     is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -496,13 +495,6 @@ def init_agent(
     ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100,
     log_prefix: str = "",
-    providers_allowed: List[str] = None,
-    providers_ignored: List[str] = None,
-    providers_order: List[str] = None,
-    provider_sort: str = None,
-    provider_require_parameters: bool = False,
-    provider_data_collection: str = None,
-    openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
     tool_progress_callback: callable = None,
     tool_start_callback: callable = None,
@@ -575,13 +567,6 @@ def init_agent(
         ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
         log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
-        providers_allowed (List[str]): OpenRouter providers to allow (optional)
-        providers_ignored (List[str]): OpenRouter providers to ignore (optional)
-        providers_order (List[str]): OpenRouter providers to try in order (optional)
-        provider_sort (str): Sort providers by price/throughput/latency (optional)
-        openrouter_min_coding_score (float): Coding-score floor (0.0-1.0) for the
-            openrouter/pareto-code router. Only applied when model == "openrouter/pareto-code".
-            None or empty = let OpenRouter pick the strongest available coder.
         session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
         tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
         clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
@@ -766,22 +751,6 @@ def init_agent(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
 
-    # Pre-warm OpenRouter model metadata cache in a background thread.
-    # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
-    # HTTP request on the first API response when pricing is estimated.
-    # Use a process-level Event so this thread is only spawned once — a new
-    # AIAgent is created for every gateway request, so without the guard
-    # each message leaks one OS thread and the process eventually exhausts
-    # the system thread limit (RuntimeError: can't start new thread).
-    if (agent.provider == "openrouter" or agent._is_openrouter_url()) and \
-            not _ra()._openrouter_prewarm_done.is_set():
-        _ra()._openrouter_prewarm_done.set()
-        threading.Thread(
-            target=fetch_model_metadata,
-            daemon=True,
-            name="openrouter-prewarm",
-        ).start()
-
     agent.tool_progress_callback = tool_progress_callback
     agent.tool_start_callback = tool_start_callback
     agent.tool_complete_callback = tool_complete_callback
@@ -863,15 +832,6 @@ def init_agent(
     agent._background_review_agent = None
     agent._background_review_run = None
     agent._background_review_lock = threading.Lock()
-
-    # Store OpenRouter provider preferences
-    agent.providers_allowed = providers_allowed
-    agent.providers_ignored = providers_ignored
-    agent.providers_order = providers_order
-    agent.provider_sort = provider_sort
-    agent.provider_require_parameters = provider_require_parameters
-    agent.provider_data_collection = provider_data_collection
-    agent.openrouter_min_coding_score = openrouter_min_coding_score
 
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets

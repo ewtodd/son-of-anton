@@ -4560,26 +4560,12 @@ def run_conversation(
                         agent._buffer_vprint(f"   📋 Details: {_err_body_str}")
                 agent._buffer_vprint(f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
-                # Actionable hint for OpenRouter "no tool endpoints" error.
+                # Actionable hint for the "no tool endpoints" error.
                 # Buffered like the rest of the retry trace — surfaced only
-                # if every retry+fallback exhausts.  Avoids spamming users
-                # who recover automatically via fallback.
-                if (
-                    agent._is_openrouter_url()
-                    and "support tool use" in error_msg
-                ):
+                # if every retry+fallback exhausts.
+                if "support tool use" in error_msg:
                     agent._buffer_vprint(
-                        f"   💡 No OpenRouter providers for {_model} support tool calling with your current settings."
-                    )
-                    if agent.providers_allowed:
-                        agent._buffer_vprint(
-                            "      Your provider_routing.only restriction is filtering out tool-capable providers."
-                        )
-                        agent._buffer_vprint(
-                            "      Try removing the restriction or adding providers that support tools for this model."
-                        )
-                    agent._buffer_vprint(
-                        f"      Check which providers support tools: https://openrouter.ai/models/{_model}"
+                        f"   💡 No providers for {_model} support tool calling with your current settings."
                     )
 
                 # Actionable hint for a bare 404 on a provider whose catalogue

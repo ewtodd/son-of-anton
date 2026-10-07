@@ -274,13 +274,6 @@ _MAX_TOOL_WORKERS = 8
 # this never reaches a strict OpenAI-compatible gateway.
 _DB_PERSISTED_MARKER = "_db_persisted"
 
-
-# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
-# process, not once per AIAgent instantiation.  Without this, long-running
-# gateway processes leak one OS thread per incoming message and eventually
-# exhaust the system thread limit (RuntimeError: can't start new thread).
-_openrouter_prewarm_done = threading.Event()
-
 # =========================================================================
 # Large tool result handler — save oversized output to temp file
 # =========================================================================
@@ -427,13 +420,6 @@ class AIAgent:
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
-        provider_sort: str = None,
-        provider_require_parameters: bool = False,
-        provider_data_collection: str = None,
-        openrouter_min_coding_score: Optional[float] = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
@@ -518,13 +504,6 @@ class AIAgent:
             ephemeral_system_prompt=ephemeral_system_prompt,
             log_prefix_chars=log_prefix_chars,
             log_prefix=log_prefix,
-            providers_allowed=providers_allowed,
-            providers_ignored=providers_ignored,
-            providers_order=providers_order,
-            provider_sort=provider_sort,
-            provider_require_parameters=provider_require_parameters,
-            provider_data_collection=provider_data_collection,
-            openrouter_min_coding_score=openrouter_min_coding_score,
             session_id=session_id,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1542,10 +1521,6 @@ class AIAgent:
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See son-of-anton#21444 for symptom history."
         )
-
-    def _is_openrouter_url(self) -> bool:
-        """Return True when the base URL targets OpenRouter."""
-        return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
     def _is_codex_backend(self) -> bool:
         """Return True for the ChatGPT OAuth Codex Responses backend."""
@@ -6613,49 +6588,7 @@ class AIAgent:
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
-        if not self._is_openrouter_url():
-            return False
-        if base_url_host_matches(self._base_url_lower, "api.mistral.ai"):
-            return False
-
-        model = (self.model or "").lower()
-        # Live-catalog metadata first (ported from
-        # PrimeIntellect-ai/prime-agent#1258): OpenRouter's /v1/models entries
-        # advertise reasoning support via supported_parameters + a reasoning
-        # object, which covers every routed vendor without a hand-maintained
-        # prefix list. The static prefix allowlist below repeatedly went
-        # stale one vendor at a time (nvidia/ missing → #75386; same class
-        # as tencent/, xiaomi/ additions before it) — metadata makes new
-        # vendors work without a code change. One catalog fetch per process,
-        # cached; unknown (catalog unreachable / unlisted model) falls back
-        # to the static list.
-        try:
-            from son_of_anton_cli.models import (
-                openrouter_model_reasoning_capabilities,
-                warm_openrouter_reasoning_caps_async,
-            )
-            caps = openrouter_model_reasoning_capabilities(self.model)
-            if caps is None:
-                # Cache cold (no picker run this process) — warm it in the
-                # background so subsequent turns get metadata; never block
-                # this turn on HTTP.
-                warm_openrouter_reasoning_caps_async()
-        except Exception:
-            caps = None
-        if caps is not None:
-            return bool(caps.get("supports_reasoning"))
-        reasoning_model_prefixes = (
-            "deepseek/",
-            "anthropic/",
-            "openai/",
-            "x-ai/",
-            "google/gemini-2",
-            "google/gemma-4",
-            "qwen/qwen3",
-            "tencent/hy3",
-            "xiaomi/",
-        )
-        return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+        return False
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """Probe LM Studio's published reasoning ``allowed_options`` once per

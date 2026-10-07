@@ -688,13 +688,8 @@ def _auth_headers(api_key: str = "") -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _is_openrouter_base_url(base_url: str) -> bool:
-    return base_url_host_matches(base_url, "openrouter.ai")
-
-
 def _is_custom_endpoint(base_url: str) -> bool:
-    normalized = _normalize_base_url(base_url)
-    return bool(normalized) and not _is_openrouter_base_url(normalized)
+    return bool(_normalize_base_url(base_url))
 
 
 _URL_TO_PROVIDER: Dict[str, str] = {
@@ -1231,7 +1226,7 @@ def fetch_endpoint_model_metadata(
     (e.g. usage accounting) don't pay for the extra requests.
     """
     normalized = _normalize_base_url(base_url)
-    if not normalized or _is_openrouter_base_url(normalized):
+    if not normalized:
         return {}
     _ensure_requests()
 

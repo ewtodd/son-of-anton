@@ -1039,8 +1039,6 @@ DEFAULT_CONFIG = {
         # is never engaged for background auxiliary traffic (compaction,
         # title generation, session search, vision, web extract).
         "free_only": False,
-        # Override the auxiliary auto-chain's aggregator fallback model.
-        "openrouter_model": "",
         # Endpoints that reject NON-streaming chat requests outright (e.g.
         # Tencent Copilot returns HTTP 400 "Non-stream chat request is
         # currently not supported"). Auxiliary calls to a matching endpoint
