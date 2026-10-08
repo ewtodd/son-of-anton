@@ -60,12 +60,10 @@ def test_frame_is_terminal_native_and_responsive() -> None:
             ctx = app.query_one("#context")
             assert ctx.display is True, "sidebar should be visible at width 160"
             assert ctx.styles.width.value == 42.0
-            assert app.query_one("#wordmark").has_class("wordmark")
             assert app.theme.startswith("ansi-"), f"not an ansi theme: {app.theme}"
             vars_ = app.get_css_variables()
             for key in ("background", "panel", "surface", "text", "foreground"):
                 assert "#" not in vars_.get(key, ""), f"{key} hardcodes a hex: {vars_.get(key)!r}"
-            assert _tui.PlainMarkdown.BLOCKS["fence"] is _tui._PlainFence
             assert app.focused is app.query_one("#input"), "prompt not focused on mount"
 
     async def narrow() -> None:
@@ -102,18 +100,20 @@ def test_backend_events_render_into_the_feed() -> None:
             post("turn_end")
             await pilot.pause(0.8)
 
-            feed = app.query_one("#feed").children
-            kinds = [type(w).__name__ for w in feed]
-            assert kinds.count("ReasoningBlock") == 1
-            assert kinds.count("ToolLine") == 1, "tool_gen + tool_start + tool_done must share one row"
-            assert kinds.count("PlainMarkdown") == 1
-            reasoning = next(w for w in feed if isinstance(w, _tui.ReasoningBlock))
+            feed = app.query_one("#feed")
+            kinds = [b.kind for b in feed._blocks]
+            assert kinds.count("reasoning") == 1
+            assert kinds.count("tool") == 1, "tool_gen + tool_start + tool_done must share one row"
+            assert kinds.count("markdown") == 1
+            reasoning = next(b for b in feed._blocks if b.kind == "reasoning")
             assert reasoning.collapsed, "reasoning folds once the answer starts"
-            assert "2 lines" in reasoning.title
-            tool = next(w for w in feed if isinstance(w, _tui.ToolLine))
+            assert "2 lines" in "".join(s.text for s in reasoning.lines)
+            tool = next(b for b in feed._blocks if b.kind == "tool")
             assert tool.done
-            notes = [w for w in feed if isinstance(w, _tui.NoteLine) and w.text is not None]
-            assert any("note one\nnote two" in w.text.plain for w in notes), "consecutive lines merge into one block"
+            notes = [b for b in feed._blocks if b.kind == "note"]
+            assert len(notes) == 1, "consecutive lines merge into one block"
+            joined = "".join(s.text for s in notes[0].lines)
+            assert "note one" in joined and "note two" in joined
             assert "streaming **markdown**" in app._transcript
             assert "```python" in app._transcript
             assert "|---|---|" in app._transcript
@@ -143,7 +143,7 @@ def test_prompt_completes_slash_commands_and_q_quits() -> None:
             await pilot.press("h", "i")
             await pilot.press("enter")
             await pilot.pause(0.3)
-            assert [w for w in app.query_one("#feed").children if isinstance(w, _tui.UserTurn)]
+            assert any(b.kind == "user" for b in app.query_one("#feed")._blocks)
             prompt.text = ":q"
             await pilot.press("enter")
             await pilot.pause(0.3)
@@ -175,8 +175,8 @@ def test_text_we_did_not_author_is_never_parsed_as_markup() -> None:
             post("reasoning_end")
             await pilot.pause(0.4)
             assert app.is_running, "a bracket in the reasoning stream crashed the app"
-            block = next(w for w in app.query_one("#feed").children if isinstance(w, _tui.ReasoningBlock))
-            assert hostile in block._buffer
+            block = next(b for b in app.query_one("#feed")._blocks if b.kind == "reasoning")
+            assert hostile in block.buffer
 
             app.push_screen(_tui.ChoiceModal(hostile, [("ok", "OK", "")], detail=hostile), lambda r: None)
             await pilot.pause(0.3)
@@ -294,14 +294,18 @@ def test_selecting_in_the_feed_copies_and_keeps_the_prompt_focused() -> None:
             prompt = app.query_one("#input")
             assert app.focused is prompt
 
-            note = next(w for w in app.query_one("#feed").children if isinstance(w, _tui.NoteLine))
-            await pilot.mouse_down(note, offset=(0, 0))
-            await pilot.hover(note, offset=(12, 0))
-            await pilot.mouse_up(note, offset=(12, 0))
+            feed = app.query_one("#feed")
+            note = next(b for b in feed._blocks if b.kind == "note")
+            y = feed._starts[note.idx]
+            # note text is padded to column 3; drag across cells 3..22
+            await pilot.mouse_down(feed, offset=(3, y))
+            await pilot.hover(feed, offset=(22, y))
+            await pilot.mouse_up(feed, offset=(22, y))
             await pilot.pause(0.3)
 
-            assert app.clipboard.strip(), "highlighting did not copy anything"
-            assert app.clipboard.strip() in "a line worth selecting"
+            assert app.clipboard.strip() == "a line worth select", (
+                f"selection copied {app.clipboard.strip()!r}"
+            )
             assert app.focused is prompt, "selecting stole focus from the prompt"
 
             # A plain click anywhere in the transcript keeps the caret too.
@@ -545,22 +549,22 @@ def test_app_runs_a_turn_and_answers_the_backend_modals(backend) -> None:
             await pilot.pause(0.3)
 
             assert seen == {"approval": "session", "clarify": "chocolate", "sudo": ""}
-            feed = app.query_one("#feed").children
-            kinds = [type(w).__name__ for w in feed]
-            assert "UserTurn" in kinds and "ReasoningBlock" in kinds and "ToolLine" in kinds
-            assert kinds.count("PlainMarkdown") == 2
+            feed = app.query_one("#feed")
+            kinds = [b.kind for b in feed._blocks]
+            assert "user" in kinds and "reasoning" in kinds and "tool" in kinds
+            assert kinds.count("markdown") == 2
             assert "All done: **chocolate**" in app._transcript
-            notes = [w.text.plain for w in feed if isinstance(w, _tui.NoteLine) and w.text is not None]
-            assert any("a bare print from the worker" in n for n in notes), "print() from the worker is captured"
-            assert any("Approval: rm -rf /tmp/x" in n for n in notes), "the persisted prompt summary lands in the feed"
+            notes = "".join(s.text for b in feed._blocks if b.kind == "note" for s in b.lines)
+            assert "a bare print from the worker" in notes, "print() from the worker is captured"
+            assert "Approval: rm -rf /tmp/x" in notes, "the persisted prompt summary lands in the feed"
             assert app.focused is prompt
 
             prompt.text = "/verbose"
             await pilot.press("enter")
             assert await wait_for(pilot, lambda: app._busy is None)
             await pilot.pause(0.3)
-            notes = [w.text.plain for w in feed if isinstance(w, _tui.NoteLine) and w.text is not None]
-            assert any("Tool progress" in n for n in notes), "slash command output reaches the feed"
+            notes = "".join(s.text for b in app.query_one("#feed")._blocks if b.kind == "note" for s in b.lines)
+            assert "Tool progress" in notes, "slash command output reaches the feed"
 
     asyncio.run(run())
 
@@ -802,23 +806,20 @@ def test_transcript_columns_match_opencode() -> None:
             await pilot.pause(0.6)
 
             feed = app.query_one("#feed")
-            md = feed.query_one(_tui.PlainMarkdown)
-            note = [w for w in feed.children if isinstance(w, _tui.NoteLine)][-1]
-            tool = feed.query_one(_tui.ToolLine)
-            assert md.styles.padding.left == 3
-            assert note.styles.padding.left == 3
-            assert tool.styles.padding.left == 0
-            # icon column, then the label at column 2
-            rendered = str(tool.render())
+            md = next(b for b in feed._blocks if b.kind == "markdown")
+            note = next(b for b in feed._blocks if b.kind == "note")
+            tool = next(b for b in feed._blocks if b.kind == "tool")
+            assert "".join(s.text for s in md.lines[0]).startswith("   ")  # column 3 indent
+            assert "".join(s.text for s in note.lines[0]).startswith("   ")
+            rendered = "".join(s.text for s in tool.lines[0])
             assert rendered.startswith("$ "), rendered
             assert "Running ls" in rendered
 
-            user = _tui.UserTurn("hi")
-            await feed.mount(user)
+            app._add_user_turn("hi")
             await pilot.pause(0.1)
-            # rail (1) + padding (2) puts user text in the same column as the rest
-            assert user.styles.padding.left == 2
-            assert user.styles.border_left[0] == "wide"
+            user = next(b for b in feed._blocks if b.kind == "user")
+            # rail (1 cell) + padding (2 cells) puts user text in column 3
+            assert "".join(s.text for s in user.lines[0])[3:5] == "hi"
 
     asyncio.run(run())
 
@@ -1002,10 +1003,18 @@ def test_app_paints_generated_surfaces_only_when_the_terminal_answered() -> None
             # the base background still belongs to the terminal
             assert "#" not in variables["background"]
             assert app.theme == "ansi-dark"
-            user = _tui.UserTurn("hi")
-            await app.query_one("#feed").mount(user)
+            app._add_user_turn("hi")
             await pilot.pause(0.1)
-            assert user.styles.background.hex.lower().startswith("#2c2c43")
+            user = next(b for b in app.query_one("#feed")._blocks if b.kind == "user")
+            backgrounds = set()
+            for strip in user.lines:
+                for seg in strip:
+                    if seg.style is not None and seg.style.bgcolor:
+                        r, g, b = seg.style.bgcolor.get_truecolor()
+                        backgrounds.add(f"#{r:02x}{g:02x}{b:02x}")
+            assert any(bg.startswith("#2c2c43") for bg in backgrounds), (
+                f"user rows sit on the generated panel: {backgrounds}"
+            )
 
     async def without_colors() -> None:
         app = _tui.SonOfAntonTUIApp()
@@ -1116,16 +1125,20 @@ def test_wordmark_never_outgrows_its_column_across_resizes() -> None:
             for i in range(40):
                 app.post_message(_tui.TuiEvent("ansi", {"text": f"filler {i}"}))
             await pilot.pause(0.4)
-            wordmark = app.query_one("#wordmark", _tui.Wordmark)
+            feed = app.query_one("#feed")
+            wordmark = feed._wordmark
 
             def widest() -> int:
-                return max((len(line) for line in str(wordmark.render()).splitlines()), default=0)
+                return max(
+                    (len("".join(s.text for s in line)) for line in wordmark.lines),
+                    default=0,
+                )
 
             for width in (160, 113, 114, 121, 119, 100, 90, 200, 70, 160):
                 await pilot.resize_terminal(width, 30)
                 await pilot.pause(0.3)
-                assert widest() <= wordmark.size.width, (
-                    f"wordmark is {widest()} columns in a {wordmark.size.width}-column feed at term width {width}"
+                assert widest() <= feed._width, (
+                    f"wordmark is {widest()} columns in a {feed._width}-column feed at term width {width}"
                 )
 
     asyncio.run(run())
@@ -1145,21 +1158,23 @@ def test_blocks_are_separated_the_way_opencode_separates_them() -> None:
             post("tool_start", name="read_file", label="Reading a.py")
             post("tool_done", name="read_file", label="Reading a.py", duration=0.1)
             await pilot.pause(0.5)
-            tools = app.query(_tui.ToolLine).nodes
+            feed = app.query_one("#feed")
+            tools = [b for b in feed._blocks if b.kind == "tool"]
             assert len(tools) == 2
-            assert tools[1].styles.margin.top == 0, "consecutive tool rows should stay tight"
+            assert tools[1].before == 0, "consecutive tool rows should stay tight"
 
             # A note straight after a user block must not butt against it —
             # this is the "yo" / "Initializing agent..." pair from a real turn.
-            feed = app.query_one("#feed")
             post("ansi", text="a line before the turn")
             await pilot.pause(0.2)
             app._add_user_turn("yo")
             post("ansi", text="Initializing agent...")
             await pilot.pause(0.4)
-            note = [w for w in feed.children if isinstance(w, _tui.NoteLine)][-1]
-            assert "Initializing" in note.text.plain, "the note merged into the block above the user message"
-            assert note.styles.margin.top == 1, "a note following a user message needs air"
+            note = [b for b in feed._blocks if b.kind == "note"][-1]
+            assert "Initializing" in "".join(s.text for s in note.lines), (
+                "the note merged into the block above the user message"
+            )
+            assert note.before == 1, "a note following a user message needs air"
 
     asyncio.run(run())
 
@@ -1353,7 +1368,7 @@ def test_composing_in_an_editor_suspends_the_app(backend, monkeypatch) -> None:
             await pilot.pause(0.4)
 
             assert suspends, "the editor ran without suspending the app"
-            turns = [str(w.render()) for w in app.query_one("#feed").children if isinstance(w, _tui.UserTurn)]
+            turns = ["".join(s.text for s in b.lines) for b in app.query_one("#feed")._blocks if b.kind == "user"]
             assert any("EDITED" in t for t in turns), f"composed text was not sent: {turns}"
             assert any("draft" in t for t in turns), "the draft was not carried into the editor"
 
@@ -1403,7 +1418,7 @@ def test_an_empty_editor_gives_the_draft_back(backend, monkeypatch) -> None:
                 await pilot.pause(0.1)
             await pilot.pause(0.4)
             assert app._prompt.text == "keep me", "an empty save must not eat the draft"
-            assert not [w for w in app.query_one("#feed").children if isinstance(w, _tui.UserTurn)]
+            assert not [b for b in app.query_one("#feed")._blocks if b.kind == "user"]
 
     asyncio.run(run())
 
@@ -1639,12 +1654,12 @@ def test_compaction_renders_as_a_divider_then_what_it_remembers() -> None:
                 )
             )
             await pilot.pause(0.6)
-            feed = app.query_one("#feed").children
-            kinds = [type(w).__name__ for w in feed]
-            assert kinds.count("PlainMarkdown") == 1, "the summary is a markdown block, not chrome"
-            notes = [w for w in feed if isinstance(w, _tui.NoteLine)]
-            assert any(w.text is not None and "6 of 40 messages kept" in w.text.plain for w in notes)
-            assert kinds.index("PlainMarkdown") < kinds.index("NoteLine", kinds.index("PlainMarkdown")), (
+            feed = app.query_one("#feed")
+            kinds = [b.kind for b in feed._blocks]
+            assert kinds.count("markdown") == 1, "the summary is a markdown block, not chrome"
+            notes = "".join(s.text for b in feed._blocks if b.kind == "note" for s in b.lines)
+            assert "6 of 40 messages kept" in notes
+            assert kinds.index("markdown") < kinds.index("note", kinds.index("markdown")), (
                 "divider, summary, then the stats line"
             )
 
@@ -1652,62 +1667,26 @@ def test_compaction_renders_as_a_divider_then_what_it_remembers() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Transcript scaling: trimming, deferred merges, batched streaming
+# Transcript scaling: virtual feed, deferred merges, buffered streaming
 # ---------------------------------------------------------------------------
 
-def test_feed_trims_oldest_rows_past_the_widget_cap(monkeypatch) -> None:
-    """The frame cost scales with widget count, so old rows must be dropped.
-
-    Textual lays out every child of the scroll container on every pass; without
-    a cap, long sessions degrade to single-digit fps.  The trim keeps the
-    wordmark, intro and live rows, drops the oldest content first, and records
-    the drop with a marker so the gap is not mistaken for a new session.
-    """
+def test_feed_holds_every_row_of_a_marathon_session() -> None:
+    """The virtual feed keeps all rows — no cap, no trim, unbounded scrollback."""
     _textual()
-    monkeypatch.setattr(_tui, "_MAX_FEED_WIDGETS", 30)
 
     async def run() -> None:
         app = _tui.SonOfAntonTUIApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.2)
-            for i in range(40):
+            for i in range(3000):
                 app._add_user_turn(f"turn {i}")
-            await pilot.pause(0.2)
-
-            feed = app.query_one("#feed")
-            floor = 30 * 3 // 4
-            assert len(feed.children) <= floor + 3, "wordmark, intro, marker + trimmed rows"
-            assert app.query_one("#wordmark").is_mounted, "the wordmark must never be trimmed"
-            assert app._trim_marker is not None and app._trim_marker.is_mounted
-            turns = [w.content.plain for w in feed.children if isinstance(w, _tui.UserTurn)]
-            assert "turn 0" not in turns, "the oldest rows are the first to go"
-            assert "turn 39" in turns, "the newest rows must survive"
-
-            app.action_clear_feed()
-            assert app._trim_marker is None, "/clear must not leave a stale trim marker"
-
-    asyncio.run(run())
-
-
-def test_running_rows_and_live_blocks_survive_the_trim(monkeypatch) -> None:
-    """A trim must never remove the block still being written or animating."""
-    _textual()
-    monkeypatch.setattr(_tui, "_MAX_FEED_WIDGETS", 30)
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.2)
-            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
-            for i in range(30):
-                app._add_user_turn(f"filler {i}")
-            post("assistant_start")
-            post("assistant_delta", text="live")
-            post("tool_start", name="terminal", label="Running ls")
             await pilot.pause(0.3)
             feed = app.query_one("#feed")
-            assert app._md is not None and app._md.is_mounted, "the streaming block was trimmed"
-            assert any(w in feed.children for w in app._running_tools), "a running tool row was trimmed"
+            turns = [b for b in feed._blocks if b.kind == "user"]
+            assert len(turns) == 3000, "nothing is trimmed; scrollback is unbounded"
+            assert "turn 0" in "".join(s.text for s in turns[0].lines)
+            assert "turn 2999" in "".join(s.text for s in turns[-1].lines)
+            assert feed._total == sum(b.before + b.height for b in feed._blocks)
 
     asyncio.run(run())
 
@@ -1722,14 +1701,15 @@ def test_note_merge_defers_rendering_until_flush() -> None:
             await pilot.pause(0.2)
             app._note("first")
             app._note("second")
-            note = app._note_block
-            assert note is not None
-            assert "first" in note.text.plain
-            assert "second" not in note.text.plain, "pending lines render only on flush"
+            note = [b for b in app.query_one("#feed")._blocks if b.kind == "note"][-1]
+            assert len(note.texts) == 2, "both lines merge into one block"
+            assert note.dirty, "pending lines render only on flush"
             app._tick_spinner()
-            assert "first\nsecond" in note.text.plain
+            assert not note.dirty
+            joined = "".join(s.text for s in note.lines)
+            assert "first" in joined and "second" in joined
             app._tick_spinner()  # idempotent once flushed
-            assert note.text.plain.count("second") == 1
+            assert joined.count("second") == 1
 
     asyncio.run(run())
 
@@ -1742,17 +1722,21 @@ def test_note_merge_caps_the_block_and_flushes_on_replacement() -> None:
         app = _tui.SonOfAntonTUIApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.2)
-            for i in range(_tui._NOTE_MERGE_MAX_LINES + 5):
+            from son_of_anton_tui import feed as _feed
+
+            for i in range(_feed._NOTE_MERGE_MAX_LINES + 5):
                 app._note(f"line {i}")
-            assert app._note_block.line_count == 5, "a fresh block starts after the cap"
+            notes = [b for b in app.query_one("#feed")._blocks if b.kind == "note"]
+            assert len(notes) == 2, "a fresh block starts after the cap"
+            assert len(notes[-1].texts) == 5
             app._tick_spinner()
-            assert "line 0" not in app._note_block.text.plain
+            assert "line 0" not in "".join(s.text for s in notes[-1].lines)
 
     asyncio.run(run())
 
 
-def test_assistant_deltas_batch_until_the_flush_timer() -> None:
-    """Per-line Markdown appends re-parse; deltas should batch instead."""
+def test_assistant_deltas_accumulate_and_render_on_the_flush_tick() -> None:
+    """Deltas buffer into the markdown block; the frame tick renders them."""
     _textual()
 
     async def run() -> None:
@@ -1763,20 +1747,38 @@ def test_assistant_deltas_batch_until_the_flush_timer() -> None:
             post("assistant_start")
             await pilot.pause(0.05)
             post("assistant_delta", text="alpha")
-            await pilot.pause(0.02)  # process the delta; the 0.1s flush timer has not fired
-            assert app._md_pending == "alpha", "deltas buffer instead of writing immediately"
+            await pilot.pause(0.02)  # process the delta; the frame tick has not flushed
+            block = app._md_block
+            assert block is not None and block.source == "alpha", "deltas buffer, renders are batched"
             assert "alpha" in app._transcript, "the transcript records every delta as it lands"
 
             post("assistant_delta", text="beta")
-            await pilot.pause(0.4)  # the 0.1s flush timer fires
-            assert app._md_pending == ""
-            mds = [w for w in app.query_one("#feed").children if isinstance(w, _tui.PlainMarkdown)]
-            assert len(mds) == 1
-            assert "alphabeta" in mds[0]._markdown
+            await pilot.pause(0.4)  # the 0.12s spinner tick flushes
+            assert block.source == "alphabeta"
+            assert not block.dirty
+            assert "alphabeta" in "".join(s.text for s in block.lines)
 
             post("assistant_end")
             await pilot.pause(0.2)
-            assert app._md_stream is None and app._md_pending == ""
+            assert app._md_block is None
+
+    asyncio.run(run())
+
+
+def test_the_feed_is_a_single_widget_with_no_children() -> None:
+    """The Line API contract: content lives in blocks, never in child widgets."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            for i in range(50):
+                app._note(f"line {i}")
+            await pilot.pause(0.3)
+            feed = app.query_one("#feed")
+            assert len(feed.children) == 0, "the virtual feed must not accumulate children"
+            assert feed._total >= 50
 
     asyncio.run(run())
 

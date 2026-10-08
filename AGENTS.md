@@ -319,10 +319,17 @@ fallback: if Textual will not start, nothing interactive starts. Single-query mo
 (`son-of-anton "..."`, `-q`) bypasses the front-end entirely.
 
 - `son_of_anton_tui/tui.py` — the `SonOfAntonTUIApp` (Textual `App`) and its
-  widgets: transcript column, 42-column sidebar, `PromptArea` (with `PromptHistory`
-  for ↑ recall), `Wordmark`, `UserTurn`, `ToolLine`, `ReasoningBlock`
-  (collapsible), `ChoiceModal`/`MultiChoiceModal`/`TextModal`, and
-  `SlashProvider` (autocomplete). `run_app(backend)` starts it.
+  widgets: the virtual transcript (see `son_of_anton_tui/feed.py`), the 42-column
+  sidebar, `PromptArea` (with `PromptHistory` for ↑ recall),
+  `ChoiceModal`/`MultiChoiceModal`/`TextModal`, and `SlashProvider`
+  (autocomplete). `run_app(backend)` starts it.
+- `son_of_anton_tui/feed.py` — `VirtualFeed`, the transcript as a Textual Line
+  API widget (`ScrollView` + `render_line`): blocks of content (user turns,
+  ANSI note lines, tool rows, reasoning, markdown) rendered to line strips,
+  painted per viewport so the frame cost is O(visible lines) regardless of
+  session length — the marathon-session fix. Markdown renders through the
+  `gfm-like` markdown-it preset in the fork's plain aesthetic (no syntax
+  rainbow), with tables realigned by the shared `realign_markdown_tables`.
 - `son_of_anton_tui/backend.py` — `TextualBackend(SonOfAntonCLI)`: owns the
   session state, routes slash commands to `process_command()`, and bridges the
   agent loop into the TUI. `_apply_tui_skin_style()` re-resolves the palette

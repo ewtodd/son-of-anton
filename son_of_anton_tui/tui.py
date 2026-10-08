@@ -43,19 +43,18 @@ try:
     from textual.binding import Binding
     from textual.command import DiscoveryHit, Hit, Hits, Provider
     from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-    from textual.content import Content
     from textual.message import Message
     from textual.screen import ModalScreen
     from textual.widgets import (
-        Collapsible,
         Input,
-        Markdown,
         OptionList,
         SelectionList,
         Static,
         TextArea,
     )
     from textual.widgets.option_list import Option
+
+    from son_of_anton_tui.feed import FeedStyle, VirtualFeed
 
     _TEXTUAL_AVAILABLE = True
 except Exception:  # pragma: no cover - import-time guard
@@ -66,11 +65,11 @@ except Exception:  # pragma: no cover - import-time guard
     Binding = None  # type: ignore
     DiscoveryHit = Hit = Hits = Provider = None  # type: ignore
     Container = Horizontal = Vertical = VerticalScroll = None  # type: ignore
-    Content = None  # type: ignore
     Message = None  # type: ignore
     ModalScreen = None  # type: ignore
-    Collapsible = Input = Markdown = OptionList = SelectionList = Static = TextArea = None  # type: ignore
+    Input = OptionList = SelectionList = Static = TextArea = None  # type: ignore
     Option = None  # type: ignore
+    FeedStyle = VirtualFeed = None  # type: ignore
     _TEXTUAL_AVAILABLE = False
 
 _DEFAULT_AGENT = "Son of Anton Agent"
@@ -85,15 +84,6 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # opencode gives each tool a one-glyph icon in a two-cell column
 # (INLINE_TOOL_ICON_WIDTH), so labels align no matter the tool.
-TOOL_ICON_WIDTH = 2
-
-# The transcript is one widget per row and Textual lays out every child of the
-# scroll container on every pass, so the frame cost scales with the row count.
-# Trim the oldest rows past this cap; the session store keeps the real history.
-_MAX_FEED_WIDGETS = 1500
-# Consecutive ANSI lines merge into one NoteLine block; cap the merge so a
-# flood of output re-renders a bounded block rather than an ever-growing one.
-_NOTE_MERGE_MAX_LINES = 100
 _TOOL_ICONS = {
     "terminal": "$",
     "execute_code": "$",
@@ -148,6 +138,12 @@ def _skin_accent(key: str, default: str) -> str:
         return _to_ansi(get_active_skin().get_color(key, ""), default)
     except Exception:
         return default
+
+
+def _rich_color(value: str) -> str:
+    """Map a Textual ansi_<name> token onto the rich basic colour of the same name."""
+    token = _to_ansi(value, "")
+    return token[5:] if token.startswith("ansi_") else token
 
 
 def _polarity(colors: Any = None) -> str:
@@ -346,19 +342,6 @@ def is_available() -> bool:
 
 if _TEXTUAL_AVAILABLE:
     from rich.text import Text
-    from textual.widgets._markdown import MarkdownFence  # type: ignore
-
-    class _PlainFence(MarkdownFence):
-        """A fenced code block rendered as plain text (no syntax highlighting)."""
-
-        @classmethod
-        def highlight(cls, code: str, language: str, ansi: bool = False, dark: bool = False) -> Content:
-            return Content(code)
-
-    class PlainMarkdown(Markdown):
-        """Markdown that renders fenced code without syntax highlighting."""
-
-        BLOCKS = {**Markdown.BLOCKS, "fence": _PlainFence, "code_block": _PlainFence}
 
     # ------------------------------------------------------------------
     # Messages
@@ -482,154 +465,6 @@ if _TEXTUAL_AVAILABLE:
             self.text = entry
             self.move_cursor(self.document.end)
             return True
-
-    # ------------------------------------------------------------------
-    # Feed widgets
-    # ------------------------------------------------------------------
-    class Wordmark(Static):
-        """The ASCII wordmark, sized from the width it is actually given.
-
-        Choosing the variant from outside is unreliable: an app-level resize
-        handler runs before the new layout exists, so it sees the old width and
-        can leave a 109-column form in a 108-column feed, which wraps into
-        rubble. The widget's own resize fires after layout with its real width,
-        scrollbar already deducted.
-        """
-
-        def __init__(self, **kw: Any) -> None:
-            super().__init__("", **kw)
-            self._art_width = -1
-
-        def on_resize(self, event: events.Resize) -> None:
-            self.fit(event.size.width)
-
-        def fit(self, width: int) -> None:
-            if width <= 0 or width == self._art_width:
-                return
-            self._art_width = width
-            lines = _wordmark_for_width(width).splitlines()
-            if not lines:
-                self.update("")
-                return
-            pad = max(0, (width - max(len(line) for line in lines)) // 2)
-            self.update("\n".join(f"{' ' * pad}{line}" for line in lines))
-
-    class UserTurn(Static):
-        """The user's message: an accent rail, bold text."""
-
-    class NoteLine(Static):
-        """Chrome / command output / ANSI lines from the classic CLI."""
-
-        def __init__(self, renderable: Any = "", *, muted: bool = False, **kw: Any) -> None:
-            super().__init__(renderable, **kw)
-            self.text: Optional[Text] = renderable if isinstance(renderable, Text) else None
-            self.line_count = 1
-            self._pending: list = []
-            self._dirty = False
-            if muted:
-                self.add_class("muted")
-
-        def append_line(self, line: Text) -> bool:
-            """Fold another line into this block (only for Text-backed blocks).
-
-            The merge is deferred to :meth:`flush` so a flood of lines costs one
-            re-render per frame instead of one per line.
-            """
-            if self.text is None:
-                return False
-            self._pending.append(line)
-            self._dirty = True
-            self.line_count += 1
-            return True
-
-        def flush(self) -> None:
-            """Fold pending lines into the rendered content (idempotent)."""
-            if not self._dirty:
-                return
-            self._dirty = False
-            merged = self.text
-            if self._pending:
-                merged = merged.copy()
-                for line in self._pending:
-                    merged.append("\n")
-                    merged.append_text(line)
-                self._pending = []
-                self.text = merged
-            self.update(merged)
-
-    class ToolLine(Static):
-        """One tool call, in opencode's inline shape.
-
-        A two-cell icon column then the label: a spinner sits in that column
-        while the call runs and is replaced by the tool's glyph when it lands,
-        so a row never reflows between the two states.
-        """
-
-        def __init__(self, label: str, icon: str = "⚙", **kw: Any) -> None:
-            super().__init__("", **kw)
-            self.label = label
-            self.icon = icon
-            self.started = time.monotonic()
-            self.done = False
-            self.add_class("running")
-
-        def _row(self, lead: str, label: str, trailing: str = "") -> Text:
-            row = Text()
-            row.append(lead.ljust(TOOL_ICON_WIDTH))
-            row.append(label)
-            if trailing:
-                row.append(trailing, style="dim")
-            row.no_wrap = True
-            row.overflow = "ellipsis"
-            return row
-
-        def render_running(self, frame: str) -> None:
-            elapsed = time.monotonic() - self.started
-            self.update(self._row(frame, self.label, f"  {elapsed:.0f}s" if elapsed >= 1 else ""))
-
-        def finish(self, label: str, is_error: bool, duration: float = 0.0) -> None:
-            self.done = True
-            self.remove_class("running")
-            if is_error:
-                self.add_class("error")
-            self.update(
-                self._row(
-                    "✗" if is_error else self.icon,
-                    label or self.label,
-                    f"  {duration:.1f}s" if duration else "",
-                )
-            )
-
-    class ReasoningBlock(Collapsible):
-        """Model reasoning: expanded while it streams, folded once the answer starts."""
-
-        def __init__(self, **kw: Any) -> None:
-            # markup=False: reasoning is the model's prose, and Textual's
-            # content markup would try to parse any "[" in it — a stray
-            # bracket used to take the whole app down with a MarkupError.
-            self._body = Static("", classes="reasoning-body", markup=False)
-            self._buffer = ""
-            self._dirty = False
-            super().__init__(self._body, title="reasoning", collapsed=False, **kw)
-
-        def append(self, text: str) -> None:
-            self._buffer += text
-            self._dirty = True
-
-        def flush(self) -> None:
-            if self._dirty:
-                self._dirty = False
-                self._body.update(self._buffer.strip())
-
-        def finish(self) -> None:
-            self.flush()
-            lines = len(self._buffer.strip().splitlines())
-            self.title = f"reasoning · {lines} line{'s' if lines != 1 else ''}"
-            self.collapsed = True
-
-    # Blocks that always earn a blank line before whatever follows them —
-    # opencode keeps the same set in `alwaysSeparate`.
-    _ALWAYS_SEPARATE = (UserTurn, PlainMarkdown, ReasoningBlock)
 
     # ------------------------------------------------------------------
     # Modals
@@ -877,46 +712,15 @@ if _TEXTUAL_AVAILABLE:
         Horizontal#split { width: 1fr; height: 1fr; }
         Vertical#content { width: 1fr; padding: 0 2 1 2; }
 
-        VerticalScroll#feed {
-            width: 1fr; height: 1fr; margin-bottom: 1;
+        /* The transcript is the virtual feed: a Line API widget with no
+           children, so there is nothing to style inside it — blocks carry
+           their own rich styles (see son_of_anton_tui/feed.py). */
+        #feed {
+            width: 1fr; height: 1fr; margin-bottom: 1; overflow-x: hidden;
             scrollbar-size-vertical: 1;
             scrollbar-color: $text-muted; scrollbar-color-hover: $primary; scrollbar-color-active: $primary;
             scrollbar-background: transparent;
         }
-        #feed .wordmark {
-            text-style: bold; color: $primary; margin: 1 0 0 0; width: 1fr;
-            /* block letters must clip, never wrap: a wrapped line is rubble */
-            text-wrap: nowrap; overflow-x: hidden;
-        }
-        #feed .intro { color: $text-muted; margin: 0 0 1 0; padding: 0 0 0 3; }
-
-        /* opencode UserMessage: left rail in the agent colour, padding 1/0/1/2,
-           filled with the generated panel surface. */
-        #feed UserTurn { margin-top: 1; padding: 1 0 1 2; border-left: wide $primary; background: $panel; }
-        /* opencode indents transcript text to column 3; inline tool rows keep
-           their icon in the two columns left of it. */
-        #feed NoteLine { padding: 0 0 0 3; }
-        #feed NoteLine.muted { color: $text-muted; }
-        #feed NoteLine.command { color: $text-muted; margin-top: 1; }
-        /* opencode InlineTool: a 2-cell icon column, then the label. */
-        #feed ToolLine { color: $text-muted; }
-        #feed ToolLine.running { color: $text; }
-        #feed ToolLine.error { color: $error; }
-
-        #feed PlainMarkdown { background: transparent; margin: 1 0 0 0; padding: 0 0 0 3; }
-        #feed MarkdownH1, #feed MarkdownH2, #feed MarkdownH3, #feed MarkdownH4 {
-            background: transparent; color: $primary; text-style: bold; content-align: left middle; margin: 1 0 0 0;
-        }
-        #feed MarkdownFence { background: transparent; color: $text; border-left: outer $text-muted 40%; padding: 0 1; margin: 1 0; }
-        #feed MarkdownBlockQuote { background: transparent; border-left: outer $secondary; }
-        #feed MarkdownHorizontalRule { border-bottom: solid $text-muted; }
-
-        #feed ReasoningBlock { background: transparent; border: none; padding: 0; margin: 1 0 0 0; }
-        #feed ReasoningBlock > CollapsibleTitle { color: $secondary; background: transparent; padding: 0 0 0 3; }
-        #feed ReasoningBlock > CollapsibleTitle:hover { background: transparent; text-style: bold; }
-        #feed ReasoningBlock > CollapsibleTitle:focus { background: transparent; text-style: bold; }
-        #feed ReasoningBlock > Contents { padding: 0 0 0 5; }
-        #feed .reasoning-body { color: $secondary; }
 
         /* The dock: completion popup, the prompt block, then the status row. */
         #dock { height: auto; }
@@ -1023,17 +827,11 @@ if _TEXTUAL_AVAILABLE:
             self._status = "ready"
             self._busy: Optional[str] = None
             self._sidebar_forced: Optional[bool] = None
-            self._md: Optional[PlainMarkdown] = None
-            self._md_stream: Any = None
-            self._md_pending = ""
-            self._md_flush_scheduled = False
-            self._reasoning: Optional[ReasoningBlock] = None
-            self._note_block: Optional[NoteLine] = None
-            self._note_lines = 0
-            self._trim_marker: Optional[NoteLine] = None
-            self._tool_gen_line: Optional[ToolLine] = None
-            self._tool_lines: dict[str, list[ToolLine]] = {}
-            self._running_tools: list[ToolLine] = []
+            self._md_block: Optional[Any] = None
+            self._reasoning: Optional[Any] = None
+            self._tool_gen_line: Optional[Any] = None
+            self._tool_lines: dict[str, list[Any]] = {}
+            self._running_tools: list[Any] = []
             self._refresh_scheduled = False
             self._modal_open = False
             self._serviced: dict[str, Any] = {}  # attr -> the state object already shown
@@ -1075,9 +873,7 @@ if _TEXTUAL_AVAILABLE:
         def compose(self) -> ComposeResult:
             with Horizontal(id="split"):
                 with Vertical(id="content"):
-                    with VerticalScroll(id="feed"):
-                        yield Wordmark(id="wordmark", classes="wordmark")
-                        yield Static("", id="intro", classes="intro")
+                    yield VirtualFeed(self._feed_style())
                     with Vertical(id="dock"):
                         yield OptionList(id="completer")
                         with Vertical(id="prompt-frame"):
@@ -1130,7 +926,7 @@ if _TEXTUAL_AVAILABLE:
             return line
 
         def on_mount(self) -> None:
-            self._feed = self.query_one("#feed", VerticalScroll)
+            self._feed = self.query_one("#feed", VirtualFeed)
             self._prompt = self.query_one("#input", PromptArea)
             self._prompt.prompt_history = PromptHistory(getattr(self.backend, "_history_file", None))
             self._completer = self.query_one("#completer", OptionList)
@@ -1178,6 +974,10 @@ if _TEXTUAL_AVAILABLE:
             self._show_wordmark()
             if self.backend is not None:
                 self.backend.set_feed_width(self._feed_inner_width())
+            try:
+                self._feed.set_width(self._feed_inner_width())
+            except Exception:
+                pass
 
         def _wide(self, width: Optional[int] = None) -> bool:
             return (self.size.width if width is None else width) > SIDEBAR_THRESHOLD
@@ -1222,10 +1022,19 @@ if _TEXTUAL_AVAILABLE:
             except Exception:
                 pass
 
+        def _feed_style(self) -> FeedStyle:
+            """Transcript rich-style tokens, resolved from the active skin."""
+            return FeedStyle(
+                primary=_rich_color(_skin_accent("ui_accent", "ansi_yellow")),
+                secondary=_rich_color(_skin_accent("ui_thinking", "ansi_cyan")),
+                error=_rich_color(_skin_accent("ui_error", "ansi_red")),
+                panel=self._surfaces.get("panel", ""),
+            )
+
         def _show_wordmark(self) -> None:
             """Nudge the wordmark to re-fit (it sizes itself on its own resize)."""
             try:
-                self.query_one("#wordmark", Wordmark).fit(self._feed_inner_width())
+                self._feed.set_wordmark(_wordmark_for_width(self._feed_inner_width()))
             except Exception:
                 pass
 
@@ -1249,7 +1058,7 @@ if _TEXTUAL_AVAILABLE:
             text = Text("  ·  ".join(parts), style="dim")
             text.append("\n/help for commands · ctrl+p for the palette · :q to quit", style="dim")
             try:
-                self.query_one("#intro", Static).update(text)
+                self._feed.set_intro(text)
             except Exception:
                 pass
 
@@ -1287,117 +1096,20 @@ if _TEXTUAL_AVAILABLE:
             self._log_handlers = []
 
         # ---------------- feed helpers ----------------
-        def _mount(self, widget: Any) -> None:
-            """Mount a transcript row, separating it from a block above it.
-
-            opencode's rule (``setPreLayoutSiblingMargin`` + ``alwaysSeparate``):
-            a row gets a blank line above it when the previous sibling was a
-            block, or was taller than one line. Consecutive one-line tool rows
-            stay tight; anything following a user message, an answer or a
-            reasoning block gets air.
-            """
-            previous = None
-            for child in reversed(self._feed.children):
-                if child.id in ("wordmark", "intro"):
-                    break
-                previous = child
-                break
-            if previous is not None and not isinstance(widget, _ALWAYS_SEPARATE):
-                separate = isinstance(previous, _ALWAYS_SEPARATE)
-                if not separate and isinstance(previous, NoteLine):
-                    separate = previous.line_count > 1
-                if separate:
-                    widget.styles.margin = (1, 0, 0, 0)
-            # Anything that isn't another chrome line ends the run of lines a
-            # NoteLine is merging, so the merge can't reach across a block.
-            if not isinstance(widget, NoteLine):
-                self._reset_note_block()
-            self._feed.mount(widget)
-            self._trim_feed()
-
         def _reset_note_block(self) -> None:
-            block = self._note_block
-            self._note_block = None
-            self._note_lines = 0
-            if block is not None:
-                block.flush()
-
-        def _trim_feed(self) -> None:
-            """Drop the oldest transcript rows once the feed passes a widget cap.
-
-            Textual lays out every child of the scroll container on every pass,
-            so the frame cost scales with the row count.  Trimming keeps long
-            sessions lively without touching the session store; a marker records
-            the drop so the gap at the top is not mistaken for a new session.
-            """
-            if len(self._feed.children) <= _MAX_FEED_WIDGETS:
-                return
-            marker = getattr(self, "_trim_marker", None)
-            if marker is not None:
-                try:
-                    marker.remove()
-                except Exception:
-                    pass
-                self._trim_marker = None
-
-            protected = {
-                id(self._md),
-                id(self._reasoning),
-                id(self._tool_gen_line),
-                id(self._note_block),
-            }
-            protected.update(id(row) for row in self._running_tools)
-            for rows in self._tool_lines.values():
-                protected.update(id(row) for row in rows)
-
-            # `remove()` posts a Prune message, so the DOM count does not shrink
-            # inside this loop — count our own removals against the excess.
-            floor = _MAX_FEED_WIDGETS * 3 // 4
-            excess = len(self._feed.children) - floor
-            removed = 0
-            for child in list(self._feed.children):
-                if removed >= excess:
-                    break
-                if child.id in ("wordmark", "intro") or id(child) in protected:
-                    continue
-                if getattr(child, "done", True) is False:
-                    continue
-                child.remove()
-                removed += 1
-
-            marker = NoteLine(Text("⋯ earlier transcript trimmed — session history is preserved", style="dim"))
-            anchor = None
-            for child in self._feed.children:
-                if child.id in ("wordmark", "intro"):
-                    continue
-                anchor = child
-                break
-            if anchor is not None:
-                self._feed.mount(marker, before=anchor)
-            else:
-                self._feed.mount(marker)
-            self._trim_marker = marker
+            self._feed.reset_note()
 
         def _note(self, text: str, *, muted: bool = False) -> None:
-            """Append one ANSI/plain line, merging consecutive lines into one block."""
+            """Append one ANSI/plain line, merging consecutive lines into a block."""
             if not text.strip():
                 return
             rich = Text.from_ansi(text.rstrip())
             if muted:
                 rich.stylize("dim")
-            if self._note_block is not None and self._note_lines < _NOTE_MERGE_MAX_LINES:
-                if self._note_block.append_line(rich):
-                    self._note_lines += 1
-                    return
-            if self._note_block is not None:
-                self._note_block.flush()
-            block = NoteLine(rich)
-            self._mount(block)
-            self._note_block = block
-            self._note_lines = 1
+            self._feed.add_note(rich)
 
         def _add_user_turn(self, text: str) -> None:
-            self._mount(UserTurn(Text(text)))
+            self._feed.add_user(text)
             self._transcript_scroll()
 
         def _transcript_scroll(self) -> None:
@@ -1418,9 +1130,13 @@ if _TEXTUAL_AVAILABLE:
             self._schedule_refresh()
 
         def _ev_restyle(self) -> None:
-            """/skin changed the accents — re-resolve the CSS variables."""
+            """/skin changed the accents — re-resolve CSS and transcript styles."""
             try:
                 self.refresh_css()
+            except Exception:
+                pass
+            try:
+                self._feed.restyle(self._feed_style())
             except Exception:
                 pass
             self._schedule_refresh()
@@ -1434,7 +1150,7 @@ if _TEXTUAL_AVAILABLE:
             if isinstance(renderable, Text) and not renderable.plain.strip():
                 return
             self._reset_note_block()
-            self._mount(NoteLine(renderable))
+            self._feed.add_rich(renderable)
 
         async def _ev_compaction(self, text: str = "", stats: Optional[dict] = None) -> None:
             """opencode's compaction entry: a titled rule, then what the model now remembers."""
@@ -1442,67 +1158,36 @@ if _TEXTUAL_AVAILABLE:
 
             if not (text or "").strip():
                 return
-            await self._close_assistant()
+            self._close_assistant()
             self._reset_note_block()
-            self._mount(NoteLine(Rule(title="Compaction", style="dim")))
-            self._mount(PlainMarkdown(text))
+            self._feed.add_rich(Rule(title="Compaction", style="dim"))
+            self._feed.add_markdown(text)
             line = _compaction_stats_line(stats or {})
             if line:
-                self._mount(NoteLine(Text(line, style="dim"), muted=True))
+                self._feed.add_rich(Text(line, style="dim"))
             self._transcript_scroll()
 
-        async def _ev_assistant_start(self) -> None:
-            await self._close_assistant()
-            self._reset_note_block()
-            self._md = PlainMarkdown("")
-            await self._feed.mount(self._md)
-            self._md_stream = Markdown.get_stream(self._md)
+        def _ev_assistant_start(self) -> None:
+            self._close_assistant()
+            self._md_block = self._feed.open_markdown()
 
-        async def _ev_assistant_delta(self, text: str = "") -> None:
+        def _ev_assistant_delta(self, text: str = "") -> None:
             if not text:
                 return
-            if self._md_stream is None:
-                await self._ev_assistant_start()
+            if self._md_block is None:
+                self._ev_assistant_start()
             self._transcript += text
-            # Every MarkdownStream.write costs one append, and append re-parses
-            # and re-mounts blocks; the backend emits per line, so batch the
-            # deltas on a short timer to cut appends an order of magnitude.
-            self._md_pending += text
-            if not self._md_flush_scheduled:
-                self._md_flush_scheduled = True
-                self.set_timer(0.1, self._flush_md_pending)
+            self._md_block.append(text)
 
-        async def _flush_md_pending(self) -> None:
-            """Write the buffered assistant deltas to the markdown stream."""
-            self._md_flush_scheduled = False
-            pending, self._md_pending = self._md_pending, ""
-            stream = self._md_stream
-            if pending and stream is not None:
-                await stream.write(pending)
+        def _ev_assistant_end(self) -> None:
+            self._close_assistant()
 
-        async def _ev_assistant_end(self) -> None:
-            await self._close_assistant()
-
-        async def _close_assistant(self) -> None:
-            stream, self._md_stream = self._md_stream, None
-            self._md = None
-            pending, self._md_pending = self._md_pending, ""
-            if pending and stream is not None:
-                try:
-                    await stream.write(pending)
-                except Exception:
-                    pass
-            if stream is not None:
-                try:
-                    await stream.stop()
-                except Exception:
-                    pass
+        def _close_assistant(self) -> None:
+            self._md_block = None
 
         def _ev_reasoning_start(self) -> None:
             self._finish_reasoning()
-            self._reset_note_block()
-            self._reasoning = ReasoningBlock()
-            self._mount(self._reasoning)
+            self._reasoning = self._feed.open_reasoning()
 
         def _ev_reasoning_delta(self, text: str = "") -> None:
             if self._reasoning is None:
@@ -1516,29 +1201,26 @@ if _TEXTUAL_AVAILABLE:
             block, self._reasoning = self._reasoning, None
             if block is not None:
                 block.finish()
+                self._feed.changed(block)
 
         def _ev_tool_gen(self, name: str = "") -> None:
-            self._reset_note_block()
-            line = ToolLine(f"Preparing {name}…", _tool_icon(name))
+            line = self._feed.open_tool(name)
+            line.frame = _SPINNER[self._spin]
+            line.dirty = True
             self._tool_gen_line = line
-            self._mount(line)
-            line.render_running(_SPINNER[self._spin])
 
         def _ev_tool_start(self, name: str = "", label: str = "", hidden: bool = False) -> None:
-            self._reset_note_block()
             line = self._tool_gen_line
             self._tool_gen_line = None
             if hidden:
                 if line is not None:
-                    line.remove()
+                    self._feed.remove_block(line)
                 return
             if line is None:
-                line = ToolLine(label or name, _tool_icon(name))
-                self._mount(line)
-            else:
-                line.label = label or name
-                line.icon = _tool_icon(name)
-            line.render_running(_SPINNER[self._spin])
+                line = self._feed.open_tool(name)
+            line.label = label or name
+            line.icon = _tool_icon(name)
+            line.dirty = True
             self._tool_lines.setdefault(name, []).append(line)
             self._running_tools.append(line)
 
@@ -1559,28 +1241,29 @@ if _TEXTUAL_AVAILABLE:
                 self._running_tools.remove(row)
             if hidden:
                 if row is not None:
-                    row.remove()
+                    self._feed.remove_block(row)
                 return
             if row is None:
                 if not (label or line):
                     return
-                row = ToolLine(label or name, _tool_icon(name))
-                self._reset_note_block()
-                self._mount(row)
-            row.finish(label, is_error, duration)
+                row = self._feed.open_tool(name)
+            row.finish(_tool_icon(name), label or name, is_error, duration)
+            self._feed.changed(row)
 
-        async def _ev_turn_end(self) -> None:
-            await self._close_assistant()
+        def _ev_turn_end(self) -> None:
+            self._close_assistant()
             self._finish_reasoning()
             if self._tool_gen_line is not None:
-                self._tool_gen_line.remove()
+                self._feed.remove_block(self._tool_gen_line)
                 self._tool_gen_line = None
             for row in self._running_tools:
                 if not row.done:
-                    row.finish("", False, time.monotonic() - row.started)
+                    row.finish(row.icon, row.label, False, time.monotonic() - row.started)
+                    self._feed.changed(row)
             self._running_tools.clear()
             self._tool_lines.clear()
             self._reset_note_block()
+            self._feed.flush()
 
         # ---------------- chrome ----------------
         def _schedule_refresh(self) -> None:
@@ -1591,12 +1274,13 @@ if _TEXTUAL_AVAILABLE:
 
         def _tick_spinner(self) -> None:
             self._spin = (self._spin + 1) % len(_SPINNER)
-            if self._reasoning is not None:
-                self._reasoning.flush()
-            if self._note_block is not None:
-                self._note_block.flush()
             for row in self._running_tools:
-                row.render_running(_SPINNER[self._spin])
+                row.frame = _SPINNER[self._spin]
+                row.dirty = True
+            if self._tool_gen_line is not None:
+                self._tool_gen_line.frame = _SPINNER[self._spin]
+                self._tool_gen_line.dirty = True
+            self._feed.flush()
             if self._busy:
                 self._update_status()
 
@@ -2094,7 +1778,7 @@ if _TEXTUAL_AVAILABLE:
                 return
             if _cli._looks_like_slash_command(value) or value in (":q", ":quit"):
                 self._reset_note_block()
-                self._mount(NoteLine(Text(f"⚙ {value}"), classes="command"))
+                self._feed.add_rich(Text(f"⚙ {value}", style="dim"))
                 self._transcript_scroll()
                 keep_going = await self._run_in_worker("command", partial(backend.run_slash, value))
                 if keep_going is False:
@@ -2109,7 +1793,7 @@ if _TEXTUAL_AVAILABLE:
                 return
             if value.startswith("!"):
                 self._reset_note_block()
-                self._mount(NoteLine(Text(value), classes="command"))
+                self._feed.add_rich(Text(value, style="dim"))
                 handled = await self._run_in_worker("shell", partial(backend.handle_bang_shell, value))
                 if handled:
                     await self._after_dispatch()
@@ -2247,15 +1931,11 @@ if _TEXTUAL_AVAILABLE:
                 prompt.focus()
 
         def on_text_selected(self, event: events.TextSelected) -> None:
-            """Click-and-highlight auto-copies, with a "copied" toast.
+            """Native Textual selection (sidebar, dialogs) auto-copies.
 
-            Textual's native mouse selection is already active (feed widgets
-            are selectable by default) and it posts ``TextSelected`` on
-            mouse-up — but it stops there and makes the user hit ctrl+c.
-            Mirroring what terminals do out of the box, we copy the
-            selection to the system clipboard (``copy_to_clipboard`` writes
-            OSC 52) and surface a short toast. A plain click yields no
-            selection, so this is a no-op.
+            The transcript itself selects through the virtual feed, which posts
+            ``VirtualFeed.TextCopied`` instead — a Line API widget has no
+            children for Textual's selection machinery to walk.
             """
             try:
                 selected = self.screen.get_selected_text()
@@ -2265,6 +1945,20 @@ if _TEXTUAL_AVAILABLE:
                 return
             self.copy_to_clipboard(selected)
             self.notify(f"copied {len(selected.strip())} chars", timeout=1.5)
+
+        @on(VirtualFeed.TextCopied)
+        def _copy_selection(self, event: VirtualFeed.TextCopied) -> None:
+            """The virtual feed's drag-selection released with content: copy it.
+
+            Mirroring what terminals do out of the box, the selection lands on
+            the system clipboard (``copy_to_clipboard`` writes OSC 52) with a
+            short toast. A plain click yields no selection, so no message.
+            """
+            try:
+                self.copy_to_clipboard(event.text)
+            except Exception:
+                pass
+            self.notify(f"copied {len(event.text.strip())} chars", timeout=1.5)
 
         # ---------------- actions ----------------
         def action_interrupt_or_quit(self) -> None:
@@ -2292,12 +1986,7 @@ if _TEXTUAL_AVAILABLE:
                 self.backend.interrupt_turn()
 
         def action_clear_feed(self) -> None:
-            for w in list(self._feed.children):
-                if w.id in ("wordmark", "intro"):
-                    continue
-                w.remove()
-            self._trim_marker = None
-            self._reset_note_block()
+            self._feed.clear()
             self._transcript = ""
 
         def run_suspended(self, fn: Any) -> Any:
@@ -2373,7 +2062,7 @@ if _TEXTUAL_AVAILABLE:
                 content = (content or "").strip()
                 if msg.get("role") == "user":
                     if content:
-                        self._mount(UserTurn(Text(content)))
+                        self._feed.add_user(content)
                 else:
                     try:
                         import cli as _cli
@@ -2382,18 +2071,17 @@ if _TEXTUAL_AVAILABLE:
                     except Exception:
                         pass
                     if content:
-                        self._mount(PlainMarkdown(content))
+                        self._feed.add_markdown(content)
                     for call in msg.get("tool_calls") or []:
                         name = (call.get("function") or {}).get("name") if isinstance(call, dict) else None
                         if name:
-                            row = ToolLine(name, _tool_icon(name))
-                            self._mount(row)
-                            row.finish(name, False)
+                            row = self._feed.open_tool(name)
+                            row.finish(_tool_icon(name), name, False, 0.0)
+                            self._feed.changed(row)
             self._reset_note_block()
 
 else:
     SonOfAntonTUIApp = None  # type: ignore
-    PlainMarkdown = None  # type: ignore
     PromptArea = None  # type: ignore
 
 

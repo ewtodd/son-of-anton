@@ -54,13 +54,13 @@ screenshots. What we mirror, and where it comes from:
 | row of main column + 42-col sidebar; column holds `paddingLeft/Right 2, paddingBottom 1, gap 1` | `#split` → `#content` (padding `0 2 1 2`) + `#context` |
 | sidebar visible when `sidebarOpen || (auto && width > 120)`; **overlays** the content when narrow rather than disappearing | same threshold; `.overlay` class docks it to the right layer |
 | sidebar: bold title, muted session id, workspace, and the product + version pinned at the bottom | same, with our context/usage detail as a middle block |
-| `TextPart` indents markdown by 3 | `#feed PlainMarkdown { padding-left: 3 }` |
-| `UserMessage`: left rail in the agent colour, padding `1 0 1 2` | `UserTurn` with `border-left: wide $primary` |
-| `InlineTool`: 2-cell icon column then the label; spinner occupies that column while running | `ToolLine`, icons per tool (`$` shell, `→` read, `✱` search, `◈` web, `←` write) |
+| `TextPart` indents markdown by 3 | feed blocks pad 3 (`_pad` in `son_of_anton_tui/feed.py`) |
+| `UserMessage`: left rail in the agent colour, padding `1 0 1 2` | user block: 1-cell primary rail + 2 spaces, on the panel surface |
+| `InlineTool`: 2-cell icon column then the label; spinner occupies that column while running | tool blocks, icons per tool (`$` shell, `→` read, `✱` search, `◈` web, `←` write) |
 | `Prompt`: left rail, textarea, then a meta row of `agent · model provider` | `#prompt-frame` + `#prompt-meta` |
 | status row under the prompt: working directory when idle / spinner + action when busy, with usage and shortcut hints right-aligned | `#statusline` (`#status-left` / `#status-right`) |
 | spinner frames `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | identical |
-| `setPreLayoutSiblingMargin` + `alwaysSeparate`: a row gets a blank line above it when the previous sibling was a block or was multi-line | the same rule, applied when a row is mounted |
+| `setPreLayoutSiblingMargin` + `alwaysSeparate`: a row gets a blank line above it when the previous sibling was a block or was multi-line | the same rule, as `before` blank lines on the next block (feed `_separate`) |
 | `generateSystem` derives panel/element surfaces from the queried terminal background | `palette.py` → `$panel` / `$surface` |
 
 **Surfaces follow the terminal too.** opencode's "system" theme does not settle

@@ -57,6 +57,11 @@ dependencies = [
   # with no subcommand launches it, so it is a core dependency rather than an
   # extra. It replaced the prompt_toolkit REPL, which is gone.
   "textual==8.2.8",
+  # The virtual transcript feed (son_of_anton_tui/feed.py) parses model
+  # markdown with the same "gfm-like" preset Textual's Markdown widget uses.
+  # Was a transitive of textual; promoted to direct the moment the TUI imports
+  # it itself.
+  "markdown-it-py==4.0.0",
   # ``packaging`` is imported directly on three production paths but was never
   # declared, so it only reached users transitively (pip/uv pull it for other
   # tools). The slim official Docker image ships without it, where the

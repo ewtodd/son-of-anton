@@ -12,14 +12,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-setuptools = false
-pillow = false
 aiohttp = false
 cryptography = false
+h2 = false
+huggingface-hub = false
 mcp = false
 nemo-relay = false
-huggingface-hub = false
-h2 = false
+pillow = false
+setuptools = false
 
 [manifest]
 overrides = [{ name = "pynacl", specifier = ">=1.6,<1.7" }]
@@ -2232,6 +2232,7 @@ dependencies = [
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "markdown" },
+    { name = "markdown-it-py" },
     { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')" },
     { name = "openai" },
     { name = "packaging" },
@@ -2340,6 +2341,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'mcp'", specifier = "==2.7.0" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "markdown", specifier = "==3.10.2" },
+    { name = "markdown-it-py", specifier = "==4.0.0" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==2.0.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.0.0" },
     { name = "mem0ai", marker = "extra == 'mem0'", specifier = "==2.0.10" },
