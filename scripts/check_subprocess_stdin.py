@@ -107,7 +107,6 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
             continue
 
         # Collect the full call (may span multiple lines).
-        call_start = i
         paren_depth = 0
         found_open = False
         call_lines = []

@@ -6026,7 +6026,6 @@ def _get_pre_tool_call_directive_details(
         middleware_trace=list(middleware_trace or []),
     )
 
-    block_msg: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
 
     for result in hook_results:

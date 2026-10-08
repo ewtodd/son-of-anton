@@ -1018,11 +1018,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
 
-    if availability is None:
-        availability = compute_toolset_availability(enabled_toolsets)
-    unavailable_toolsets = availability.get("unavailable_toolsets", [])
-    lazy_tools = set(availability.get("lazy_tools", []))
-    disabled_tools = set(availability.get("disabled_tools", []))
     _enabled_ts = {str(t) for t in enabled_toolsets}
 
     # Single centred column. The old two-column grid existed to park the
@@ -1034,7 +1029,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "yellow")
     dim = _skin_color("banner_dim", "dim yellow")
-    text = _skin_color("banner_text", "default")
     session_color = _skin_color("session_border", "default")
 
     # A skin may still supply hero art; the built-in diamond cluster is gone.

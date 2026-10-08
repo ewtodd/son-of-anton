@@ -108,7 +108,6 @@ def finalize_turn(
         and budget_fallback_eligible
     )
 
-    iteration_limit_fallback = False
     preserved_verification_fallback = False
     if continuation_budget_exhausted:
         # A verification/continuation gate deliberately withheld a composed
@@ -123,7 +122,6 @@ def finalize_turn(
         if _pending_verification_response_previewed:
             agent._response_was_previewed = True
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        iteration_limit_fallback = True
         preserved_verification_fallback = True
     elif final_response is None and budget_fallback_eligible:
         # Budget exhausted — ask the model for a summary via one extra
@@ -140,8 +138,6 @@ def finalize_turn(
                 "— requesting summary..."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
-        iteration_limit_fallback = True
-
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")

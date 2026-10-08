@@ -5310,8 +5310,6 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
-    allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
-
     # Skip the knobs the setup forms hide (home channel, reply mode, proxy,
     # mention behavior). They're self-configuring or already correct by
     # default — /sethome sets the home channel on the first chat — so asking
@@ -5356,7 +5354,6 @@ def _setup_standard_platform(platform: dict):
                     cleaned = ",".join(parts)
                 save_env_value(var["name"], cleaned)
                 print_success("  Saved — only these users can interact with the bot.")
-                allowed_val_set = cleaned
             else:
                 # No allowlist — ask about open access vs DM pairing
                 print()

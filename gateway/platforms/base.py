@@ -116,7 +116,6 @@ def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics."""
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
-    thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
     if (
         platform == "slack"

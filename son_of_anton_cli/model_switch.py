@@ -3654,7 +3654,6 @@ def list_picker_providers(
 
     filtered: List[dict] = []
     for p in providers:
-        slug = str(p.get("slug", "")).lower()
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if not has_models and not is_custom_endpoint:

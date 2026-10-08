@@ -2175,7 +2175,6 @@ class ProcessRegistry:
         Uses a plain ``\\n`` line ending — correct for POSIX PTYs and Popen
         pipes.
         """
-        session = self.get(session_id)
         line_ending = "\n"
         return self.write_stdin(session_id, data + line_ending)
 

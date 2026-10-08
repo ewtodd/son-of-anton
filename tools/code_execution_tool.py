@@ -253,7 +253,7 @@ def check_sandbox_requirements() -> bool:
             _get_env_config,
         )
 
-        config = _get_env_config()
+        _get_env_config()
     except Exception:
         logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
         return False

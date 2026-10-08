@@ -416,7 +416,6 @@ class GatewaySlashCommandsMixin:
 
         model_name = ""
         provider_name = ""
-        base_url = ""
         route_resolved = False
         context_used = 0
         context_total = 0
@@ -426,7 +425,6 @@ class GatewaySlashCommandsMixin:
             if live_model and live_provider:
                 model_name = live_model
                 provider_name = live_provider
-                base_url = _clean_str(getattr(status_agent, "base_url", ""))
                 route_resolved = True
             ctx = getattr(status_agent, "context_compactor", None)
             if ctx is not None:
@@ -438,12 +436,10 @@ class GatewaySlashCommandsMixin:
         if not route_resolved and persisted_model and persisted_provider:
             model_name = persisted_model
             provider_name = persisted_provider
-            base_url = _clean_str(persisted_route.get("billing_base_url"))
             route_resolved = True
         if not route_resolved:
             model_name = _clean_str(session_row.get("model"))
             provider_name = _clean_str(session_row.get("billing_provider"))
-            base_url = _clean_str(session_row.get("billing_base_url"))
         context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
 
         user_config: dict[str, Any] = {}
@@ -3967,7 +3963,6 @@ class GatewaySlashCommandsMixin:
         # Count messages for context
         history = await self.async_session_store.load_transcript(target_id)
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
-        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         if not msg_count:
             return t("gateway.resume.resumed_no_count", title=title)
@@ -4159,13 +4154,11 @@ class GatewaySlashCommandsMixin:
                     if cached:
                         agent = cached[0]
 
-        # Resolve provider/base_url/api_key for the account-usage fetch.
+        # Resolve the provider for the account-usage fetch.
         # Prefer the live agent; fall back to persisted billing data on the
         # SessionDB row so `/usage` still returns account info between turns
         # when no agent is resident.
         provider = getattr(agent, "provider", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        base_url = getattr(agent, "base_url", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
-        api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         if not provider and getattr(self, "_session_db", None) is not None:
             try:
                 _entry_for_billing = await self.async_session_store.get_or_create_session(source)
@@ -4179,10 +4172,8 @@ class GatewaySlashCommandsMixin:
                 persisted_route = {}
             if persisted_route.get("billing_provider"):
                 provider = persisted_route["billing_provider"]
-                base_url = persisted_route.get("billing_base_url")
             else:
                 provider = persisted.get("billing_provider")
-                base_url = persisted.get("billing_base_url")
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []

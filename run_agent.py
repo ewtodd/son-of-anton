@@ -6450,7 +6450,6 @@ class AIAgent:
         # compaction replaces the history with a summary and rebuilds the
         # system prompt, so that request is a cold write on any endpoint. What
         # it buys is the turns AFTER compaction reading the cache it wrote.
-        token = None
         # Every AIAgent compaction has a fence, including ordinary in-turn and
         # manual paths. hard_interrupt() uses this exact instance to serialize
         # cancel admission against begin_commit().
@@ -6942,7 +6941,6 @@ class AIAgent:
         durable_turn_lease_activity_lock = threading.Lock()
         durable_turn_lease_turn_active = False
         durable_turn_lease_interrupt_message = None
-        token = None
         acct_token = None
         task_started = False
         task_finished = False
@@ -7228,7 +7226,6 @@ class AIAgent:
                     parent_session_id=getattr(self, "_parent_session_id", None) or "",
                 )
                 task_started = True
-            token = None
             # Publish the session accounting handles the same way so auxiliary
             # calls record their token usage into session_model_usage (task
             # dimension) — the fix for aux spend being invisible in analytics

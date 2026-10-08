@@ -8378,8 +8378,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # run_in_terminal requires an asyncio event loop — only exists in the
         # main prompt_toolkit thread.  If we're in a background thread (e.g.
         # process_loop), fall back to direct curses call.
-        in_main_thread = threading.current_thread() is threading.main_thread()
-
         _pick()
 
         return result[0]
