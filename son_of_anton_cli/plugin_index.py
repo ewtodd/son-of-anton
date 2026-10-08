@@ -229,22 +229,3 @@ def load_index(*, refresh: bool = False, offline: bool = False) -> tuple[List[Pl
 # ---------------------------------------------------------------------------
 
 
-def resolve_name(
-    entries: List[PluginIndexEntry], name: str
-) -> tuple[Optional[PluginIndexEntry], List[PluginIndexEntry]]:
-    """Resolve a bare plugin *name* against the index.
-
-    Returns ``(entry, candidates)``: an exact (case-insensitive) unique match
-    in ``entry``, otherwise ``entry is None`` and ``candidates`` holds any
-    partial matches (empty = nothing similar, >1 on exact = ambiguous).
-    """
-    lowered = name.strip().lower()
-    exact = [e for e in entries if e.name.lower() == lowered]
-    if len(exact) == 1:
-        return exact[0], exact
-    if len(exact) > 1:
-        return None, exact
-    partial = [e for e in entries if lowered in e.name.lower()]
-    if len(partial) == 1:
-        return partial[0], partial
-    return None, partial
