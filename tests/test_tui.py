@@ -1146,13 +1146,17 @@ def test_wordmark_never_outgrows_its_column_across_resizes() -> None:
                 assert feed._width == app._feed_inner_width(), (
                     f"feed width {feed._width} drifted from the real {app._feed_inner_width()} at term width {width}"
                 )
-                # The art variant must match the width it was rendered at.
+                # Every row shares one left pad derived from the widest row:
+                # the art's rows taper, and per-line padding would shift the
+                # narrower rows (the letter bottoms) right of the ones above.
                 art = _tui._wordmark_for_width(feed._width)
-                rendered_first = "".join(s.text for s in wordmark.lines[0]).strip()
-                art_first = art.splitlines()[0].strip()
-                assert rendered_first == art_first, (
-                    f"wordmark rendered {rendered_first[:30]!r} but {feed._width} columns wants {art_first[:30]!r}"
-                )
+                art_lines = art.splitlines()
+                pad = max(0, (feed._width - max(len(line) for line in art_lines)) // 2)
+                for i, (art_line, strip) in enumerate(zip(art_lines, wordmark.lines)):
+                    rendered = "".join(s.text for s in strip).rstrip()
+                    assert rendered == (" " * pad + art_line).rstrip(), (
+                        f"wordmark row {i} misaligned: {rendered[:30]!r}"
+                    )
 
     asyncio.run(run())
 

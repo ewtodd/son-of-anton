@@ -322,10 +322,14 @@ class _WordmarkBlock(_Block):
 
     def render(self, width: int, styles: FeedStyle) -> None:
         art = self.art_fn(max(1, width)) or ""
+        lines = art.splitlines() or [""]
+        # One pad for every line, from the widest line: the art's rows taper
+        # (letter bottoms are narrower), and padding each line to its own
+        # width would shift those rows right of the ones above them.
+        pad = max(0, (width - max(cell_len(line) for line in lines)) // 2)
         out: list[Strip] = []
         style = _combine("bold", styles.primary)
-        for line in (art.splitlines() or [""]):
-            pad = max(0, (width - len(line)) // 2)
+        for line in lines:
             out.extend(_to_strips(Text(" " * pad + line, style=style, overflow="crop"), width))
         self.lines = out
         self.height = len(out)
