@@ -1,6 +1,6 @@
 # Son of Anton — Status
 
-_Last updated 2026-10-03. History lives in git; this file is only current
+_Last updated 2026-10-08. History lives in git; this file is only current
 state, known future work, and the operational facts a fresh session needs._
 
 ## What this is
@@ -14,6 +14,12 @@ huggingface/physics-intern. One chat loop (`standard`); physics runs only via
 
 All of the following is merged to `main` and deployed on e-desktop:
 
+- **Dead-code sweep (2026-10-08).** All provider-era residue is gone: the
+  OpenAI/Codex OAuth surface, the models.dev no-op stub layer, vendor
+  catalogs/branches, 639 unreferenced top-level symbols, and 184 class
+  methods. The AST analyzers (top-level + method-aware, with `__all__`,
+  string-reference, decorator, framework-dispatch, and plugin-contract
+  guards) converge at zero dead symbols; `ruff F821`/`F841` are clean.
 - **Memory scopes.** `MEMORY.md`/`USER.md` are shared; `*.cli.md` and
   `*.gateway.md` are per-surface. The active scope follows the surface
   (`memory.scope` pins it), and the `memory` tool takes a `scope`.
@@ -70,29 +76,34 @@ All of the following is merged to `main` and deployed on e-desktop:
 
 Ordered by importance. Each item is independently scoped.
 
-1. **Live-validate the relay round trip.** The code is complete and
+1. **Delegation and sub-agents are broken.** `delegate_task` does not
+   reliably run or return usable results (reported 2026-10-08; not yet
+   root-caused). Debug the dispatch/execution path end to end before building
+   anything on top of it. The physics sub-agent round-cap failure (item 10)
+   is a separate, diagnosed instance of sub-agents coming back empty.
+2. **Live-validate the relay round trip.** The code is complete and
    unit-tested, but no real Signal coding request has gone through the whole
    path: skill → background coder → dangerous command → watcher prompt in the
    chat → `/approve` → coder resumes → completion summary. Do this before
    building anything on top of the relay.
-2. **One coder per workspace is not enforced.** Only the `relay-coding`
+3. **One coder per workspace is not enforced.** Only the `relay-coding`
    skill's instruction prevents two concurrent coders in the same directory.
    If that becomes a real failure mode, add a workspace-keyed lease.
-3. **`session_search` is not scope-filtered.** _Resolved._ The tool gained a
+4. **`session_search` is not scope-filtered.** _Resolved._ The tool gained a
    `sources` filter (comma-separated, e.g. `sources="cli"`) threaded through
    the browse, discovery, and title-match paths into
    `list_sessions_rich(sources=)` / `search_messages(source_filter=)`. Omitting
    it is the explicit "search everything" escape. The state layer already
    supported both filters, so this was surfacing, not new query machinery.
    Tests in `tests/test_session_search_sources.py`.
-4. **RAG search is a pure-Python cosine scan.** Fine for hundreds of chunks.
+5. **RAG search is a pure-Python cosine scan.** Fine for hundreds of chunks.
    If the journals grow into the tens of thousands, add a keyword/FTS
    prefilter or a candidate cap before ranking.
-5. **RAG refresh should self-register.** When `memory.rag.enabled` is set, a
+6. **RAG refresh should self-register.** When `memory.rag.enabled` is set, a
    `rag index` cron job should be created automatically (idempotently, per
    instance) instead of requiring `son-of-anton cron create` by hand. Until
    then, run `son-of-anton rag index` manually or cron it yourself.
-6. **Cron jobs must always run the current default model.** _Resolved (opt-out)._
+7. **Cron jobs must always run the current default model.** _Resolved (opt-out)._
    The model is already re-resolved from config on every tick; what blocked
    changing it was the fail-closed #44585 drift guard, which skips an *unpinned*
    job when the global default moves (real overage, so the default stays on).
@@ -100,41 +111,45 @@ Ordered by importance. Each item is independently scoped.
    the README ("Cron") and covered by `tests/test_cron_model_drift_guard.py`;
    this instance has it off (local models, no spend), so unpinned jobs track the
    live default.
-7. **Deep-Nous prose residue.** The gateway relay's enroll docstring still
-   names `resolve_nous_access_token()` (never called), and `doctor.py` carries
-   an inert removed-provider probe. Cosmetic.
-8. **TUI gaps from the REPL.** Prompt image attachments and an `/agents`
-   viewer were never carried over.
-9. **Physics sub-agents vanish when they exhaust their round cap.** In the
-   YAP alpha/gamma calibration run (`workspace-soa/runs/20261002_153415_*`),
-   7 of 9 dispatches came back empty. Root cause: a sub-agent with lookup
-   tools runs through `run_agent_loop(..., max_rounds=6)`
-   (`autophysicist/subagent.py:210`); when it spends all 6 rounds calling
-   context7 / analysis_utilities lookups and never emits a final plain-text
-   answer, `run_agent_loop` (`llm.py:607`) returns `text=""` on the
-   `max_rounds` fallback (the normal exit path returns `message.content`).
-   `dispatch_subagent` then finds no code block and reports
-   `execution_status="no_code"`, so the Manager sees "the model wrote no
-   code" and misdiagnoses it as a prompting problem (it spent iteration 2
-   "confirming" a dispatch rule that was never the cause). Every *substantive*
-   task that needs several doc lookups before writing a script dies this way;
-   only trivial ≤1-lookup tasks survive. Fix: in `run_agent_loop`, track the
-   last non-empty `message.content` and return it on the `max_rounds`
-   fallback; propagate `stop_reason` so `dispatch_subagent` can set a distinct
-   `execution_status="max_rounds"` and tell the Manager to re-dispatch tighter
-   (or with more rounds) rather than "it returned nothing". Optionally raise
-   `max_rounds=6` → 8–10. Secondary run issues noted for follow-up: 0 durable
-   output across 2 iterations (no RESULTS.txt / features / calib), critic is
-   ~298s per iteration, `df_cache` capped at 50k events vs 1.8M–13.4M real,
-   waveform polarity (+1 vs −1) never settled by an artifact, and pure files
-    carry two `Data_R` trees while `load_tree_data` reads only the first.
+8. **Deep-Nous prose residue.** The gateway relay's enroll docstring still
+   names `resolve_nous_access_token()` (never called;
+   `gateway/relay/__init__.py:528/633/651`). Cosmetic. (The old `doctor.py`
+   probe is gone — the file was deleted in `bebf5cd6`.)
+9. **TUI gaps from the REPL.** _Resolved._ The Textual TUI carries `/image`
+   and `/paste` attachments plus `/agents`
+   (`son_of_anton_cli/commands.py`, `cli_commands_mixin.py`).
+10. **Physics sub-agents vanish when they exhaust their round cap.** In the
+    YAP alpha/gamma calibration run (`workspace-soa/runs/20261002_153415_*`),
+    7 of 9 dispatches came back empty. Root cause: a sub-agent with lookup
+    tools runs through `run_agent_loop(..., max_rounds=6)`
+    (`autophysicist/subagent.py:210`); when it spends all 6 rounds calling
+    context7 / analysis_utilities lookups and never emits a final plain-text
+    answer, `run_agent_loop` (`llm.py:562`) returns `text=""` on the
+    `max_rounds` fallback (the normal exit path returns `message.content`).
+    `stop_reason="max_rounds"` **is** propagated in the `AgentResult`
+    (`llm.py:566`), but `dispatch_subagent` ignores it and reports
+    `execution_status="no_code"`, so the Manager sees "the model wrote no
+    code" and misdiagnoses it as a prompting problem (it spent iteration 2
+    "confirming" a dispatch rule that was never the cause). Every *substantive*
+    task that needs several doc lookups before writing a script dies this way;
+    only trivial ≤1-lookup tasks survive. Fix: in `run_agent_loop`, track the
+    last non-empty `message.content` and return it on the `max_rounds`
+    fallback; teach `dispatch_subagent` to read `stop_reason` and set a
+    distinct `execution_status="max_rounds"` so the Manager re-dispatches
+    tighter (or with more rounds) instead of "it returned nothing". Optionally
+    raise `max_rounds=6` → 8–10. Secondary run issues noted for follow-up:
+    0 durable output across 2 iterations (no RESULTS.txt / features / calib),
+    critic is ~298s per iteration, `df_cache` capped at 50k events vs
+    1.8M–13.4M real, waveform polarity (+1 vs −1) never settled by an
+    artifact, and pure files carry two `Data_R` trees while `load_tree_data`
+    reads only the first.
 
 ## Operational notes
 
 - Repo `git@github.com:ewtodd/son-of-anton.git`, branch `main`. Sole
   authorship, no `Co-authored-by` trailers; the bot commit identity is in the
   repo git config.
-- Tests: `nix develop -c scripts/run_tests.sh` (741 tests, 68 files, ~35s).
+- Tests: `nix develop -c scripts/run_tests.sh` (742 tests, 68 files, ~35s).
   Pre-commit (`nix develop -c pre-commit install`) runs ruff plus that suite.
 - Deployment: `/etc/nixos` host `e-desktop`, flake input `son-of-anton`
   following `main`; bump the input and reactivate. Bifrost on oracle fronts
