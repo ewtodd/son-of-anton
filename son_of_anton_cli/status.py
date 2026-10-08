@@ -36,25 +36,6 @@ def redact_key(key: str) -> str:
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
-def _format_iso_timestamp(value) -> str:
-    """Format ISO timestamps for status output, converting to local timezone."""
-    if not value or not isinstance(value, str):
-        return "(unknown)"
-    from datetime import datetime, timezone
-    text = value.strip()
-    if not text:
-        return "(unknown)"
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-    except Exception:
-        return value
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-
-
 def _format_relative_ts(ts: float) -> str:
     """Format an epoch timestamp as a short relative age for status output."""
     from son_of_anton_cli.timefmt import relative_time

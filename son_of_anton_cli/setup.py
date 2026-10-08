@@ -25,85 +25,8 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
-def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        return dict(current_model)
-    if isinstance(current_model, str) and current_model.strip():
-        return {"default": current_model.strip()}
-    return {}
-
-
-def _get_credential_pool_strategies(config: Dict[str, Any]) -> Dict[str, str]:
-    strategies = config.get("credential_pool_strategies")
-    return dict(strategies) if isinstance(strategies, dict) else {}
-
-
-def _set_credential_pool_strategy(config: Dict[str, Any], provider: str, strategy: str) -> None:
-    if not provider:
-        return
-    strategies = _get_credential_pool_strategies(config)
-    strategies[provider] = strategy
-    config["credential_pool_strategies"] = strategies
-
-
-def _supports_same_provider_pool_setup(provider: str) -> bool:
-    if not provider or provider == "custom":
-        return False
-    if provider == "openrouter":
-        return True
-    from son_of_anton_cli.auth import PROVIDER_REGISTRY
-
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if not pconfig:
-        return False
-    return pconfig.auth_type in {"api_key", "oauth_device_code"}
-
-
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
-_DEFAULT_PROVIDER_MODELS = {
-    "copilot-acp": [
-        "copilot-acp",
-    ],
-    "copilot": [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-opus-4.6",
-        "claude-sonnet-5",
-        "claude-sonnet-4.6",
-        "claude-sonnet-4.5",
-        "claude-haiku-4.5",
-        "gemini-2.5-pro",
-    ],
-    "gemini": [
-        "gemini-3.1-pro-preview", "gemini-3-pro-preview",
-        "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
-    ],
-    "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
-    "kimi-coding": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "kimi-coding-cn": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
-    "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
-    "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
-    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
-    "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
-    "kilocode": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
-    "opencode-zen": ["x-preview-f-free", "gpt-5.6-sol", "gpt-5.4", "gpt-5.3-codex", "claude-opus-5", "claude-sonnet-5", "gemini-3.7-flash", "glm-5.2", "kimi-k3", "minimax-m3"],
-    "opencode-free": ["x-preview-f-free", "hy3-free", "laguna-s-2.1-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free"],
-    "opencode-go": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "gpt-5.6-luna", "grok-4.5", "glm-5.3", "glm-5.2", "mimo-v2.5-pro", "mimo-v2.5", "minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.7-max", "deepseek-v4-pro", "hy3"],
-    "huggingface": [
-        "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
-        "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
-        "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
-    ],
-}
 
 
 def _current_reasoning_effort(config: Dict[str, Any]) -> str:
@@ -119,8 +42,6 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
         agent_cfg = {}
         config["agent"] = agent_cfg
     agent_cfg["reasoning_effort"] = effort
-
-
 
 
 # Import config helpers
@@ -223,7 +144,6 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0, descri
     """Single-select menu using curses. Delegates to curses_radiolist."""
     from son_of_anton_cli.curses_ui import curses_radiolist
     return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
-
 
 
 def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
@@ -559,7 +479,6 @@ def _print_setup_summary(config: dict, son_of_anton_home):
 # =============================================================================
 # Section 1: Model & Provider Configuration
 # =============================================================================
-
 
 
 def setup_model_provider(config: dict, *, quick: bool = False):

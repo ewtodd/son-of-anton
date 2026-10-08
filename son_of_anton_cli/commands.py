@@ -11,11 +11,9 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 from __future__ import annotations
 
 import logging
-import os
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from utils import is_truthy_value
 
@@ -26,38 +24,7 @@ from utils import is_truthy_value
 # path+mtime keeps the memo freshness-correct (same pattern as load_env and
 # _nous_auth_status_cache). Falls back to a fresh load when the file cannot
 # be stat'ed.
-_personalities_memo: Optional[
-    Tuple[Tuple[Optional[str], Optional[int], Optional[int]], Dict[str, Any]]
-] = None
 
-
-def _personalities_from_cli_config() -> Dict[str, Any]:
-    """Return the available personalities map, memoised on config mtime.
-
-    Wraps ``available_personalities(load_cli_config())`` — the single owner of
-    built-ins + user overrides. Built-ins are static for the process lifetime,
-    so keying on the config file's path+mtime+size keeps the memo
-    freshness-correct.
-    """
-    global _personalities_memo
-    from cli import load_cli_config
-    from son_of_anton_cli.personality import available_personalities
-
-    try:
-        from son_of_anton_cli.config import get_config_path
-
-        cfg_path = get_config_path()
-        st = cfg_path.stat()
-        sig = (str(cfg_path), st.st_mtime_ns, st.st_size)
-    except Exception:
-        sig = (None, None, None)
-
-    if _personalities_memo is not None and _personalities_memo[0] == sig:
-        return _personalities_memo[1]
-
-    personalities = available_personalities(load_cli_config())
-    _personalities_memo = (sig, personalities)
-    return personalities
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +79,6 @@ class CommandDef:
 
 
 # Valid values for CommandDef.busy_policy (see field docs above).
-VALID_BUSY_POLICIES: frozenset[str] = frozenset(
-    {"dispatch", "reject", "interrupt_then_dispatch"}
-)
 
 
 # ---------------------------------------------------------------------------
@@ -424,9 +388,6 @@ def is_gateway_known_command(name: str | None) -> bool:
 # Kept under its historical public name for introspection / tests;
 # semantically a subset of "all resolvable commands" — which is the real
 # bypass set (see should_bypass_active_session below).
-ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
-    cmd.name for cmd in COMMAND_REGISTRY if cmd.busy_policy != "reject"
-)
 
 
 def is_interrupt_then_dispatch(command_name: str | None) -> bool:
@@ -512,11 +473,6 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return False
 
 
-def _requires_argument(args_hint: str) -> bool:
-    """Return True when selecting a command without text would be incomplete."""
-    return args_hint.strip().startswith("<")
-
-
 def gateway_help_lines(only: Optional[frozenset[str]] = None) -> list[str]:
     """Generate gateway help text lines from the registry.
 
@@ -600,46 +556,6 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
 
 
 # Platform slash-command name cap (Discord/Slack/Telegram all cap at 32 chars).
-_CMD_NAME_LIMIT = 32
-
-
-def _clamp_command_names(
-    entries: list[tuple[str, ...]],
-    reserved: set[str],
-) -> list[tuple[str, ...]]:
-    """Enforce 32-char command name limit with collision avoidance.
-
-    Platforms cap slash command names at 32 characters.
-    Names exceeding the limit are truncated.  If truncation creates a duplicate
-    (against *reserved* names or earlier entries in the same batch), the name is
-    shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
-    If all 10 digit slots are taken the entry is silently dropped.
-
-    Accepts tuples of any length >= 2.  Extra elements beyond ``(name, desc)``
-    (e.g. ``cmd_key``) are passed through unchanged, so callers can attach
-    metadata that survives the rename.
-    """
-    used: set[str] = set(reserved)
-    result: list[tuple] = []
-    for entry in entries:
-        name, desc, *extra = entry
-        if len(name) > _CMD_NAME_LIMIT:
-            candidate = name[:_CMD_NAME_LIMIT]
-            if candidate in used:
-                prefix = name[:_CMD_NAME_LIMIT - 1]
-                for digit in range(10):
-                    candidate = f"{prefix}{digit}"
-                    if candidate not in used:
-                        break
-                else:
-                    # All 10 digit slots exhausted — skip entry
-                    continue
-            name = candidate
-        if name in used:
-            continue
-        used.add(name)
-        result.append((name, desc, *extra))
-    return result
 
 
 # Backward-compat alias.
@@ -649,162 +565,10 @@ def _clamp_command_names(
 # Shared skill/plugin collection for gateway platforms
 # ---------------------------------------------------------------------------
 
-def _collect_gateway_skill_entries(
-    platform: str,
-    max_slots: int,
-    reserved_names: set[str],
-    desc_limit: int = 100,
-    sanitize_name: "Callable[[str], str] | None" = None,
-) -> tuple[list[tuple[str, str, str]], int]:
-    """Collect plugin + skill entries for a gateway platform.
-
-    Priority order:
-      1. Plugin slash commands (take precedence over skills)
-      2. Built-in skill commands (fill remaining slots, alphabetical)
-
-    Only skills are trimmed when the cap is reached.
-    Hub-installed skills are excluded.  Per-platform disabled skills are
-    excluded.
-
-    Args:
-        platform: Platform identifier for per-platform skill filtering
-            (``"discord"``, ``"slack"``, etc.).
-        max_slots: Maximum number of entries to return (remaining slots after
-            built-in/core commands).
-        reserved_names: Names already taken by built-in commands.  Mutated
-            in-place as new names are added.
-        desc_limit: Max description length (100 for Discord).
-        sanitize_name: Optional name transform applied before clamping.  May
-            return an empty string to signal "skip this entry".
-
-    Returns:
-        ``(entries, hidden_count)`` where *entries* is a list of
-        ``(name, description, cmd_key)`` triples and *hidden_count* is the
-        number of skill entries dropped due to the cap.  ``cmd_key`` is the
-        original ``/skill-name`` key from :func:`get_skill_commands`.
-    """
-    all_entries: list[tuple[str, str, str]] = []
-
-    # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
-    plugin_pairs: list[tuple[str, str]] = []
-    try:
-        from son_of_anton_cli.plugins import get_plugin_commands
-        plugin_cmds = get_plugin_commands()
-        for cmd_name in sorted(plugin_cmds):
-            name = sanitize_name(cmd_name) if sanitize_name else cmd_name
-            if not name:
-                continue
-            desc = plugin_cmds[cmd_name].get("description", "Plugin command")
-            if len(desc) > desc_limit:
-                desc = desc[:desc_limit - 3] + "..."
-            plugin_pairs.append((name, desc))
-    except Exception:
-        pass
-
-    plugin_pairs = _clamp_command_names(plugin_pairs, reserved_names)
-    reserved_names.update(n for n, _ in plugin_pairs)
-    # Plugins have no cmd_key — use empty string as placeholder
-    for n, d in plugin_pairs:
-        all_entries.append((n, d, ""))
-
-    # --- Tier 2: Built-in skill commands (trimmed at cap) -----------------
-    _platform_disabled: set[str] = set()
-    try:
-        from agent.skill_utils import get_disabled_skill_names
-        _platform_disabled = get_disabled_skill_names(platform=platform)
-    except Exception:
-        pass
-
-    skill_triples: list[tuple[str, str, str]] = []
-    try:
-        from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
-        # Build set of allowed directory prefixes: local skills dir + any
-        # user-configured ``skills.external_dirs`` + trusted project dirs.
-        # Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
-        # Without this widening, external skills are visible in
-        # ``son-of-anton skills list`` and the agent's ``/skill-name`` dispatch but
-        # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
-        )
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_project_skills_dirs()
-        )
-        skill_cmds = get_skill_commands()
-        for cmd_key in sorted(skill_cmds):
-            info = skill_cmds[cmd_key]
-            skill_path = info.get("skill_md_path", "")
-            if not skill_path:
-                continue
-            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
-                continue
-            if skill_path.startswith(_hub_dir):
-                continue
-            skill_name = info.get("name", "")
-            if skill_name in _platform_disabled:
-                continue
-            raw_name = cmd_key.lstrip("/")
-            name = sanitize_name(raw_name) if sanitize_name else raw_name
-            if not name:
-                continue
-            desc = info.get("description", "")
-            if len(desc) > desc_limit:
-                desc = desc[:desc_limit - 3] + "..."
-            skill_triples.append((name, desc, cmd_key))
-    except Exception:
-        pass
-
-    # Clamp names; cmd_key is passed through as extra payload so it survives
-    # any clamp-induced renames.
-    skill_triples = _clamp_command_names(skill_triples, reserved_names)
-
-    # Skills fill remaining slots — only tier that gets trimmed
-    remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_triples) - remaining)
-    for n, d, k in skill_triples[:remaining]:
-        all_entries.append((n, d, k))
-
-    return all_entries[:max_slots], hidden_count
-
 
 # ---------------------------------------------------------------------------
 # Platform-specific wrappers
 # ---------------------------------------------------------------------------
-
-def discord_skill_commands(
-    max_slots: int,
-    reserved_names: set[str],
-) -> tuple[list[tuple[str, str, str]], int]:
-    """Return skill entries for Discord slash command registration.
-
-    Same priority and filtering logic as the gateway command menu
-    (plugins > skills, hub excluded, per-platform disabled excluded), but
-    adapted for Discord's constraints:
-
-    - Hyphens are allowed in names (no ``-`` → ``_`` sanitization)
-    - Descriptions capped at 100 chars (Discord's per-field max)
-
-    Args:
-        max_slots: Available command slots (100 minus existing built-in count).
-        reserved_names: Names of already-registered built-in commands.
-
-    Returns:
-        ``(entries, hidden_count)`` where *entries* is a list of
-        ``(discord_name, description, cmd_key)`` triples.  ``cmd_key`` is
-        the original ``/skill-name`` key needed for the slash handler callback.
-    """
-    return _collect_gateway_skill_entries(
-        platform="discord",
-        max_slots=max_slots,
-        reserved_names=set(reserved_names),  # copy — don't mutate caller's set
-        desc_limit=100,
-    )
 
 
 def discord_skill_commands_by_category(
@@ -1205,24 +969,8 @@ def slack_subcommand_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # Inline auto-suggest (ghost text) for slash commands
 # ---------------------------------------------------------------------------
 
 
-
-def _file_size_label(path: str) -> str:
-    """Return a compact human-readable file size, or '' on error."""
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return ""
-    if size < 1024:
-        return f"{size}B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.0f}K"
-    if size < 1024 * 1024 * 1024:
-        return f"{size / (1024 * 1024):.1f}M"
-    return f"{size / (1024 * 1024 * 1024):.1f}G"

@@ -89,12 +89,6 @@ except Exception:
     def _list_providers():
         return []
 
-_PROVIDER_PREFIXES: frozenset[str] = frozenset(
-    value.lower()
-    for profile in _list_providers()
-    for value in (profile.name, *profile.aliases)
-)
-
 
 _OLLAMA_TAG_PATTERN = re.compile(
     r"^(\d+\.?\d*b|latest|stable|q\d|fp?\d|instruct|chat|coder|vision|text)",
@@ -139,8 +133,6 @@ def _strip_provider_prefix(model: str) -> str:
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
-_novita_metadata_cache: Dict[str, Dict[str, Any]] = {}
-_novita_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
@@ -344,18 +336,6 @@ def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
         logger.debug("Failed to load OpenRouter model metadata disk cache: %s", e)
         return {}
 
-
-def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
-    """Save processed OpenRouter metadata cache to disk atomically."""
-    try:
-        atomic_json_write(
-            _get_model_metadata_cache_path(),
-            data,
-            indent=0,
-            separators=(",", ":"),
-        )
-    except Exception as e:
-        logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
 
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
@@ -600,36 +580,6 @@ DEFAULT_CONTEXT_LENGTHS = {
 # effort dial — so callers should send no `reasoning` key at all rather
 # than a default `medium` (which 400s with "Model X does not support
 # parameter reasoningEffort").
-_GROK_EFFORT_CAPABLE_PREFIXES = (
-    "grok-3-mini",
-    "grok-4.20-multi-agent",
-    "grok-4.3",
-    # grok-4.5: verified live against /v1/responses 2026-07-08 — accepts
-    # effort low/medium/high (default: high when omitted) but REJECTS
-    # "none" ("This model does not support `reasoning_effort` value `none`"),
-    # unlike grok-4.3. models.dev agrees: effort values [low, medium, high].
-    "grok-4.5",
-    # grok-4.6: drop-in successor of grok-4.5 (same effort dial).
-    "grok-4.6",
-)
-
-
-def grok_supports_reasoning_effort(model: str) -> bool:
-    """Return True when an xAI Grok model accepts ``reasoning.effort``.
-
-    Allowlist by substring (matches both bare ``grok-3-mini`` and
-    aggregator-prefixed ``x-ai/grok-3-mini``). Conservative by design:
-    if a future Grok model isn't listed, we send no effort dial rather
-    than 400.
-    """
-    name = (model or "").strip().lower()
-    if not name:
-        return False
-    # Strip common aggregator prefixes (x-ai/, openrouter/x-ai/, xai/, ...)
-    for sep in ("/",):
-        if sep in name:
-            name = name.rsplit(sep, 1)[-1]
-    return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
 def is_grok_46_family(model: str) -> bool:
@@ -1694,14 +1644,6 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 
 
-def get_next_probe_tier(current_length: int) -> Optional[int]:
-    """Return the next lower probe tier, or None if already at minimum."""
-    for tier in CONTEXT_PROBE_TIERS:
-        if tier < current_length:
-            return tier
-    return None
-
-
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """Try to extract the actual context limit from an API error message.
 
@@ -2451,16 +2393,6 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     return None
 
 
-def _normalize_model_version(model: str) -> str:
-    """Normalize version separators for matching.
-
-    Nous uses dashes: claude-opus-4-6, claude-sonnet-4-5
-    OpenRouter uses dots: claude-opus-4.6, claude-sonnet-4.5
-    Normalize both to dashes for comparison.
-    """
-    return model.replace(".", "-")
-
-
 def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> Optional[int]:
     """Query Anthropic's /v1/models endpoint for context length.
 
@@ -2983,18 +2915,6 @@ async def get_model_context_length_async(
     )
 
 
-def _is_cjk_token_dense_char(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x1100 <= code <= 0x11FF  # Hangul Jamo
-        or 0x2E80 <= code <= 0x9FFF  # CJK radicals/ideographs
-        or 0xA960 <= code <= 0xA97F  # Hangul Jamo Extended-A
-        or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
-        or 0xF900 <= code <= 0xFAFF  # CJK compatibility ideographs
-        or 0xFF00 <= code <= 0xFFEF  # Fullwidth forms / halfwidth kana
-    )
-
-
 # Same codepoint ranges as _is_cjk_token_dense_char, as a compiled character
 # class so dense-char counting runs in C (``len(text) - len(re.sub(...))``)
 # instead of a per-char Python loop.  MUST stay in sync with
@@ -3221,17 +3141,6 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         else:
             shadow[k] = v
     return shadow
-
-
-def _estimate_message_chars(msg: Dict[str, Any]) -> int:
-    """Char count for token estimation, excluding base64 image data.
-
-    Base64 images are counted via `_count_image_tokens` instead; including
-    their raw chars here would massively overestimate token usage.
-    """
-    if not isinstance(msg, dict):
-        return len(str(msg))
-    return len(str(_wire_message_shadow(msg)))
 
 
 def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
