@@ -3,15 +3,10 @@ Single source of truth for provider identity in Son of Anton Agent.
 
 Two data sources, merged at runtime:
 
-1. **models.dev catalog** — 109+ providers with base URLs, env vars, display
-   names, and full model metadata (context, cost, capabilities).  This is
-   the primary database.
+1. **Son of Anton overlays** — transport type, auth patterns, aggregator flags,
+   base URLs, and env vars for the built-in providers.
 
-2. **Son of Anton overlays** — transport type, auth patterns, aggregator flags,
-   and additional env vars that models.dev doesn't track.  Small dict,
-   maintained here.
-
-3. **User config** (``providers:`` section in config.toml) — user-defined
+2. **User config** (``providers:`` section in config.toml) — user-defined
    endpoints and overrides.  Merged on top of everything else.
 
 Other modules import from this file.  No parallel registries.
@@ -29,17 +24,17 @@ logger = logging.getLogger(__name__)
 
 
 # -- Son of Anton overlay ----------------------------------------------------------
-# Son of Anton-specific metadata that models.dev doesn't provide.
+# Additional metadata for the fork's built-in providers.
 
 @dataclass(frozen=True)
 class SonOfAntonOverlay:
-    """Son of Anton-specific provider metadata layered on top of models.dev."""
+    """Provider metadata for the fork's built-in providers."""
 
     transport: str = "openai_chat"        # wire transport key (see TRANSPORT_TO_API_MODE)
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
-    extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
-    base_url_override: str = ""           # override if models.dev URL is wrong/missing
+    extra_env_vars: Tuple[str, ...] = ()  # additional env vars for this provider
+    base_url_override: str = ""           # built-in base URL
     base_url_env_var: str = ""            # env var for user-custom base URL
     keyless: bool = False                 # served anonymously — no credential exists to configure
 
@@ -57,7 +52,7 @@ SON_OF_ANTON_OVERLAYS: Dict[str, SonOfAntonOverlay] = {
 
 
 # -- Resolved provider -------------------------------------------------------
-# The merged result of models.dev + overlay + user config.
+# The merged result of overlay + user config.
 
 @dataclass
 class ProviderDef:
@@ -72,12 +67,11 @@ class ProviderDef:
     is_aggregator: bool = False
     auth_type: str = "api_key"
     doc: str = ""
-    source: str = ""                      # "models.dev", "son-of-anton", "user-config"
+    source: str = ""                      # "son-of-anton", "user-config", "plugin-profile"
 
 
 # -- Aliases ------------------------------------------------------------------
 # Maps human-friendly / legacy names to canonical provider IDs.
-# Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
     # openai
@@ -87,7 +81,6 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "custom",
     "lm-studio": "custom",
     "lm_studio": "custom",
-    "ollama": "custom",  # bare "ollama" = local
     "vllm": "local",
     "llamacpp": "local",
     "llama.cpp": "local",
@@ -96,7 +89,7 @@ ALIASES: Dict[str, str] = {
 
 
 # -- Display labels -----------------------------------------------------------
-# Built dynamically from models.dev + overlays.  Fallback for providers
+# Built dynamically from overlays + plugin profiles.  Fallback for providers
 # not in the catalog.
 
 _LABEL_OVERRIDES: Dict[str, str] = {
@@ -127,8 +120,8 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """Look up a built-in provider by id or alias.
 
     Resolution order:
-      1. Son of Anton overlays (for providers not in models.dev)
-      2. models.dev catalog + Son of Anton overlay
+      1. Son of Anton overlays
+      2. Plugin-registered provider profiles (``plugins/model-providers/<name>/``)
 
     User-defined providers from config.toml (``providers:`` / ``custom_providers:``)
     are resolved by :func:`resolve_provider_full`, which layers ``resolve_user_provider``
@@ -139,51 +132,10 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """
     canonical = normalize_provider(name)
 
-    # Try to get models.dev data
-    try:
-        from agent.models_dev import get_provider_info as _mdev_provider
-        # Keep the single-argument call on the default path: test sites
-        # monkeypatch get_provider_info with single-arg lambdas.
-        mdev_info = (
-            _mdev_provider(canonical)
-            if allow_network
-            else _mdev_provider(canonical, allow_network=False)
-        )
-    except Exception:
-        mdev_info = None
-
     overlay = SON_OF_ANTON_OVERLAYS.get(canonical)
 
-    if mdev_info is not None:
-        # Merge models.dev + overlay
-        transport = overlay.transport if overlay else "openai_chat"
-        is_agg = overlay.is_aggregator if overlay else False
-        auth = overlay.auth_type if overlay else "api_key"
-        base_url_env = overlay.base_url_env_var if overlay else ""
-        base_url_override = overlay.base_url_override if overlay else ""
-
-        # Combine env vars: models.dev env + son-of-anton extra
-        env_vars = list(mdev_info.env)
-        if overlay and overlay.extra_env_vars:
-            for ev in overlay.extra_env_vars:
-                if ev not in env_vars:
-                    env_vars.append(ev)
-
-        return ProviderDef(
-            id=canonical,
-            name=mdev_info.name,
-            transport=transport,
-            api_key_env_vars=tuple(env_vars),
-            base_url=base_url_override or mdev_info.api,
-            base_url_env_var=base_url_env,
-            is_aggregator=is_agg,
-            auth_type=auth,
-            doc=mdev_info.doc,
-            source="models.dev",
-        )
-
     if overlay is not None:
-        # Son of Anton-only provider (not in models.dev)
+        # Overlay-only provider
         return ProviderDef(
             id=canonical,
             name=_LABEL_OVERRIDES.get(canonical, canonical),
@@ -198,7 +150,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
 
     # Plugin-registered provider profiles (plugins/model-providers/<name>/).
     # Providers that ship only as plugin profiles (e.g. commandcode,
-    # tencent-tokenhub) are absent from models.dev and SON_OF_ANTON_OVERLAYS, so
+    # tencent-tokenhub) are absent from SON_OF_ANTON_OVERLAYS, so
     # without this fallback they resolve as "Unknown provider" in /model,
     # --provider, and the model-switch path even though the picker lists them
     # (CANONICAL_PROVIDERS auto-extends from the same plugin registry).
@@ -238,14 +190,12 @@ def get_label(provider_id: str) -> str:
     if canonical in _LABEL_OVERRIDES:
         return _LABEL_OVERRIDES[canonical]
 
-    # Try models.dev
+    # Resolve the provider name
     pdef = get_provider(canonical)
     if pdef:
         return pdef.name
 
     return canonical
-
-
 
 
 def is_aggregator(provider: str) -> bool:
@@ -257,31 +207,12 @@ def is_aggregator(provider: str) -> bool:
     return pdef.is_aggregator if pdef else False
 
 
-# Flat-namespace resellers (subscription APIs whose live ``/v1/models``
-# returns bare model IDs rather than ``vendor/model`` routing slugs) are
-# flagged ``is_aggregator=True`` in an overlay so the model-switch resolver
-# searches their flat catalog. None ship in the fork today — kept as the
-# shared hook for the picker dedup (build_models_payload), which must treat
-# such resellers differently from true routers like ``custom:*`` proxies.
-_FLAT_NAMESPACE_RESELLERS: frozenset[str] = frozenset()
-
-
 def is_routing_aggregator(provider: str) -> bool:
-    """Return True only for TRUE routing aggregators (e.g. OpenRouter, named
-    ``custom:*`` proxies) — those that route bare/vendor-slugged model names
-    to *other* providers' endpoints.
-
-    Distinct from :func:`is_aggregator`, which also reports True for
-    flat-namespace resellers (opencode-go/zen) whose catalog is entirely
-    first-party. Use this gate when the question is "would selecting this
-    model silently re-route the call away from the user's intended provider?"
-    — i.e. the picker dedup. Resellers answer no: their listed models are
-    their own, so their rows must not be deduped against user proxies.
+    """Return True only for TRUE routing aggregators (named ``custom:*``
+    proxies) — those that route bare/vendor-slugged model names to *other*
+    providers' endpoints.
     """
-    provider_norm = normalize_provider(provider or "")
-    if provider_norm in _FLAT_NAMESPACE_RESELLERS:
-        return False
-    return is_aggregator(provider_norm)
+    return is_aggregator(normalize_provider(provider or ""))
 
 
 def is_official_openai_host(base_url: str) -> bool:
@@ -477,7 +408,7 @@ def resolve_provider_full(
     user_providers: Optional[Dict[str, Any]] = None,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[ProviderDef]:
-    """Full resolution chain: built-in → models.dev → user config.
+    """Full resolution chain: built-in → user config.
 
     This is the main entry point for --provider flag resolution.
 
@@ -495,19 +426,15 @@ def resolve_provider_full(
     # 0. User-defined config providers win over the built-in alias table.
     #    A user who declares ``providers.<name>`` in config.toml has stated
     #    explicit intent for that name — it must not be hijacked by a legacy
-    #    vendor alias (e.g. bare "openai" → "openrouter"). Resolve the raw
-    #    name against user config FIRST so a configured ``providers.openai``
-    #    (pointing at api.openai.com) beats the alias that would otherwise
-    #    silently route to OpenRouter. Only the raw (pre-alias) name is tried
-    #    here; canonical/alias resolution still happens below.
+    #    vendor alias. Resolve the raw name against user config FIRST; only
+    #    the raw (pre-alias) name is tried here, canonical/alias resolution
+    #    still happens below.
     if user_providers:
         user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
 
     # 0.5 Exact Son of Anton provider IDs must win over LOSSY alias collapsing.
-    # Example: kimi-coding-cn should stay distinct from kimi-coding instead of
-    # normalizing through the shared models.dev alias "kimi-for-coding".
     # A collapse is lossy only when MULTIPLE distinct registry providers
     # normalize to the same canonical name — resolving through the alias
     # would then lose which one the caller meant. Single-entry rewrites
@@ -535,7 +462,7 @@ def resolve_provider_full(
         except Exception:
             pass
 
-    # 1. Built-in (models.dev + overlays)
+    # 1. Built-in (overlays + plugin profiles)
     pdef = get_provider(canonical)
     if pdef is not None:
         return pdef
@@ -555,21 +482,5 @@ def resolve_provider_full(
     custom_pdef = resolve_custom_provider(name, custom_providers)
     if custom_pdef is not None:
         return custom_pdef
-
-    # 3. Try models.dev directly (for providers not in our ALIASES)
-    try:
-        from agent.models_dev import get_provider_info as _mdev_provider
-        mdev_info = _mdev_provider(canonical)
-        if mdev_info is not None:
-            return ProviderDef(
-                id=canonical,
-                name=mdev_info.name,
-                transport="openai_chat",
-                api_key_env_vars=mdev_info.env,
-                base_url=mdev_info.api,
-                source="models.dev",
-            )
-    except Exception:
-        pass
 
     return None

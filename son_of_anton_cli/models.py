@@ -78,64 +78,7 @@ def _custom_provider_ssl_context(base_url: str):
     return None
 
 
-# Fallback OpenRouter snapshot used when the live catalog is unavailable.
-# (model_id, display description shown in menus)
-
-
-# Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
-# OSS / open-weight models prioritized first, then closed-source by family.
-# Slugs match Vercel's actual /v1/models catalog (e.g. alibaba/ for Qwen,
-# zai/ and xai/ without hyphens).
-
-
 _PROVIDER_MODELS: dict[str, list[str]] = {
-    "nous": [
-        # Anthropic
-        "anthropic/claude-fable-5",
-        "anthropic/claude-opus-5",
-        "anthropic/claude-opus-4.8",
-        "anthropic/claude-sonnet-5",
-        "anthropic/claude-haiku-4.5",
-        # OpenAI
-        "openai/gpt-5.6-sol",
-        "openai/gpt-5.6-sol-pro",
-        "openai/gpt-5.6-terra",
-        "openai/gpt-5.6-terra-pro",
-        "openai/gpt-5.6-luna",
-        "openai/gpt-5.6-luna-pro",
-        "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
-        "openai/gpt-5.4-mini",
-        # Google
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3.7-flash",
-        # xAI
-        "x-ai/grok-4.6",
-        # DeepSeek
-        "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-pro-0813",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v4-flash-0731",
-        # Qwen
-        "qwen/qwen3.8-max",
-        # MoonshotAI
-        "moonshotai/kimi-k3",
-        # MiniMax
-        "minimax/minimax-m3",
-        # Z-AI
-        "z-ai/glm-5.2",
-        "z-ai/glm-5.1",
-        # Xiaomi
-        "xiaomi/mimo-v2.5-pro",
-        # Tencent
-        "tencent/hy3",
-        # StepFun
-        "stepfun/step-3.7-flash",
-        # NVIDIA
-        "nvidia/nemotron-3-super-120b-a12b",
-        # Sakana
-        "sakana/fugu-ultra",
-    ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
     "openai": [
@@ -166,216 +109,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
-    "copilot-acp": [
-        "copilot-acp",
-    ],
-    "copilot": [
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-sonnet-4.6",
-        "claude-sonnet-5",
-        "claude-sonnet-4",
-        "claude-sonnet-4.5",
-        "claude-haiku-4.5",
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
-    ],
-    "gemini": [
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3.6-flash",
-        "gemini-3.1-flash-lite-preview",
-    ],
-    "zai": [
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-        "glm-5v-turbo",
-        "glm-5-turbo",
-        "glm-4.7",
-        "glm-4.5",
-        "glm-4.5-flash",
-    ],
-    "nvidia": [
-        # NVIDIA flagship reasoning models
-        "nvidia/nemotron-3-ultra-550b-a55b",
-        "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "z-ai/glm-5.2",
-        "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m3",
-    ],
-    "kimi-coding": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-for-coding",
-        "kimi-for-coding-highspeed",
-        "kimi-k2-thinking",
-        "kimi-k2-thinking-turbo",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "kimi-coding-cn": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "stepfun": [
-        "step-3.5-flash",
-        "step-3.5-flash-2603",
-    ],
-    "moonshot": [
-        "kimi-k3",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "minimax": [
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.5",
-        "MiniMax-M2.1",
-        "MiniMax-M2",
-    ],
-    "minimax-oauth": [
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.7-highspeed",
-    ],
-    "minimax-cn": [
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.5",
-        "MiniMax-M2.1",
-        "MiniMax-M2",
-    ],
-    "anthropic": [
-        "claude-fable-5",
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
-        "claude-opus-4-20250514",
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
-    ],
-    "xiaomi": [
-        "mimo-v2.5-pro",
-        "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
-        "mimo-v2-flash",
-    ],
-    "tencent-tokenhub": [
-        "hy3-preview",
-    ],
-    "arcee": [
-        "trinity-large-thinking",
-        "trinity-large-preview",
-        "trinity-mini",
-    ],
-    "gmi": [
-        "zai-org/GLM-5.1-FP8",
-        "deepseek-ai/DeepSeek-V3.2",
-        "moonshotai/Kimi-K2.5",
-        "google/gemini-3.1-flash-lite-preview",
-        "anthropic/claude-sonnet-5",
-        "anthropic/claude-sonnet-4.6",
-        "openai/gpt-5.4",
-    ],
     # Synced against https://opencode.ai/docs/zen/ + live GET /zen/v1/models
     # (2026-08-20). Zen/Go are _LIVE_FIRST_PICKER_PROVIDERS, so this list is a
     # discovery floor — live entries lead in the picker and stale curated
     # names never pollute the top.
-    "opencode-zen": [
-        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
-        "kimi-k3",
-        "kimi-k2.5",
-        "kimi-k2.6",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4-pro",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
-        "gpt-5.3-codex",
-        "gpt-5.3-codex-spark",
-        "gpt-5.2",
-        "gpt-5.2-codex",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-max",
-        "gpt-5.1-codex-mini",
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-5-nano",
-        "claude-fable-5",
-        "claude-opus-5",
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-opus-4-5",
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-5",
-        "claude-sonnet-4",
-        "claude-haiku-4-5",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-pro",
-        "gemini-3-flash",
-        "grok-4.6",
-        "grok-4.5",
-        "grok-build-0.1",
-        "muse-spark-1.2",
-        "minimax-m3",
-        "minimax-m2.7",
-        "minimax-m2.5",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-        "kimi-k2.7-code",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-        "deepseek-v4-flash-free",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "big-pickle",
-        "mimo-v2.5-free",
-        "hy3-free",
-        "laguna-s-2.1-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free",
-    ],
     # OpenCode free tier — keyless (no OpenCode account needed). Synced
     # against live GET /zen/v1/models + anonymous probes (2026-08-21);
     # deepseek-v4-flash-free delisted (promo ended, now 401s).
@@ -383,113 +120,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # FreeUsageLimitError for every client except User-Agent
     # "opencode/latest"; we send honest Son of Anton attribution and don't
     # impersonate other clients — verified 2026-08-21).
-    "opencode-free": [
-        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
-        "hy3-free",
-        "laguna-s-2.1-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "muse-spark-1.2-contributor-free",
-    ],
     # Synced against https://opencode.ai/docs/go/ + live GET /zen/go/v1/models
     # (2026-08-20).
-    "opencode-go": [
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "gpt-5.6-luna",
-        "grok-4.5",
-        "glm-5.3",
-        "glm-5.2",
-        "glm-5.1",
-        "glm-5",
-        "mimo-v2.5-pro",
-        "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
-        "minimax-m3",
-        "minimax-m2.7",
-        "minimax-m2.5",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash",
-        "qwen3.8-max",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "hy3",
-        "hy3-preview",
-        "muse-spark-1.2-contributor",
-        # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
-        # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
-        "ox-alpha-free",
-    ],
-    "kilocode": [
-        "anthropic/claude-opus-4.6",
-        "anthropic/claude-sonnet-4.6",
-        "openai/gpt-5.4",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
-    ],
     # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
     # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
     # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
-    "alibaba": [
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "kimi-k2.5",
-        "qwen3.5-plus",
-        "qwen3-coder-plus",
-        "qwen3-coder-next",
-        # Third-party models available on coding-intl
-        "glm-5",
-        "glm-4.7",
-        "MiniMax-M2.5",
-    ],
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
-    "alibaba-coding-plan": [
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-        "qwen3-max-2026-01-23",
-        "qwen3-coder-plus",
-        "qwen3-coder-next",
-        "kimi-k2.5",
-        "glm-5",
-        "glm-4.7",
-        "MiniMax-M2.5",
-    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
-    "huggingface": [
-        "moonshotai/Kimi-K2.5",
-        "Qwen/Qwen3.5-397B-A17B",
-        "Qwen/Qwen3.5-35B-A3B",
-        "deepseek-ai/DeepSeek-V3.2",
-        "MiniMaxAI/MiniMax-M2.5",
-        "zai-org/GLM-5",
-        "XiaomiMiMo/MiMo-V2-Flash",
-        "moonshotai/Kimi-K2-Thinking",
-        "moonshotai/Kimi-K2.6",
-    ],
     # AWS Bedrock — static fallback list used when dynamic discovery is
     # unavailable (no boto3, no credentials, or API error).  The agent
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
-    "novita": [
-        "moonshotai/kimi-k2.5",
-        "minimax/minimax-m2.7",
-        "zai-org/glm-5",
-        "deepseek/deepseek-v3-0324",
-        "deepseek/deepseek-r1-0528",
-        "qwen/qwen3-235b-a22b-fp8",
-    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -599,13 +245,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # Member order is the order shown inside the group submenu.
 # ---------------------------------------------------------------------------
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
-    "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
-    "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
-    "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Direct OpenAI API", ["openai-api"]),
-    "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
-    "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
 
 # Reverse index: member slug -> group_id. Built once at import.
@@ -680,84 +320,7 @@ def group_providers(slugs):
 
 
 _PROVIDER_ALIASES = {
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "github": "copilot",
-    "github-copilot": "copilot",
-    "github-models": "copilot",
-    "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp",
-    "copilot-acp-agent": "copilot-acp",
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn",
-    "moonshot-cn": "kimi-coding-cn",
-    "step": "stepfun",
-    "stepfun-coding-plan": "stepfun",
-    "arcee-ai": "arcee",
-    "arceeai": "arcee",
-    "gmi-cloud": "gmi",
-    "gmicloud": "gmi",
-    "fireworks-ai": "fireworks",
-    "fw": "fireworks",
-    "actual-computer": "actual",
-    "actualcomputer": "actual",
-    "aci": "actual",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "minimax-portal": "minimax-oauth",
-    "minimax-global": "minimax-oauth",
-    "minimax_oauth": "minimax-oauth",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-    "opencode": "opencode-zen",
-    "zen": "opencode-zen",
-    "go": "opencode-go",
-    "opencode-go-sub": "opencode-go",
-    "free": "opencode-free",
-    "opencode_free": "opencode-free",
-    "aigateway": "ai-gateway",
-    "vercel": "ai-gateway",
-    "vercel-ai-gateway": "ai-gateway",
-    "kilo": "kilocode",
-    "kilo-code": "kilocode",
-    "kilo-gateway": "kilocode",
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
-    "qwen": "alibaba",
-    "alibaba-cloud": "alibaba",
-    "hf": "huggingface",
-    "hugging-face": "huggingface",
-    "huggingface-hub": "huggingface",
-    "novita-ai": "novita",
-    "novitaai": "novita",
-    "mimo": "xiaomi",
-    "xiaomi-mimo": "xiaomi",
-    "tencent": "tencent-tokenhub",
-    "tokenhub": "tencent-tokenhub",
-    "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-    "grok": "xai",
-    "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth",
-    "x-ai-oauth": "xai-oauth",
-    "xai-grok-oauth": "xai-oauth",
-    "x-ai": "xai",
-    "x.ai": "xai",
-    "nim": "nvidia",
-    "nvidia-nim": "nvidia",
-    "build-nvidia": "nvidia",
-    "nemotron": "nvidia",
-    "lmstudio": "lmstudio",
-    "lm-studio": "lmstudio",
-    "lm_studio": "lmstudio",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
-    "ollama_cloud": "ollama-cloud",
+    "local": "custom",  # a local OpenAI-compatible endpoint
 }
 
 
@@ -773,45 +336,6 @@ _PROVIDER_ALIASES = {
 # lists are ordered most-capable-first, so [0] is the priciest Anthropic
 # flagship (claude-fable-5 / opus) — silently billing the most expensive model
 # for traffic the user never opted into.
-PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
-
-
-def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
-    """Return the silent-default model id — catalog label first, constant second.
-
-    Reads the ``"default": true`` label from the cached remote catalog
-    (never hits the network — safe on hot resolution paths), falling back to
-    :data:`PREFERRED_SILENT_DEFAULT_MODEL` when no cached manifest exists or
-    the provider block carries no label.
-    """
-    try:
-        from son_of_anton_cli.model_catalog import get_default_model_from_cache
-        labeled = get_default_model_from_cache(provider)
-        if labeled:
-            return labeled
-    except Exception:
-        pass
-    return PREFERRED_SILENT_DEFAULT_MODEL
-
-
-# Providers whose *silent* auto-default must go through the cost-safe
-# catalog-labeled default (``get_preferred_silent_default_model``) instead of
-# curated-list entry [0]. Metered aggregators (Nous Portal, OpenRouter) order
-# their lists best-/most-capable-first — entry [0] is the priciest flagship
-# (``anthropic/claude-fable-5``). Using that as the non-interactive fallback
-# when a profile sets a provider with no model silently bills the most
-# expensive model for traffic the user never opted into (a missing default
-# escalated to Opus and billed 863 requests before the user noticed). The
-# catalog manifest labels the default entry (``"default": true``) so it can
-# rotate without a release; a missing model must never escalate to the
-# flagship.
-#
-# This is deliberately a network-free lookup for the hot resolution path
-# (cache-only catalog read). The *interactive* default (GUI onboarding /
-# ``son-of-anton model``) uses the richer free/paid-tier-aware resolver — see
-# ``get_recommended_default_model`` in son_of_anton_cli/web_server.py and
-# ``partition_nous_models_by_tier`` — which can hit the Portal.
-_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
 
 def get_default_model_for_provider(provider: str) -> str:
@@ -820,22 +344,10 @@ def get_default_model_for_provider(provider: str) -> str:
     Used as a NON-INTERACTIVE fallback when a provider is configured but no
     model was ever selected (a profile that sets ``provider`` with no ``model``).
 
-    For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
-    same model the ``son-of-anton model`` picker offers first. For metered aggregators
-    whose curated list is ordered most-capable-first, that entry is also the
-    most EXPENSIVE one, so silently defaulting to it is a billing footgun.
-    Those providers (``_SILENT_DEFAULT_PROVIDERS``) resolve through the
-    catalog-labeled default instead; a missing model must never auto-escalate
-    to the flagship.
+    Returns the first entry in ``_PROVIDER_MODELS`` — the same model the
+    ``son-of-anton model`` picker offers first.
     """
     models = _PROVIDER_MODELS.get(provider, [])
-    if provider in _SILENT_DEFAULT_PROVIDERS:
-        preferred = get_preferred_silent_default_model(provider)
-        # Trust the preferred default even when the provider has no static
-        # catalog (OpenRouter's picker list is fetched live; its curated
-        # snapshot carries the default).
-        if preferred and (preferred in models or not models):
-            return preferred
     return models[0] if models else ""
 
 
@@ -2013,28 +1525,6 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
     )
 
 
-_AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
-)
-
-# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
-# would be listed here (tried only as a last resort for bare short-alias
-# resolution, after every native-vendor catalog, so they never hijack an alias
-# away from the model's native vendor). None are currently defined.
-_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
-
-# Providers whose live /v1/models endpoint is the authoritative catalog, so the
-# curated list is a discovery-only fallback. For these, the picker merges
-# live-first (live entries lead, curated-only entries append). Every OTHER
-# provider keeps curated-first (commit 658ac1d86, #46309) so a deliberately
-# surfaced newest model stays at the top even when the live API lags. OpenCode
-# Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
-# their stale curated entries must not pollute the top of the picker. (#49129)
-_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go"}
-)
-
-
 def _resolve_static_model_alias(
     name_lower: str,
     current_keys: set[str],
@@ -2049,18 +1539,13 @@ def _resolve_static_model_alias(
     if identity is None:
         return None
 
-    vendor = identity.vendor
     family = identity.family
 
     def _match(provider: str) -> Optional[str]:
         models = _PROVIDER_MODELS.get(provider, [])
         if not models:
             return None
-        prefix = (
-            f"{vendor}/{family}"
-            if provider in _AGGREGATOR_PROVIDERS
-            else family
-        ).lower()
+        prefix = family.lower()
         for model in models:
             if model.lower().startswith(prefix):
                 return model
@@ -2071,24 +1556,9 @@ def _resolve_static_model_alias(
             return provider, matched
 
     for provider in _PROVIDER_MODELS:
-        if (
-            provider in current_keys
-            or provider in _AGGREGATOR_PROVIDERS
-            or provider in _BORROWED_MODEL_PROVIDERS
-        ):
+        if provider in current_keys:
             continue
         if matched := _match(provider):
-            return provider, matched
-
-    for provider in _AGGREGATOR_PROVIDERS:
-        if provider in current_keys and (matched := _match(provider)):
-            return provider, matched
-
-    # Last resort: providers that re-expose other vendors' models. Only reached
-    # when no native-vendor catalog matched — so `sonnet` resolves to anthropic.
-    # None are currently defined (_BORROWED_MODEL_PROVIDERS is empty).
-    for provider in _BORROWED_MODEL_PROVIDERS:
-        if provider in current_keys and (matched := _match(provider)):
             return provider, matched
 
     return None
@@ -2156,21 +1626,9 @@ def detect_static_provider_for_model(
         or current_provider.startswith("custom:")
     )
     for pid in _PROVIDER_MODELS:
-        if (
-            pid in current_keys
-            or pid in _AGGREGATOR_PROVIDERS
-            or pid in _BORROWED_MODEL_PROVIDERS
-        ):
+        if pid in current_keys:
             continue
         if _is_custom_current:
-            continue
-        if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
-            return (pid, name)
-
-    # Borrow-list providers (re-expose other vendors' models) only after every
-    # native-vendor catalog, and only when one is the current provider.
-    for pid in _BORROWED_MODEL_PROVIDERS:
-        if pid in current_keys:
             continue
         if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
             return (pid, name)
@@ -2622,10 +2080,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                         _p.fallback_models or ()
                     )
                     if curated:
-                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
-                            primary, secondary = live, curated
-                        else:
-                            primary, secondary = curated, live
+                        primary, secondary = curated, live
                         merged = list(primary)
                         merged_lower = {_model_dedup_key(m) for m in primary}
                         for m in secondary:
