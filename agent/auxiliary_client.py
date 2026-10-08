@@ -148,7 +148,6 @@ def aux_probe_mode():
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from son_of_anton_cli.config import get_son_of_anton_home
 from utils import base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
@@ -168,7 +167,6 @@ _LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
 # Same treatment for the two "registered provider, unsupported sub-branch"
 # routing dead-ends — external-process and OAuth providers that fall through
 # with no matching handler. Keyed by provider name.
-_LOGGED_UNSUPPORTED_EXTPROC_KEYS: set = set()
 _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 
@@ -307,25 +305,6 @@ class AuxiliaryExplicitCancellation(BaseException):
 
 def _aux_interrupt_protected() -> bool:
     return bool(getattr(_aux_interrupt_protection, "active", False))
-
-
-def _aux_interrupt_cancel_requested() -> bool:
-    """Return whether an explicit host cancel overrides aux protection."""
-    event = getattr(_aux_interrupt_protection, "cancel_event", None)
-    if event is not None:
-        try:
-            return bool(event.is_set())
-        except Exception:
-            logger.debug("aux interrupt cancel event check failed", exc_info=True)
-            return False
-    check = getattr(_aux_interrupt_protection, "cancel_check", None)
-    if not callable(check):
-        return False
-    try:
-        return bool(check())
-    except Exception:
-        logger.debug("aux interrupt cancel check failed", exc_info=True)
-        return False
 
 
 @contextlib.contextmanager
@@ -522,14 +501,6 @@ def _run_protected_sync_provider_call(
         if exception is not None:
             raise exception
         return outcome.get("result")
-
-
-def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
-    """Return False instead of raising when a patched symbol is not a type."""
-    try:
-        return isinstance(obj, maybe_type)
-    except TypeError:
-        return False
 
 
 def _extract_url_query_params(url: str):
@@ -833,7 +804,6 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
     return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
 
 
-
 # Fallback for providers not yet migrated to ProviderProfile.default_aux_model,
 # plus providers we intentionally keep pinned here (e.g. Anthropic predates
 # profiles). New providers should set default_aux_model on their profile instead.
@@ -859,7 +829,6 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
 
 # Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
 # can still use this dict directly. Kept in sync with _FALLBACK above.
-_API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
 
 # Auxiliary tasks that may opt into the provider's fast/cheap model instead of
 # the user's main chat model. The opt-in lives in
@@ -976,9 +945,6 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
 
 # NVIDIA NIM cloud billing attribution.  Keep this host-gated because the
 # nvidia provider also supports local/on-prem NIM endpoints via NVIDIA_BASE_URL.
-_NVIDIA_NIM_CLOUD_HEADERS = {
-    "X-BILLING-INVOKE-ORIGIN": "SonOfAntonAgent",
-}
 
 
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
@@ -986,7 +952,6 @@ _NVIDIA_NIM_CLOUD_HEADERS = {
 
 
 # Default auxiliary models per provider
-_AUTH_JSON_PATH = get_son_of_anton_home() / "auth.json"
 
 _DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = (
     "minimax.io",
@@ -1124,39 +1089,6 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
 # Anthropic default — operators routing main-session traffic through a
 # non-Anthropic host (e.g. OpenRouter, OpenAI) with provider=anthropic in config
 # must NOT have that foreign host leak into the auxiliary client. See #52608.
-_ANTHROPIC_COMPATIBLE_HOSTS = frozenset({
-    "api.anthropic.com",
-})
-
-
-def _is_anthropic_compatible_host(url: str) -> bool:
-    """Return True if ``url`` is an Anthropic endpoint we trust for aux calls.
-
-    Trust the native Anthropic hosts, plus Anthropic-compatible gateways that
-    expose the native Messages protocol under a ``/anthropic`` path suffix
-    (MiniMax, Zhipu GLM, LiteLLM-style relays, self-hosted proxies). That suffix
-    is the same convention ``runtime_provider._detect_api_mode_for_url`` uses to
-    route ``provider: anthropic`` on the primary path, and ``_wrap_if_needed``
-    uses to pick the Anthropic wire transport — without this, ``_try_anthropic``
-    discards a configured ``model.base_url`` for auxiliary and fallback calls and
-    forces ``https://api.anthropic.com``, so those calls diverge from the main
-    agent's endpoint (and fail when the gateway, not Anthropic, holds auth).
-
-    A bare non-Anthropic base_url (e.g. a stale ``openrouter.ai/api/v1`` left on
-    ``provider: anthropic``) still returns False — the guard #52608 added.
-    """
-    if not url:
-        return False
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").strip().lower().rstrip(".")
-        if host in _ANTHROPIC_COMPATIBLE_HOSTS:
-            return True
-        path = (parsed.path or "").rstrip("/").lower()
-        return path.endswith("/anthropic") or path.endswith("/anthropic/v1")
-    except Exception:
-        return False
 
 
 def _scoped_key_env(name: str) -> str:
@@ -1747,18 +1679,6 @@ def set_runtime_main(
     return token
 
 
-def reset_runtime_main(token: contextvars.Token) -> None:
-    """Restore the runtime binding that preceded one scoped turn."""
-    if token is None:
-        return
-    try:
-        _RUNTIME_MAIN_CONTEXT.reset(token)
-    except (RuntimeError, ValueError):
-        # A token cannot be reset from another copied Context. Background
-        # workers inherit values, not ownership of the parent's token.
-        pass
-
-
 @contextlib.contextmanager
 def scoped_runtime_main(main_runtime: Optional[Dict[str, Any]]):
     """Temporarily bind an explicit runtime without touching legacy mirrors."""
@@ -1768,22 +1688,6 @@ def scoped_runtime_main(main_runtime: Optional[Dict[str, Any]]):
         yield runtime
     finally:
         _RUNTIME_MAIN_CONTEXT.reset(token)
-
-
-def clear_runtime_main() -> None:
-    """Clear the runtime override in the current context."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    global _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
-    _RUNTIME_MAIN_CONTEXT.set(None)
-    with _RUNTIME_MAIN_COMPAT_LOCK:
-        _RUNTIME_MAIN_PROVIDER = ""
-        _RUNTIME_MAIN_MODEL = ""
-        _RUNTIME_MAIN_BASE_URL = ""
-        _RUNTIME_MAIN_API_KEY = ""
-        _RUNTIME_MAIN_API_MODE = ""
-        _RUNTIME_MAIN_AUTH_MODE = ""
-        _RUNTIME_MAIN_COMPAT_SNAPSHOT = ("", "", "", "", "", "")
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2056,13 +1960,6 @@ def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
             "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
             task or "call", label, max(0, int(expires_at - now)),
         )
-
-
-def _reset_aux_unhealthy_cache() -> None:
-    """Clear the unhealthy cache. Used by tests and by a future explicit
-    user trigger (e.g. ``son-of-anton config aux reset``)."""
-    _aux_unhealthy_until.clear()
-    _aux_unhealthy_logged_at.clear()
 
 
 def _is_payment_error(exc: Exception) -> bool:
@@ -3568,25 +3465,6 @@ def _try_main_fallback_chain(
     return None, None, ""
 
 
-def _resolve_single_provider(
-    provider: str,
-    model: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Optional[Any]:
-    """Resolve a single provider entry from fallback_chain to an OpenAI client.
-
-    Uses the existing provider resolution infrastructure where possible.
-    """
-    # Reuse resolve_provider_client which handles provider→client mapping.
-    client, resolved_model = resolve_provider_client(
-        provider=provider,
-        model=model,
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-    )
-    return client
-
 def _resolve_auto_route(
     main_runtime: Optional[Dict[str, Any]] = None,
     task: Optional[str] = None,
@@ -3791,15 +3669,6 @@ def _resolve_auto_route(
                    "or a custom endpoint).",
                    ", ".join(tried))
     return None, None, ""
-
-
-def _resolve_auto(
-    main_runtime: Optional[Dict[str, Any]] = None,
-    task: Optional[str] = None,
-) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Backward-compatible auto resolver for callers that only need client/model."""
-    client, model, _provider = _resolve_auto_route(main_runtime=main_runtime, task=task)
-    return client, model
 
 
 def _tag_effective_provider(client: Any, provider: str) -> None:
@@ -4331,25 +4200,6 @@ def get_text_auxiliary_client(
     )
 
 
-def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None):
-    """Return (async_client, model_slug) for async consumers.
-
-    For standard providers returns (AsyncOpenAI, model). For Codex returns
-    (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
-    Returns (None, None) when no provider is available.
-    """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
-    return resolve_provider_client(
-        provider,
-        model=model,
-        async_mode=True,
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-        api_mode=api_mode,
-        main_runtime=main_runtime,
-    )
-
-
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "deepinfra",
@@ -4792,51 +4642,6 @@ def _client_cache_key(
     model_key = model or runtime.get("model", "")
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
     return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
-
-
-def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
-    if isinstance(client, _AuxProbeClientStub):
-        # Probe stubs must never enter the cache — a runtime caller would
-        # receive a non-functional client on the next cache hit.
-        return
-    with _client_cache_lock:
-        old_entry = _client_cache.get(cache_key)
-        if old_entry is not None and old_entry[0] is not client:
-            _close_cached_client(old_entry[0])
-        _client_cache[cache_key] = (client, default_model, bound_loop)
-
-
-def neuter_async_httpx_del() -> None:
-    """Monkey-patch ``AsyncHttpxClientWrapper.__del__`` to be a no-op.
-
-    The OpenAI SDK's ``AsyncHttpxClientWrapper.__del__`` schedules
-    ``self.aclose()`` via ``asyncio.get_running_loop().create_task()``.
-    When an ``AsyncOpenAI`` client is garbage-collected while
-    prompt_toolkit's event loop is running (the common CLI idle state),
-    the ``aclose()`` task runs on prompt_toolkit's loop but the
-    underlying TCP transport is bound to a *different* loop (the worker
-    thread's loop that the client was originally created on).  If that
-    loop is closed or its thread is dead, the transport's
-    ``self._loop.call_soon()`` raises ``RuntimeError("Event loop is
-    closed")``, which prompt_toolkit surfaces as "Unhandled exception
-    in event loop ... Press ENTER to continue...".
-
-    Neutering ``__del__`` is safe because:
-    - Cached clients are explicitly cleaned via ``_force_close_async_httpx``
-      on stale-loop detection and ``shutdown_cached_clients`` on exit.
-    - Uncached clients' TCP connections are cleaned up by the OS when the
-      process exits.
-    - The OpenAI SDK itself marks this as a TODO (``# TODO(someday):
-      support non asyncio runtimes here``).
-
-    Call this once at CLI startup, before any ``AsyncOpenAI`` clients are
-    created.
-    """
-    try:
-        from openai._base_client import AsyncHttpxClientWrapper
-        AsyncHttpxClientWrapper.__del__ = lambda self: None  # type: ignore[assignment]
-    except (ImportError, AttributeError):
-        pass  # Graceful degradation if the SDK changes its internals
 
 
 def _force_close_async_httpx(client: Any) -> None:
@@ -5514,13 +5319,6 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
         return entry[1]
 
 
-def _reset_aux_semaphores() -> None:
-    """Drop cached semaphores (test helper)."""
-    with _aux_sem_lock:
-        _aux_sync_semaphores.clear()
-        _aux_async_semaphores.clear()
-
-
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -6060,19 +5858,6 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
         timeout = 0.0
     return max(_AUX_STREAM_CEILING_FLOOR_SECONDS,
                _AUX_STREAM_CEILING_MULTIPLIER * timeout)
-
-
-def _is_streaming_rejected_error(exc: Exception) -> bool:
-    """Provider explicitly refused a streamed chat.completions request."""
-    err = str(exc).lower()
-    if "stream_options" in err:
-        return True
-    return "stream" in err and (
-        "not supported" in err
-        or "unsupported" in err
-        or "not allowed" in err
-        or "disabled" in err
-    )
 
 
 def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:

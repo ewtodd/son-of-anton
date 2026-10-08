@@ -82,30 +82,10 @@ def _custom_provider_ssl_context(base_url: str):
 # (model_id, display description shown in menus)
 
 
-
 # Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
 # OSS / open-weight models prioritized first, then closed-source by family.
 # Slugs match Vercel's actual /v1/models catalog (e.g. alibaba/ for Qwen,
 # zai/ and xai/ without hyphens).
-VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
-    ("moonshotai/kimi-k2.6",                 "recommended"),
-    ("alibaba/qwen3.6-plus",                 ""),
-    ("zai/glm-5.1",                          ""),
-    ("minimax/minimax-m2.7",                 ""),
-    ("anthropic/claude-sonnet-4.6",          ""),
-    ("anthropic/claude-opus-4.7",            ""),
-    ("anthropic/claude-opus-4.6",            ""),
-    ("anthropic/claude-haiku-4.5",           ""),
-    ("openai/gpt-5.4",                       ""),
-    ("openai/gpt-5.4-mini",                  ""),
-    ("openai/gpt-5.3-codex",                 ""),
-    ("google/gemini-3.1-pro-preview",        ""),
-    ("google/gemini-3-flash",                ""),
-    ("google/gemini-3.1-flash-lite-preview", ""),
-    ("xai/grok-4.20-reasoning",              ""),
-]
-
-_ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -512,12 +492,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
 }
 
-# Vercel AI Gateway: derive the bare-model-id catalog from the curated
-# ``VERCEL_AI_GATEWAY_MODELS`` snapshot so both the picker (tuples with descriptions)
-# and the static fallback catalog (bare ids) stay in sync from a single
-# source of truth.
-_PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
-
 # ---------------------------------------------------------------------------
 # Nous Portal free-model helper
 # ---------------------------------------------------------------------------
@@ -526,23 +500,10 @@ _PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 # surface it to users as-is — no local allowlist filtering.
 
 
-def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
-    """Return True if *model_id* has zero-cost prompt AND completion pricing."""
-    p = pricing.get(model_id)
-    if not p:
-        return False
-    try:
-        return float(p.get("prompt", "1")) == 0 and float(p.get("completion", "1")) == 0
-    except (TypeError, ValueError):
-        return False
-
-
 # ---------------------------------------------------------------------------
 # TTL cache for free-tier detection — avoids repeated API calls within a
 # session while still picking up upgrades quickly.
 # ---------------------------------------------------------------------------
-_FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
-_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
 
 
 # ---------------------------------------------------------------------------
@@ -565,20 +526,7 @@ _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
 #   }
 # ---------------------------------------------------------------------------
 
-NOUS_RECOMMENDED_MODELS_PATH = "/api/nous/recommended-models"
-_NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 # (result_dict, timestamp) keyed by portal_base_url so staging vs prod don't collide.
-_nous_recommended_cache: dict[str, tuple[dict[str, Any], float]] = {}
-
-
-def _extract_model_name(entry: Any) -> Optional[str]:
-    """Pull the ``modelName`` field from a recommended-model entry, else None."""
-    if not isinstance(entry, dict):
-        return None
-    model_name = entry.get("modelName")
-    if isinstance(model_name, str) and model_name.strip():
-        return model_name.strip()
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -846,21 +794,6 @@ def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
     return PREFERRED_SILENT_DEFAULT_MODEL
 
 
-def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
-    """Pick the silent default from an available-models list.
-
-    Returns the catalog-labeled default (see
-    :func:`get_preferred_silent_default_model`) when the list carries it,
-    else the first entry, else "". Used by every surface that must choose a
-    model on the user's behalf without an interactive picker (GUI onboarding
-    recommended-default, empty-model runtime fallback).
-    """
-    preferred = get_preferred_silent_default_model(provider)
-    if preferred in model_ids:
-        return preferred
-    return model_ids[0] if model_ids else ""
-
-
 # Providers whose *silent* auto-default must go through the cost-safe
 # catalog-labeled default (``get_preferred_silent_default_model``) instead of
 # curated-list entry [0]. Metered aggregators (Nous Portal, OpenRouter) order
@@ -904,41 +837,6 @@ def get_default_model_for_provider(provider: str) -> str:
         if preferred and (preferred in models or not models):
             return preferred
     return models[0] if models else ""
-
-
-def _openrouter_model_is_free(pricing: Any) -> bool:
-    """Return True when both prompt and completion pricing are zero."""
-    if not isinstance(pricing, dict):
-        return False
-    try:
-        return float(pricing.get("prompt", "0")) == 0 and float(pricing.get("completion", "0")) == 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _openrouter_model_supports_tools(item: Any) -> bool:
-    """Return True when the model's ``supported_parameters`` advertise tool calling.
-
-    son-of-anton is tool-calling-first — every provider path assumes the model
-    can invoke tools. Models that don't advertise ``tools`` in their
-    ``supported_parameters`` (e.g. image-only or completion-only models) cannot
-    be driven by the agent loop and would fail at the first tool call.
-
-    **Permissive when the field is missing.** Some OpenRouter-compatible gateways
-    (Nous Portal, private mirrors, older catalog snapshots) don't populate
-    ``supported_parameters`` at all. Treat that as "unknown capability → allow"
-    so the picker doesn't silently empty for those users. Only hide models
-    whose ``supported_parameters`` is an explicit list that omits ``tools``.
-
-    Ported from Kilo-Org/kilocode#9068.
-    """
-    if not isinstance(item, dict):
-        return True
-    params = item.get("supported_parameters")
-    if not isinstance(params, list):
-        # Field absent / malformed / None — be permissive.
-        return True
-    return "tools" in params
 
 
 def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any]]:
@@ -1237,125 +1135,10 @@ def warm_openrouter_reasoning_caps_async() -> None:
 # Nous Portal serves OpenRouter's catalog schema, so the same parser and
 # tri-state contract apply. Kept in its own cache because the two catalogs
 # list different models (and different capabilities for shared ids).
-_nous_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
-_nous_reasoning_caps_failed_at: float | None = None
-
-
-_nous_caps_disk_checked = False
-_nous_caps_warm_started = False
 
 
 # Canonical low→high ordering used for nearest-level clamping. Kept as an
 # alias of the single source of truth in ``agent.reasoning_effort``.
-from agent.reasoning_effort import clamp_effort as _clamp_effort
-
-
-def clamp_reasoning_effort_to_supported(
-    effort: Optional[str],
-    supported_efforts: Optional[list[str]],
-) -> Optional[str]:
-    """Clamp a requested reasoning effort to a provider's supported levels.
-
-    Thin wrapper over the canonical policy in
-    :func:`agent.reasoning_effort.clamp_effort` (single implementation for
-    every transport and provider profile): keep a supported level verbatim,
-    otherwise nearest WEAKER supported level (never silently escalate cost),
-    weakest supported level when nothing weaker exists, pass through unknown
-    supported-sets and bespoke level names unchanged.
-
-    Ported from PrimeIntellect-ai/prime-agent#1258's thinking-level-map
-    normalization.
-    """
-    return _clamp_effort(effort, supported_efforts)
-
-
-def _ai_gateway_model_is_free(pricing: Any) -> bool:
-    """Return True if an AI Gateway model has $0 input AND output pricing."""
-    if not isinstance(pricing, dict):
-        return False
-    try:
-        return float(pricing.get("input", "0")) == 0 and float(pricing.get("output", "0")) == 0
-    except (TypeError, ValueError):
-        return False
-
-
-def fetch_ai_gateway_models(
-    timeout: float = 8.0,
-    *,
-    force_refresh: bool = False,
-) -> list[tuple[str, str]]:
-    """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
-    global _ai_gateway_catalog_cache
-
-    if _ai_gateway_catalog_cache is not None and not force_refresh:
-        return list(_ai_gateway_catalog_cache)
-
-    from son_of_anton_constants import AI_GATEWAY_BASE_URL
-
-    fallback = list(VERCEL_AI_GATEWAY_MODELS)
-    preferred_ids = [mid for mid, _ in fallback]
-
-    try:
-        req = urllib.request.Request(
-            f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception:
-        return list(_ai_gateway_catalog_cache or fallback)
-
-    live_items = payload.get("data", [])
-    if not isinstance(live_items, list):
-        return list(_ai_gateway_catalog_cache or fallback)
-
-    live_by_id: dict[str, dict[str, Any]] = {}
-    for item in live_items:
-        if not isinstance(item, dict):
-            continue
-        mid = str(item.get("id") or "").strip()
-        if not mid:
-            continue
-        live_by_id[mid] = item
-
-    curated: list[tuple[str, str]] = []
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
-            continue
-        desc = "free" if _ai_gateway_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
-
-    if not curated:
-        return list(_ai_gateway_catalog_cache or fallback)
-
-    # If the live catalog offers a free Moonshot model, auto-promote it to
-    # position #1 as "recommended" — dynamic discovery without a PR.
-    free_moonshot = next(
-        (
-            mid
-            for mid, item in live_by_id.items()
-            if mid.startswith("moonshotai/")
-            and _ai_gateway_model_is_free(item.get("pricing"))
-        ),
-        None,
-    )
-    if free_moonshot:
-        curated = [(mid, desc) for mid, desc in curated if mid != free_moonshot]
-        curated.insert(0, (free_moonshot, "recommended"))
-    else:
-        first_id, _ = curated[0]
-        curated[0] = (first_id, "recommended")
-
-    _ai_gateway_catalog_cache = curated
-    return list(curated)
-
-
-def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
-    """Return just the AI Gateway model-id strings."""
-    return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1771,124 +1554,6 @@ def _fetch_novita_pricing(
 
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = (
-    set(_PROVIDER_LABELS.keys())
-    | set(_PROVIDER_ALIASES.keys())
-    | {"openrouter", "custom"}
-)
-
-
-def _configured_custom_provider_ids() -> set[str]:
-    """Return routable custom-provider IDs configured by the user."""
-    ids = {"custom"}
-    try:
-        from son_of_anton_cli.config import load_config
-        from son_of_anton_cli.providers import custom_provider_slug
-
-        config = load_config()
-        providers = config.get("providers", {})
-        if isinstance(providers, dict):
-            for key, entry in providers.items():
-                if isinstance(entry, dict):
-                    ids.add(custom_provider_slug(str(entry.get("name") or key), str(key)))
-        legacy = config.get("custom_providers", [])
-        if isinstance(legacy, list):
-            for entry in legacy:
-                if isinstance(entry, dict):
-                    ids.add(custom_provider_slug(str(entry.get("name") or "")))
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
-        pass
-    return ids
-
-def list_available_providers() -> list[dict[str, str]]:
-    """Return info about all providers the user could use with ``provider:model``.
-
-    Each dict has ``id``, ``label``, and ``aliases``.
-    Checks which providers have valid credentials configured.
-
-    Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
-    source of truth shared with ``son-of-anton model``, ``/model``, etc.).
-    """
-    # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
-    # Build reverse alias map
-    aliases_for: dict[str, list[str]] = {}
-    for alias, canonical in _PROVIDER_ALIASES.items():
-        aliases_for.setdefault(canonical, []).append(alias)
-
-    result = []
-    for pid in provider_order:
-        label = _PROVIDER_LABELS.get(pid, pid)
-        alias_list = aliases_for.get(pid, [])
-        # Check if this provider has credentials available
-        has_creds = False
-        try:
-            from son_of_anton_cli.auth import get_auth_status
-            if pid == "custom":
-                custom_base_url = _get_custom_base_url() or ""
-                has_creds = bool(custom_base_url.strip())
-            else:
-                status = get_auth_status(pid)
-                has_creds = bool(status.get("logged_in") or status.get("configured"))
-        except Exception:
-            pass
-        result.append({
-            "id": pid,
-            "label": label,
-            "aliases": alias_list,
-            "authenticated": has_creds,
-        })
-    return result
-
-
-def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
-    """Parse ``/model`` input into ``(provider, model)``.
-
-    Supports ``provider:model`` syntax to switch providers at runtime::
-
-        openrouter:anthropic/claude-sonnet-4.5  →  ("openrouter", "anthropic/claude-sonnet-4.5")
-        nous:son-of-anton-3                           →  ("nous", "son-of-anton-3")
-        anthropic/claude-sonnet-4.5             →  (current_provider, "anthropic/claude-sonnet-4.5")
-        gpt-5.4                                 →  (current_provider, "gpt-5.4")
-
-    The colon is only treated as a provider delimiter if the left side is a
-    recognized provider name or alias.  This avoids misinterpreting model names
-    that happen to contain colons (e.g. ``anthropic/claude-3.5-sonnet:beta``).
-
-    Returns ``(provider, model)`` where *provider* is either the explicit
-    provider from the input or *current_provider* if none was specified.
-    """
-    stripped = raw.strip()
-    colon = stripped.find(":")
-    if colon > 0:
-        provider_part = stripped[:colon].strip().lower()
-        model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
-            if provider_part == "custom":
-                lowered = stripped.lower()
-                for custom_id in sorted(
-                    _configured_custom_provider_ids() - {"custom"},
-                    key=len,
-                    reverse=True,
-                ):
-                    prefix = f"{custom_id.lower()}:"
-                    if lowered.startswith(prefix):
-                        return custom_id, stripped[len(custom_id) + 1 :].strip()
-            # Support custom:name:model triple syntax for named custom
-            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
-            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
-            if provider_part == "custom" and ":" in model_part:
-                second_colon = model_part.find(":")
-                custom_name = model_part[:second_colon].strip()
-                actual_model = model_part[second_colon + 1:].strip()
-                if custom_name and actual_model:
-                    custom_id = f"custom:{custom_name.lower()}"
-                    if custom_id in _configured_custom_provider_ids():
-                        return (custom_id, actual_model)
-                    return ("custom", model_part)
-            return (normalize_provider(provider_part), model_part)
-    return (current_provider, stripped)
 
 
 def _get_custom_base_url() -> str:
@@ -2319,36 +1984,6 @@ def _base_url_looks_like_anthropic_messages(base_url: str) -> bool:
         return False
     path = urllib.parse.urlparse(normalized).path.rstrip("/")
     return path.endswith("/anthropic") or path.endswith("/anthropic/v1")
-
-
-def _anthropic_models_url(base_url: Optional[str] = None) -> str:
-    endpoint = str(base_url or "https://api.anthropic.com").strip().rstrip("/")
-    if endpoint.endswith("/v1"):
-        return endpoint + "/models"
-    return endpoint + "/v1/models"
-
-
-def curated_models_for_provider(
-    provider: Optional[str],
-    *,
-    force_refresh: bool = False,
-) -> list[tuple[str, str]]:
-    """Return ``(model_id, description)`` tuples for a provider's model list.
-
-    Tries to fetch the live model list from the provider's API first,
-    falling back to the static ``_PROVIDER_MODELS`` catalog if the API
-    is unreachable.
-    """
-    normalized = normalize_provider(provider)
-
-    # Try live API first
-    live = provider_model_ids(normalized)
-    if live:
-        return [(m, "") for m in live]
-
-    # Fallback to static catalog
-    models = _PROVIDER_MODELS.get(normalized, [])
-    return [(m, "") for m in models]
 
 
 def _provider_keys(provider: str) -> set[str]:
@@ -3662,25 +3297,6 @@ def probe_lmstudio_models(
     return keys
 
 
-def fetch_lmstudio_models(
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    timeout: float = 5.0,
-) -> list[str]:
-    """Fetch LM Studio chat-capable model keys from native ``/api/v1/models``.
-
-    Returns a list of model keys (e.g. ``publisher/model-name``) with embedding
-    models filtered out. Returns an empty list on network errors, malformed
-    responses, or empty/invalid base URLs.
-
-    Raises ``AuthError`` on HTTP 401/403 so callers can distinguish a missing
-    or wrong ``LM_API_KEY`` from an unreachable server — the most common
-    LM Studio support case once auth-enabled mode is turned on.
-    """
-    models = probe_lmstudio_models(api_key=api_key, base_url=base_url, timeout=timeout)
-    return models or []
-
-
 class LMStudioLoadResult(NamedTuple):
     """Verified LM Studio runtime plus load-attempt provenance."""
 
@@ -4007,8 +3623,6 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     return []
 
 
-
-
 def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
     """Resolve a provider id to its OpenCode family, or None.
 
@@ -4067,22 +3681,6 @@ _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
 # Free-tier models whose slug does NOT carry the ``-free`` suffix.
 # (big-pickle is OpenCode's rotating free stealth slot.)
-_OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
-
-
-def is_opencode_zen_free_model(model_id: Optional[str]) -> bool:
-    """True when ``model_id`` is an OpenCode Zen free-tier slug.
-
-    Matches the ``*-free`` suffix plus the known unsuffixed free slugs
-    (``big-pickle``). Tolerates provider-prefixed ids
-    (``opencode-zen/x-preview-f-free``). The Go catalog serves no free
-    models (verified 2026-08-21), so this identifies the Zen free tier
-    across the OpenCode family.
-    """
-    bare = str(model_id or "").strip().rsplit("/", 1)[-1].lower()
-    if not bare:
-        return False
-    return bare.endswith("-free") or bare in _OPENCODE_KEYLESS_EXTRA_SLUGS
 
 
 def opencode_zen_free_headers() -> dict:
@@ -4534,30 +4132,6 @@ def _fetch_deepinfra_models(
     return [item["id"] for item in items] or None
 
 
-def deepinfra_model_ids(tag: str, *, force_refresh: bool = False) -> list[str]:
-    """Return DeepInfra model ids carrying surface *tag* (``[]`` on failure).
-
-    Single source of truth for the per-surface model shims (TTS/STT/vision),
-    replacing the copy-pasted ``import _fetch_deepinfra_models_by_tag → fetch
-    → [item["id"] …]`` wrapper each of them used to carry.
-    """
-    items = _fetch_deepinfra_models_by_tag(tag, force_refresh=force_refresh)
-    return [item["id"] for item in items] if items else []
-
-
-def deepinfra_base_url(section: Optional[dict] = None) -> str:
-    """Resolve the DeepInfra OpenAI-compatible base URL, normalized.
-
-    Precedence: config-section ``base_url`` → ``DEEPINFRA_BASE_URL`` env →
-    default. Always stripped with any trailing slash removed. Single source
-    of truth for the base-URL chain the TTS/STT/image/video shims each used
-    to re-code (with subtly divergent normalization).
-    """
-    candidate = section.get("base_url") if isinstance(section, dict) else None
-    value = candidate or os.getenv("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
-    return str(value).strip().rstrip("/")
-
-
 def _fetch_deepinfra_pricing(
     timeout: float = 5.0,
     *,
@@ -4794,10 +4368,6 @@ def cached_fetch_api_models(
 # ---------------------------------------------------------------------------
 # Ollama Cloud — merged model discovery with disk cache
 # ---------------------------------------------------------------------------
-
-
-
-_OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
 def _strip_ollama_cloud_suffix(model_id: str) -> str:
