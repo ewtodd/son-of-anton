@@ -1247,7 +1247,6 @@ _nous_caps_warm_started = False
 
 # Canonical low→high ordering used for nearest-level clamping. Kept as an
 # alias of the single source of truth in ``agent.reasoning_effort``.
-from agent.reasoning_effort import EFFORT_LADDER as _REASONING_EFFORT_ORDER
 from agent.reasoning_effort import clamp_effort as _clamp_effort
 
 
@@ -1825,7 +1824,7 @@ def list_available_providers() -> list[dict[str, str]]:
         # Check if this provider has credentials available
         has_creds = False
         try:
-            from son_of_anton_cli.auth import get_auth_status, has_usable_secret
+            from son_of_anton_cli.auth import get_auth_status
             if pid == "custom":
                 custom_base_url = _get_custom_base_url() or ""
                 has_creds = bool(custom_base_url.strip())
@@ -2841,17 +2840,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return fallback_models or []
 
     normalized = normalize_provider(provider)
-    if normalized == "openrouter":
-        # The curated fetcher (fetch_openrouter_models/model_ids) was removed
-        # in 40a24437; query the live /v1/models catalog instead, which also
-        # seeds the reasoning-capability cache via fetch_models_with_pricing.
-        try:
-            live = fetch_api_models(_resolve_openrouter_api_key(), "https://openrouter.ai/api")
-            if live:
-                return live
-        except Exception:
-            pass
-        return []
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

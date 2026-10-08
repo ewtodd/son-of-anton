@@ -21,8 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import shlex
 import stat
 import sys
 import base64
@@ -76,14 +74,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
-from urllib.parse import urlparse
 
 from son_of_anton_cli.config import (
     get_son_of_anton_home,
 )
 from son_of_anton_constants import secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, env_float
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -98,115 +95,6 @@ except Exception:
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
-
-# Nous Portal defaults
-DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
-DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
-DEFAULT_NOUS_CLIENT_ID = "son-of-anton-cli"
-NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
-NOUS_BILLING_MANAGE_SCOPE = "billing:manage"
-DEFAULT_NOUS_SCOPE = NOUS_INFERENCE_INVOKE_SCOPE
-NOUS_DEVICE_CODE_SOURCE = "device_code"
-NOUS_AUTH_PATH_INVOKE_JWT = "invoke_jwt"
-ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
-NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
-DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
-MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
-MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
-MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
-MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
-MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
-MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
-MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
-MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
-DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
-DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
-DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
-DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
-DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
-STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
-STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
-try:  # Version tag for OAuth token-endpoint User-Agents; fall back if unavailable.
-    from son_of_anton_cli import __version__ as _SON_OF_ANTON_CLI_VERSION
-except Exception:  # pragma: no cover - version import should always succeed
-    _SON_OF_ANTON_CLI_VERSION = "unknown"
-XAI_OAUTH_ISSUER = "https://auth.x.ai"
-XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
-XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
-XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:access"
-XAI_OAUTH_DEVICE_CODE_URL = f"{XAI_OAUTH_ISSUER}/oauth2/device/code"
-# xAI/Grok OAuth access tokens are intentionally short-lived (about 6h in
-# current SuperGrok flows). A two-minute refresh window is too narrow for
-# gateway/cron workloads that may only touch the provider every 30 minutes,
-# leaving brief but noisy credential-expiry gaps. Refresh up to one hour
-# early so ordinary runtime calls keep the token warm without user reauth.
-XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
-QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
-QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
-QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
-DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
-DEFAULT_SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
-DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
-SPOTIFY_DOCS_URL = "https://son-of-anton.nousresearch.com/docs/user-guide/features/spotify"
-SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
-SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
-
-OAUTH_OVER_SSH_DOCS_URL = "https://son-of-anton.nousresearch.com/docs/guides/oauth-over-ssh"
-DEFAULT_SPOTIFY_SCOPE = " ".join((
-    "user-modify-playback-state",
-    "user-read-playback-state",
-    "user-read-currently-playing",
-    "user-read-recently-played",
-    "playlist-read-private",
-    "playlist-read-collaborative",
-    "playlist-modify-public",
-    "playlist-modify-private",
-    "user-library-read",
-    "user-library-modify",
-))
-SERVICE_PROVIDER_NAMES: Dict[str, str] = {
-    "spotify": "Spotify",
-}
-
-# LM Studio's default no-auth mode still requires *some* non-empty bearer for
-# the API-key code paths (auxiliary_client, runtime resolver) to treat the
-# provider as configured. This sentinel is sent only to LM Studio, never to
-# any remote service.
-LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
-ACTUAL_LOCAL_NOAUTH_PLACEHOLDER = "dummy-actual-local-api-key"
-
-
-def is_actual_local_base_url(base_url: str) -> bool:
-    """Return True for Actual's loopback local API endpoint."""
-    try:
-        host = (urlparse(base_url or "").hostname or "").lower().rstrip(".")
-    except Exception:
-        return False
-    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-
-
-def normalize_actual_base_url(base_url: str) -> str:
-    """Return Actual's OpenAI-compatible base URL.
-
-    Actual hosted inference is exposed at api.actual.inc, while the Actual
-    client's offline local server binds a loopback host. Both use a /v1 API
-    surface for Son of Anton' Responses transport.
-    """
-    url = str(base_url or "").strip().rstrip("/")
-    if not url:
-        return DEFAULT_ACTUAL_BASE_URL
-    try:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        path = parsed.path.rstrip("/")
-    except Exception:
-        return url
-    if host == "api.actual.inc" and path in {"", "/"}:
-        return url + "/v1"
-    if is_actual_local_base_url(url) and path in {"", "/"}:
-        return url + "/v1"
-    return url
-
 
 # =============================================================================
 # Provider Registry
@@ -297,23 +185,6 @@ except Exception:
 # "/v1/messages" internally — so "/coding" + SDK suffix → "/coding/v1/messages"
 # (the correct target). Using "/coding/v1" here would produce
 # "/coding/v1/v1/messages" (a 404).
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
-
-
-def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Return the correct Kimi base URL based on the API key prefix.
-
-    If the user has explicitly set KIMI_BASE_URL, that always wins.
-    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
-    """
-    if env_override:
-        return env_override
-    # No key → nothing to infer from.  Return default without inspecting.
-    if not api_key:
-        return default_url
-    if api_key.startswith("sk-kimi-"):
-        return KIMI_CODE_BASE_URL
-    return default_url
 
 
 _PLACEHOLDER_SECRET_VALUES = {
@@ -372,196 +243,6 @@ def _resolve_api_key_provider_secret(
         pass
 
     return "", ""
-
-
-# =============================================================================
-# Z.AI Endpoint Detection
-# =============================================================================
-
-# Z.AI has separate billing for general vs coding plans, and global vs China
-# endpoints.  A key that works on one may return "Insufficient balance" on
-# another.  We probe at setup time and store the working endpoint.
-# Each entry lists candidate models to try in order — newer coding plan accounts
-# may only have access to recent models (glm-5.1, glm-5v-turbo) while older
-# ones still use glm-4.7.
-
-ZAI_ENDPOINTS = [
-    # (id, base_url, probe_models, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
-]
-
-
-def _probe_single_zai_endpoint(
-    api_key: str, endpoint: tuple, timeout: float,
-) -> Optional[Dict[str, str]]:
-    """Probe a single Z.AI endpoint. Returns endpoint info dict or None.
-
-    Preserves the per-endpoint candidate-model loop: endpoints carry a
-    ``probe_models`` LIST and each model is tried in order until one
-    succeeds (some plans only accept newer/older GLM slugs).
-    """
-    ep_id, base_url, probe_models, label = endpoint
-    for model in probe_models:
-        try:
-            resp = httpx.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "stream": False,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "ping"}],
-                },
-                timeout=timeout,
-            )
-            if resp.status_code == 200:
-                logger.debug("Z.AI endpoint probe: %s (%s) model=%s OK", ep_id, base_url, model)
-                return {
-                    "id": ep_id,
-                    "base_url": base_url,
-                    "model": model,
-                    "label": label,
-                }
-            logger.debug("Z.AI endpoint probe: %s model=%s returned %s", ep_id, model, resp.status_code)
-        except Exception as exc:
-            logger.debug("Z.AI endpoint probe: %s model=%s failed: %s", ep_id, model, exc)
-    return None
-
-
-def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
-    """Probe z.ai endpoints in parallel to find one that accepts this API key.
-
-    Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
-    first working endpoint (in ZAI_ENDPOINTS priority order), or None if all
-    fail.  For endpoints with multiple candidate models, each worker tries
-    its endpoint's models in order and returns the first that succeeds.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    # No `with` block: a context manager would join ALL probe threads on
-    # exit, defeating the early return below. shutdown(wait=False) lets the
-    # surviving daemon-style probes drain in the background instead of
-    # blocking the caller on slow/unreachable endpoints.
-    pool = ThreadPoolExecutor(max_workers=len(ZAI_ENDPOINTS))
-    try:
-        futures = {
-            pool.submit(_probe_single_zai_endpoint, api_key, ep, timeout): ep[0]
-            for ep in ZAI_ENDPOINTS
-        }
-        by_id = {ep_id: f for f, ep_id in futures.items()}
-        results: Dict[str, Dict[str, str]] = {}
-        for future in as_completed(futures):
-            ep_id = futures[future]
-            try:
-                result = future.result()
-                if result is not None:
-                    results[ep_id] = result
-            except Exception:
-                pass
-            # Early exit in PRIORITY order: walk endpoints highest-priority
-            # first; if one has succeeded and every higher-priority probe
-            # has already finished (without success), no later completion
-            # can win — return now instead of waiting out slow endpoints
-            # (main's sequential loop also stopped at first success).
-            for ep in ZAI_ENDPOINTS:
-                if not by_id[ep[0]].done():
-                    break  # a higher-priority probe is still in flight
-                if ep[0] in results:
-                    return results[ep[0]]
-
-        # All probes finished: first match in priority order, if any.
-        for ep in ZAI_ENDPOINTS:
-            if ep[0] in results:
-                return results[ep[0]]
-        return None
-    finally:
-        pool.shutdown(wait=False)
-
-
-def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Return the correct Z.AI base URL by probing endpoints.
-
-    If the user has explicitly set GLM_BASE_URL, that always wins.
-    Otherwise, probe the candidate endpoints to find one that accepts the
-    key.  The detected endpoint is cached in provider state (auth.json) keyed
-    on a hash of the API key so subsequent starts skip the probe.
-    """
-    if env_override:
-        return env_override
-
-    # No API key set → don't probe (would fire N×M HTTPS requests with an
-    # empty Bearer token, all returning 401).  This path is hit during
-    # auxiliary-client auto-detection when the user has no Z.AI credentials
-    # at all — the caller discards the result immediately, so the probe is
-    # pure latency for every AIAgent construction.
-    if not api_key:
-        return default_url
-
-    # Check provider-state cache for a previously-detected endpoint.
-    auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "zai") or {}
-    cached = state.get("detected_endpoint")
-    if isinstance(cached, dict) and cached.get("base_url"):
-        key_hash = cached.get("key_hash", "")
-        if key_hash == hashlib.sha256(api_key.encode()).hexdigest()[:16]:
-            logger.debug("Z.AI: using cached endpoint %s", cached["base_url"])
-            return cached["base_url"]
-
-    # Probe — may take up to ~8s per endpoint.
-    detected = detect_zai_endpoint(api_key)
-    if detected and detected.get("base_url"):
-        # Persist the detection result keyed on the API key hash.
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        detected_endpoint = {
-            "base_url": detected["base_url"],
-            "endpoint_id": detected.get("id", ""),
-            "model": detected.get("model", ""),
-            "label": detected.get("label", ""),
-            "key_hash": key_hash,
-        }
-        # Persist failure (disk full, permissions, lock timeout) must not
-        # break resolution — detection already succeeded; worst case the
-        # next start re-probes.
-        try:
-            with _auth_store_lock():
-                # Reload auth_store under lock to avoid overwriting concurrent changes
-                auth_store = _load_auth_store()
-                state_under_lock = _load_provider_state(auth_store, "zai") or {}
-                state_under_lock["detected_endpoint"] = detected_endpoint
-                # set_active=False: this runs from credential-pool env seeding
-                # (agent/credential_pool.py) for ANY user with a Z.AI key in env,
-                # and caching a probe result must not flip their active provider.
-                _store_provider_state(auth_store, "zai", state_under_lock, set_active=False)
-                _save_auth_store(auth_store)
-        except Exception as exc:
-            logger.warning("Z.AI: could not persist detected endpoint (%s); will re-probe next start", exc)
-        logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
-        return detected["base_url"]
-
-    logger.debug("Z.AI: probe failed, falling back to default %s", default_url)
-    return default_url
-
-
-def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
-    """Return the OpenAI-compatible LM Studio runtime base URL.
-
-    LM Studio's native management API lives under ``/api/v1`` while its
-    OpenAI-compatible chat endpoint lives under ``/v1``. Users often paste
-    either form into ``LM_BASE_URL`` or ``model.base_url``; normalize before
-    the OpenAI SDK appends ``/chat/completions``.
-    """
-    root = str(base_url or "").strip().rstrip("/")
-    for suffix in ("/api/v1", "/api", "/v1"):
-        if root.endswith(suffix):
-            root = root[: -len(suffix)].rstrip("/")
-            break
-    return (root or "http://127.0.0.1:1234") + "/v1"
 
 
 # =============================================================================
@@ -958,95 +639,6 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     return auth_file
 
 
-def _load_provider_state_with_source(
-    auth_store: Dict[str, Any],
-    provider_id: str,
-) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
-    """Return a provider state plus the auth.json path it came from.
-
-    Most callers only need the state, but refresh paths that rotate single-use
-    OAuth refresh tokens must write the updated token chain back to the same
-    store they read. In profile mode ``_load_provider_state`` can read a
-    global-root fallback state; persisting a rotated Nous refresh token only to
-    the profile would leave the global/root store stale and cause the next
-    process to replay an already-consumed refresh token.
-    """
-    providers = auth_store.get("providers")
-    if isinstance(providers, dict):
-        state = providers.get(provider_id)
-        if isinstance(state, dict):
-            return dict(state), _auth_file_path()
-
-    global_path = _global_auth_file_path()
-    global_store = _load_global_auth_store()
-    if global_store:
-        global_providers = global_store.get("providers")
-        if isinstance(global_providers, dict):
-            global_state = global_providers.get(provider_id)
-            if isinstance(global_state, dict):
-                return dict(global_state), global_path
-    return None, None
-
-
-def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
-    """Return a provider's persisted state.
-
-    In profile mode, falls back to the global-root ``auth.json`` when the
-    profile has no entry for ``provider_id``. This mirrors the per-provider
-    shadowing already used by ``read_credential_pool``: workers spawned in a
-    profile can see providers (e.g. ``nous``) that were only authenticated at
-    global scope. Once the user runs ``son-of-anton auth login <provider>`` inside
-    the profile, the profile state fully shadows the global state on the next
-    read. See issue #18594 follow-up.
-    """
-    state, _source_path = _load_provider_state_with_source(auth_store, provider_id)
-    return state
-
-
-def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any]) -> None:
-    providers = auth_store.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        auth_store["providers"] = {}
-        providers = auth_store["providers"]
-    providers[provider_id] = state
-    auth_store["active_provider"] = provider_id
-
-
-def _store_provider_state(
-    auth_store: Dict[str, Any],
-    provider_id: str,
-    state: Dict[str, Any],
-    *,
-    set_active: bool = True,
-) -> None:
-    providers = auth_store.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        auth_store["providers"] = {}
-        providers = auth_store["providers"]
-    providers[provider_id] = state
-    if set_active:
-        auth_store["active_provider"] = provider_id
-
-
-def _persist_provider_state_to_store(
-    provider_id: str,
-    state: Dict[str, Any],
-    target_path: Path,
-    *,
-    set_active: bool = False,
-) -> Path:
-    """Merge one provider into a specific auth store under that store's lock."""
-    with _auth_store_lock(target_path=target_path):
-        auth_store = _load_auth_store(target_path)
-        _store_provider_state(
-            auth_store,
-            provider_id,
-            dict(state),
-            set_active=set_active,
-        )
-        return _save_auth_store(auth_store, target_path=target_path)
-
-
 def is_runtime_provider_routable(provider_id: str) -> bool:
     """Return whether runtime resolution recognizes a provider identity.
 
@@ -1315,23 +907,6 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
             auth_store.pop("suppressed_sources", None)
         _save_auth_store(auth_store)
         return True
-
-
-def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Return persisted auth state for a provider, or None.
-
-    In profile mode, ``_load_provider_state`` already falls back to the
-    global-root ``auth.json`` per-provider when the profile has no entry —
-    so this is now a thin convenience wrapper. Profile state always wins
-    when present. Writes (``_save_auth_store`` / ``persist_*_credentials``)
-    are unchanged — they still target the profile only. This mirrors
-    ``read_credential_pool``'s per-provider shadowing semantics so that
-    ``_seed_from_singletons`` can reseed a profile's credential pool from
-    global-scope provider state (e.g. a globally-authenticated Anthropic
-    OAuth or Nous device-code session). See issue #18594 follow-up.
-    """
-    auth_store = _load_auth_store()
-    return _load_provider_state(auth_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:
@@ -1712,25 +1287,9 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
     return parsed.timestamp()
 
 
-def _is_expiring(expires_at_iso: Any, skew_seconds: int) -> bool:
-    expires_epoch = _parse_iso_timestamp(expires_at_iso)
-    if expires_epoch is None:
-        return True
-    return expires_epoch <= (time.time() + skew_seconds)
-
-
-_NOUS_STALE_PORTAL_HOSTS: FrozenSet[str] = frozenset({
-    "api.nousresearch.com",
-})
-
 # Allowlist of valid Nous Portal hosts. A portal_base_url outside this
 # set is treated as a misconfiguration and falls back to the default.
 # "localhost" / "127.0.0.1" are valid for local development and testing.
-_NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
-    "portal.nousresearch.com",
-    "localhost",
-    "127.0.0.1",
-})
 
 
 # Allowlist of hosts the Nous Portal proxy is willing to forward inference
@@ -1741,9 +1300,6 @@ _NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
 # (NOUS_INFERENCE_BASE_URL) bypass validation — that's the documented
 # dev/staging escape hatch and the env source is already trusted (the
 # user set it themselves).
-_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
-    "inference-api.nousresearch.com",
-})
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
@@ -1759,42 +1315,10 @@ def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
     return claims if isinstance(claims, dict) else {}
 
 
-_NOUS_EFFECTIVE_STATE_IGNORED_KEYS = frozenset({
-    # These are derived from expires_at/JWT exp and naturally tick down between
-    # reads. Persisting only these changes makes auth.json noisy and defeats
-    # the mtime-keyed auth-status cache.
-    "expires_in",
-    "agent_key_expires_in",
-})
-
-
 # =============================================================================
 # Spotify auth — PKCE tokens stored in ~/.son-of-anton/auth.json
 # =============================================================================
 
-
-def get_spotify_auth_status() -> Dict[str, Any]:
-    state = get_provider_auth_state("spotify")
-    if not state:
-        return {"logged_in": False}
-
-    expires_at = state.get("expires_at")
-    refresh_token = str(state.get("refresh_token", "") or "").strip()
-    return {
-        "logged_in": bool(refresh_token or not _is_expiring(expires_at, 0)),
-        "auth_type": state.get("auth_type", "oauth_pkce"),
-        "client_id": state.get("client_id"),
-        "redirect_uri": state.get("redirect_uri"),
-        "scope": state.get("granted_scope") or state.get("scope"),
-        "expires_at": expires_at,
-        "api_base_url": state.get("api_base_url"),
-        "has_refresh_token": bool(refresh_token),
-    }
-
-
-# =============================================================================
-# SSH / remote session detection
-# =============================================================================
 
 def _is_remote_session() -> bool:
     """Detect environments where loopback OAuth can't reach the local browser.
@@ -1907,720 +1431,6 @@ def _can_open_graphical_browser() -> bool:
 # xAI Grok OAuth — tokens stored in ~/.son-of-anton/auth.json
 # =============================================================================
 
-def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return usable xAI OAuth state from provider state or credential pool."""
-    state = _load_provider_state(auth_store, "xai-oauth")
-    tokens = state.get("tokens") if isinstance(state, dict) else None
-    if isinstance(tokens, dict):
-        access_token = str(tokens.get("access_token", "") or "").strip()
-        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
-        if access_token and refresh_token:
-            return state
-
-    credential_pool = auth_store.get("credential_pool")
-    entries = (
-        credential_pool.get("xai-oauth")
-        if isinstance(credential_pool, dict)
-        else None
-    )
-    if isinstance(entries, list):
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            access_token = str(entry.get("access_token", "") or "").strip()
-            refresh_token = str(entry.get("refresh_token", "") or "").strip()
-            if not access_token or not refresh_token:
-                continue
-            merged = dict(state or {})
-            merged["tokens"] = {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": str(entry.get("token_type") or "Bearer"),
-            }
-            if entry.get("last_refresh"):
-                merged["last_refresh"] = entry.get("last_refresh")
-            merged.setdefault("auth_mode", "oauth_pkce")
-            return merged
-
-    return state if isinstance(state, dict) else None
-
-
-def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
-    tokens = state.get("tokens") if isinstance(state, dict) else None
-    return (
-        isinstance(tokens, dict)
-        and bool(str(tokens.get("access_token", "") or "").strip())
-        and bool(str(tokens.get("refresh_token", "") or "").strip())
-    )
-
-
-def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-    else:
-        auth_store = _load_auth_store()
-    state = _xai_oauth_state_from_store(auth_store)
-    if not _xai_oauth_state_has_usable_tokens(state):
-        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
-        if _xai_oauth_state_has_usable_tokens(global_state):
-            state = global_state
-    if not state:
-        raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `son-of-anton model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing",
-            relogin_required=True,
-        )
-    tokens = state.get("tokens")
-    if not isinstance(tokens, dict):
-        raise AuthError(
-            "xAI OAuth state is missing tokens. Re-authenticate with `son-of-anton model`.",
-            provider="xai-oauth",
-            code="xai_auth_invalid_shape",
-            relogin_required=True,
-        )
-    access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
-    if not access_token:
-        raise AuthError(
-            "xAI OAuth state is missing access_token. Re-authenticate with `son-of-anton model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing_access_token",
-            relogin_required=True,
-        )
-    if not refresh_token:
-        raise AuthError(
-            "xAI OAuth state is missing refresh_token. Re-authenticate with `son-of-anton model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing_refresh_token",
-            relogin_required=True,
-        )
-    return {
-        "tokens": tokens,
-        "last_refresh": state.get("last_refresh"),
-        "discovery": state.get("discovery") or {},
-        "redirect_uri": state.get("redirect_uri"),
-    }
-
-
-def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
-    """Persist a rotated xAI OAuth ``state`` into the global-root auth.json.
-
-    Best-effort write-through for the multi-profile rotation hazard (#43589):
-    xAI rotates the refresh_token on every refresh, so when a profile session
-    refreshes a grant it resolved from the root fallback, the rotated chain
-    must land back in root. Otherwise root keeps a now-revoked refresh token
-    and every other profile reading the stale root grant dies with
-    ``invalid_grant`` once its access token expires.
-
-    Only updates ``providers.xai-oauth`` in the root store; never touches the
-    profile store (the caller already saved that). Swallows all errors — a
-    failed write-through degrades to the pre-existing behavior (root stale),
-    it must never break the profile's own successful save.
-    """
-    global_path = _global_auth_file_path()
-    if global_path is None:
-        # Classic mode (profile == root); the profile save already hit root.
-        return
-    # Seat belt: under pytest, refuse to write the real user's
-    # ~/.son-of-anton/auth.json even when SON_OF_ANTON_HOME points at a profile path
-    # (mirrors the read-side guard in _load_global_auth_store). Uses the
-    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_env = os.environ.get("HOME", "")
-        if real_home_env:
-            real_root = Path(real_home_env) / ".son-of-anton" / "auth.json"
-            try:
-                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
-                    return
-            except Exception:
-                return
-    try:
-        _persist_provider_state_to_store(
-            "xai-oauth",
-            state,
-            global_path,
-            set_active=False,
-        )
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
-
-
-def _save_xai_oauth_tokens(
-    tokens: Dict[str, Any],
-    *,
-    discovery: Optional[Dict[str, Any]] = None,
-    redirect_uri: str = "",
-    last_refresh: Optional[str] = None,
-    auth_mode: str = "oauth_device_code",
-    set_active: bool = True,
-) -> None:
-    """Persist xAI OAuth tokens into the auth store.
-
-    When *set_active* is True (default), also promote ``xai-oauth`` to
-    ``active_provider`` — appropriate for intentional model/auth login.
-    Pass ``set_active=False`` for side-tool credential bootstrap (TTS/setup,
-    tools config, dashboard token save, token refresh) so inference routing
-    is unchanged.
-    """
-    if last_refresh is None:
-        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        # A profile that lacks its own xai-oauth block is reading the root
-        # grant through _load_provider_state's fallback. When such a profile
-        # refreshes the (rotating) grant, we must write the rotated chain back
-        # to root too, or root is left holding a revoked refresh token (#43589).
-        # #74339: the old key-presence check (_profile_has_own_xai_oauth_state)
-        # decided write-through based on whether the profile had a
-        # providers.xai-oauth key BEFORE the save — but _store_provider_state
-        # unconditionally creates that key below. Use
-        # _load_provider_state_with_source to learn where the grant was
-        # resolved from and write back only to that source.
-        state, source_path = _load_provider_state_with_source(
-            auth_store, "xai-oauth"
-        )
-        if state is None:
-            state = {}
-        state["tokens"] = tokens
-        state["last_refresh"] = last_refresh
-        state["auth_mode"] = auth_mode
-        if discovery:
-            state["discovery"] = discovery
-        if redirect_uri:
-            state["redirect_uri"] = redirect_uri
-        global_root = _global_auth_file_path()
-        is_from_root = bool(
-            source_path is not None
-            and global_root is not None
-            and _same_path(source_path, global_root)
-        )
-        if is_from_root:
-            # Grant was resolved from root — write back to root only.
-            # Do NOT call _store_provider_state on the profile auth_store
-            # (it would create a shadowing providers.xai-oauth key that
-            # disables write-through on the next refresh — #74339).
-            _write_through_xai_oauth_to_global_root(state)
-        else:
-            # Profile genuinely owns this — write to profile store.
-            _store_provider_state(
-                auth_store, "xai-oauth", state, set_active=set_active
-            )
-            _save_auth_store(auth_store)
-
-
-def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
-    if not isinstance(access_token, str) or "." not in access_token:
-        return False
-    try:
-        parts = access_token.split(".")
-        if len(parts) < 2:
-            return False
-        payload_b64 = parts[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8"))
-        exp = payload.get("exp")
-        if not isinstance(exp, (int, float)):
-            return False
-        return float(exp) <= (time.time() + max(0, int(skew_seconds)))
-    except Exception:
-        return False
-
-
-def _xai_proactive_refresh_skew_seconds(access_token: str) -> int:
-    """How far before JWT ``exp`` to proactively refresh xAI OAuth tokens.
-
-    SuperGrok sessions can still ship multi-hour access tokens, where the
-    gateway-oriented :data:`XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS` window
-    makes sense. Device-code logins often return ~15-minute JWTs; applying
-    the full hour-long skew to those forces a refresh on *every* credential
-    resolution (chat turn, Imagine tool call, ``son-of-anton auth status``, …),
-    which burns single-use refresh tokens and races concurrent callers into
-    ``invalid_grant`` quarantine.
-    """
-    max_skew = XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
-    if not isinstance(access_token, str) or "." not in access_token:
-        return max_skew
-    try:
-        parts = access_token.split(".")
-        if len(parts) < 2:
-            return max_skew
-        payload_b64 = parts[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8"))
-        exp = payload.get("exp")
-        if not isinstance(exp, (int, float)):
-            return max_skew
-        remaining = float(exp) - time.time()
-        if remaining <= 0:
-            return max_skew
-        if remaining <= 45 * 60:
-            return min(120, max_skew)
-        return max_skew
-    except Exception:
-        return max_skew
-
-
-def _xai_validate_oauth_endpoint(url: str, *, field: str) -> str:
-    """Refuse any OIDC discovery endpoint that isn't HTTPS on the xAI origin.
-
-    The OIDC discovery response is a long-lived, low-frequency request whose
-    output is cached in ``~/.son-of-anton/auth.json``. A single MITM during initial
-    login could substitute a malicious ``token_endpoint``; that URL would
-    then receive the refresh_token on every subsequent refresh — a permanent
-    credential leak from a one-time MITM. Validating scheme + host pins the
-    cached endpoint to the xAI auth origin (or a future ``*.x.ai`` subdomain
-    if xAI migrates) so the cache poisoning loses its persistence guarantee.
-
-    RFC 8414 §2 requires the issuer to be ``https://`` and SHOULD-keeps the
-    token_endpoint on the same origin; we enforce both. ``x.ai`` is the
-    bare apex, so we accept either exact host match or any ``.x.ai`` suffix.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise AuthError(
-            f"xAI OIDC discovery returned a non-HTTPS {field}: {url!r}.",
-            provider="xai-oauth",
-            code="xai_discovery_invalid",
-        )
-    host = (parsed.hostname or "").lower()
-    if not host:
-        raise AuthError(
-            f"xAI OIDC discovery {field} is missing a hostname: {url!r}.",
-            provider="xai-oauth",
-            code="xai_discovery_invalid",
-        )
-    if host != "x.ai" and not host.endswith(".x.ai"):
-        raise AuthError(
-            f"xAI OIDC discovery {field} host {host!r} is not on the xAI origin "
-            f"(expected x.ai or a *.x.ai subdomain). Refusing to use a cached "
-            f"endpoint that may have been substituted by a MITM during initial "
-            f"discovery; re-authenticate with `son-of-anton model` to re-fetch.",
-            provider="xai-oauth",
-            code="xai_discovery_invalid",
-        )
-    return url
-
-
-def _xai_validate_inference_base_url(value: str, *, fallback: str) -> str:
-    """Refuse a non-xAI base_url for the OAuth-authenticated inference path.
-
-    The xAI Grok OAuth bearer is a high-value, long-lived credential tied to
-    the user's SuperGrok subscription. ``XAI_BASE_URL`` / ``SON_OF_ANTON_XAI_BASE_URL``
-    let users repoint the inference endpoint (handy for staging or a local
-    proxy), but the env override is also a credential-leak vector: a tampered
-    ``.env`` or hostile shell init that sets
-    ``XAI_BASE_URL=https://attacker.example/v1`` would ship the OAuth access
-    token to a third party on every request, silently.
-
-    Pin the inference origin to ``api.x.ai`` (or any ``*.x.ai`` subdomain xAI
-    may add). On rejection, fall back to the default and log a warning rather
-    than raise — a bad env var should not deadlock authentication, but it
-    should also never leak the bearer.
-
-    ``value`` is the already-stripped, trailing-slash-trimmed candidate from
-    env. Empty input returns ``fallback`` unchanged.
-    """
-    candidate = (value or "").strip().rstrip("/")
-    if not candidate:
-        return fallback
-    try:
-        parsed = urlparse(candidate)
-    except Exception:
-        logger.warning(
-            "Ignoring malformed xAI base_url override %r; using %s instead.",
-            candidate, fallback,
-        )
-        return fallback
-    if parsed.scheme != "https":
-        logger.warning(
-            "Refusing non-HTTPS xAI base_url override %r (xai-oauth bearer would "
-            "be sent in cleartext); falling back to %s.",
-            candidate, fallback,
-        )
-        return fallback
-    host = (parsed.hostname or "").lower()
-    if not host:
-        logger.warning(
-            "Ignoring xAI base_url override %r with no hostname; using %s instead.",
-            candidate, fallback,
-        )
-        return fallback
-    if host != "x.ai" and not host.endswith(".x.ai"):
-        logger.warning(
-            "Refusing xAI base_url override %r — host %r is not on the xAI origin "
-            "(expected x.ai or a *.x.ai subdomain). The xai-oauth bearer is only "
-            "valid against xAI's inference API; sending it elsewhere would leak "
-            "the credential. Falling back to %s.",
-            candidate, host, fallback,
-        )
-        return fallback
-    return candidate
-
-
-def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
-    try:
-        response = httpx.get(
-            XAI_OAUTH_DISCOVERY_URL,
-            headers={"Accept": "application/json"},
-            timeout=timeout_seconds,
-        )
-    except Exception as exc:
-        raise AuthError(
-            f"xAI OIDC discovery failed: {exc}",
-            provider="xai-oauth",
-            code="xai_discovery_failed",
-        ) from exc
-    if response.status_code != 200:
-        raise AuthError(
-            f"xAI OIDC discovery returned status {response.status_code}.",
-            provider="xai-oauth",
-            code="xai_discovery_failed",
-        )
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise AuthError(
-            f"xAI OIDC discovery returned invalid JSON: {exc}",
-            provider="xai-oauth",
-            code="xai_discovery_invalid_json",
-        ) from exc
-    if not isinstance(payload, dict):
-        raise AuthError(
-            "xAI OIDC discovery response was not a JSON object.",
-            provider="xai-oauth",
-            code="xai_discovery_incomplete",
-        )
-    authorization_endpoint = str(payload.get("authorization_endpoint", "") or "").strip()
-    token_endpoint = str(payload.get("token_endpoint", "") or "").strip()
-    if not authorization_endpoint or not token_endpoint:
-        raise AuthError(
-            "xAI OIDC discovery response was missing required endpoints.",
-            provider="xai-oauth",
-            code="xai_discovery_incomplete",
-        )
-    _xai_validate_oauth_endpoint(authorization_endpoint, field="authorization_endpoint")
-    _xai_validate_oauth_endpoint(token_endpoint, field="token_endpoint")
-    return {
-        "authorization_endpoint": authorization_endpoint,
-        "token_endpoint": token_endpoint,
-    }
-
-
-def refresh_xai_oauth_pure(
-    access_token: str,
-    refresh_token: str,
-    *,
-    token_endpoint: str = "",
-    timeout_seconds: float = 20.0,
-) -> Dict[str, Any]:
-    del access_token
-    if not isinstance(refresh_token, str) or not refresh_token.strip():
-        raise AuthError(
-            "xAI OAuth is missing refresh_token. Re-authenticate with `son-of-anton model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing_refresh_token",
-            relogin_required=True,
-        )
-    endpoint = token_endpoint.strip() or _xai_oauth_discovery(timeout_seconds)["token_endpoint"]
-    # Re-validate cached endpoints on the refresh hot path: an auth.json
-    # written by an older Son of Anton (or hand-edited) may carry a non-xAI
-    # token_endpoint that would receive every future refresh_token in
-    # plaintext if we trusted it blindly. Cheap suffix check; fast-fail
-    # with a clear error so the user can re-run `son-of-anton model` to refetch.
-    _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
-    timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
-        response = client.post(
-            endpoint,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "refresh_token",
-                "client_id": XAI_OAUTH_CLIENT_ID,
-                "refresh_token": refresh_token,
-            },
-        )
-    if response.status_code != 200:
-        detail = response.text.strip()
-        # ``403`` from xAI's token endpoint is almost always a tier /
-        # entitlement gate (the OAuth grant exists but the account isn't
-        # on the allowlist for API access).  Re-running ``son-of-anton model``
-        # won't fix that — surface a separate error code so
-        # ``format_auth_error`` doesn't append a misleading
-        # re-authenticate hint, and point users at the ``XAI_API_KEY``
-        # fallback.  See #26847.
-        if response.status_code == 403:
-            raise AuthError(
-                "xAI token refresh failed with HTTP 403."
-                + (f" Response: {detail}" if detail else "")
-                + " This OAuth account is not authorized for xAI API"
-                  " access — xAI may be restricting API/OAuth use to"
-                  " specific SuperGrok tiers despite the in-app"
-                  " subscription being active. Re-logging in won't"
-                  " change that; set ``XAI_API_KEY`` and switch to"
-                  " ``provider: xai`` (API-key path) if available, or"
-                  " upgrade your subscription at https://x.ai/grok.",
-                provider="xai-oauth",
-                code="xai_oauth_tier_denied",
-                relogin_required=False,
-            )
-        raise AuthError(
-            "xAI token refresh failed."
-            + (f" Response: {detail}" if detail else ""),
-            provider="xai-oauth",
-            code="xai_refresh_failed",
-            relogin_required=(response.status_code in {400, 401}),
-        )
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise AuthError(
-            f"xAI token refresh returned invalid JSON: {exc}",
-            provider="xai-oauth",
-            code="xai_refresh_invalid_json",
-        ) from exc
-    if not isinstance(payload, dict):
-        raise AuthError(
-            "xAI token refresh response was not a JSON object.",
-            provider="xai-oauth",
-            code="xai_refresh_invalid_response",
-            relogin_required=True,
-        )
-    refreshed_access = str(payload.get("access_token", "") or "").strip()
-    if not refreshed_access:
-        raise AuthError(
-            "xAI token refresh response was missing access_token.",
-            provider="xai-oauth",
-            code="xai_refresh_missing_access_token",
-            relogin_required=True,
-        )
-    updated = {
-        "access_token": refreshed_access,
-        "refresh_token": str(payload.get("refresh_token") or refresh_token).strip(),
-        "id_token": str(payload.get("id_token") or "").strip(),
-        "expires_in": payload.get("expires_in"),
-        "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
-    return updated
-
-
-def _refresh_xai_oauth_tokens(
-    tokens: Dict[str, Any],
-    *,
-    token_endpoint: str,
-    redirect_uri: str = "",
-    timeout_seconds: float,
-) -> Dict[str, Any]:
-    # Re-persist whatever auth_mode is already stored (legacy pre-device-code
-    # logins may still carry ``oauth_pkce``): the refresh hot path must not
-    # relabel how the grant was originally obtained.
-    try:
-        state = _load_provider_state(_load_auth_store(), "xai-oauth") or {}
-        auth_mode = str(state.get("auth_mode") or "oauth_device_code")
-    except Exception:
-        auth_mode = "oauth_device_code"
-    refreshed = refresh_xai_oauth_pure(
-        str(tokens.get("access_token", "") or ""),
-        str(tokens.get("refresh_token", "") or ""),
-        token_endpoint=token_endpoint,
-        timeout_seconds=timeout_seconds,
-    )
-    updated_tokens = dict(tokens)
-    updated_tokens["access_token"] = refreshed["access_token"]
-    updated_tokens["refresh_token"] = refreshed["refresh_token"]
-    if refreshed.get("id_token"):
-        updated_tokens["id_token"] = refreshed["id_token"]
-    if refreshed.get("expires_in") is not None:
-        updated_tokens["expires_in"] = refreshed["expires_in"]
-    if refreshed.get("token_type"):
-        updated_tokens["token_type"] = refreshed["token_type"]
-    _save_xai_oauth_tokens(
-        updated_tokens,
-        discovery={"token_endpoint": token_endpoint},
-        redirect_uri=redirect_uri,
-        last_refresh=refreshed["last_refresh"],
-        auth_mode=auth_mode,
-        # Refresh must not flip active_provider — TTS/side tools can refresh
-        # xAI tokens while chat still routes through another provider.
-        set_active=False,
-    )
-    return updated_tokens
-
-
-def resolve_xai_oauth_runtime_credentials(
-    *,
-    force_refresh: bool = False,
-    refresh_if_expiring: bool = True,
-    refresh_skew_seconds: Optional[int] = None,
-) -> Dict[str, Any]:
-    data = _read_xai_oauth_tokens()
-    tokens = dict(data["tokens"])
-    access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = env_float("SON_OF_ANTON_XAI_REFRESH_TIMEOUT_SECONDS", 20)
-    discovery = dict(data.get("discovery") or {})
-    token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
-    redirect_uri = str(data.get("redirect_uri", "") or "").strip()
-
-    effective_skew = (
-        int(refresh_skew_seconds)
-        if refresh_skew_seconds is not None
-        else _xai_proactive_refresh_skew_seconds(access_token)
-    )
-    should_refresh = bool(force_refresh)
-    if (not should_refresh) and refresh_if_expiring:
-        should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
-    if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_xai_oauth_tokens(_lock=False)
-            tokens = dict(data["tokens"])
-            access_token = str(tokens.get("access_token", "") or "").strip()
-            discovery = dict(data.get("discovery") or {})
-            token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
-            redirect_uri = str(data.get("redirect_uri", "") or "").strip()
-            effective_skew = (
-                int(refresh_skew_seconds)
-                if refresh_skew_seconds is not None
-                else _xai_proactive_refresh_skew_seconds(access_token)
-            )
-            should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
-            if should_refresh:
-                if not token_endpoint:
-                    token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
-                try:
-                    tokens = _refresh_xai_oauth_tokens(
-                        tokens,
-                        token_endpoint=token_endpoint,
-                        redirect_uri=redirect_uri,
-                        timeout_seconds=refresh_timeout_seconds,
-                    )
-                    access_token = str(tokens.get("access_token", "") or "").strip()
-                except AuthError as exc:
-                    if _is_terminal_xai_oauth_refresh_error(exc):
-                        # Terminal failure (HTTP 400/401/403 — invalid_grant, token revoked).
-                        # Clear dead tokens from auth.json so subsequent sessions fail fast
-                        # without a network retry. Mirrors credential_pool.py quarantine.
-                        try:
-                            _q_store = _load_auth_store()
-                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
-                            _q_tokens = dict(_q_state.get("tokens") or {})
-                            _q_tokens.pop("access_token", None)
-                            _q_tokens.pop("refresh_token", None)
-                            _q_state["tokens"] = _q_tokens
-                            _q_state["last_auth_error"] = {
-                                "provider": "xai-oauth",
-                                "code": exc.code or "xai_refresh_failed",
-                                "message": str(exc),
-                                "reason": "runtime_refresh_failure",
-                                "relogin_required": True,
-                                "at": datetime.now(timezone.utc).isoformat(),
-                            }
-                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
-                        except Exception as _save_exc:
-                            logger.debug(
-                                "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
-                            )
-                    raise
-
-    base_url = _xai_validate_inference_base_url(
-        os.getenv("SON_OF_ANTON_XAI_BASE_URL", "").strip().rstrip("/")
-        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
-        fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-    )
-    return {
-        "provider": "xai-oauth",
-        "base_url": base_url,
-        "api_key": access_token,
-        "source": "son-of-anton-auth-store",
-        "last_refresh": data.get("last_refresh"),
-        # Display/telemetry only. Device-code is the only supported xAI OAuth
-        # flow, so report it unconditionally — auth.json may still carry a
-        # legacy ``oauth_pkce`` label, which the refresh path preserves as-is.
-        "auth_mode": "oauth_device_code",
-    }
-
-
-# =============================================================================
-# TLS verification helper
-# =============================================================================
-
-
-def _is_terminal_xai_oauth_refresh_error(exc: Exception) -> bool:
-    """True when retrying the same xAI OAuth refresh token cannot succeed.
-
-    ``xai_refresh_failed`` covers HTTP 400/401/403 from the token endpoint
-    (invalid_grant, token revoked, refresh_token_reused).
-    ``xai_auth_missing_refresh_token`` means the pool entry has no refresh
-    token at all — retrying will never work.
-    Both carry ``relogin_required=True``; transient failures (429, 5xx) do not.
-    """
-    return (
-        isinstance(exc, AuthError)
-        and exc.provider == "xai-oauth"
-        and exc.code in {"xai_refresh_failed", "xai_auth_missing_refresh_token"}
-        and bool(exc.relogin_required)
-    )
-
-
-# =============================================================================
-# Status helpers
-# =============================================================================
-
-# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store).
-# Same invalidation contract as _nous_auth_status_cache — the global auth
-# file changes only when a global-scope auth write touches it.
-_global_auth_store_cache: Optional[Tuple[str, int, Dict[str, Any]]] = None
-
-
-def get_xai_oauth_auth_status() -> Dict[str, Any]:
-    try:
-        from agent.credential_pool import load_pool
-
-        pool = load_pool("xai-oauth")
-        if pool and pool.has_credentials():
-            entry = pool.select()
-            if entry is not None:
-                api_key = (
-                    getattr(entry, "runtime_api_key", None)
-                    or getattr(entry, "access_token", "")
-                )
-                if api_key and not _xai_access_token_is_expiring(api_key, 0):
-                    return {
-                        "logged_in": True,
-                        "auth_store": str(_auth_file_path()),
-                        "last_refresh": getattr(entry, "last_refresh", None),
-                        # Display/telemetry only. Device-code is the only xAI
-                        # OAuth flow, so report it unconditionally (auth.json
-                        # may still carry a legacy ``oauth_pkce`` label).
-                        "auth_mode": "oauth_device_code",
-                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
-                        "api_key": api_key,
-                    }
-    except Exception:
-        pass
-
-    try:
-        creds = resolve_xai_oauth_runtime_credentials()
-        return {
-            "logged_in": True,
-            "auth_store": str(_auth_file_path()),
-            "last_refresh": creds.get("last_refresh"),
-            "auth_mode": creds.get("auth_mode"),
-            "source": creds.get("source"),
-            "api_key": creds.get("api_key"),
-        }
-    except AuthError as exc:
-        return {
-            "logged_in": False,
-            "auth_store": str(_auth_file_path()),
-            "error": str(exc),
-        }
-
-
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -2646,67 +1456,20 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
             "logged_in": True,
         }
 
-    api_key = ""
-    key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif env_url:
-        base_url = env_url
-    else:
-        base_url = pconfig.inference_base_url
-
-    if provider_id == "actual":
-        base_url = normalize_actual_base_url(base_url)
-
-    actual_local_noauth = (
-        provider_id == "actual"
-        and not api_key
-        and is_actual_local_base_url(base_url)
-    )
+    base_url = env_url or pconfig.inference_base_url
 
     return {
-        "configured": bool(api_key) or actual_local_noauth,
+        "configured": bool(api_key),
         "provider": provider_id,
         "name": pconfig.name,
-        "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
+        "key_source": key_source,
         "base_url": base_url,
-        "logged_in": bool(api_key) or actual_local_noauth,  # compat with OAuth status shape
-    }
-
-
-def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for providers that run a local subprocess."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "external_process":
-        return {"configured": False}
-
-    command = (
-        os.getenv("SON_OF_ANTON_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("SON_OF_ANTON_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    resolved_command = shutil.which(command) if command else None
-    return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
-        "provider": provider_id,
-        "name": pconfig.name,
-        "command": command,
-        "args": args,
-        "resolved_command": resolved_command,
-        "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "logged_in": bool(api_key),
     }
 
 
@@ -2715,14 +1478,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
-    if target == "spotify":
-        return get_spotify_auth_status()
-    if target == "xai-oauth":
-        return get_xai_oauth_auth_status()
-    if target == "minimax-oauth":
-        return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
-        return get_external_process_provider_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
@@ -2743,91 +1498,24 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
             code="invalid_provider",
         )
 
-    api_key = ""
-    key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-
-    # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
-    # see the local server as configured. doctor still reports unconfigured
-    # because get_api_key_provider_status uses the raw secret resolver.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
-        key_source = key_source or "default"
 
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif provider_id == "zai":
-        base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
-    elif env_url:
-        base_url = env_url.rstrip("/")
-    else:
-        base_url = pconfig.inference_base_url
-
-    if provider_id == "lmstudio":
-        base_url = _normalize_lmstudio_runtime_base_url(base_url)
-
-    if provider_id == "actual":
-        base_url = normalize_actual_base_url(base_url)
+    base_url = env_url.rstrip("/") if env_url else pconfig.inference_base_url
 
     # Last-resort guard: an API-key provider must never hand back an empty
-    # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
-    # otherwise wedges chat inference — #50252).
+    # base URL (a set-but-empty <PROVIDER>_BASE_URL env override otherwise
+    # wedges chat inference — #50252).
     if not (isinstance(base_url, str) and base_url.strip()):
         base_url = pconfig.inference_base_url
-
-    if not api_key and provider_id == "actual" and is_actual_local_base_url(base_url):
-        api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-        key_source = key_source or "local-offline"
 
     return {
         "provider": provider_id,
         "api_key": api_key,
         "base_url": base_url.rstrip("/"),
         "source": key_source or "default",
-    }
-
-
-def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
-    """Resolve runtime details for local subprocess-backed providers."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "external_process":
-        raise AuthError(
-            f"Provider '{provider_id}' is not an external-process provider.",
-            provider=provider_id,
-            code="invalid_provider",
-        )
-
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-    if not base_url:
-        base_url = pconfig.inference_base_url
-
-    command = (
-        os.getenv("SON_OF_ANTON_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("SON_OF_ANTON_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
-    resolved_command = shutil.which(command) if command else None
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
-        raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set SON_OF_ANTON_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
-            provider=provider_id,
-            code="missing_copilot_cli",
-        )
-
-    return {
-        "provider": provider_id,
-        "api_key": "copilot-acp",
-        "base_url": base_url.rstrip("/"),
-        "command": resolved_command or command,
-        "args": args,
-        "source": "process",
     }
 
 
@@ -3063,7 +1751,7 @@ def _prompt_model_selection(
         choices.append("Enter custom model name")
         choices.append("Skip (keep current)")
 
-        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        _upgrade_url = (portal_url or "").rstrip("/")
         unavailable_footer = unavailable_message.strip()
         if not unavailable_footer and _unavailable:
             unavailable_footer = f"Upgrade at {_upgrade_url} for paid models"
@@ -3141,7 +1829,7 @@ def _prompt_model_selection(
     print(f"  {n + 2:>{num_width}}. Skip (keep current)")
 
     if _unavailable:
-        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        _upgrade_url = (portal_url or "").rstrip("/")
         unavailable_footer = unavailable_message.strip() or (
             f"Unavailable models (requires paid tier — upgrade at {_upgrade_url})"
         )
@@ -3186,28 +1874,4 @@ def _save_model_choice(model_id: str) -> None:
     else:
         config["model"] = {"default": model_id}
     save_config(config)
-
-
-# ==================== MiniMax Portal OAuth ====================
-
-_MINIMAX_OAUTH_ERROR_BODY_LIMIT = 16 * 1024
-
-
-def get_minimax_oauth_auth_status() -> Dict[str, Any]:
-    """Return auth status dict for MiniMax OAuth provider."""
-    state = get_provider_auth_state("minimax-oauth")
-    if not state or not state.get("access_token"):
-        return {"logged_in": False, "provider": "minimax-oauth"}
-    try:
-        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
-        token_valid = (expires_at - time.time()) > 0
-    except Exception:
-        token_valid = bool(state.get("access_token"))
-    return {
-        "logged_in": token_valid,
-        "provider": "minimax-oauth",
-        "region": state.get("region", "global"),
-        "expires_at": state.get("expires_at"),
-    }
-
 

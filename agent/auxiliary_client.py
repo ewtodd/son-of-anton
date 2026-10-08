@@ -988,6 +988,14 @@ _NVIDIA_NIM_CLOUD_HEADERS = {
 # Default auxiliary models per provider
 _AUTH_JSON_PATH = get_son_of_anton_home() / "auth.json"
 
+_DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = (
+    "minimax.io",
+    "minimax.chat",
+    "minimaxi.com",
+)
+_DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES = ("api.minimax.",)
+
+
 def _is_dual_surface_anthropic_host(url: str) -> bool:
     """True when the URL's host is a known dual-surface (MiniMax-family) host."""
     try:
@@ -1896,6 +1904,10 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
+
+
+_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -4188,7 +4200,6 @@ def resolve_provider_client(
         from son_of_anton_cli.auth import (
             PROVIDER_REGISTRY,
             resolve_api_key_provider_credentials,
-            resolve_external_process_provider_credentials,
         )
     except ImportError:
         logger.debug("son_of_anton_cli.auth not available for provider %s", provider)
@@ -4227,23 +4238,8 @@ def resolve_provider_client(
         if _free_rt is not None:
             api_key = _free_rt["api_key"]
             raw_base_url = str(_free_rt["base_url"]).rstrip("/")
-        if provider == "actual":
-            try:
-                from son_of_anton_cli.auth import (
-                    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
-                    is_actual_local_base_url,
-                    normalize_actual_base_url,
-                )
-
-                raw_base_url = normalize_actual_base_url(raw_base_url)
-                if not api_key and is_actual_local_base_url(raw_base_url):
-                    api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-            except Exception:
-                pass
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
-            if provider == "copilot":
-                tried_sources.append("gh auth token")
             logger.debug("resolve_provider_client: provider %s has no API "
                          "key configured (tried: %s)",
                          provider, ", ".join(tried_sources))
@@ -4288,27 +4284,9 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    if pconfig.auth_type == "external_process":
-        creds = resolve_external_process_provider_credentials(provider)
-        final_model = _normalize_resolved_model(
-            model
-            or (main_runtime.get("model") if main_runtime else None)
-            or _read_main_model_for_aux(),
-            provider,
-        )
-        if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
-            _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
-            logger.debug("resolve_provider_client: external-process provider %s not "
-                         "directly supported", provider)
-        return None, None
-
-
-
     elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
-        # OAuth providers — route through their specific try functions
-        if provider == "xai-oauth":
-            return resolve_provider_client("xai-oauth", model, async_mode)
-        # Other OAuth providers not directly supported
+        # OAuth providers are not directly supported here; their credential
+        # resolution lives with the provider plugin.
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
             logger.debug("resolve_provider_client: OAuth provider %s not "
@@ -7368,11 +7346,8 @@ async def _async_call_llm_impl(
         # Retry ONCE on the same provider for a transient transport blip
         # before the except-chain escalates to fallback — see call_llm()
         # for the rationale. (PR #16587)
-        _force_stream_async = (
-            _provider_requires_stream(
-                request_provider, _client_base or resolved_base_url,
-            )
-            and not isinstance(client, AsyncCodexAuxiliaryClient)
+        _force_stream_async = _provider_requires_stream(
+            request_provider, _client_base or resolved_base_url,
         )
 
         async def _acreate(_kwargs: Dict[str, Any]) -> Any:

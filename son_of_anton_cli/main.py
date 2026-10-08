@@ -264,13 +264,9 @@ _ensure_project_root_on_path_fast()
 if _try_ultrafast_version():
     raise SystemExit(0)
 
-import argparse
-import hashlib
-import json
 import re
 import shlex
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -399,7 +395,6 @@ import threading
 import time as _time
 from datetime import datetime
 
-from son_of_anton_cli import __version__, __release_date__
 
 # Provider model-selection wizard flows extracted to son_of_anton_cli/model_setup_flows.py
 # (god-file decomposition Phase 2). Re-imported here so select_provider_and_model
@@ -1662,7 +1657,6 @@ def select_provider_and_model(args=None):
     from son_of_anton_cli.config import (
         get_compatible_custom_providers,
         load_config,
-        get_env_value,
     )
     from son_of_anton_cli.providers import (
         custom_provider_aliases,
@@ -2651,7 +2645,6 @@ def _auto_provider_name(base_url: str) -> str:
     "RunPod (xyz.runpod.io)".  Used as the default when prompting the
     user for a display name during custom endpoint setup.
     """
-    import re
 
     clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
     clean = re.sub(r"/v1/?$", "", clean)
@@ -3001,24 +2994,18 @@ def _prompt_api_key(
     ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
-    from son_of_anton_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
     from son_of_anton_cli.config import save_env_value
     from son_of_anton_cli.secret_prompt import masked_secret_prompt
 
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
-    def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
-        if provider_id == "lmstudio" and allow_lmstudio_default:
-            prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
-        else:
-            prompt = f"{key_env} (or Enter to cancel): "
+    def _prompt_new_key() -> str:
+        prompt = f"{key_env} (or Enter to cancel): "
         try:
             entered = masked_secret_prompt(prompt).strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return ""
-        if not entered and provider_id == "lmstudio" and allow_lmstudio_default:
-            return LMSTUDIO_NOAUTH_PLACEHOLDER
         return entered
 
     # First-time entry ────────────────────────────────────────────────────
@@ -3026,7 +3013,7 @@ def _prompt_api_key(
         print(f"No {pconfig.name} API key configured.")
         if not key_env:
             return "", True
-        new_key = _prompt_new_key(allow_lmstudio_default=True)
+        new_key = _prompt_new_key()
         if not new_key:
             print("Cancelled.")
             return "", True
@@ -3057,7 +3044,7 @@ def _prompt_api_key(
         choice = "k"
 
     if choice.startswith("r"):
-        new_key = _prompt_new_key(allow_lmstudio_default=False)
+        new_key = _prompt_new_key()
         if not new_key:
             print("  No change.")
             print()
@@ -3077,29 +3064,6 @@ def _prompt_api_key(
     # Keep (default, or any other input)
     print()
     return existing_key, False
-
-
-
-
-def _infer_stepfun_region(base_url: str) -> str:
-    """Infer the current StepFun region from the configured endpoint."""
-    normalized = (base_url or "").strip().lower()
-    if "api.stepfun.com" in normalized:
-        return "china"
-    return "international"
-
-
-def _stepfun_base_url_for_region(region: str) -> str:
-    from son_of_anton_cli.auth import (
-        STEPFUN_STEP_PLAN_CN_BASE_URL,
-        STEPFUN_STEP_PLAN_INTL_BASE_URL,
-    )
-
-    return (
-        STEPFUN_STEP_PLAN_CN_BASE_URL
-        if region == "china"
-        else STEPFUN_STEP_PLAN_INTL_BASE_URL
-    )
 
 
 

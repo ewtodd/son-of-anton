@@ -2784,9 +2784,8 @@ def list_authenticated_providers(
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
         # Fallback: check the credential pool with full auto-seeding.
-        # This catches credentials that exist in external stores (e.g.
-        # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()
-        # imports on demand but aren't in the raw auth.json yet.
+        # This catches credentials stored in the pool that aren't in the
+        # raw auth.json yet.
         if not has_creds:
             try:
                 if _credential_pool_is_usable(son_of_anton_slug):

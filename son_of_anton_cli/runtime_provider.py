@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -20,16 +18,12 @@ from agent.credential_pool import (
 )
 from agent.secret_scope import get_secret as _get_secret
 from son_of_anton_cli.auth import (
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
     PROVIDER_REGISTRY,
     format_auth_error,
     resolve_provider,
     resolve_api_key_provider_credentials,
-    resolve_external_process_provider_credentials,
     has_usable_secret,
-    is_actual_local_base_url,
-    normalize_actual_base_url,
 )
 from son_of_anton_cli.config import (
     get_compatible_custom_providers,
@@ -37,7 +31,7 @@ from son_of_anton_cli.config import (
     normalize_extra_headers,
 )
 from son_of_anton_cli.providers import custom_provider_aliases, custom_provider_slug
-from utils import base_url_host_matches, base_url_hostname, env_int
+from utils import base_url_host_matches, base_url_hostname
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -340,9 +334,6 @@ def _resolve_runtime_from_pool_entry(
         from son_of_anton_cli.models import normalize_opencode_base_url
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
-
-    if provider == "lmstudio":
-        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
 
     return {
         "provider": provider,
@@ -1139,14 +1130,7 @@ def _resolve_explicit_runtime(
 
         base_url = explicit_base_url
         if not base_url:
-            if provider in {"kimi-coding", "kimi-coding-cn"}:
-                creds = resolve_api_key_provider_credentials(provider)
-                base_url = creds.get("base_url", "").rstrip("/")
-            else:
-                base_url = env_url or pconfig.inference_base_url
-
-        if provider == "actual":
-            base_url = normalize_actual_base_url(base_url)
+            base_url = env_url or pconfig.inference_base_url
 
         api_key = explicit_api_key
         if not api_key:
@@ -1154,8 +1138,6 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
-                if provider == "actual":
-                    base_url = normalize_actual_base_url(base_url)
 
         api_mode = "chat_completions"
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1167,9 +1149,6 @@ def _resolve_explicit_runtime(
             api_mode = _fallback_api_mode(
                 provider, base_url, target_model or model_cfg.get("default", "")
             )
-
-        if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
-            api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
 
         return {
             "provider": provider,
@@ -1354,35 +1333,15 @@ def resolve_runtime_provider(
                 target_model=target_model,
             )
 
-    if provider == "minimax-oauth":
-        pconfig = PROVIDER_REGISTRY.get(provider)
-    # Anthropic (native Messages API)
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # API-key providers
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        # Actual Computer: a loopback base_url configured in model_cfg (not
-        # just env) selects the daemon's local offline API, which requires no
-        # auth. Inject the placeholder BEFORE the usable-secret gate below,
-        # mirroring the env-driven path inside the credential resolver.
-        if provider == "actual" and not has_usable_secret(creds.get("api_key")):
-            _cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-            _cfg_url = ""
-            if _cfg_provider == provider:
-                _cfg_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-            _effective_url = normalize_actual_base_url(
-                _cfg_url or creds.get("base_url", "").rstrip("/")
-            )
-            if is_actual_local_base_url(_effective_url):
-                creds = dict(creds)
-                creds["api_key"] = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-                creds["source"] = creds.get("source") or "local-offline"
         # An explicitly selected API-key provider is authoritative. Returning
         # a runtime with an empty key defers failure until the first request and
         # can make a later fallback look like a silent provider switch. Fail at
         # resolution so callers surface the missing credential (or consult only
-        # an explicitly configured fallback chain). LM Studio's no-auth path
-        # supplies a non-empty placeholder in the credential resolver above.
+        # an explicitly configured fallback chain).
         if not has_usable_secret(creds.get("api_key")):
             env_names = ", ".join(pconfig.api_key_env_vars)
             hint = f" Set {env_names}." if env_names else ""
@@ -1392,16 +1351,13 @@ def resolve_runtime_provider(
                 code="missing_api_key",
             )
         # Honour model.base_url from config.toml when the configured provider
-        # matches this provider — mirrors the Anthropic path above.  Without
-        # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
-        # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
+        # matches this provider.  Without this, a configured custom endpoint
+        # still falls back to the provider's hardcoded default (#6039).
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
-        if provider == "actual":
-            base_url = normalize_actual_base_url(base_url)
         api_mode = "chat_completions"
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Only honor persisted api_mode when it belongs to the same provider family.
@@ -1432,11 +1388,7 @@ def resolve_runtime_provider(
         if opencode_provider_family(provider) is not None:
             from son_of_anton_cli.models import normalize_opencode_base_url
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
-        if provider == "lmstudio":
-            base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
         api_key = creds.get("api_key", "")
-        if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
-            api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
         return {
             "provider": provider,
             "api_mode": api_mode,
