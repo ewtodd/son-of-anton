@@ -39,6 +39,8 @@ from __future__ import annotations
 import re
 from typing import Optional, Sequence
 
+from utils import base_url_host_matches
+
 #: K3 slug detector — matches ``k3`` as a delimited token (``k3``,
 #: ``k3-256k``, ``kimi-k3``, ``kimi-k3-cot``) without matching K2-era names
 #: (``kimi-k2.6``). From #76427 by @ruizanthony.
@@ -61,27 +63,10 @@ OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 
-#: OpenAI/Codex Responses backend — per-model vocabulary, live-verified
-#: (Aug 2026): ``minimal`` is rejected by both generations (clamps to low);
-#: ``max`` is gpt-5.6-only — gpt-5.5 rejects it with "Supported values are:
-#: 'none', 'low', 'medium', 'high', 'xhigh'" (#68365's premise, confirmed).
-
-
-#: Backward-compat alias (pre-#68365-verification name).
-
-#: xAI Responses — Grok 4.6+ accepts xhigh; older Grok tops out at high.
-
-#: Actual Computer relays (SGLang/vLLM): none/low/medium/high/max.
-
 #: Moonshot/Kimi K3: low/high/max (server default high).
 KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 #: Moonshot/Kimi K2-era models: low/medium/high.
 KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
-
-#: OpenCode "Ox Alpha" stealth model (x-preview-f-free): thinking is always
-#: on and the wire accepts exactly low/high/max — medium/none/xhigh 400 with
-#: "This model always engages in thinking and cannot be disabled; please use
-#: low, high, or max" (verified live 2026-08-21). xhigh rounds up to max.
 
 #: Tencent TokenHub: low/medium/high.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
@@ -91,17 +76,6 @@ TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 #: default, so ``medium`` rounds to it rather than down to ``low``; ``xhigh``
 #: rounds up to ``max`` (K3's top tier), matching the kimi-coding plugin.
 KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
-
-#: GLM-5.2 native reasoning_effort knob: exactly two enabled levels,
-#: ``high`` (its minimum thinking level) and ``max`` (per Z.AI/BigModel
-#: docs). ``xhigh`` requests the top tier, not the floor.
-
-#: Ollama Cloud /v1/chat/completions: accepts {none, low, medium, high, max};
-#: rejects ``minimal`` with HTTP 400. ``xhigh`` requests the top tier.
-
-#: Meta Model API (Muse): minimal..xhigh; rejects ``none``.
-
-#: Upstage Solar Pro/Open: low/medium/high.
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
@@ -117,6 +91,60 @@ def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     if _KIMI_K3_SLUG_RE.search(m):
         return KIMI_K3_EFFORTS
     return KIMI_K2_EFFORTS
+
+
+#: Hosts whose wire picks the Kimi vocabulary (mirrors the transport branch in
+#: ``agent/transports/chat_completions.py``).
+_KIMI_EFFORT_HOSTS: tuple[str, ...] = ("api.kimi.com", "moonshot.ai", "moonshot.cn")
+
+#: Host whose wire picks the TokenHub vocabulary.
+_TOKENHUB_EFFORT_HOST = "tokenhub.tencentmaas.com"
+
+
+def supported_efforts_for(
+    model: Optional[str],
+    *,
+    provider: str = "",
+    base_url: str = "",
+    custom_providers: Optional[list] = None,
+    config: Optional[dict] = None,
+) -> tuple[str, ...]:
+    """Effort levels to offer for the active route, in declared order.
+
+    Mirrors the transport's clamping set so a picker never offers a level the
+    wire would clamp or reject. Precedence:
+
+      1. the route's declared set
+         (``custom_providers.<name>.models.<model>.reasoning_efforts``),
+      2. known wire hosts (Kimi, TokenHub),
+      3. the widest OpenAI-compatible vocabulary.
+
+    ``provider`` is accepted for call-site symmetry; the fork's remaining
+    routes are host- and declaration-driven.
+    """
+    if model:
+        try:
+            from son_of_anton_cli.config import get_custom_provider_reasoning_decl
+
+            decl = get_custom_provider_reasoning_decl(
+                str(model),
+                base_url or None,
+                custom_providers=custom_providers,
+                config=config,
+            ) or {}
+        except Exception:
+            decl = {}
+        efforts = decl.get("efforts")
+        if efforts:
+            return tuple(str(level) for level in efforts)
+
+    if base_url:
+        if any(base_url_host_matches(base_url, host) for host in _KIMI_EFFORT_HOSTS):
+            return kimi_supported_efforts(model)
+        if base_url_host_matches(base_url, _TOKENHUB_EFFORT_HOST):
+            return TOKENHUB_EFFORTS
+
+    return OPENAI_COMPAT_WIRE_EFFORTS
 
 
 def clamp_effort(

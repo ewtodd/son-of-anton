@@ -20,6 +20,13 @@ All of the following is merged to `main` and deployed on e-desktop:
   methods. The AST analyzers (top-level + method-aware, with `__all__`,
   string-reference, decorator, framework-dispatch, and plugin-contract
   guards) converge at zero dead symbols; `ruff F821`/`F841` are clean.
+- **Reasoning picker.** Bare `/reasoning` opens a picker (Textual modal in
+  the TUI, curses radiolist on the plain CLI) limited to the levels the
+  active route accepts: the declared
+  `custom_providers.<name>.models.<model>.reasoning_efforts` set first, then
+  known wire hosts (Kimi, TokenHub), else the widest OpenAI-compatible
+  vocabulary. `/reasoning status` prints the old state summary and direct
+  `/reasoning <level> [--global]` still works for scripting.
 - **Memory scopes.** `MEMORY.md`/`USER.md` are shared; `*.cli.md` and
   `*.gateway.md` are per-surface. The active scope follows the surface
   (`memory.scope` pins it), and the `memory` tool takes a `scope`.

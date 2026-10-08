@@ -2161,11 +2161,96 @@ class CLICommandsMixin:
         else:
             _cprint("  Failed to save timestamps setting to config.toml")
 
+    def _reasoning_current_level(self) -> str:
+        """Current session effort level in wire vocabulary."""
+        rc = self.reasoning_config
+        if rc is None:
+            return "medium"
+        if rc.get("enabled") is False:
+            return "none"
+        return str(rc.get("effort") or "medium").strip().lower()
+
+    def _apply_reasoning_level(self, level: str, *, persist_global: bool = False) -> bool:
+        """Set the session reasoning effort; optionally persist to config.toml."""
+        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
+
+        parsed = _parse_reasoning_config(level)
+        if parsed is None:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {level}{_RST}")
+            return False
+
+        self.reasoning_config = parsed
+        self.agent = None  # Force agent re-init with new reasoning config
+
+        if persist_global and save_config_value("agent.reasoning_effort", level):
+            agent_cfg = CLI_CONFIG.get("agent")
+            if not isinstance(agent_cfg, dict):
+                agent_cfg = {}
+                CLI_CONFIG["agent"] = agent_cfg
+            agent_cfg["reasoning_effort"] = level
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{level}' (saved to config){_RST}")
+        elif persist_global:
+            _cprint(
+                f"  {_ACCENT}✓ Reasoning effort set to '{level}' "
+                f"(session only; config save failed){_RST}"
+            )
+        else:
+            _cprint(
+                f"  {_ACCENT}✓ Reasoning effort set to '{level}' "
+                f"(this session — use --global to persist){_RST}"
+            )
+        return True
+
+    def _print_reasoning_status(self) -> None:
+        """Print the current effort/display state and the command's usage."""
+        from cli import _ACCENT, _DIM, _RST, _cprint
+
+        rc = self.reasoning_config
+        level = self._reasoning_current_level()
+        if rc is None:
+            level = f"{level} (default)"
+        if rc is not None and rc.get("enabled") is False:
+            level = "none (disabled)"
+        display_state = "on ✓" if self.show_reasoning else "off"
+        full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
+        _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
+        _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
+        _cprint(f"  {_DIM}Usage: /reasoning [status|<level>|show|hide|full|clamp] [--global]{_RST}")
+
+    def _prompt_reasoning_effort_picker(self, *, persist_global: bool = False) -> None:
+        """Open the supported-effort picker for the active model."""
+        from cli import _DIM, _RST, _cprint
+        from agent.reasoning_effort import supported_efforts_for
+
+        model = getattr(self, "model", "") or ""
+        provider = getattr(self, "provider", "") or ""
+        base_url = getattr(self, "base_url", "") or ""
+        if self.agent is not None:
+            model = getattr(self.agent, "model", model) or model
+            provider = getattr(self.agent, "provider", provider) or provider
+            base_url = getattr(self.agent, "base_url", base_url) or base_url
+
+        choices = list(supported_efforts_for(model, provider=provider, base_url=base_url))
+        if not choices:
+            self._print_reasoning_status()
+            return
+
+        current = self._reasoning_current_level()
+        default = choices.index(current) if current in choices else 0
+        picked = self._run_curses_picker(
+            f"Reasoning effort  ·  now {current}", choices, default_index=default
+        )
+        if picked is None or not (0 <= picked < len(choices)):
+            _cprint(f"  {_DIM}Reasoning effort unchanged.{_RST}")
+            return
+        self._apply_reasoning_level(choices[picked], persist_global=persist_global)
+
     def _handle_reasoning_command(self, cmd: str):
-        """Handle /reasoning — manage effort level and display toggle.
+        """Handle /reasoning — pick or set the effort level and display mode.
 
         Usage:
-            /reasoning              Show current effort level and display state
+            /reasoning              Open the picker (supported levels for the current model)
+            /reasoning status       Show current effort level and display state
             /reasoning <level>      Set effort for this session only (none, minimal, low, medium, high, xhigh, max, ultra)
             /reasoning <level> --global  Persist reasoning effort to config.toml
             /reasoning show|on      Show model thinking/reasoning in output
@@ -2173,23 +2258,12 @@ class CLICommandsMixin:
             /reasoning full         Show complete thinking (no 10-line clamp)
             /reasoning clamp        Collapse long thinking to the first 10 lines
         """
-        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
-            # Show current state
-            rc = self.reasoning_config
-            if rc is None:
-                level = "medium (default)"
-            elif rc.get("enabled") is False:
-                level = "none (disabled)"
-            else:
-                level = rc.get("effort", "medium")
-            display_state = "on ✓" if self.show_reasoning else "off"
-            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
-            _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp> [--global]{_RST}")
+            # No argument: open the model-aware picker (like /model).
+            self._prompt_reasoning_effort_picker()
             return
 
         arg = parts[1].strip().lower()
@@ -2203,6 +2277,15 @@ class CLICommandsMixin:
                 token for token in arg_tokens
                 if token not in ("--global", "--session")
             )
+
+        if arg in {"status", "?"}:
+            self._print_reasoning_status()
+            return
+
+        # Bare --global with no level: pick, then persist the selection.
+        if not arg and explicit_global:
+            self._prompt_reasoning_effort_picker(persist_global=True)
+            return
 
         # Display toggle
         if arg in {"show", "on"}:
@@ -2236,29 +2319,9 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
             return
 
-        # Effort level change
-        parsed = _parse_reasoning_config(arg)
-        if parsed is None:
-            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max, ultra{_RST}")
-            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
-            _cprint(f"  {_DIM}Scope:        session-scoped by default, --global to persist{_RST}")
-            return
+        # Effort level change (direct argument)
+        self._apply_reasoning_level(arg, persist_global=explicit_global)
 
-        self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
-
-        if explicit_global and save_config_value("agent.reasoning_effort", arg):
-            agent_cfg = CLI_CONFIG.get("agent")
-            if not isinstance(agent_cfg, dict):
-                agent_cfg = {}
-                CLI_CONFIG["agent"] = agent_cfg
-            agent_cfg["reasoning_effort"] = arg
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
-        elif explicit_global:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only; config save failed){_RST}")
-        else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (this session — use --global to persist){_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Son of Anton is working.
