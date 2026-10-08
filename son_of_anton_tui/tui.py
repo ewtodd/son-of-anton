@@ -86,6 +86,14 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # opencode gives each tool a one-glyph icon in a two-cell column
 # (INLINE_TOOL_ICON_WIDTH), so labels align no matter the tool.
 TOOL_ICON_WIDTH = 2
+
+# The transcript is one widget per row and Textual lays out every child of the
+# scroll container on every pass, so the frame cost scales with the row count.
+# Trim the oldest rows past this cap; the session store keeps the real history.
+_MAX_FEED_WIDGETS = 1500
+# Consecutive ANSI lines merge into one NoteLine block; cap the merge so a
+# flood of output re-renders a bounded block rather than an ever-growing one.
+_NOTE_MERGE_MAX_LINES = 100
 _TOOL_ICONS = {
     "terminal": "$",
     "execute_code": "$",
@@ -239,6 +247,7 @@ class PromptHistory:
     """
 
     MAX_ENTRIES = 500
+    _MAX_FILE_BYTES = 512 * 1024
 
     def __init__(self, path: Any = None) -> None:
         self._path: Optional[Path] = Path(path) if path else None
@@ -252,7 +261,14 @@ class PromptHistory:
         if self._path is None:
             return
         try:
-            raw = self._path.read_text(encoding="utf-8", errors="replace")
+            # The file is append-only and never pruned on disk, so a
+            # long-lived install reads its whole life history at every start.
+            # Only the tail matters: a partial first line is simply skipped.
+            with self._path.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - self._MAX_FILE_BYTES))
+                raw = fh.read().decode("utf-8", errors="replace")
         except OSError:
             return
         entry: list[str] = []
@@ -508,20 +524,38 @@ if _TEXTUAL_AVAILABLE:
             super().__init__(renderable, **kw)
             self.text: Optional[Text] = renderable if isinstance(renderable, Text) else None
             self.line_count = 1
+            self._pending: list = []
+            self._dirty = False
             if muted:
                 self.add_class("muted")
 
         def append_line(self, line: Text) -> bool:
-            """Fold another line into this block (only for Text-backed blocks)."""
+            """Fold another line into this block (only for Text-backed blocks).
+
+            The merge is deferred to :meth:`flush` so a flood of lines costs one
+            re-render per frame instead of one per line.
+            """
             if self.text is None:
                 return False
-            merged = self.text.copy()
-            merged.append("\n")
-            merged.append_text(line)
-            self.text = merged
+            self._pending.append(line)
+            self._dirty = True
             self.line_count += 1
-            self.update(merged)
             return True
+
+        def flush(self) -> None:
+            """Fold pending lines into the rendered content (idempotent)."""
+            if not self._dirty:
+                return
+            self._dirty = False
+            merged = self.text
+            if self._pending:
+                merged = merged.copy()
+                for line in self._pending:
+                    merged.append("\n")
+                    merged.append_text(line)
+                self._pending = []
+                self.text = merged
+            self.update(merged)
 
     class ToolLine(Static):
         """One tool call, in opencode's inline shape.
@@ -991,9 +1025,12 @@ if _TEXTUAL_AVAILABLE:
             self._sidebar_forced: Optional[bool] = None
             self._md: Optional[PlainMarkdown] = None
             self._md_stream: Any = None
+            self._md_pending = ""
+            self._md_flush_scheduled = False
             self._reasoning: Optional[ReasoningBlock] = None
             self._note_block: Optional[NoteLine] = None
             self._note_lines = 0
+            self._trim_marker: Optional[NoteLine] = None
             self._tool_gen_line: Optional[ToolLine] = None
             self._tool_lines: dict[str, list[ToolLine]] = {}
             self._running_tools: list[ToolLine] = []
@@ -1004,6 +1041,7 @@ if _TEXTUAL_AVAILABLE:
             self._completion_cmds: list[str] = []
             self._queued = 0
             self._last_ctrl_c = 0.0
+            self._snap_cache: Optional[tuple] = None
             self._log_handlers: list[tuple[logging.Handler, Any]] = []
             super().__init__(**kwargs)
             self.theme = self._theme
@@ -1275,10 +1313,70 @@ if _TEXTUAL_AVAILABLE:
             if not isinstance(widget, NoteLine):
                 self._reset_note_block()
             self._feed.mount(widget)
+            self._trim_feed()
 
         def _reset_note_block(self) -> None:
+            block = self._note_block
             self._note_block = None
             self._note_lines = 0
+            if block is not None:
+                block.flush()
+
+        def _trim_feed(self) -> None:
+            """Drop the oldest transcript rows once the feed passes a widget cap.
+
+            Textual lays out every child of the scroll container on every pass,
+            so the frame cost scales with the row count.  Trimming keeps long
+            sessions lively without touching the session store; a marker records
+            the drop so the gap at the top is not mistaken for a new session.
+            """
+            if len(self._feed.children) <= _MAX_FEED_WIDGETS:
+                return
+            marker = getattr(self, "_trim_marker", None)
+            if marker is not None:
+                try:
+                    marker.remove()
+                except Exception:
+                    pass
+                self._trim_marker = None
+
+            protected = {
+                id(self._md),
+                id(self._reasoning),
+                id(self._tool_gen_line),
+                id(self._note_block),
+            }
+            protected.update(id(row) for row in self._running_tools)
+            for rows in self._tool_lines.values():
+                protected.update(id(row) for row in rows)
+
+            # `remove()` posts a Prune message, so the DOM count does not shrink
+            # inside this loop — count our own removals against the excess.
+            floor = _MAX_FEED_WIDGETS * 3 // 4
+            excess = len(self._feed.children) - floor
+            removed = 0
+            for child in list(self._feed.children):
+                if removed >= excess:
+                    break
+                if child.id in ("wordmark", "intro") or id(child) in protected:
+                    continue
+                if getattr(child, "done", True) is False:
+                    continue
+                child.remove()
+                removed += 1
+
+            marker = NoteLine(Text("⋯ earlier transcript trimmed — session history is preserved", style="dim"))
+            anchor = None
+            for child in self._feed.children:
+                if child.id in ("wordmark", "intro"):
+                    continue
+                anchor = child
+                break
+            if anchor is not None:
+                self._feed.mount(marker, before=anchor)
+            else:
+                self._feed.mount(marker)
+            self._trim_marker = marker
 
         def _note(self, text: str, *, muted: bool = False) -> None:
             """Append one ANSI/plain line, merging consecutive lines into one block."""
@@ -1287,10 +1385,12 @@ if _TEXTUAL_AVAILABLE:
             rich = Text.from_ansi(text.rstrip())
             if muted:
                 rich.stylize("dim")
-            if self._note_block is not None and self._note_lines < 400:
+            if self._note_block is not None and self._note_lines < _NOTE_MERGE_MAX_LINES:
                 if self._note_block.append_line(rich):
                     self._note_lines += 1
                     return
+            if self._note_block is not None:
+                self._note_block.flush()
             block = NoteLine(rich)
             self._mount(block)
             self._note_block = block
@@ -1364,7 +1464,21 @@ if _TEXTUAL_AVAILABLE:
             if self._md_stream is None:
                 await self._ev_assistant_start()
             self._transcript += text
-            await self._md_stream.write(text)
+            # Every MarkdownStream.write costs one append, and append re-parses
+            # and re-mounts blocks; the backend emits per line, so batch the
+            # deltas on a short timer to cut appends an order of magnitude.
+            self._md_pending += text
+            if not self._md_flush_scheduled:
+                self._md_flush_scheduled = True
+                self.set_timer(0.1, self._flush_md_pending)
+
+        async def _flush_md_pending(self) -> None:
+            """Write the buffered assistant deltas to the markdown stream."""
+            self._md_flush_scheduled = False
+            pending, self._md_pending = self._md_pending, ""
+            stream = self._md_stream
+            if pending and stream is not None:
+                await stream.write(pending)
 
         async def _ev_assistant_end(self) -> None:
             await self._close_assistant()
@@ -1372,6 +1486,12 @@ if _TEXTUAL_AVAILABLE:
         async def _close_assistant(self) -> None:
             stream, self._md_stream = self._md_stream, None
             self._md = None
+            pending, self._md_pending = self._md_pending, ""
+            if pending and stream is not None:
+                try:
+                    await stream.write(pending)
+                except Exception:
+                    pass
             if stream is not None:
                 try:
                     await stream.stop()
@@ -1473,6 +1593,8 @@ if _TEXTUAL_AVAILABLE:
             self._spin = (self._spin + 1) % len(_SPINNER)
             if self._reasoning is not None:
                 self._reasoning.flush()
+            if self._note_block is not None:
+                self._note_block.flush()
             for row in self._running_tools:
                 row.render_running(_SPINNER[self._spin])
             if self._busy:
@@ -1527,7 +1649,7 @@ if _TEXTUAL_AVAILABLE:
                 right.append("ctrl+c", style="bold")
                 right.append(" interrupt")
             else:
-                snap = backend.status_snapshot() if backend is not None else {}
+                snap = self._snapshot()
                 pct = snap.get("context_percent")
                 if pct is not None:
                     right.append(f"{pct}% context")
@@ -1541,7 +1663,7 @@ if _TEXTUAL_AVAILABLE:
             # --- the meta row inside the prompt block ---------------------
             meta = Text()
             if backend is not None:
-                snap = backend.status_snapshot()
+                snap = self._snapshot()
                 # The mode readout: the session permission mode, always shown
                 # (default | ask | lockdown | yolo), with the warning styling
                 # for the modes that change what the agent may do unasked.
@@ -1572,6 +1694,22 @@ if _TEXTUAL_AVAILABLE:
         def _attached(self) -> list:
             return list(getattr(self.backend, "_attached_images", None) or [])
 
+        def _snapshot(self) -> dict:
+            """The backend status snapshot, reused for a short window.
+
+            ``status_snapshot`` builds a ~30-key dict and the chrome paths call
+            it up to three times per refresh (status row, meta row, sidebar).
+            Token counts only move per API call, so caching the build for a few
+            hundred milliseconds removes the redundant work invisibly.
+            """
+            cached = self._snap_cache
+            now = time.monotonic()
+            if cached is not None and now - cached[0] < 0.3:
+                return cached[1]
+            snap = self.backend.status_snapshot() if self.backend is not None else {}
+            self._snap_cache = (now, snap)
+            return snap
+
         def _update_context(self) -> None:
             if not self._panel.display:
                 return
@@ -1581,7 +1719,7 @@ if _TEXTUAL_AVAILABLE:
                 self.query_one("#ctx-title", Static).update(self.agent_name)
                 self.query_one("#ctx-cwd", Static).update(cwd)
                 return
-            snap = backend.status_snapshot()
+            snap = self._snapshot()
             self.query_one("#ctx-title", Static).update(snap.get("session_title") or "untitled")
             self.query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
             self.query_one("#ctx-cwd", Static).update(cwd)
@@ -2158,6 +2296,7 @@ if _TEXTUAL_AVAILABLE:
                 if w.id in ("wordmark", "intro"):
                     continue
                 w.remove()
+            self._trim_marker = None
             self._reset_note_block()
             self._transcript = ""
 

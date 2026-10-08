@@ -5585,61 +5585,66 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._stream_last_was_newline = True  # start of stream = boundary
 
         if not getattr(self, "_in_reasoning_block", False):
-            # Case-insensitive matching against a lowercased view so
-            # mixed-case tag variants (<Think>, <THINKING>, …) are caught.
-            prefilt_lower = self._stream_prefilt.lower()
-            for tag in _OPEN_TAGS:
-                tag_lower = tag.lower()
-                search_start = 0
-                while True:
-                    idx = prefilt_lower.find(tag_lower, search_start)
-                    if idx == -1:
-                        break
-                    # Check if this is a block boundary position
-                    preceding = self._stream_prefilt[:idx]
-                    if idx == 0:
-                        # At buffer start — only a boundary if we're at
-                        # a line start (stream start or last emit ended
-                        # with newline)
-                        is_block_boundary = getattr(self, "_stream_last_was_newline", True)
-                    else:
-                        # Find last newline in the buffer before the tag
-                        last_nl = preceding.rfind("\n")
-                        if last_nl == -1:
-                            # No newline in buffer — boundary only if
-                            # last emit was a newline AND only whitespace
-                            # has accumulated before the tag
-                            is_block_boundary = (
-                                getattr(self, "_stream_last_was_newline", True)
-                                and preceding.strip() == ""
-                            )
+            # Fast path: every tag starts with "<", so a line with none can
+            # skip the lowercase + find scan entirely. The scan is otherwise
+            # O(line²) over the accumulating buffer for long single lines.
+            if "<" in self._stream_prefilt:
+                # Case-insensitive matching against a lowercased view so
+                # mixed-case tag variants (<Think>, <THINKING>, …) are caught.
+                prefilt_lower = self._stream_prefilt.lower()
+                for tag in _OPEN_TAGS:
+                    tag_lower = tag.lower()
+                    search_start = 0
+                    while True:
+                        idx = prefilt_lower.find(tag_lower, search_start)
+                        if idx == -1:
+                            break
+                        # Check if this is a block boundary position
+                        preceding = self._stream_prefilt[:idx]
+                        if idx == 0:
+                            # At buffer start — only a boundary if we're at
+                            # a line start (stream start or last emit ended
+                            # with newline)
+                            is_block_boundary = getattr(self, "_stream_last_was_newline", True)
                         else:
-                            # Text between last newline and tag must be
-                            # whitespace-only
-                            is_block_boundary = preceding[last_nl + 1:].strip() == ""
-                    if is_block_boundary:
-                        # Emit everything before the tag
-                        if preceding:
-                            self._emit_stream_text(preceding)
-                            self._stream_last_was_newline = preceding.endswith("\n")
-                        self._in_reasoning_block = True
-                        self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                            # Find last newline in the buffer before the tag
+                            last_nl = preceding.rfind("\n")
+                            if last_nl == -1:
+                                # No newline in buffer — boundary only if
+                                # last emit was a newline AND only whitespace
+                                # has accumulated before the tag
+                                is_block_boundary = (
+                                    getattr(self, "_stream_last_was_newline", True)
+                                    and preceding.strip() == ""
+                                )
+                            else:
+                                # Text between last newline and tag must be
+                                # whitespace-only
+                                is_block_boundary = preceding[last_nl + 1:].strip() == ""
+                        if is_block_boundary:
+                            # Emit everything before the tag
+                            if preceding:
+                                self._emit_stream_text(preceding)
+                                self._stream_last_was_newline = preceding.endswith("\n")
+                            self._in_reasoning_block = True
+                            self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                            break
+                        # Not a block boundary — keep searching after this occurrence
+                        search_start = idx + 1
+                    if getattr(self, "_in_reasoning_block", False):
                         break
-                    # Not a block boundary — keep searching after this occurrence
-                    search_start = idx + 1
-                if getattr(self, "_in_reasoning_block", False):
-                    break
 
             # Could also be a partial open tag at the end — hold it back
             if not getattr(self, "_in_reasoning_block", False):
                 # Check for partial tag match at the end (case-insensitive)
                 safe = self._stream_prefilt
-                for tag in _OPEN_TAGS:
-                    tag_lower = tag.lower()
-                    for i in range(1, len(tag)):
-                        if prefilt_lower.endswith(tag_lower[:i]):
-                            safe = self._stream_prefilt[:-i]
-                            break
+                if "<" in self._stream_prefilt:
+                    for tag in _OPEN_TAGS:
+                        tag_lower = tag.lower()
+                        for i in range(1, len(tag)):
+                            if prefilt_lower.endswith(tag_lower[:i]):
+                                safe = self._stream_prefilt[:-i]
+                                break
                 if safe:
                     self._emit_stream_text(safe)
                     self._stream_last_was_newline = safe.endswith("\n")
@@ -5650,24 +5655,27 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Keep accumulating _stream_prefilt because close tags can arrive
         # split across multiple tokens (e.g. "</REASONING_SCRATCH" + "PAD>...").
         if getattr(self, "_in_reasoning_block", False):
-            prefilt_lower = self._stream_prefilt.lower()
-            for tag in _CLOSE_TAGS:
-                idx = prefilt_lower.find(tag.lower())
-                if idx != -1:
-                    self._in_reasoning_block = False
-                    # When show_reasoning is on, route inner content to
-                    # the reasoning display box instead of discarding.
-                    if self.show_reasoning:
-                        inner = self._stream_prefilt[:idx]
-                        if inner:
-                            self._stream_reasoning_delta(inner)
-                    after = self._stream_prefilt[idx + len(tag):]
-                    self._stream_prefilt = ""
-                    # Process remaining text after close tag through full
-                    # filtering (it could contain another open tag)
-                    if after:
-                        self._stream_delta(after)
-                    return
+            # Fast path: close tags also start with "<"; skip the scan when
+            # the accumulated buffer cannot contain one.
+            if "<" in self._stream_prefilt:
+                prefilt_lower = self._stream_prefilt.lower()
+                for tag in _CLOSE_TAGS:
+                    idx = prefilt_lower.find(tag.lower())
+                    if idx != -1:
+                        self._in_reasoning_block = False
+                        # When show_reasoning is on, route inner content to
+                        # the reasoning display box instead of discarding.
+                        if self.show_reasoning:
+                            inner = self._stream_prefilt[:idx]
+                            if inner:
+                                self._stream_reasoning_delta(inner)
+                        after = self._stream_prefilt[idx + len(tag):]
+                        self._stream_prefilt = ""
+                        # Process remaining text after close tag through full
+                        # filtering (it could contain another open tag)
+                        if after:
+                            self._stream_delta(after)
+                        return
             # When show_reasoning is on, stream reasoning content live
             # instead of silently accumulating. Keep only the tail that
             # could be a partial close tag prefix.

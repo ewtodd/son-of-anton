@@ -855,6 +855,16 @@ class TextualBackend(SonOfAntonCLI):
         self.emit("refresh")
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
+        # The classic CLI throttles repaints to min_interval; the agent's
+        # spinner calls this every ~120ms from the worker thread. Honour the
+        # same cadence so a running turn does not schedule chrome refreshes
+        # faster than the frame can change. Callers that need an immediate
+        # paint pass min_interval=0.0 and always get through.
+        now = time.monotonic()
+        last = getattr(self, "_last_tui_invalidate", 0.0)
+        if now - last < min_interval:
+            return
+        self._last_tui_invalidate = now
         self.emit("refresh")
 
     def _force_full_redraw(self) -> None:

@@ -1649,3 +1649,176 @@ def test_compaction_renders_as_a_divider_then_what_it_remembers() -> None:
             )
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Transcript scaling: trimming, deferred merges, batched streaming
+# ---------------------------------------------------------------------------
+
+def test_feed_trims_oldest_rows_past_the_widget_cap(monkeypatch) -> None:
+    """The frame cost scales with widget count, so old rows must be dropped.
+
+    Textual lays out every child of the scroll container on every pass; without
+    a cap, long sessions degrade to single-digit fps.  The trim keeps the
+    wordmark, intro and live rows, drops the oldest content first, and records
+    the drop with a marker so the gap is not mistaken for a new session.
+    """
+    _textual()
+    monkeypatch.setattr(_tui, "_MAX_FEED_WIDGETS", 30)
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            for i in range(40):
+                app._add_user_turn(f"turn {i}")
+            await pilot.pause(0.2)
+
+            feed = app.query_one("#feed")
+            floor = 30 * 3 // 4
+            assert len(feed.children) <= floor + 3, "wordmark, intro, marker + trimmed rows"
+            assert app.query_one("#wordmark").is_mounted, "the wordmark must never be trimmed"
+            assert app._trim_marker is not None and app._trim_marker.is_mounted
+            turns = [w.content.plain for w in feed.children if isinstance(w, _tui.UserTurn)]
+            assert "turn 0" not in turns, "the oldest rows are the first to go"
+            assert "turn 39" in turns, "the newest rows must survive"
+
+            app.action_clear_feed()
+            assert app._trim_marker is None, "/clear must not leave a stale trim marker"
+
+    asyncio.run(run())
+
+
+def test_running_rows_and_live_blocks_survive_the_trim(monkeypatch) -> None:
+    """A trim must never remove the block still being written or animating."""
+    _textual()
+    monkeypatch.setattr(_tui, "_MAX_FEED_WIDGETS", 30)
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            for i in range(30):
+                app._add_user_turn(f"filler {i}")
+            post("assistant_start")
+            post("assistant_delta", text="live")
+            post("tool_start", name="terminal", label="Running ls")
+            await pilot.pause(0.3)
+            feed = app.query_one("#feed")
+            assert app._md is not None and app._md.is_mounted, "the streaming block was trimmed"
+            assert any(w in feed.children for w in app._running_tools), "a running tool row was trimmed"
+
+    asyncio.run(run())
+
+
+def test_note_merge_defers_rendering_until_flush() -> None:
+    """A flood of lines costs one re-render per frame, not one per line."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            app._note("first")
+            app._note("second")
+            note = app._note_block
+            assert note is not None
+            assert "first" in note.text.plain
+            assert "second" not in note.text.plain, "pending lines render only on flush"
+            app._tick_spinner()
+            assert "first\nsecond" in note.text.plain
+            app._tick_spinner()  # idempotent once flushed
+            assert note.text.plain.count("second") == 1
+
+    asyncio.run(run())
+
+
+def test_note_merge_caps_the_block_and_flushes_on_replacement() -> None:
+    """Blocks stop growing at the cap; the previous block is flushed on switch."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            for i in range(_tui._NOTE_MERGE_MAX_LINES + 5):
+                app._note(f"line {i}")
+            assert app._note_block.line_count == 5, "a fresh block starts after the cap"
+            app._tick_spinner()
+            assert "line 0" not in app._note_block.text.plain
+
+    asyncio.run(run())
+
+
+def test_assistant_deltas_batch_until_the_flush_timer() -> None:
+    """Per-line Markdown appends re-parse; deltas should batch instead."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(150, 40)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            post("assistant_start")
+            await pilot.pause(0.05)
+            post("assistant_delta", text="alpha")
+            await pilot.pause(0.02)  # process the delta; the 0.1s flush timer has not fired
+            assert app._md_pending == "alpha", "deltas buffer instead of writing immediately"
+            assert "alpha" in app._transcript, "the transcript records every delta as it lands"
+
+            post("assistant_delta", text="beta")
+            await pilot.pause(0.4)  # the 0.1s flush timer fires
+            assert app._md_pending == ""
+            mds = [w for w in app.query_one("#feed").children if isinstance(w, _tui.PlainMarkdown)]
+            assert len(mds) == 1
+            assert "alphabeta" in mds[0]._markdown
+
+            post("assistant_end")
+            await pilot.pause(0.2)
+            assert app._md_stream is None and app._md_pending == ""
+
+    asyncio.run(run())
+
+
+def test_status_snapshot_is_reused_within_a_refresh_cycle(backend) -> None:
+    """The chrome paths share one snapshot build per short window."""
+    _textual()
+    b, _rec = backend
+    b.detach()
+    calls: list = []
+    original = b.status_snapshot
+
+    def counting():
+        calls.append(1)
+        return original()
+
+    b.status_snapshot = counting
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(150, 40)) as pilot:
+            await pilot.pause(0.3)
+            calls.clear()
+            app._snap_cache = None
+            app._update_status()  # status row + meta row both read the snapshot
+            app._update_context()  # and so does the sidebar
+            assert len(calls) == 1, f"three reads, one build: {len(calls)}"
+            app._update_status()
+            assert len(calls) == 1, "a read inside the cache window rebuilt the snapshot"
+
+    asyncio.run(run())
+
+
+def test_prompt_history_loads_only_the_tail_of_huge_files(tmp_path) -> None:
+    """The history file grows forever; the load must not read all of it."""
+    _textual()
+    path = tmp_path / ".son_of_anton_history"
+    path.write_bytes(
+        b"# 2020-01-01 00:00:00.000000\n+old entry\n"
+        + b"junk\n" * 200_000  # ~1 MB, well past the 512 KB cap
+        + b"# 2026-01-01 00:00:00.000000\n+recent entry\n"
+    )
+
+    hist = _tui.PromptHistory(path)
+    assert hist._entries == ["recent entry"], "the tail survives; the pre-cap head does not"
