@@ -90,9 +90,6 @@ def _safe_stderr():  # type: ignore[return]
     return stream
 
 
-_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
-
-
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
     """Return True for concurrent-log-handler's Windows lock timeout.
 
@@ -133,11 +130,6 @@ def set_session_context(session_id: str) -> None:
     in the formatted output.  Call at the start of ``run_conversation()``.
     """
     _session_context.session_id = session_id
-
-
-def clear_session_context() -> None:
-    """Clear the session ID for the current thread."""
-    _session_context.session_id = None
 
 
 # ---------------------------------------------------------------------------
@@ -607,25 +599,6 @@ def _register_queued_handler(handler: logging.Handler) -> None:
             _queue_atexit_registered = True
 
 
-def flush_log_queue() -> None:
-    """Block until all queued records have been written, then resume.
-
-    Draining is done by stopping the listener (which processes every pending
-    record before joining) and restarting it.  Used by tests that read a log
-    file right after emitting to it.
-
-    NOTE: ``stop()`` joins the worker thread, so this blocks until the queue
-    is empty. Do NOT call this on a hard-exit path where the listener may be
-    wedged on the rotation lock — use ``drain_log_queue()`` there instead,
-    which bounds the wait.
-    """
-    with _queue_state_lock:
-        listener = _queue_listener
-        if listener is not None:
-            listener.stop()
-            listener.start()
-
-
 def drain_log_queue(timeout: float = 1.0) -> None:
     """Best-effort, time-bounded drain for hard-exit paths (no restart).
 
@@ -652,33 +625,6 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     t = threading.Thread(target=_drain, name="son-of-anton-log-drain", daemon=True)
     t.start()
     t.join(timeout)
-
-
-def rotating_file_handlers() -> list:
-    """Return the live rotating file handlers.
-
-    They are attached to the async ``QueueListener`` rather than the root
-    logger, so callers/tests must use this instead of scanning
-    ``logging.getLogger().handlers``."""
-    return list(_queued_file_handlers)
-
-
-def _reset_queued_handlers() -> None:
-    """Tear down the async logging queue + listener (test-isolation helper)."""
-    global _log_queue
-    with _queue_state_lock:
-        _stop_queue_listener_locked()
-        root = logging.getLogger()
-        for h in list(root.handlers):
-            if getattr(h, "_son_of_anton_queue", False):
-                root.removeHandler(h)
-        for h in list(_queued_file_handlers):
-            try:
-                h.close()
-            except Exception:
-                pass
-        _queued_file_handlers.clear()
-        _log_queue = None
 
 
 def _add_rotating_handler(

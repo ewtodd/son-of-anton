@@ -254,51 +254,6 @@ def provider_supports_force_fire(provider: Any) -> bool:
     )
 
 
-def provider_supports_split_fire(provider: Any) -> bool:
-    """Return whether a provider implements the two-phase fire contract.
-
-    The fire-admission path uses ``claim_fire`` + ``fire_claimed`` so the
-    202 response is backed by a durable, owner-fenced claim. A legacy
-    third-party provider that overrides the documented single-phase
-    ``fire_due`` hook (custom claim/re-arm/telemetry behavior) but inherits
-    the base ``claim_fire`` must keep being driven through its own
-    ``fire_due`` — silently routing around its override would drop that
-    behavior. Providers that customize ``claim_fire`` itself are already
-    split-aware and keep the two-phase path.
-    """
-    cls = type(provider)
-    fire_due_impl = getattr(cls, "fire_due", None)
-    claim_fire_impl = getattr(cls, "claim_fire", None)
-    fire_claimed_impl = getattr(cls, "fire_claimed", None)
-    if claim_fire_impl is not None and claim_fire_impl is not CronScheduler.claim_fire:
-        return True
-    # Overriding the second phase is also proof of split-awareness (the
-    # provider composes with the inherited claim path) — e.g. Chronos keeps
-    # its re-arm logic in ``fire_claimed`` only.
-    if fire_claimed_impl is not None and fire_claimed_impl is not CronScheduler.fire_claimed:
-        return True
-    if fire_due_impl is None or fire_due_impl is CronScheduler.fire_due:
-        return True
-    return False
-
-
-def provider_supports_fire_cancel(provider: Any) -> bool:
-    """Return whether ``fire_claimed`` accepts a ``cancel_event`` kwarg."""
-    try:
-        parameters = inspect.signature(provider.fire_claimed).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or (
-            parameter.name == "cancel_event"
-            and parameter.kind
-            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
-        for parameter in parameters
-    )
-
-
 DEFAULT_MISFIRE_GRACE_MINUTES = 10
 
 

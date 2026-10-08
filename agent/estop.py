@@ -168,7 +168,3 @@ def check_paused(component: str, logger: logging.Logger) -> bool:
     return True
 
 
-def _reset_log_state_for_tests() -> None:
-    """Clear the log-once bookkeeping (test isolation helper)."""
-    with _log_lock:
-        _logged_components.clear()

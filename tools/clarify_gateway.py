@@ -35,7 +35,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -283,16 +283,6 @@ def _selection_attempt_tokens(
         return None
 
 
-def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
-    """Map typed choice replies to canonical choice text, otherwise keep or reject custom text.
-
-    Thin wrapper over :func:`_coerce_text_response_detailed` for callers that
-    only need the accepted value (or ``None`` on any rejection).
-    """
-    coerced, _reason = _coerce_text_response_detailed(entry, response)
-    return coerced
-
-
 def _coerce_text_response_detailed(
     entry: _ClarifyEntry,
     response: str,
@@ -452,17 +442,6 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
     return TEXT_NO_PENDING
 
 
-def resolve_text_response_for_session(session_key: str, response: str) -> bool:
-    """Resolve the oldest pending clarify in ``session_key`` from typed text.
-
-    Returns True only when the reply was accepted and the waiter unblocked.
-    Rejected prose, rejected selections, and missing prompts all return False;
-    use :func:`attempt_text_response_for_session` when the caller must
-    distinguish those cases (gateway deadlock vs multi-select retry).
-    """
-    return attempt_text_response_for_session(session_key, response) == TEXT_RESOLVED
-
-
 def mark_awaiting_text(clarify_id: str) -> bool:
     """Flip an entry into text-capture mode (user picked the 'Other' button).
 
@@ -582,24 +561,4 @@ def get_clarify_timeout() -> int:
 # callback bridges sync→async (runs on the agent thread; schedules the
 # adapter ``send_clarify`` call on the event loop).
 
-_notify_cbs: Dict[str, Callable[[_ClarifyEntry], None]] = {}
 
-
-def register_notify(session_key: str, cb: Callable[[_ClarifyEntry], None]) -> None:
-    """Register a per-session notify callback used by ``clarify_callback``."""
-    with _lock:
-        _notify_cbs[session_key] = cb
-
-
-def unregister_notify(session_key: str) -> None:
-    """Drop the per-session notify callback and cancel any pending clarify entries."""
-    with _lock:
-        _notify_cbs.pop(session_key, None)
-    # Cancel any pending entries so blocked threads unwind when the run
-    # ends (interrupt, completion, gateway shutdown).
-    clear_session(session_key)
-
-
-def get_notify(session_key: str) -> Optional[Callable[[_ClarifyEntry], None]]:
-    with _lock:
-        return _notify_cbs.get(session_key)

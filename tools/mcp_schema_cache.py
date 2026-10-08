@@ -89,10 +89,6 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     return entry
 
 
-def has_cached_entry(server_name: str, fingerprint: str) -> bool:
-    return get_cached_entry(server_name, fingerprint) is not None
-
-
 def write_cache_entry(
     server_name: str,
     fingerprint: str,
@@ -130,14 +126,6 @@ def write_cache_entry(
             return
         data[server_name] = entry
         _save_all(data)
-
-
-def clear_cache_entry(server_name: str) -> None:
-    with _cache_lock:
-        data = _load_all()
-        if server_name in data:
-            del data[server_name]
-            _save_all(data)
 
 
 def tools_from_cache_entry(entry: dict) -> List[dict]:

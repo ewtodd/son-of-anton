@@ -128,46 +128,6 @@ def _display_chat_id(platform_name: str, chat_id: str) -> str:
     return chat_id
 
 
-SEND_MESSAGE_SCHEMA = {
-    "name": "send_message",
-    "description": (
-        "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: When the user asks to send to a specific channel or person "
-        "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to discord', send directly "
-        "to the home channel without listing first."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["send", "list", "react", "unreact"],
-                 "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it). 'unreact' retracts a previously-added reaction."
-            },
-            "target": {
-                "type": "string",
-                 "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for threaded platforms. Examples: 'discord', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
-            },
-            "message": {
-                "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
-            },
-            "emoji": {
-                "type": "string",
-                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
-            },
-            "message_id": {
-                "type": "string",
-                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
-            }
-        },
-        "required": []
-    }
-}
-
-
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
     action = args.get("action", "send")
@@ -987,7 +947,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-
 # wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
 
 
@@ -1256,44 +1215,6 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return result
     except Exception as e:
         return _error(f"Signal send failed: {e}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _check_send_message():
-    """Gate send_message on gateway running (always available on messaging platforms).
-
-    Also passes for kanban workers — the dispatcher sets ``SON_OF_ANTON_KANBAN_TASK``
-    on every spawned worker, but those workers run with the assignee profile's
-    ``SON_OF_ANTON_HOME`` which has no ``gateway.pid``, so the gateway-running check
-    would fail even though the parent gateway is alive. Honoring the env var
-    lets workers call ``send_message`` to deliver rich content directly to the
-    originating chat (paired with ``kanban_complete`` for the short notifier
-    summary), which is the canonical pattern for any worker that needs to
-    reply with more than the ~200-char first-line truncation the kanban
-    notifier applies.
-    """
-    if os.environ.get("SON_OF_ANTON_KANBAN_TASK"):
-        return True
-    from gateway.session_context import get_session_env
-    platform = get_session_env("SON_OF_ANTON_SESSION_PLATFORM", "")
-    if platform and platform != "local":
-        return True
-    try:
-        from gateway.status import is_gateway_running
-        return is_gateway_running()
-    except Exception:
-        return False
 
 
 # --- Registry ---

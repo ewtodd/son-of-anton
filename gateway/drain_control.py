@@ -71,7 +71,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from son_of_anton_constants import get_son_of_anton_home
-from utils import atomic_json_write
 
 _log = logging.getLogger(__name__)
 
@@ -159,61 +158,6 @@ def drain_request_path(home: Optional[Path] = None) -> Path:
     """Absolute path to the drain-request marker, respecting SON_OF_ANTON_HOME."""
     base = home if home is not None else get_son_of_anton_home()
     return Path(base) / _DRAIN_REQUEST_FILENAME
-
-
-def write_drain_request(
-    *,
-    principal: str = "drain-control",
-    suppress_notification: bool = False,
-    home: Optional[Path] = None,
-) -> dict[str, Any]:
-    """Write the begin-drain marker. Returns the payload written.
-
-    Atomic write so the gateway watcher never reads a half-written file.
-    Idempotent: re-writing while a drain is already in progress refreshes
-    ``requested_at`` — the sanctioned keep-alive for a drain that legitimately
-    needs longer than :data:`DRAIN_REQUEST_MAX_AGE_SECONDS`.
-
-    Stamps the marker with :func:`current_instantiation_epoch` so a marker that
-    later survives a machine restart on the durable SON_OF_ANTON_HOME volume can be
-    recognised as stale and ignored (NS-570).
-
-    ``suppress_notification`` is a generic "be quiet on the shutdown that ends
-    this drain" flag. When the drain culminates in a process exit (e.g. NAS
-    recreates the machine for an auto-update image migration), the gateway's
-    shutdown path reads it via :func:`drain_notification_suppressed` and skips
-    the *home-channel* "gateway shutting down" broadcast — the operator-flavoured
-    ping that would otherwise fire on every routine auto-update, potentially
-    dozens of times a day. It NEVER suppresses the per-active-session interrupt
-    ping. The gateway stays agnostic about *why* the drain is quiet; the policy
-    of which drain causes set the flag lives entirely in the caller (NAS). The
-    field defaults False so legacy/operator drains behave exactly as before.
-    """
-    payload = {
-        "action": "drain",
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "principal": principal,
-        "epoch": current_instantiation_epoch(),
-        "suppress_notification": bool(suppress_notification),
-    }
-    atomic_json_write(drain_request_path(home), payload)
-    return payload
-
-
-def clear_drain_request(*, home: Optional[Path] = None) -> bool:
-    """Remove the drain marker (cancel-drain). Returns True if one existed.
-
-    Best-effort: a missing file is not an error (cancel is idempotent).
-    """
-    path = drain_request_path(home)
-    try:
-        path.unlink()
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError as e:
-        _log.warning("drain-control: failed to remove %s: %s", path, e)
-        return False
 
 
 def _marker_epoch_is_stale(body: dict[str, Any]) -> bool:

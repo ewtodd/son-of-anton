@@ -367,8 +367,3 @@ def get_scheduler() -> SignalAttachmentScheduler:
     return _scheduler
 
 
-def _reset_scheduler() -> None:
-    """Drop the cached scheduler so the next ``get_scheduler`` call
-    builds a fresh one. Test-only — never call from production paths."""
-    global _scheduler
-    _scheduler = None

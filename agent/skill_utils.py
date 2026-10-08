@@ -641,18 +641,6 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
     return root, count
 
 
-def get_scan_ordered_skills_dirs() -> List[Path]:
-    """All skill dirs in precedence order: project → local → external.
-
-    First-wins name deduplication over this order gives project skills
-    priority over profile-local and external ones.
-    """
-    dirs = list(get_project_skills_dirs())
-    dirs.append(get_skills_dir())
-    dirs.extend(get_external_skills_dirs())
-    return dirs
-
-
 # ── Project skill quarantine (scan-time injection defense) ────────────────
 #
 # Trust (`son_of_anton skills trust`) is a REPO-level decision made once; the repo's
@@ -723,11 +711,6 @@ def is_quarantined_project_skill(skill_md) -> bool:
         quarantined = True
     _PROJECT_QUARANTINE_CACHE[key] = quarantined
     return quarantined
-
-
-def _project_quarantine_cache_clear() -> None:
-    """Test hook."""
-    _PROJECT_QUARANTINE_CACHE.clear()
 
 
 def iter_project_skill_files(project_dir: Path):

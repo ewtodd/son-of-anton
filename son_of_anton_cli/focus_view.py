@@ -51,8 +51,6 @@ _OFF_WORDS = frozenset({"off", "disable", "disabled", "false", "no", "0"})
 _STATUS_WORDS = frozenset({"status", "show", "?"})
 _TOGGLE_WORDS = frozenset({"", "toggle"})
 
-FOCUS_USAGE = "Usage: /focus [on|off|status]"
-
 
 def normalize_tool_progress_mode(mode: object, default: str = "all") -> str:
     """Coerce a raw config/attr value into a known tool-progress mode.
@@ -91,20 +89,6 @@ def resolve_focus_arg(arg: str, current: bool) -> tuple[str, Optional[bool]]:
     if text in _TOGGLE_WORDS:
         return "set", not bool(current)
     return "usage", None
-
-
-def effective_tool_progress_mode(focus_enabled: bool, configured_mode: object) -> str:
-    """Return the tool-progress mode that should actually be in force.
-
-    Focus view wins while it is on (it *is* "tool progress off" plus reporting).
-    When focus is off the user's configured mode is returned untouched — this is
-    what makes ``/focus off`` restore ``/verbose verbose`` rather than clobbering
-    it to ``all``.
-    """
-    normalized = normalize_tool_progress_mode(configured_mode)
-    if focus_enabled:
-        return FOCUS_TOOL_PROGRESS_MODE
-    return normalized
 
 
 def would_display_tool_line(

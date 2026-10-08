@@ -63,7 +63,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -71,10 +70,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
 # Offset of the 4-byte big-endian page-count field in the SQLite header.
-_HEADER_PAGE_COUNT_OFFSET = 28
 
 # Guards BOTH the registry and the lifecycle syscalls it describes. Reentrant
 # because connect_tracked -> _canonical_db_path -> ... stays on one thread.
@@ -116,17 +113,6 @@ def _canonical_db_path(conn: sqlite3.Connection) -> Optional[str]:
     if not path_str:
         return None
     return _key(path_str)
-
-
-def track_connection(path: Path | str) -> None:
-    """Record that this process now holds a connection to *path*.
-
-    Prefer :func:`connect_tracked`; this exists for callers that manage their
-    own connection objects, and for tests.
-    """
-    key = _key(path)
-    with _live_lock:
-        _live_connections[key] = _live_connections.get(key, 0) + 1
 
 
 def untrack_connection(path: Path | str) -> None:
@@ -292,56 +278,6 @@ def _retrofit_tracking(conn: sqlite3.Connection, resolved: str) -> sqlite3.Conne
             "cannot release its tracking entry on close; byte-probe safety "
             "for this database would be silently lost"
         ) from exc
-
-
-def page_count_bytes(conn: sqlite3.Connection) -> Optional[int]:
-    """Logical database size in bytes, read through *conn*.
-
-    ``page_count * page_size`` is the same quantity the 4-byte header field at
-    offset 28 carries, but reading it via ``PRAGMA`` opens no new file
-    descriptor and therefore cannot cancel this process's POSIX locks.
-
-    Returns ``None`` when the pragmas cannot be read.
-    """
-    try:
-        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-    except (sqlite3.Error, TypeError, IndexError) as exc:
-        logger.debug("page_count/page_size unavailable: %s", exc)
-        return None
-    try:
-        return int(page_count) * int(page_size)
-    except (TypeError, ValueError):
-        return None
-
-
-def file_length_matches_header(conn: sqlite3.Connection) -> Optional[bool]:
-    """Whether the file on disk is at least as long as the header claims.
-
-    Detects the "torn extend" shape (file shorter than its own page count)
-    without ever opening the database file: the header side comes from
-    ``PRAGMA page_count`` over *conn*, and the on-disk side from ``stat()``,
-    which takes no descriptor and cannot break locks.
-
-    Returns ``None`` when the check is not applicable (in-memory database,
-    unreadable pragmas, or a stat failure).
-
-    Note: in WAL mode a freshly committed page may still live in the ``-wal``
-    file, so the main file legitimately lags. Callers must treat this as
-    advisory unless the database is in a rollback journal mode.
-    """
-    path_str = _canonical_db_path(conn)
-    if path_str is None:
-        return None
-
-    logical = page_count_bytes(conn)
-    if not logical:
-        return None
-    try:
-        actual = os.path.getsize(path_str)
-    except OSError:
-        return None
-    return actual >= logical
 
 
 def read_header_bytes_preopen(

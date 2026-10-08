@@ -1159,12 +1159,6 @@ def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
     return {**event, "toolset": toolset or "other"}
 
 
-def prepare_session_start() -> None:
-    """Register the subscriber before any producer opens the session scope."""
-    if enabled():
-        _get_runtime(retry_failed=True)
-
-
 def _prepare_core_session(
     host: relay_runtime.RelayRuntime,
     context: dict[str, Any],

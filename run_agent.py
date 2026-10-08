@@ -278,7 +278,6 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # Extracted as a module-level helper so both __init__ and
 # _apply_client_headers_for_base_url can share it.
 # =========================================================================
-_QWEN_CODE_VERSION = "0.14.1"
 
 
 def _pool_may_recover_from_rate_limit(pool) -> bool:
@@ -4297,14 +4296,6 @@ class AIAgent:
     def is_interrupted(self) -> bool:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
-
-
-
-
-
-
-
-
 
 
     def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:

@@ -30,14 +30,9 @@ _DEFAULT_CAPTURE_MODE = "all"
 _DEFAULT_SEARCH_MODE = "hybrid"
 _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
 _DEFAULT_API_TIMEOUT = 5.0
-_MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _DEFAULT_BASE_URL = "https://api.supermemory.ai"
 _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=son-of-anton"
-_TRIVIAL_RE = re.compile(
-    r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
-    re.IGNORECASE,
-)
 _CONTEXT_STRIP_RE = re.compile(
     r"<supermemory-context>[\s\S]*?</supermemory-context>\s*", re.DOTALL
 )
@@ -271,10 +266,6 @@ def _clean_text_for_capture(text: str) -> str:
     text = _CONTEXT_STRIP_RE.sub("", text or "")
     text = _CONTAINERS_STRIP_RE.sub("", text)
     return text.strip()
-
-
-def _is_trivial_message(text: str) -> bool:
-    return bool(_TRIVIAL_RE.match((text or "").strip()))
 
 
 class _SupermemoryClient:

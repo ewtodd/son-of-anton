@@ -23,10 +23,9 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass
 from pathlib import Path
 from son_of_anton_constants import get_son_of_anton_home, _get_platform_default_son_of_anton_home
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 from utils import atomic_json_write
 
 import fcntl
@@ -37,7 +36,6 @@ _LOCKS_DIRNAME = "gateway-locks"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
-_GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 
@@ -236,57 +234,6 @@ def _utc_now_iso() -> str:
 # Reject epoch values before 2000-01-01T00:00:00Z: nothing in Son of Anton' lifetime
 # legitimately produced a gateway heartbeat last century, so anything older is
 # a corrupt or hand-edited state file (e.g. an accidental 0 / tiny int).
-_EPOCH_MIN_PLAUSIBLE = 946684800.0  # 2000-01-01T00:00:00Z
-
-
-def normalize_updated_at(value: Any) -> Optional[str]:
-    """Coerce a persisted ``updated_at`` value to an RFC3339 string or ``None``.
-
-    The ``gateway_state.json`` writers all emit RFC3339 via :func:`_utc_now_iso`,
-    but the file can also be produced by legacy gateways (which wrote unix
-    epoch floats), hand edits, or partial corruption. Every read/emit surface
-    (``/api/status``'s ``gateway_updated_at``, the gateway's
-    ``/health/detailed`` ``updated_at``) promises consumers ``string | null``
-    (see ``web/src/lib/api.ts``), so this funnel enforces that contract:
-
-    - ``str``: accepted iff :meth:`datetime.fromisoformat` parses it (a
-      trailing ``Z`` is tolerated). Naive timestamps are coerced to UTC.
-      Returns the canonical ``datetime.isoformat()`` rendering.
-    - ``int`` / ``float``: treated as unix epoch **seconds** and converted to
-      a UTC ISO string. Implausible values — before 2000-01-01, more than a
-      day in the future, or non-finite — return ``None``.
-    - ``bool``: returns ``None``. Although ``bool`` is an ``int`` subclass,
-      ``True``/``False`` as a timestamp is always garbage (epoch 0/1 would be
-      rejected by the range guard anyway); rejecting explicitly keeps the
-      behaviour documented rather than incidental.
-    - anything else (``None``, dict, list, ...): ``None``.
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, str):
-        raw = value.strip()
-        # Python < 3.11 fromisoformat rejects a trailing 'Z'; tolerate it.
-        if raw.endswith(("Z", "z")):
-            raw = raw[:-1] + "+00:00"
-        try:
-            parsed = datetime.fromisoformat(raw)
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.isoformat()
-    if isinstance(value, (int, float)):
-        seconds = float(value)
-        if seconds != seconds or seconds in (float("inf"), float("-inf")):
-            return None
-        now = datetime.now(timezone.utc).timestamp()
-        if seconds < _EPOCH_MIN_PLAUSIBLE or seconds > now + 86400:
-            return None
-        try:
-            return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
-        except (OverflowError, OSError, ValueError):
-            return None
-    return None
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -685,28 +632,6 @@ def _clear_running_pid_cache() -> None:
         _gateway_running_pid_cache.clear()
 
 
-def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int]]:
-    try:
-        st = path.stat()
-    except OSError:
-        return (False, None, None)
-    return (True, st.st_mtime_ns, st.st_size)
-
-
-def _running_pid_cache_signature(
-    pid_path: Path,
-    *,
-    include_runtime_status: bool,
-) -> tuple[Any, ...]:
-    parts: list[Any] = [
-        _file_cache_signature(pid_path),
-        _file_cache_signature(_get_gateway_lock_path(pid_path)),
-    ]
-    if include_runtime_status:
-        parts.append(_file_cache_signature(_get_runtime_status_path()))
-    return tuple(parts)
-
-
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     """Delete a stale gateway PID file (and its sibling lock metadata).
 
@@ -818,7 +743,6 @@ def _pid_exists(pid: int) -> bool:
         return True
     except OSError:
         return False
-
 
 
 def _release_file_lock(handle) -> None:
@@ -1153,147 +1077,6 @@ def derive_gateway_drainable(*, gateway_running: bool, gateway_state: Any) -> bo
     non-running gateway.
     """
     return bool(gateway_running) and gateway_state in _DRAINABLE_GATEWAY_STATES
-
-
-@dataclass(frozen=True)
-class GatewayLiveness:
-    """Resolved gateway liveness for one dashboard surface.
-
-    ``source`` records which rung of the ladder answered, purely for logging
-    and tests — never branch product behavior on it.
-
-    ``probe_error`` is True when a rung raised instead of answering. Callers
-    that must distinguish "the gateway is down" from "we could not tell"
-    need it: the dashboard renders a down badge either way, but the kanban
-    dispatcher warning deliberately fails OPEN on an unreadable probe so it
-    never cries wolf at a user whose gateway is fine.
-    """
-
-    running: bool
-    pid: Optional[int]
-    source: str
-    health_body: Optional[dict[str, Any]] = None
-    probe_error: bool = False
-
-
-def resolve_gateway_liveness(
-    *,
-    profile_dir: Optional[Path] = None,
-    runtime: Any = _UNSET,
-    health_probe: Optional[Callable[[], tuple[bool, Optional[dict[str, Any]]]]] = None,
-    use_cache: bool = True,
-    pid_probe: Optional[Callable[..., Optional[int]]] = None,
-    runtime_reader: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
-    runtime_pid_probe: Optional[Callable[..., Optional[int]]] = None,
-) -> GatewayLiveness:
-    """Single source of truth for "is the gateway up?" across dashboard surfaces.
-
-    Before this existed, ``/api/status`` and ``/api/messaging/platforms``
-    each open-coded their own ladder and disagreed on the same page load —
-    the sidebar read "running" while the Channels page rendered "The gateway
-    is not running."  Three deployments hit it: a cross-container gateway
-    (only ``/api/status`` ran the HTTP health probe), a profile-scoped
-    dashboard (only ``/api/status`` passed the profile's paths, so messaging
-    borrowed another profile's runtime state — issue #71211), and a
-    launch-service-managed gateway with no PID file (only some callers used
-    the runtime-status fallback).
-
-    The ladder, most to least authoritative:
-
-    1. **PID file + runtime lock** — scoped to ``profile_dir`` when given.
-       Cached by default (``use_cache``); high-frequency polling must not
-       churn file descriptors re-flocking ``gateway.lock`` on every request.
-    2. **HTTP health probe** — supplied by the caller (the dashboard owns the
-       deprecated ``GATEWAY_HEALTH_URL`` config).  Covers the gateway running
-       in another container where no local PID is visible.
-    3. **Runtime status PID** — validated against the live process table with
-       ``expected_home`` so a recycled PID belonging to a *different*
-       profile's gateway is never reported as this one's.
-
-    Rung 3 only ever runs against a LOCAL state record: the probe body's PID
-    belongs to another host, and ``os.kill``-ing a remote PID is both wrong
-    and trips the test live-system guard.  Pass ``runtime`` when the caller
-    has already read the state file so it isn't read twice per request.
-
-    ``pid_probe`` / ``runtime_reader`` / ``runtime_pid_probe`` let a caller
-    inject its own module-level references to these helpers.  The dashboard
-    passes its ``son_of_anton_cli.web_server`` bindings so the long-standing
-    monkeypatch seam in the test-suite keeps working; production callers
-    leave them ``None`` and get this module's implementations.
-    """
-    _pid_probe = pid_probe or (
-        get_running_pid_cached if use_cache else get_running_pid
-    )
-    _runtime_reader = runtime_reader or read_runtime_status
-    _runtime_pid_probe = runtime_pid_probe or get_runtime_status_running_pid
-
-    pid_path = (profile_dir / "gateway.pid") if profile_dir is not None else None
-    probe_error = False
-    try:
-        # Plain zero-arg call when unscoped: several callers monkeypatch these
-        # probes with zero-arg lambdas, and /api/status's cache signature is
-        # keyed on the exact call shape.
-        pid = _pid_probe(pid_path) if pid_path is not None else _pid_probe()
-    except Exception:
-        # A probe failure (permissions, exotic /proc) must degrade to the
-        # next rung, never 500 a status endpoint. Recorded in probe_error so
-        # fail-open callers can tell "down" from "unknown".
-        pid = None
-        probe_error = True
-    if pid is not None:
-        return GatewayLiveness(running=True, pid=pid, source="pid")
-
-    health_body: Optional[dict[str, Any]] = None
-    if health_probe is not None:
-        try:
-            alive, health_body = health_probe()
-        except Exception:
-            alive, health_body = False, None
-            probe_error = True
-        if alive:
-            # Display-only PID: it belongs to the remote container.
-            remote_pid = health_body.get("pid") if health_body else None
-            return GatewayLiveness(
-                running=True,
-                pid=remote_pid,
-                source="health",
-                health_body=health_body,
-            )
-
-    if runtime is _UNSET:
-        try:
-            runtime = (
-                _runtime_reader(path=profile_dir / "gateway_state.json")
-                if profile_dir is not None
-                else _runtime_reader()
-            )
-        except Exception:
-            runtime = None
-            probe_error = True
-    try:
-        runtime_pid = (
-            _runtime_pid_probe(runtime, expected_home=profile_dir)
-            if profile_dir is not None
-            else _runtime_pid_probe(runtime)
-        )
-    except Exception:
-        runtime_pid = None
-        probe_error = True
-    if runtime_pid is not None:
-        return GatewayLiveness(
-            running=True,
-            pid=runtime_pid,
-            source="runtime_status",
-            health_body=health_body,
-        )
-
-    return GatewayLiveness(
-        running=False,
-        pid=None,
-        source="none",
-        health_body=health_body,
-        probe_error=probe_error,
-    )
 
 
 def get_runtime_status_running_pid(
@@ -2161,14 +1944,6 @@ def planned_stop_marker_targets_self() -> bool:
     return True
 
 
-def clear_planned_stop_marker() -> None:
-    """Remove the planned-stop marker unconditionally."""
-    try:
-        _get_planned_stop_marker_path().unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
 def get_running_pid(
     pid_path: Optional[Path] = None,
     *,
@@ -2217,58 +1992,3 @@ def get_running_pid(
     return None
 
 
-def get_running_pid_cached(
-    pid_path: Optional[Path] = None,
-    *,
-    cleanup_stale: bool = True,
-    ttl_seconds: float = _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS,
-) -> Optional[int]:
-    """Cached read-side wrapper for dashboard/status polling.
-
-    ``get_running_pid()`` probes the runtime lock by briefly opening and locking
-    ``gateway.lock``. That is the right authoritative check for control paths,
-    but high-frequency read-only HTTP polling can call it hundreds of times per
-    minute. Cache for a short window and invalidate on PID/lock/runtime-status
-    file changes so status endpoints do not churn file descriptors while still
-    noticing gateway start/stop transitions quickly.
-    """
-    if ttl_seconds <= 0:
-        return get_running_pid(pid_path, cleanup_stale=cleanup_stale)
-
-    resolved_pid_path = pid_path or _get_pid_path()
-    include_runtime_status = pid_path is None
-    signature = _running_pid_cache_signature(
-        resolved_pid_path,
-        include_runtime_status=include_runtime_status,
-    )
-    key = (str(resolved_pid_path), bool(cleanup_stale), include_runtime_status)
-    now = time.monotonic()
-
-    with _gateway_running_pid_cache_lock:
-        cached = _gateway_running_pid_cache.get(key)
-        if cached is not None:
-            cached_at, cached_signature, cached_pid = cached
-            if now - cached_at <= ttl_seconds and cached_signature == signature:
-                return cached_pid
-
-    pid = get_running_pid(pid_path, cleanup_stale=cleanup_stale)
-    refreshed_signature = _running_pid_cache_signature(
-        resolved_pid_path,
-        include_runtime_status=include_runtime_status,
-    )
-    with _gateway_running_pid_cache_lock:
-        _gateway_running_pid_cache[key] = (
-            time.monotonic(),
-            refreshed_signature,
-            pid,
-        )
-    return pid
-
-
-def is_gateway_running(
-    pid_path: Optional[Path] = None,
-    *,
-    cleanup_stale: bool = True,
-) -> bool:
-    """Check if the gateway daemon is currently running."""
-    return get_running_pid(pid_path, cleanup_stale=cleanup_stale) is not None

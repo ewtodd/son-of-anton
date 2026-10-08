@@ -485,16 +485,6 @@ def _is_curator_managed_record(record: Any) -> bool:
     return record.get("created_by") == "agent" or record.get("agent_created") is True
 
 
-def is_curator_managed(skill_name: str) -> bool:
-    """Whether *skill_name* is opted into curator management.
-
-    Policy-intent alias for the ``created_by``-marker check, so call sites read
-    as the question they are actually asking (see ``_is_curator_managed_record``
-    for why the stored field name says "created_by").
-    """
-    return _is_curator_managed_record(load_usage().get(skill_name))
-
-
 def list_unmanaged_skill_names() -> List[str]:
     """Enumerate curation-ELIGIBLE skills that carry no provenance marker.
 
@@ -1010,7 +1000,6 @@ def set_pinned(skill_name: str, pinned: bool) -> None:
     _mutate(skill_name, _apply, require_curation_eligible=True)
 
 
-
 def forget(skill_name: str) -> None:
     """Drop a skill's usage entry entirely. Called when the skill is deleted."""
     if not skill_name:
@@ -1270,17 +1259,6 @@ def curated_report() -> List[Dict[str, Any]]:
         row["provenance"] = provenance(name)
         rows.append(row)
     return rows
-
-
-def agent_created_report() -> List[Dict[str, Any]]:
-    """DEPRECATED — use :func:`curated_report` instead.
-
-    Used to return everything :func:`curated_report` returns (including bundled
-    skills when ``curator.prune_builtins`` is enabled), which made the
-    "agent-created" name misleading. Kept as a compatibility alias for
-    external callers; new code should call ``curated_report()``.
-    """
-    return curated_report()
 
 
 def provenance(skill_name: str) -> str:

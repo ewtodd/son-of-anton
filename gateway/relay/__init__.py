@@ -126,19 +126,6 @@ def _relay_bot_ids_map() -> dict:
         return {}
 
 
-def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform
-    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
-    ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
-    """
-    entry = _relay_bot_ids_map().get(platform)
-    if isinstance(entry, dict):
-        username = entry.get("username")
-        if username:
-            return str(username).lstrip("@")
-    return None
-
-
 def relay_platform_identity() -> tuple[str, str]:
     """The PRIMARY (platform, bot_id) — the first identity in the configured set.
 

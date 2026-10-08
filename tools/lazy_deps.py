@@ -515,26 +515,6 @@ def _is_satisfied(spec: str) -> bool:
         return True
 
 
-def _is_present(spec: str) -> bool:
-    """Cheap presence-only check (package name installed at any version).
-
-    Used by :func:`active_features` to detect backends the user has
-    previously activated, regardless of whether the version pin moved.
-    """
-    pkg = _pkg_name_from_spec(spec)
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:
-        return False
-    try:
-        version(pkg)
-        return True
-    except PackageNotFoundError:
-        return False
-    except Exception:
-        return False
-
-
 def _core_constraints_file() -> Optional[Path]:
     """Write a pip constraints file pinning every package already importable
     in the core environment to its installed version.
@@ -859,25 +839,6 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
-def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional[str]:
-    """Return the ``pip install`` command a user could run manually, or None.
-
-    ``venv_pip=True`` targets the running interpreter's pip
-    (``{sys.executable} -m pip install …``) — correct in every layout
-    (default install, ``SON_OF_ANTON_HOME`` overrides, profile installs) and
-    immune to Ubuntu 24.04's PEP 668 ``externally-managed-environment``
-    failure that a bare/system ``pip install`` hint invites.  The default
-    ``uv pip install`` form is kept for contexts that document uv usage.
-    """
-    if feature not in LAZY_DEPS:
-        return None
-    specs = LAZY_DEPS[feature]
-    joined = " ".join(repr(s) for s in specs)
-    if venv_pip:
-        return f"{sys.executable} -m pip install {joined}"
-    return "uv pip install " + joined
-
-
 @dataclass
 class InstallSpecsResult:
     """Outcome of :func:`install_specs` for one batch of pip specs.
@@ -975,94 +936,6 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
         stdout=result.stdout,
         stderr=result.stderr,
     )
-
-
-def active_features() -> list[str]:
-    """Return the list of features the user has ever lazy-installed.
-
-    A feature counts as "active" if its anchor package (the first declared
-    spec) is currently installed in the venv (presence check, ignoring
-    version). We intentionally do NOT treat shared helper packages as proof
-    that a backend was enabled: for example a backend may depend on
-    generic packages that can be installed for unrelated reasons.
-    Features the user has never enabled stay quiet.
-
-    Used by ``son-of-anton update`` to figure out which lazy backends need a
-    refresh pass when pins move in :data:`LAZY_DEPS`.
-    """
-    active = []
-    for feature, specs in LAZY_DEPS.items():
-        if specs and _is_present(specs[0]):
-            active.append(feature)
-    return active
-
-
-def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
-    """Re-run ``ensure`` for every feature the user has previously activated.
-
-    Returns a ``{feature: status}`` map where status is one of:
-        ``"current"``  — pins already satisfied, no install run
-        ``"refreshed"`` — pins were stale, reinstall succeeded
-        ``"failed: <reason>"`` — install attempt failed; caller decides
-                                  whether to surface it (we don't raise)
-        ``"skipped: <reason>"`` — gated off (config flag, user decline)
-
-    Intended for ``son-of-anton update``. Never raises; lazy-install failures
-    here must not block the rest of the update flow.
-    """
-    return _refresh_features(active_features(), prompt=prompt, restoring=False)
-
-
-def restore_features(features: list[str]) -> dict[str, str]:
-    """Restore features captured before an explicit managed-runtime rebuild.
-
-    Feature names are checked against :data:`LAZY_DEPS`, and installs remain
-    subject to ``security.allow_lazy_installs``. An explicit opt-out therefore
-    leaves the captured feature absent and reports it as skipped.
-    """
-    return _refresh_features(features, prompt=False, restoring=True)
-
-
-def _refresh_features(
-    features: list[str], *, prompt: bool, restoring: bool
-) -> dict[str, str]:
-    """Refresh or restore a known set of allowlisted lazy features."""
-    results: dict[str, str] = {}
-    for feature in features:
-        if feature not in LAZY_DEPS:
-            continue
-        missing = feature_missing(feature)
-        if not missing:
-            results[feature] = "current"
-            continue
-
-        unsupported = _unsupported_feature_reason(feature)
-        if unsupported:
-            results[feature] = f"skipped: {unsupported}"
-            continue
-
-        try:
-            if restoring:
-                ensure(feature, prompt=False)
-                results[feature] = "restored"
-            else:
-                ensure(feature, prompt=prompt)
-                results[feature] = "refreshed"
-        except FeatureUnavailable as e:
-            # Distinguish "user opted out" or platform-incompatible features
-            # from install failures so the update command can render the
-            # right non-error message.
-            if (
-                "lazy installs disabled" in str(e)
-                or "declined" in str(e)
-                or e.reason.startswith("unsupported ")
-            ):
-                results[feature] = f"skipped: {e.reason}"
-            else:
-                results[feature] = f"failed: {e.reason}"
-        except Exception as e:
-            results[feature] = f"failed: {e}"
-    return results
 
 
 def ensure_and_bind(

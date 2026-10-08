@@ -329,14 +329,6 @@ def register_from_config(
     return registered
 
 
-def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
-    """Return the parsed ``ShellHookSpec`` entries from config without
-    registering anything.  Used by ``son-of-anton hooks list`` and ``doctor``."""
-    if not isinstance(cfg, dict):
-        return []
-    return _parse_hooks_block(cfg.get("hooks"))
-
-
 def re_register_config_hooks() -> None:
     """Re-register shell hooks from config after a plugin force-reload.
 
@@ -1077,17 +1069,6 @@ def _resolve_effective_accept(
 # Introspection (used by `son-of-anton hooks` CLI)
 # ---------------------------------------------------------------------------
 
-def allowlist_entry_for(event: str, command: str) -> Optional[Dict[str, Any]]:
-    """Return the allowlist record for this pair, if any."""
-    for e in load_allowlist().get("approvals", []):
-        if (
-            isinstance(e, dict)
-            and e.get("event") == event
-            and e.get("command") == command
-        ):
-            return e
-    return None
-
 
 def script_mtime_iso(command: str) -> Optional[str]:
     """ISO-8601 mtime of the resolved script path, or ``None`` if the
@@ -1104,48 +1085,3 @@ def script_mtime_iso(command: str) -> Optional[str]:
         return None
 
 
-def script_is_executable(command: str) -> bool:
-    """Return ``True`` iff ``command`` is runnable as configured.
-
-    For a bare invocation (``/path/hook.sh``) the script itself must be
-    executable.  For interpreter-prefixed commands (``python3
-    /path/hook.py``, ``/usr/bin/env bash hook.sh``) the script just has
-    to be readable — the interpreter doesn't care about the ``X_OK``
-    bit.  Mirrors what ``_spawn`` would actually do at runtime."""
-    path = _command_script_path(command)
-    if not path:
-        return False
-    expanded = os.path.expanduser(path)
-    if not os.path.isfile(expanded):
-        return False
-    try:
-        from son_of_anton_cli._subprocess_compat import split_command_line
-
-        argv = split_command_line(command)
-    except ValueError:
-        return False
-    is_bare_invocation = bool(argv) and argv[0] == path
-    required = os.X_OK if is_bare_invocation else os.R_OK
-    return os.access(expanded, required)
-
-
-def run_once(
-    spec: ShellHookSpec, kwargs: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Fire a single shell-hook invocation with a synthetic payload.
-    Used by ``son-of-anton hooks test`` and ``son-of-anton hooks doctor``.
-
-    ``kwargs`` is the same dict that :func:`son_of_anton_cli.plugins.invoke_hook`
-    would pass at runtime.  It is routed through :func:`_serialize_payload`
-    so the synthetic stdin exactly matches what a real hook firing would
-    produce — otherwise scripts tested via ``son-of-anton hooks test`` could
-    diverge silently from production behaviour.
-
-    Returns the :func:`_spawn` diagnostic dict plus a ``parsed`` field
-    holding the canonical Son of Anton-wire-shape response — including exit-code-2
-    blocking and ``fail_closed`` semantics, so what ``son-of-anton hooks test``
-    prints is exactly what the dispatcher would receive."""
-    stdin_json = _serialize_payload(spec.event, kwargs)
-    result = _spawn(spec, stdin_json)
-    result["parsed"] = _evaluate_result(spec, result)
-    return result

@@ -34,10 +34,6 @@ from .core.tool_call import ToolCall
 from .core.workspace import log_llm_call
 
 
-class ParseFailureError(Exception):
-    """Raised when an agent's structured output cannot be parsed."""
-
-
 class ContextTooLongError(Exception):
     """Raised when a provider rejects the request because it is too long."""
 
@@ -284,7 +280,6 @@ def _log_usage(config, agent_name, iteration, response, duration):
         )
 
 
-
 CONTINUATION_PROMPT = (
     "Your previous message stopped because it reached the output token limit, "
     "mid-sentence. Continue from exactly where it stopped. Do not repeat any "
@@ -390,49 +385,6 @@ def call_llm(
         model,
         system,
         messages[1:],
-        config,
-        agent_name,
-        iteration,
-        result,
-        max_tokens,
-    )
-
-
-def call_llm_continuation(
-    system: str,
-    messages: list[dict],
-    config,
-    agent_name: str = "",
-    iteration: int = 0,
-    append_to_log: str = "",
-) -> LLMResponse:
-    """Continue a multi-turn conversation with a full ``messages`` list."""
-    if not messages:
-        raise ValueError(
-            f"Empty messages in call_llm_continuation (agent={agent_name}, iteration={iteration})"
-        )
-    client, model = _resolve_endpoint(config)
-    max_tokens = config.max_tokens_for_agent(agent_name)
-    full_messages = [{"role": "system", "content": system}] + list(messages)
-    start = time.time()
-    resp = _create_with_retry(client, model, full_messages, max_tokens, config)
-    duration = time.time() - start
-
-    choice = resp.choices[0]
-    finish = choice.finish_reason or "end_turn"
-    result = LLMResponse(
-        text=choice.message.content or "",
-        input_tokens=getattr(resp.usage, "prompt_tokens", 0) or 0,
-        output_tokens=getattr(resp.usage, "completion_tokens", 0) or 0,
-        stop_reason="max_tokens" if finish == "length" else finish,
-        duration=duration,
-    )
-    _log_usage(config, agent_name, iteration, result, duration)
-    return _continue_truncated(
-        client,
-        model,
-        system,
-        list(messages),
         config,
         agent_name,
         iteration,

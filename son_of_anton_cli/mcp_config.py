@@ -117,39 +117,6 @@ def _remove_mcp_server(name: str) -> bool:
     return True
 
 
-def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
-    """Replace the WHOLE ``mcp_servers`` map in config.toml.
-
-    Unlike ``_save_mcp_server`` (per-key upsert), this sets the entire map so
-    the GUI's mcp.json editor can delete servers, drop an ``enabled: false``
-    flag (re-enable), or remove nested fields and have those *removals* land on
-    disk.  A plain ``/api/config`` deep-merge can only add/override keys, never
-    delete them — which is why edits appeared to succeed but the old entry
-    survived (see MCP tab persistence bug).
-
-    Every entry is validated up front; on any suspicious command/args the whole
-    save is rejected (returns ``(False, issues)``) so a bad paste can't be
-    partially applied.  An empty map removes the key entirely.
-    """
-    issues: List[str] = []
-    for name, cfg in servers.items():
-        if not isinstance(cfg, dict):
-            issues.append(f"Server '{name}': expected an object")
-            continue
-        issues.extend(validate_mcp_server_entry(name, cfg))
-
-    if issues:
-        return False, issues
-
-    config = load_config()
-    if servers:
-        config["mcp_servers"] = dict(servers)
-    else:
-        config.pop("mcp_servers", None)
-    save_config(config)
-    return True, []
-
-
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
     suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")

@@ -36,7 +36,6 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-ACTIONS_CONTRACT_VERSION = 1
 
 CAPABILITY_ID = "gateway.platform_actions"
 

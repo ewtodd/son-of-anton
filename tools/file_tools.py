@@ -169,34 +169,6 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 
 
-def _terminal_env_type_for_task(task_id: str = "default") -> str:
-    """Best-effort terminal backend type for path-resolution decisions."""
-    try:
-        from tools.terminal_tool import (
-            _active_environments,
-            _env_lock,
-            _get_env_config,
-            _resolve_container_task_id,
-        )
-
-        try:
-            container_key = _resolve_container_task_id(task_id)
-        except Exception:
-            container_key = task_id
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        if env is not None:
-            name = env.__class__.__name__.lower()
-            if "local" in name:
-                return "local"
-            if "ssh" in name:
-                return "ssh"
-        cfg = _get_env_config()
-        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
-    except Exception:
-        return str(os.getenv("TERMINAL_ENV") or "local").lower()
-
-
 def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     """Normalize a cwd candidate to an absolute, sentinel-free anchor.
 
@@ -1873,8 +1845,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         return tool_error(str(e))
 
 
-
-
 def reset_file_dedup(task_id: str = None):
     """Clear the deduplication cache for file reads.
 
@@ -2516,8 +2486,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return result_json
     except Exception as e:
         return tool_error(str(e))
-
-
 
 
 # ---------------------------------------------------------------------------

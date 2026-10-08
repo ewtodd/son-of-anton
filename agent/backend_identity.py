@@ -56,20 +56,6 @@ class FailureScope(Enum):
 #: Reason strings already used by auxiliary_client's except-chain, mapped to
 #: scopes. Unknown reasons default to MODEL — the least-invalidating scope —
 #: so an unrecognized failure never over-skips viable candidates.
-_REASON_SCOPES = {
-    "auth error": FailureScope.CREDENTIAL,
-    "payment error": FailureScope.CREDENTIAL,
-    "rate limit": FailureScope.MODEL,
-    "model incompatible with route": FailureScope.MODEL,
-    "invalid provider response": FailureScope.MODEL,
-    "connection error": FailureScope.MODEL,
-    "timeout": FailureScope.MODEL,
-}
-
-
-def classify_failure_scope(reason: Optional[str]) -> FailureScope:
-    """Map a human-readable failure reason to the identity axis it kills."""
-    return _REASON_SCOPES.get((reason or "").strip().lower(), FailureScope.MODEL)
 
 
 def _norm_provider(value: Optional[str]) -> str:

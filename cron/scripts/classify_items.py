@@ -79,17 +79,6 @@ def _item_id(item: Dict[str, Any], index: int) -> str:
     return f"item-{index}"
 
 
-_CLASSIFY_INSTRUCTIONS = (
-    "You are an urgency classifier for a proactive assistant. You will be given "
-    "a numbered list of items and the user's importance criteria. Score EACH "
-    "item from 0 (ignore entirely) to 10 (interrupt the user now). Return ONLY a "
-    "JSON array, one object per item, in the same order: "
-    '[{"index": <int>, "score": <int 0-10>, "reason": "<short>"}]. '
-    "No prose, no markdown fences. Be conservative: most items should score low. "
-    "Only score high when the item clearly meets the user's criteria."
-)
-
-
 def _build_prompt(items: List[Dict[str, Any]], criteria: str) -> str:
     lines = [f"USER IMPORTANCE CRITERIA:\n{criteria}\n", "ITEMS:"]
     for i, item in enumerate(items):

@@ -17,7 +17,6 @@ the async helper, never in the synchronous probe.
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import subprocess
@@ -302,14 +301,6 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
         f"{extras_str} "
         f"parent_cmdline={parent_cmd!r}"
     )
-
-
-def context_as_json(ctx: Dict[str, Any]) -> str:
-    """JSON-serialise a context dict for structured ingestion.  Never raises."""
-    try:
-        return json.dumps(ctx, default=str, sort_keys=True)
-    except (TypeError, ValueError):
-        return "{}"
 
 
 def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, Any]]:

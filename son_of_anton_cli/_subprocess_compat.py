@@ -232,4 +232,3 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
 
 
 # Backward-compat alias — existing call sites/tests import the historical name.
-_kill_git_process_tree = kill_process_tree

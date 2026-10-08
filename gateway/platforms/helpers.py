@@ -5,7 +5,6 @@ message deduplication, text batch aggregation, markdown stripping,
 and thread participation tracking.
 """
 
-import asyncio
 import json
 import logging
 import re
@@ -16,7 +15,7 @@ from typing import TYPE_CHECKING, Dict
 from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.platforms.base import MessageEvent
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -93,121 +92,9 @@ class MessageDeduplicator:
 # ─── Text Batch Aggregation ──────────────────────────────────────────────────
 
 
-class TextBatchAggregator:
-    """Aggregates rapid-fire text events into single messages.
-
-    Replaces the ``_enqueue_text_event`` / ``_flush_text_batch`` pattern
-    previously duplicated in the discord and slack adapters.
-
-    Usage::
-
-        self._text_batcher = TextBatchAggregator(
-            handler=self._message_handler,
-            batch_delay=0.6,
-            split_threshold=1900,
-        )
-
-        # In message dispatch:
-        if msg_type == MessageType.TEXT and self._text_batcher.is_enabled():
-            self._text_batcher.enqueue(event, session_key)
-            return
-    """
-
-    def __init__(
-        self,
-        handler,
-        *,
-        batch_delay: float = 0.6,
-        split_delay: float = 2.0,
-        split_threshold: int = 4000,
-    ):
-        self._handler = handler
-        self._batch_delay = batch_delay
-        self._split_delay = split_delay
-        self._split_threshold = split_threshold
-        self._pending: Dict[str, "MessageEvent"] = {}
-        self._pending_tasks: Dict[str, asyncio.Task] = {}
-
-    def is_enabled(self) -> bool:
-        """Return True if batching is active (delay > 0)."""
-        return self._batch_delay > 0
-
-    def enqueue(self, event: "MessageEvent", key: str) -> None:
-        """Add *event* to the pending batch for *key*."""
-        chunk_len = len(event.text or "")
-        existing = self._pending.get(key)
-        if not existing:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending[key] = event
-        else:
-            existing.text = f"{existing.text}\n{event.text}"
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-
-        # Cancel prior flush timer, start a new one
-        prior = self._pending_tasks.get(key)
-        if prior and not prior.done():
-            prior.cancel()
-        self._pending_tasks[key] = asyncio.create_task(self._flush(key))
-
-    async def _flush(self, key: str) -> None:
-        """Wait then dispatch the batched event for *key*."""
-        current_task = self._pending_tasks.get(key)
-        pending = self._pending.get(key)
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-
-        # Use longer delay when the last chunk looks like a split message
-        delay = self._split_delay if last_len >= self._split_threshold else self._batch_delay
-        await asyncio.sleep(delay)
-
-        event = self._pending.pop(key, None)
-        if event:
-            try:
-                await self._handler(event)
-            except Exception:
-                logger.exception("[TextBatchAggregator] Error dispatching batched event for %s", key)
-
-        if self._pending_tasks.get(key) is current_task:
-            self._pending_tasks.pop(key, None)
-
-    def cancel_all(self) -> None:
-        """Cancel all pending flush tasks."""
-        for task in self._pending_tasks.values():
-            if not task.done():
-                task.cancel()
-        self._pending_tasks.clear()
-        self._pending.clear()
-
-
 # ─── Markdown Stripping ──────────────────────────────────────────────────────
 
 # Pre-compiled regexes for performance
-_RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
-_RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
-_RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
-_RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
-_RE_INLINE_CODE = re.compile(r"`(.+?)`")
-_RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
-_RE_LINK = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
-_RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
-
-
-def strip_markdown(text: str) -> str:
-    """Strip markdown formatting for plain-text platforms.
-
-    Replaces the identical ``_strip_markdown()`` functions previously
-    duplicated in the plain-text adapters.
-    """
-    text = _RE_BOLD.sub(r"\1", text)
-    text = _RE_ITALIC_STAR.sub(r"\1", text)
-    text = _RE_BOLD_UNDER.sub(r"\1", text)
-    text = _RE_ITALIC_UNDER.sub(r"\1", text)
-    text = _RE_CODE_BLOCK.sub("", text)
-    text = _RE_INLINE_CODE.sub(r"\1", text)
-    text = _RE_HEADING.sub("", text)
-    text = _RE_LINK.sub(r"\1", text)
-    text = _RE_MULTI_NEWLINE.sub("\n\n", text)
-    return text.strip()
 
 
 # ─── Thread Participation Tracking ───────────────────────────────────────────
@@ -424,105 +311,6 @@ def convert_table_to_bullets(text: str) -> str:
 # ─── Mention-pattern compilation ─────────────────────────────────────────────
 
 
-def compile_mention_patterns(
-    raw,
-    *,
-    log_prefix: str,
-    platform_label: str | None = None,
-    display_label: str | None = None,
-    defaults: 'list[str] | None' = None,
-    logger_: 'logging.Logger | None' = None,
-) -> 'list[re.Pattern]':
-    """Compile regex wake-word/mention patterns from config or env values.
-
-    Two adapter families share this logic:
-
-    * **Config-style**: pass ``platform_label``. ``raw`` is the value from
-      ``config.extra`` after env
-      fallback parsing; must be a list or string, anything else logs a warning
-      and yields ``[]``. Non-string entries are skipped. A summary info log is
-      emitted when patterns load.
-    * **Wakeword-style**: pass ``defaults``. ``raw`` may
-      be None (use defaults), a string (JSON list or comma/newline separated),
-      a list, or a scalar (wrapped in a list). Entries are coerced via
-      ``str()``.
-
-    ``log_prefix`` is interpolated into every log message so per-adapter log
-    output stays byte-identical to the historical inline implementations.
-    """
-    log = logger_ or logger
-
-    if platform_label is not None:
-        # Config-style semantics.
-        display = display_label or platform_label
-        patterns = raw
-        if patterns is None:
-            return []
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if not isinstance(patterns, list):
-            log.warning(
-                "[%s] %s mention_patterns must be a list or string; got %s",
-                log_prefix,
-                platform_label,
-                type(patterns).__name__,
-            )
-            return []
-
-        compiled: list[re.Pattern] = []
-        for pattern in patterns:
-            if not isinstance(pattern, str) or not pattern.strip():
-                continue
-            try:
-                compiled.append(re.compile(pattern, re.IGNORECASE))
-            except re.error as exc:
-                log.warning(
-                    "[%s] Invalid %s mention pattern %r: %s",
-                    log_prefix,
-                    display,
-                    pattern,
-                    exc,
-                )
-        if compiled:
-            log.info(
-                "[%s] Loaded %d %s mention pattern(s)",
-                log_prefix,
-                len(compiled),
-                display,
-            )
-        return compiled
-
-    # Wakeword-style semantics.
-    if raw is None:
-        patterns = list(defaults or [])
-    elif isinstance(raw, str):
-        text = raw.strip()
-        try:
-            loaded = json.loads(text) if text else []
-        except Exception:
-            loaded = None
-        patterns = loaded if isinstance(loaded, list) else [
-            part.strip()
-            for line in text.splitlines()
-            for part in line.split(",")
-        ]
-    elif isinstance(raw, list):
-        patterns = raw
-    else:
-        patterns = [raw]
-
-    compiled = []
-    for pattern in patterns:
-        text = str(pattern).strip()
-        if not text:
-            continue
-        try:
-            compiled.append(re.compile(text, re.IGNORECASE))
-        except re.error as exc:
-            log.warning("[%s] Invalid mention pattern %r: %s", log_prefix, text, exc)
-    return compiled
-
-
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for the fence-aware markdown chunkers that previously lived as
 # near-duplicates in gateway/stream_consumer.py
@@ -549,15 +337,6 @@ def text_has_unclosed_fence(text: str) -> bool:
         if line.startswith('```'):
             in_fence = not in_fence
     return in_fence
-
-
-def text_ends_with_table_row(text: str) -> bool:
-    """True when the last non-empty line starts and ends with ``|``."""
-    trimmed = text.rstrip()
-    if not trimmed:
-        return False
-    last_line = trimmed.split('\n')[-1].strip()
-    return last_line.startswith('|') and last_line.endswith('|')
 
 
 def is_fence_atom(text: str) -> bool:
@@ -675,49 +454,6 @@ def split_markdown_atoms(text: str) -> "list[str]":
     return atoms
 
 
-def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
-    """Infer the separator (``'\\n'`` or ``'\\n\\n'``) between two chunks.
-
-    Single newline when the boundary sits at a code fence or a continued
-    table; paragraph separator otherwise.
-    """
-    prev_trimmed = prev_chunk.rstrip()
-    next_trimmed = next_chunk.lstrip()
-
-    if prev_trimmed.endswith('```') or next_trimmed.startswith('```'):
-        return '\n'
-
-    if text_ends_with_table_row(prev_chunk):
-        first_line = next_trimmed.split('\n')[0].strip() if next_trimmed else ''
-        if first_line.startswith('|') and first_line.endswith('|'):
-            return '\n'
-
-    return '\n\n'
-
-
-def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
-    """Stream-aware fence merge: rejoin chunks truncated mid-fence.
-
-    While chunk *i* has an unclosed fence and a successor exists, merge the
-    successor into it using :func:`infer_block_separator`.
-    """
-    if not chunks:
-        return []
-
-    result: "list[str]" = []
-    i = 0
-    while i < len(chunks):
-        current = chunks[i]
-        while text_has_unclosed_fence(current) and i + 1 < len(chunks):
-            sep = infer_block_separator(current, chunks[i + 1])
-            current = current + sep + chunks[i + 1]
-            i += 1
-        result.append(current)
-        i += 1
-
-    return result
-
-
 def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
     """Close orphaned ``` fences at each chunk boundary and reopen on the next.
 
@@ -752,36 +488,6 @@ def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
             carry_lang = None
         out.append(body)
     return out
-
-
-def greedy_pack_blocks(blocks, max_length, len_fn=None, sep="\n\n", overflow=None):
-    """Greedily pack pre-split *blocks* into chunks of at most *max_length*.
-
-    Blocks are joined with *sep* while they fit.  A block that alone exceeds
-    the limit is passed to *overflow(block)* (which must return a list of
-    chunks) when provided, else emitted as-is.
-    """
-    _len = len_fn or len
-    packed: "list[str]" = []
-    current = ""
-    for block in blocks:
-        candidate = block if not current else f"{current}{sep}{block}"
-        if _len(candidate) <= max_length:
-            current = candidate
-            continue
-        if current:
-            packed.append(current)
-            current = ""
-        if _len(block) <= max_length:
-            current = block
-            continue
-        if overflow is not None:
-            packed.extend(overflow(block))
-        else:
-            packed.append(block)
-    if current:
-        packed.append(current)
-    return packed
 
 
 def split_text_fence_aware(

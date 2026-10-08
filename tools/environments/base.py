@@ -7,7 +7,6 @@ or a temp file (local).
 """
 
 import codecs
-import json
 import logging
 import os
 import re
@@ -382,22 +381,6 @@ def _popen_bash(
     return proc
 
 
-def _load_json_store(path: Path) -> dict:
-    """Load a JSON file as a dict, returning ``{}`` on any error."""
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def _save_json_store(path: Path, data: dict) -> None:
-    """Write *data* as pretty-printed JSON to *path*."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
     """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
     try:
@@ -430,75 +413,6 @@ class ProcessHandle(Protocol):
     def returncode(self) -> int | None: ...
 
 
-class _ThreadedProcessHandle:
-    """Adapter for SDK backends (Modal, Daytona) that have no real subprocess.
-
-    Wraps a blocking ``exec_fn() -> (output_str, exit_code)`` in a background
-    thread and exposes a ProcessHandle-compatible interface.  An optional
-    ``cancel_fn`` is invoked on ``kill()`` for backend-specific cancellation
-    (e.g. Modal sandbox.terminate, Daytona sandbox.stop).
-    """
-
-    def __init__(
-        self,
-        exec_fn: Callable[[], tuple[str, int]],
-        cancel_fn: Callable[[], None] | None = None,
-    ):
-        self._cancel_fn = cancel_fn
-        self._done = threading.Event()
-        self._returncode: int | None = None
-        self._error: Exception | None = None
-
-        # Pipe for stdout — drain thread in _wait_for_process reads the read end.
-        read_fd, write_fd = os.pipe()
-        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
-        self._write_fd = write_fd
-
-        def _worker():
-            try:
-                output, exit_code = exec_fn()
-                self._returncode = exit_code
-                # Write output into the pipe so drain thread picks it up.
-                try:
-                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
-                except OSError:
-                    pass
-            except Exception as exc:
-                self._error = exc
-                self._returncode = 1
-            finally:
-                try:
-                    os.close(self._write_fd)
-                except OSError:
-                    pass
-                self._done.set()
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-
-    @property
-    def stdout(self):
-        return self._stdout
-
-    @property
-    def returncode(self) -> int | None:
-        return self._returncode
-
-    def poll(self) -> int | None:
-        return self._returncode if self._done.is_set() else None
-
-    def kill(self):
-        if self._cancel_fn:
-            try:
-                self._cancel_fn()
-            except Exception:
-                pass
-
-    def wait(self, timeout: float | None = None) -> int:
-        self._done.wait(timeout=timeout)
-        return self._returncode
-
-
 # ---------------------------------------------------------------------------
 # CWD marker for remote backends
 # ---------------------------------------------------------------------------
@@ -526,9 +440,6 @@ def _cwd_marker(session_id: str) -> str:
 # with one of these prefixes (or is SON_OF_ANTON_UI_SESSION_ID). Used by unit tests
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
-_SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (SON_OF_ANTON_SESSION_|SON_OF_ANTON_UI_SESSION_ID|SON_OF_ANTON_CRON_AUTO_DELIVER_|SON_OF_ANTON_CRON_SESSION)"
-)
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 

@@ -42,17 +42,12 @@ produce. The tool wrapper JSON-serializes it. Keys:
 from __future__ import annotations
 
 import abc
-import base64
-import datetime
 import logging
-import uuid
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
-VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
 
 
@@ -199,149 +194,10 @@ class ImageGenProvider(abc.ABC):
 # ---------------------------------------------------------------------------
 
 
-def resolve_aspect_ratio(value: Optional[str]) -> str:
-    """Clamp an aspect_ratio value to the valid set, defaulting to landscape.
-
-    Invalid values are coerced rather than rejected so the tool surface is
-    forgiving of agent mistakes.
-    """
-    if not isinstance(value, str):
-        return DEFAULT_ASPECT_RATIO
-    v = value.strip().lower()
-    if v in VALID_ASPECT_RATIOS:
-        return v
-    return DEFAULT_ASPECT_RATIO
-
-
-def normalize_reference_images(value: Any) -> Optional[List[str]]:
-    """Coerce a reference-image argument into a clean list of URL/path strings.
-
-    Accepts a single string or a list; strips blanks and whitespace. Returns
-    ``None`` when nothing usable remains so providers can treat "no refs" as a
-    single sentinel.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, (list, tuple)):
-        return None
-    out: List[str] = []
-    for item in value:
-        if isinstance(item, str) and item.strip():
-            out.append(item.strip())
-    return out or None
-
-
-def _images_cache_dir() -> Path:
-    """Return ``$SON_OF_ANTON_HOME/cache/images/``, creating parents as needed."""
-    from son_of_anton_constants import get_son_of_anton_home
-
-    path = get_son_of_anton_home() / "cache" / "images"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def save_b64_image(
-    b64_data: str,
-    *,
-    prefix: str = "image",
-    extension: str = "png",
-) -> Path:
-    """Decode base64 image data and write it under ``$SON_OF_ANTON_HOME/cache/images/``.
-
-    Returns the absolute :class:`Path` to the saved file.
-
-    Filename format: ``<prefix>_<YYYYMMDD_HHMMSS>_<short-uuid>.<ext>``.
-    """
-    raw = base64.b64decode(b64_data)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    short = uuid.uuid4().hex[:8]
-    path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
-    path.write_bytes(raw)
-    return path
-
-
 # Extension inference for save_url_image — keep small and explicit.  We don't
 # want to import mimetypes for a handful of formats every image_gen provider
 # actually returns, and we never want to inherit a content-type that points
 # at HTML or JSON when the API gives us a degenerate response.
-_URL_IMAGE_CONTENT_TYPES = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/webp": "webp",
-    "image/gif": "gif",
-}
-
-
-def save_url_image(
-    url: str,
-    *,
-    prefix: str = "image",
-    timeout: float = 60.0,
-    max_bytes: int = 25 * 1024 * 1024,
-) -> Path:
-    """Download an image URL and write it under ``$SON_OF_ANTON_HOME/cache/images/``.
-
-    Used by providers (xAI, fallback OpenAI) whose API returns an *ephemeral*
-    URL instead of inline base64 — those URLs frequently expire before a
-    downstream consumer (Telegram ``send_photo``, browser fetch) can resolve
-    them, so we materialise the bytes locally at tool-completion time.
-    Mirrors :func:`save_b64_image`'s shape so providers can swap in one line.
-
-    Returns the absolute :class:`Path` to the saved file.  Raises on any
-    network / HTTP / oversize / non-image-content-type error so callers can
-    fall back to returning the bare URL with a clear error message.
-    """
-    import requests
-
-    response = requests.get(url, timeout=timeout, stream=True)
-    response.raise_for_status()
-
-    # Infer extension from the response content-type, falling back to the
-    # URL suffix when xAI / OpenAI omit a precise type (some CDNs return
-    # ``application/octet-stream``).  Defaults to ``png``.
-    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    extension = _URL_IMAGE_CONTENT_TYPES.get(content_type)
-    if extension is None:
-        url_path = url.split("?", 1)[0].lower()
-        for ext in ("png", "jpg", "jpeg", "webp", "gif"):
-            if url_path.endswith(f".{ext}"):
-                extension = "jpg" if ext == "jpeg" else ext
-                break
-    if extension is None:
-        extension = "png"
-
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    short = uuid.uuid4().hex[:8]
-    path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
-
-    bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
-
-    if bytes_written == 0:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        raise ValueError(f"Image at {url} returned 0 bytes; refusing to cache.")
-
-    return path
 
 
 def success_response(

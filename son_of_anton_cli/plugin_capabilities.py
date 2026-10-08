@@ -348,16 +348,6 @@ def record_consent(
     )
 
 
-def consent_hash(plugin_id: str, config: Optional[Mapping[str, Any]] = None) -> Optional[str]:
-    """Return the stored consent hash, or None when absent/corrupt."""
-    entry = _plugin_entry(plugin_id, config)
-    consent = entry.get(CONSENT_KEY)
-    if not isinstance(consent, dict):
-        return None
-    h = consent.get("hash")
-    return h if isinstance(h, str) and h else None
-
-
 def pending_capabilities(
     plugin_id: str,
     declared: Iterable[str],
@@ -376,18 +366,3 @@ def pending_capabilities(
     return [c for c in declared_list if c not in granted]
 
 
-def declared_set_changed(
-    plugin_id: str,
-    declared: Iterable[str],
-    config: Optional[Mapping[str, Any]] = None,
-) -> bool:
-    """True when the declared set differs from what the user consented to.
-
-    No stored consent at all counts as changed (never consented).
-    """
-    stored = consent_hash(plugin_id, config)
-    if stored is None:
-        return True
-    return stored != capability_set_hash(
-        c for c in declared if c in VALID_CAPABILITY_IDS
-    )

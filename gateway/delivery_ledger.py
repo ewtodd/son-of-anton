@@ -40,7 +40,6 @@ or delay an actual send. Callers wrap every call in try/except.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import sqlite3
@@ -368,23 +367,3 @@ def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
         return True
 
 
-def debug_rows(limit: int = 20) -> str:
-    """Human-readable dump for ad-hoc inspection (sqlite3-free path)."""
-    with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute(
-            """SELECT obligation_id, session_key, state, attempts,
-                      created_at, updated_at, last_error
-               FROM delivery_obligations
-               ORDER BY updated_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-    return json.dumps(
-        [
-            {
-                "id": r[0], "session": r[1], "state": r[2], "attempts": r[3],
-                "created_at": r[4], "updated_at": r[5], "last_error": r[6],
-            }
-            for r in rows
-        ],
-        indent=2,
-    )

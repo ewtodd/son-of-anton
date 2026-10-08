@@ -156,10 +156,6 @@ def sensitive_query_param_name(url: str) -> Optional[str]:
     return None
 
 
-def has_sensitive_query_params(url: str) -> bool:
-    """Return True when ``url`` carries likely credential-bearing query params."""
-    return sensitive_query_param_name(url) is not None
-
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an
 # attacker could use to steal instance credentials.
@@ -277,13 +273,6 @@ def _resolve_allow_private_urls() -> bool:
         pass
 
     return False
-
-
-def _reset_allow_private_cache() -> None:
-    """Reset the cached toggle — only for tests."""
-    global _allow_private_resolved, _cached_allow_private
-    _allow_private_resolved = False
-    _cached_allow_private = False
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -702,54 +691,6 @@ def _origin_scheme_context(request: Any) -> dict[tuple[str, int], str]:
     if not host or port is None or scheme not in {"http", "https"}:
         return {}
     return {(host, port): scheme}
-
-
-def ssrf_safe_async_http_transport(**kwargs: Any) -> Any:
-    """Return an httpx async transport that pins direct TCP connects to vetted IPs."""
-    import contextvars
-    import httpx
-
-    schemes_by_origin_var = contextvars.ContextVar("son_of_anton_ssrf_async_origin_schemes")
-
-    class _Transport(httpx.AsyncHTTPTransport):
-        def __init__(self, **transport_kwargs: Any):
-            super().__init__(**transport_kwargs)
-            self._pool._network_backend = _SSRFGuardedAsyncNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
-            )
-
-        async def handle_async_request(self, request: Any) -> Any:
-            token = schemes_by_origin_var.set(_origin_scheme_context(request))
-            try:
-                return await super().handle_async_request(request)
-            finally:
-                schemes_by_origin_var.reset(token)
-
-    return _Transport(**kwargs)
-
-
-def ssrf_safe_http_transport(**kwargs: Any) -> Any:
-    """Return an httpx sync transport that pins direct TCP connects to vetted IPs."""
-    import contextvars
-    import httpx
-
-    schemes_by_origin_var = contextvars.ContextVar("son_of_anton_ssrf_origin_schemes")
-
-    class _Transport(httpx.HTTPTransport):
-        def __init__(self, **transport_kwargs: Any):
-            super().__init__(**transport_kwargs)
-            self._pool._network_backend = _SSRFGuardedNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
-            )
-
-        def handle_request(self, request: Any) -> Any:
-            token = schemes_by_origin_var.set(_origin_scheme_context(request))
-            try:
-                return super().handle_request(request)
-            finally:
-                schemes_by_origin_var.reset(token)
-
-    return _Transport(**kwargs)
 
 
 def _install_ssrf_guard_on_async_transport(transport: Any, schemes_by_origin_var: Any) -> None:

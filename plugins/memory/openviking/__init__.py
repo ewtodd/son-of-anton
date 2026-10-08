@@ -1308,47 +1308,6 @@ def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:
     return False, f"OpenViking server is not reachable at {endpoint}."
 
 
-def _validate_openviking_auth(values: dict) -> tuple[bool, str]:
-    try:
-        endpoint = _normalize_openviking_url(values.get("endpoint"))
-        client = _VikingClient(
-            endpoint,
-            _clean_config_value(values.get("api_key")),
-            account=_clean_config_value(values.get("account")),
-            user=_clean_config_value(values.get("user")),
-            agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
-        )
-        client.validate_auth()
-    except Exception as e:
-        return False, f"OpenViking authentication validation failed: {_format_openviking_exception(e)}"
-    return True, ""
-
-
-def _validate_openviking_root_access(values: dict) -> tuple[bool, str]:
-    try:
-        endpoint = _normalize_openviking_url(values.get("endpoint"))
-        client = _VikingClient(
-            endpoint,
-            _clean_config_value(values.get("api_key")),
-            agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
-        )
-        client.validate_root_access()
-    except Exception as e:
-        return False, f"OpenViking root API key validation failed: {_format_openviking_exception(e)}"
-    return True, ""
-
-
-def _validate_openviking_user_key_scope(values: dict) -> tuple[bool, str]:
-    root_ok, _message = _validate_openviking_root_access(values)
-    if not root_ok:
-        return True, ""
-    return (
-        False,
-        "That key has ROOT access. Choose Root API key and provide account/user, "
-        "or enter a user API key.",
-    )
-
-
 def _status_code_from_error(error: Exception) -> Optional[int]:
     if isinstance(error, _OpenVikingHTTPError):
         return error.status_code

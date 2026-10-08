@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # The skills index is wrapped in this tag pair inside the stable tier.
 _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
@@ -30,7 +30,6 @@ _SKILL_LINE_PREFIX = "    - "
 _NAMES_ONLY_LINE_RE = re.compile(r"^  .+ \[names only\]: (?P<names>.+)$")
 
 # Cap the human-readable "Skills by size" table; ``--json`` always has them all.
-_SKILLS_TABLE_LIMIT = 20
 
 
 def _bytes(s: str) -> int:
@@ -45,40 +44,6 @@ def _tool_name(tool: Any) -> str:
     if isinstance(fn, dict) and fn.get("name"):
         return str(fn["name"])
     return str(tool.get("name", ""))
-
-
-def _build_inspection_agent(platform: str) -> Any:
-    """Construct an offline AIAgent for prompt inspection.
-
-    Dummy ``api_key`` + ``base_url`` force the direct-construction path in
-    ``run_agent.py`` (no provider auto-detection, no network). Toolsets and
-    platform come from the caller so the breakdown matches a real session.
-    """
-    from run_agent import AIAgent
-    from son_of_anton_cli.config import load_config
-    from son_of_anton_cli.tools_config import _get_platform_tools
-
-    cfg = load_config()
-    model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
-    model = model_cfg.get("default") or model_cfg.get("model") or ""
-
-    # Resolve platform-specific toolsets the same way the gateway does.
-    enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
-    agent_cfg = cfg.get("agent") or {}
-    from agent.skill_utils import parse_config_string_list
-
-    disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
-
-    return AIAgent(
-        model=model,
-        api_key="inspect-only",
-        base_url="https://openrouter.ai/api/v1",
-        quiet_mode=True,
-        save_trajectories=False,
-        platform=platform,
-        enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
-    )
 
 
 def _skill_md_paths_by_name() -> Dict[str, Path]:
@@ -232,146 +197,3 @@ def _compute_toolsets_breakdown(tools: List[Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
-    """Return a dict of prompt-size measurements for a fresh session.
-
-    Keys: ``system_prompt`` (chars/bytes), ``skills_index``, ``memory``,
-    ``user_profile``, ``tools`` (count + json bytes), ``sections`` (a list of
-    (label, chars, bytes) for the three prompt tiers), ``skills_breakdown``
-    (per-skill index-line + on-disk SKILL.md bytes, largest-first), and
-    ``toolsets_breakdown`` (per-toolset tool count + schema json bytes,
-    largest-first). The last two answer "what should I disable to cut tokens?".
-    """
-    from agent.system_prompt import build_system_prompt, build_system_prompt_parts
-
-    agent = _build_inspection_agent(platform)
-
-    parts = build_system_prompt_parts(agent)
-    full = build_system_prompt(agent)
-
-    stable = parts.get("stable", "")
-    context = parts.get("context", "")
-    volatile = parts.get("volatile", "")
-
-    # Skills index — the <available_skills> block (the largest single block
-    # when many skills are installed). Lives in the volatile tier (moved from
-    # stable so skill edits don't invalidate the cached identity prefix).
-    skills_match = _SKILLS_BLOCK_RE.search(volatile) or _SKILLS_BLOCK_RE.search(stable)
-    skills_index = skills_match.group(0) if skills_match else ""
-
-    # Memory + user profile live in the volatile tier. We re-derive their
-    # blocks directly from the memory store so the numbers are attributable
-    # even though they're joined into ``volatile``.
-    memory_block = ""
-    user_block = ""
-    store = getattr(agent, "_memory_store", None)
-    if store is not None:
-        try:
-            if getattr(agent, "_memory_enabled", True):
-                memory_block = store.format_for_system_prompt("memory") or ""
-            if getattr(agent, "_user_profile_enabled", True):
-                user_block = store.format_for_system_prompt("user") or ""
-        except Exception:
-            pass
-
-    # Tool-schema JSON — the other half of the fixed per-call payload.
-    tools = getattr(agent, "tools", None) or []
-    tools_json = json.dumps(tools, ensure_ascii=False)
-
-    sections: List[Tuple[str, int, int]] = [
-        ("stable (identity/guidance/skills)", len(stable), _bytes(stable)),
-        ("context (AGENTS.md/cwd files)", len(context), _bytes(context)),
-        ("volatile (memory/profile/timestamp)", len(volatile), _bytes(volatile)),
-    ]
-
-    return {
-        "platform": platform,
-        "model": getattr(agent, "model", "") or "",
-        "system_prompt": {"chars": len(full), "bytes": _bytes(full)},
-        "skills_index": {"chars": len(skills_index), "bytes": _bytes(skills_index)},
-        "memory": {"chars": len(memory_block), "bytes": _bytes(memory_block)},
-        "user_profile": {"chars": len(user_block), "bytes": _bytes(user_block)},
-        "tools": {"count": len(tools), "json_bytes": _bytes(tools_json)},
-        "sections": sections,
-        "skills_breakdown": _compute_skills_breakdown(skills_index),
-        "toolsets_breakdown": _compute_toolsets_breakdown(tools),
-    }
-
-
-def _fmt_kb(n: int) -> str:
-    return f"{n / 1024:.1f} KB"
-
-
-def render_breakdown(data: Dict[str, Any]) -> str:
-    """Render the breakdown as plain text suitable for a terminal."""
-    lines: List[str] = []
-    sp = data["system_prompt"]
-    lines.append(f"Prompt-size breakdown (platform={data['platform']}, model={data['model'] or 'unset'})")
-    lines.append("")
-    lines.append(f"  System prompt total : {sp['bytes']:>8,} B  ({_fmt_kb(sp['bytes'])}, {sp['chars']:,} chars)")
-    lines.append("")
-    lines.append("  Major blocks:")
-    si = data["skills_index"]
-    mem = data["memory"]
-    up = data["user_profile"]
-    lines.append(f"    skills index       : {si['bytes']:>8,} B  ({_fmt_kb(si['bytes'])})")
-    lines.append(f"    memory             : {mem['bytes']:>8,} B  ({_fmt_kb(mem['bytes'])})")
-    lines.append(f"    user profile       : {up['bytes']:>8,} B  ({_fmt_kb(up['bytes'])})")
-    lines.append("")
-    lines.append("  Prompt tiers:")
-    for label, chars, byts in data["sections"]:
-        lines.append(f"    {label:<36}: {byts:>8,} B  ({_fmt_kb(byts)})")
-    lines.append("")
-    tools = data["tools"]
-    lines.append(f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, {tools['count']} tools)")
-
-    # Per-toolset schema cost — which toolset's tools cost the most to ship.
-    toolsets = data.get("toolsets_breakdown") or []
-    if toolsets:
-        lines.append("")
-        lines.append("  Toolsets by size (tool-schema JSON, largest first):")
-        lines.append(f"    {'toolset':<22} {'tools':>5}  {'schema':>10}")
-        for ts in toolsets:
-            lines.append(
-                f"    {ts['toolset']:<22} {ts['tool_count']:>5}  "
-                f"{ts['json_bytes']:>8,} B  ({_fmt_kb(ts['json_bytes'])})"
-            )
-
-    # Per-skill cost — index line (always shipped) vs SKILL.md (read on load).
-    skills = data.get("skills_breakdown") or []
-    if skills:
-        lines.append("")
-        lines.append(
-            "  Skills by size (SKILL.md on-disk = read cost; index cost = "
-            "attributed always-on bytes, largest first):"
-        )
-        lines.append(f"    {'skill':<28} {'SKILL.md':>10}  {'index cost':>10}")
-        shown = skills[:_SKILLS_TABLE_LIMIT]
-        for sk in shown:
-            md = sk["skill_md_bytes"]
-            md_str = f"{md:>8,} B" if md is not None else f"{'n/a':>10}"
-            name = sk["name"]
-            if len(name) > 28:
-                name = name[:27] + "…"
-            lines.append(
-                f"    {name:<28} {md_str}  {sk['index_line_bytes']:>8,} B"
-            )
-        remaining = len(skills) - len(shown)
-        if remaining > 0:
-            lines.append(f"    … and {remaining} more (use --json for the full list)")
-    return "\n".join(lines)
-
-
-def cmd_prompt_size(args: Any) -> None:
-    """Entry point for ``son-of-anton prompt-size``."""
-    platform = getattr(args, "platform", "cli") or "cli"
-    as_json = getattr(args, "json", False)
-    try:
-        data = compute_prompt_breakdown(platform)
-    except Exception as e:
-        print(f"Could not compute prompt-size breakdown: {e}")
-        return
-    if as_json:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-    else:
-        print(render_breakdown(data))

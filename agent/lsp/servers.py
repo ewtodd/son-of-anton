@@ -854,10 +854,6 @@ def _root_rust(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(file_path, workspace, ["Cargo.toml", "Cargo.lock"])
 
 
-def _root_ruby(file_path: str, workspace: str) -> Optional[str]:
-    return _root_or_workspace(file_path, workspace, ["Gemfile"])
-
-
 def _root_clangd(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(
         file_path,

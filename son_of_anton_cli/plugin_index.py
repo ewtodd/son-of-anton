@@ -41,11 +41,6 @@ SEED_INDEX_PATH = Path(__file__).parent / "data" / "plugin_index.json"
 _FETCH_TIMEOUT = 10.0
 _MAX_INDEX_BYTES = 5 * 1024 * 1024  # refuse absurdly large index payloads
 
-SECURITY_FOOTER = (
-    "Indexed \u2260 audited: inclusion in the index is a metadata review only, "
-    "not a code audit. Review a plugin before enabling it."
-)
-
 
 @dataclass
 class PluginIndexEntry:
@@ -232,56 +227,6 @@ def load_index(*, refresh: bool = False, offline: bool = False) -> tuple[List[Pl
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
-
-def _score_entry(entry: PluginIndexEntry, term: str) -> float:
-    """Fuzzy relevance score for *entry* against lowercase *term* (0 = no match)."""
-    import difflib
-
-    name = entry.name.lower()
-    desc = entry.description.lower()
-    tags = [t.lower() for t in entry.tags]
-
-    if term == name:
-        return 100.0
-    score = 0.0
-    if term in name:
-        score = max(score, 80.0)
-    if any(term == t for t in tags):
-        score = max(score, 70.0)
-    if any(term in t for t in tags):
-        score = max(score, 55.0)
-    if term in desc:
-        score = max(score, 50.0)
-    if term in entry.author.lower():
-        score = max(score, 40.0)
-    # Fuzzy close-match on the name for typo tolerance.
-    ratio = difflib.SequenceMatcher(None, term, name).ratio()
-    if ratio >= 0.6:
-        score = max(score, ratio * 60.0)
-    return score
-
-
-def search_index(
-    entries: List[PluginIndexEntry], term: str, *, capability: Optional[str] = None
-) -> List[PluginIndexEntry]:
-    """Rank *entries* against *term* (fuzzy on name/description/tags/author).
-
-    An empty *term* matches everything (browse mode). ``capability`` filters
-    entries by declared capability.
-    """
-    pool = entries
-    if capability:
-        cap = capability.lower()
-        pool = [e for e in pool if any(cap == c.lower() for c in e.capabilities)]
-
-    term = (term or "").strip().lower()
-    if not term:
-        return sorted(pool, key=lambda e: e.name)
-
-    scored = [(e, _score_entry(e, term)) for e in pool]
-    matched = [(e, s) for e, s in scored if s > 0]
-    matched.sort(key=lambda pair: (-pair[1], pair[0].name))
-    return [e for e, _s in matched]
 
 
 def resolve_name(

@@ -219,35 +219,6 @@ def get_acked_ids() -> set[str]:
     return {str(x).strip() for x in raw if str(x).strip()}
 
 
-def ack_advisory(advisory_id: str) -> bool:
-    """Persist an ack for ``advisory_id``. Returns True on success.
-
-    Idempotent — acking an already-acked ID is a no-op.
-    """
-    advisory_id = advisory_id.strip()
-    if not advisory_id:
-        return False
-    try:
-        from son_of_anton_cli.config import load_config, save_config
-    except Exception:
-        logger.warning("Could not import config module to persist ack")
-        return False
-    try:
-        cfg = load_config()
-        sec = cfg.setdefault("security", {})
-        existing = sec.get("acked_advisories") or []
-        if not isinstance(existing, list):
-            existing = []
-        if advisory_id not in existing:
-            existing.append(advisory_id)
-            sec["acked_advisories"] = existing
-            save_config(cfg)
-        return True
-    except Exception:
-        logger.exception("Failed to persist advisory ack for %s", advisory_id)
-        return False
-
-
 def filter_unacked(hits: list[AdvisoryHit]) -> list[AdvisoryHit]:
     """Return only hits whose advisories the user has not dismissed."""
     if not hits:
@@ -286,24 +257,6 @@ def short_banner_lines(hits: list[AdvisoryHit]) -> list[str]:
     if len(hits) > 1:
         lines.insert(1, f"  ({len(hits) - 1} additional advisor"
                        f"{'ies' if len(hits) > 2 else 'y'} also active.)")
-    return lines
-
-
-def full_remediation_text(hit: AdvisoryHit) -> list[str]:
-    """Return a multi-line block describing the advisory + remediation."""
-    a = hit.advisory
-    lines = [
-        f"=== {a.title} ===",
-        f"ID:        {a.id}    Severity: {a.severity}    Published: {a.published}",
-        f"Detected:  {hit.package}=={hit.installed_version}",
-        f"Reference: {a.url}",
-        "",
-        a.summary,
-        "",
-        "Remediation:",
-    ]
-    for i, step in enumerate(a.remediation, 1):
-        lines.append(f"  {i}. {step}")
     return lines
 
 
@@ -401,24 +354,6 @@ def hits_due_for_banner(
 # =============================================================================
 # Public entry points used by doctor / CLI / gateway
 # =============================================================================
-
-
-def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:
-    """Render the security-advisory section for ``son-of-anton doctor``.
-
-    Returns ``(has_problems, lines)``. Caller is responsible for printing
-    with whatever color scheme it uses.
-    """
-    fresh = filter_unacked(hits)
-    if not fresh:
-        return False, ["No active security advisories.  ✓"]
-
-    lines: list[str] = []
-    for i, hit in enumerate(fresh):
-        if i:
-            lines.append("")
-        lines.extend(full_remediation_text(hit))
-    return True, lines
 
 
 def startup_banner(hits: list[AdvisoryHit]) -> Optional[str]:

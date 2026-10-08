@@ -118,18 +118,6 @@ def _get_async_client() -> Any:
     return client
 
 
-def _reset_clients_for_tests() -> None:
-    """Drop both cached clients so tests can re-instantiate cleanly.
-
-    Clears the canonical slots on :mod:`tools.web_tools` (where
-    :func:`_get_sync_client` / :func:`_get_async_client` read/write them).
-    """
-    import tools.web_tools as _wt
-
-    _wt._parallel_client = None
-    _wt._async_parallel_client = None
-
-
 # Backward-compatible aliases for the names that lived in tools.web_tools
 # before the migration (matches existing tests + external callers).
 _get_parallel_client = _get_sync_client

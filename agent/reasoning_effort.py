@@ -65,30 +65,13 @@ OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = (
 #: (Aug 2026): ``minimal`` is rejected by both generations (clamps to low);
 #: ``max`` is gpt-5.6-only — gpt-5.5 rejects it with "Supported values are:
 #: 'none', 'low', 'medium', 'high', 'xhigh'" (#68365's premise, confirmed).
-CODEX_GPT56_EFFORTS: tuple[str, ...] = (
-    "none", "low", "medium", "high", "xhigh", "max",
-)
-CODEX_LEGACY_EFFORTS: tuple[str, ...] = (
-    "none", "low", "medium", "high", "xhigh",
-)
-
-
-def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
-    """Supported effort set for an OpenAI/Codex Responses model."""
-    if "gpt-5.6" in (model or "").lower():
-        return CODEX_GPT56_EFFORTS
-    return CODEX_LEGACY_EFFORTS
 
 
 #: Backward-compat alias (pre-#68365-verification name).
-CODEX_RESPONSES_EFFORTS: tuple[str, ...] = CODEX_GPT56_EFFORTS
 
 #: xAI Responses — Grok 4.6+ accepts xhigh; older Grok tops out at high.
-XAI_GROK46_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
-XAI_LEGACY_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
 #: Actual Computer relays (SGLang/vLLM): none/low/medium/high/max.
-ACTUAL_RELAY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 
 #: Moonshot/Kimi K3: low/high/max (server default high).
 KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
@@ -99,8 +82,6 @@ KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 #: on and the wire accepts exactly low/high/max — medium/none/xhigh 400 with
 #: "This model always engages in thinking and cannot be disabled; please use
 #: low, high, or max" (verified live 2026-08-21). xhigh rounds up to max.
-OX_ALPHA_EFFORTS: tuple[str, ...] = ("low", "high", "max")
-OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: Tencent TokenHub: low/medium/high.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
@@ -114,19 +95,13 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 #: GLM-5.2 native reasoning_effort knob: exactly two enabled levels,
 #: ``high`` (its minimum thinking level) and ``max`` (per Z.AI/BigModel
 #: docs). ``xhigh`` requests the top tier, not the floor.
-GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
-GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: Ollama Cloud /v1/chat/completions: accepts {none, low, medium, high, max};
 #: rejects ``minimal`` with HTTP 400. ``xhigh`` requests the top tier.
-OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
-OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: Meta Model API (Muse): minimal..xhigh; rejects ``none``.
-META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 #: Upstage Solar Pro/Open: low/medium/high.
-SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:

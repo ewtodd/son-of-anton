@@ -324,14 +324,6 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
         )
 
 
-def _note_delivery_attempt(delegation_id: str) -> None:
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute(
-            "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
-            (time.time(), delegation_id),
-        )
-
-
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown."""
     try:
@@ -442,18 +434,6 @@ def restore_undelivered_completions(target_queue) -> int:
             target_queue.put(evt)
             restored += 1
     return restored
-
-
-def mark_completion_delivered(delegation_id: str) -> bool:
-    """Atomically acknowledge successful injection of a durable completion."""
-    now = time.time()
-    with _DB_LOCK, _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
-               WHERE delegation_id=? AND delivery_state!='delivered'""",
-            (now, now, delegation_id),
-        )
-        return cur.rowcount == 1
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -570,25 +550,6 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
         release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
 
 
-def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
-    with _DB_LOCK, _transaction() as conn:
-        row = conn.execute(
-            """SELECT origin_session, state, dispatched_at, completed_at,
-                      result_json, delivery_state, delivery_attempts,
-                      origin_session_id
-               FROM async_delegations WHERE delegation_id=?""", (delegation_id,),
-        ).fetchone()
-    if row is None:
-        return None
-    return {
-        "delegation_id": delegation_id, "origin_session": row[0], "state": row[1],
-        "dispatched_at": row[2], "completed_at": row[3],
-        "result": json.loads(row[4]) if row[4] else None,
-        "delivery_state": row[5], "delivery_attempts": row[6],
-        "origin_session_id": row[7] or "",
-    }
-
-
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     """Lazily create (or grow) the shared daemon executor.
 
@@ -621,20 +582,6 @@ def active_count() -> int:
         return sum(
             1 for r in _records.values()
             if r.get("status") in {"running", "stalling", "finalizing"}
-        )
-
-
-def active_for_session(origin_ui_session_id: str) -> int:
-    """Number of live async delegations owned by one UI session."""
-    if not origin_ui_session_id:
-        return 0
-    with _records_lock:
-        return sum(
-            1
-            for r in _records.values()
-            if r.get("status") in {"running", "stalling", "finalizing"}
-            and str(r.get("origin_ui_session_id") or "")
-            == origin_ui_session_id
         )
 
 
@@ -673,31 +620,6 @@ def _matches_session_selectors(
         or (session_key and str(record.get("session_key") or "") == session_key)
         or (parent_session_id and str(record.get("parent_session_id") or "") == parent_session_id)
     )
-
-
-def has_live_for_session(
-    session_key: str = "",
-    origin_ui_session_id: str = "",
-    parent_session_id: str = "",
-) -> bool:
-    """Whether a session still owns any live async delegation.
-
-    Live = running / stalling / finalizing — the same states the reapers'
-    keepalive treats as active work.
-    """
-    if not session_key and not origin_ui_session_id and not parent_session_id:
-        return False
-    with _records_lock:
-        return any(
-            r.get("status") in {"running", "stalling", "finalizing"}
-            and _matches_session_selectors(
-                r,
-                session_key=session_key,
-                origin_ui_session_id=origin_ui_session_id,
-                parent_session_id=parent_session_id,
-            )
-            for r in _records.values()
-        )
 
 
 def _new_delegation_id() -> str:

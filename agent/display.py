@@ -22,7 +22,6 @@ from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
-_RED = "\033[31m"
 _RESET = "\033[0m"
 # Dim a trailing value (e.g. a tool's elapsed time) so the action text reads
 # as the foreground signal and the timing recedes. Terminal-palette neutral.
@@ -407,45 +406,6 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}"
 
 
-def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
-    """Apply secret redaction to browser_type text in display-facing payloads.
-
-    Backends sometimes echo the attempted input in error strings or fallback
-    metadata.  When the raw typed value contains a recognizable secret (API
-    key, token, JWT, etc.) the redacted form differs from the raw value, so we
-    replace every occurrence of the raw value with its redacted form before a
-    browser_type result reaches logs, callbacks, the model, or chat history.
-
-    Normal typed text (search queries, addresses, form fields) matches no
-    secret pattern, so it passes through unchanged and stays readable.
-
-    Redaction is forced here regardless of the global ``security.redact_secrets``
-    preference: a typed credential leaking into chat history is a security
-    boundary, not mere log hygiene.
-    """
-    if typed_text is None:
-        return value
-    needle = str(typed_text)
-    if needle == "":
-        return value
-    redacted = redact_sensitive_text(needle, force=True)
-    if redacted == needle:
-        # Nothing secret-looking in the typed text; leave payload untouched.
-        return value
-    if isinstance(value, str):
-        return value.replace(needle, redacted)
-    if isinstance(value, dict):
-        return {
-            key: redact_browser_typed_text_for_display(item, typed_text)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
-    if isinstance(value, tuple):
-        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
-    return value
-
-
 def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
     """Return a copy of tool args safe for logs/progress UI.
 
@@ -732,11 +692,6 @@ def set_friendly_tool_labels(enabled: bool) -> None:
     """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
     global _friendly_tool_labels
     _friendly_tool_labels = bool(enabled)
-
-
-def get_friendly_tool_labels() -> bool:
-    """Return whether friendly tool labels are enabled."""
-    return _friendly_tool_labels
 
 
 def get_tool_verb(tool_name: str) -> str | None:

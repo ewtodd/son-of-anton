@@ -108,15 +108,6 @@ _TIER_LOW = {
     "busy_ack_detail": False,
 }
 
-_TIER_MINIMAL = {
-    "tool_progress": "off",
-    "show_reasoning": False,
-    "tool_preview_length": 0,
-    "streaming": False,
-    "interim_assistant_messages": False,
-    "long_running_notifications": False,
-    "busy_ack_detail": False,
-}
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
@@ -140,7 +131,6 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 # Canonical set of per-platform overrideable keys (for validation).
-OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 
 def resolve_display_setting(

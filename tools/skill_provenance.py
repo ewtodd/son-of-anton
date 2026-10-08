@@ -54,11 +54,6 @@ def set_current_write_origin(origin: str) -> contextvars.Token[str]:
     return _write_origin.set(origin or "foreground")
 
 
-def reset_current_write_origin(token: contextvars.Token[str]) -> None:
-    """Restore the prior write origin context."""
-    _write_origin.reset(token)
-
-
 def get_current_write_origin() -> str:
     """Return the active write origin.
 

@@ -28,7 +28,6 @@ from utils import atomic_replace
 _PASTE_RS_URL = "https://paste.rs/"
 
 # Auto-delete pastes after this many seconds (6 hours).
-_AUTO_DELETE_SECONDS = 21600
 
 
 # ---------------------------------------------------------------------------
@@ -79,26 +78,6 @@ def _save_pending(entries: list[dict]) -> None:
         pass
 
 
-def _record_pending(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS) -> None:
-    """Record *urls* for deletion at ``now + delay_seconds``.
-
-    Only paste.rs URLs are recorded (dpaste.com pastes auto-expire and
-    cannot be DELETEd).  Entries are merged into any existing pending.json.
-    """
-    paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
-    if not paste_rs_urls:
-        return
-
-    entries = _load_pending()
-    # Dedupe by URL: keep the later expire_at if same URL appears twice
-    by_url: dict[str, float] = {e["url"]: float(e["expire_at"]) for e in entries}
-    expire_at = time.time() + delay_seconds
-    for u in paste_rs_urls:
-        by_url[u] = max(expire_at, by_url.get(u, 0.0))
-    merged = [{"url": u, "expire_at": ts} for u, ts in by_url.items()]
-    _save_pending(merged)
-
-
 def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     """Synchronously DELETE any pending pastes whose ``expire_at`` has passed.
 
@@ -146,14 +125,6 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     return (deleted, len(remaining))
 
 
-def _best_effort_sweep_expired_pastes() -> None:
-    """Attempt pending-paste cleanup without letting the caller fail offline."""
-    try:
-        _sweep_expired_pastes()
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Privacy / delete helpers
 # ---------------------------------------------------------------------------
@@ -191,11 +162,3 @@ def delete_paste(url: str) -> bool:
         return 200 <= resp.status < 300
 
 
-def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS):
-    """Record *urls* for deletion ``delay_seconds`` from now.
-
-    Appends to ``~/.son-of-anton/pastes/pending.json`` and the gateway's
-    cron ticker sweeps expired entries once per hour.  If the gateway never
-    runs again, paste.rs's own retention policy handles cleanup.
-    """
-    _record_pending(urls, delay_seconds=delay_seconds)

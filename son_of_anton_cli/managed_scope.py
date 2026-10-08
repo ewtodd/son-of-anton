@@ -71,13 +71,6 @@ def get_managed_dir() -> Optional[Path]:
     return _DEFAULT_MANAGED_DIR if _DEFAULT_MANAGED_DIR.is_dir() else None
 
 
-def invalidate_managed_cache() -> None:
-    """Drop cached managed config/env. For tests and post-edit reloads."""
-    with _CACHE_LOCK:
-        _CONFIG_CACHE.clear()
-        _ENV_CACHE.clear()
-
-
 def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     """Shared (mtime_ns, size)-keyed read. Returns a deepcopy of the parsed value.
 

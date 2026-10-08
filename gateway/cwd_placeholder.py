@@ -11,10 +11,6 @@ from __future__ import annotations
 CWD_PLACEHOLDERS = frozenset({".", "auto", "cwd"})
 
 
-def _truthy_env(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"true", "1", "yes"}
-
-
 def resolve_placeholder_terminal_cwd(
     *,
     configured_cwd: str,

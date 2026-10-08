@@ -900,8 +900,3 @@ def get_manager() -> MCPOAuthManager:
         return _MANAGER
 
 
-def reset_manager_for_tests() -> None:
-    """Test-only helper: drop the singleton so fixtures start clean."""
-    global _MANAGER
-    with _MANAGER_LOCK:
-        _MANAGER = None

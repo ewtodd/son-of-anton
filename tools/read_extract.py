@@ -44,7 +44,6 @@ ANYDOC_EXTENSIONS = frozenset({
     ".odt", ".ods", ".odp",
     ".rtf", ".epub", ".pdf",
 })
-MAX_XLSX_BYTES = 50 * 1024 * 1024
 # Refuse to convert huge documents. anydoc loads the whole file through its
 # Rust core with no streaming, and the read_file char budget only applies
 # after conversion, so an unbounded input can pin a tool turn and spike RAM.
@@ -233,22 +232,6 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
     if pages and not pages[-1].strip():
         pages.pop()  # trailing form-feed artifact
     return pages or None
-
-
-def _pdf_page_char_counts(path: str) -> Optional[list[int]]:
-    """Per-page extracted-text char counts, or None when undeterminable."""
-    pages = _pdf_page_texts(path)
-    if pages is None:
-        return None
-    return [len(page.strip()) for page in pages]
-
-
-def _page_ranges(pages: list[int]) -> str:
-    """Compact 1-based range list, e.g. '2-29, 33-35, 42'."""
-    parts = [f"{a}-{b}" if a != b else str(a) for a, b in _group_ranges(pages)]
-    if len(parts) > 12:
-        parts = parts[:12] + ["…"]
-    return ", ".join(parts)
 
 
 def _group_ranges(pages: list[int]) -> list[list[int]]:

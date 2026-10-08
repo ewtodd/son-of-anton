@@ -32,7 +32,7 @@ This module deliberately has no module-level imports from ``son_of_anton_cli.con
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 #: Names that mean "no personality overlay".
 NEUTRAL_PERSONALITY_NAMES = frozenset({"", "none", "default", "neutral"})
@@ -91,16 +91,6 @@ def render_personality_prompt(value: Any) -> str:
     return prompt_text(value)
 
 
-def describe_personality(value: Any, width: int = 50) -> str:
-    """Short preview line for list UIs (CLI table, gateway /personality list)."""
-    if isinstance(value, dict):
-        preview = value.get("description") or str(value.get("system_prompt", ""))
-    else:
-        preview = str(value)
-    preview = preview.strip().replace("\n", " ")
-    return preview[:width] + ("..." if len(preview) > width else "")
-
-
 def normalize_personality_name(value: Any) -> str:
     """Canonical form of a personality name ('' for any neutral spelling)."""
     name = str(value or "").strip().lower()
@@ -117,26 +107,6 @@ def available_personalities(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, A
             if key and key not in NEUTRAL_PERSONALITY_NAMES:
                 merged[key] = definition
     return merged
-
-
-def resolve_personality(
-    value: Any, cfg: Optional[Dict[str, Any]] = None
-) -> Tuple[str, str]:
-    """Resolve a requested personality to ``(canonical_name, prompt_text)``.
-
-    Neutral names resolve to ``("", "")``. Unknown names raise ``ValueError``
-    with an availability listing usable verbatim in user-facing errors.
-    """
-    name = normalize_personality_name(value)
-    if not name:
-        return "", ""
-    personalities = available_personalities(cfg)
-    if name not in personalities:
-        names = ", ".join(f"`{n}`" for n in sorted(personalities))
-        raise ValueError(
-            f"Unknown personality: `{str(value).strip()}`.\n\nAvailable: `none`, {names}"
-        )
-    return name, render_personality_prompt(personalities[name])
 
 
 def active_personality_name(cfg: Optional[Dict[str, Any]]) -> str:
@@ -160,27 +130,3 @@ def resolve_ephemeral_system_prompt(cfg: Optional[Dict[str, Any]]) -> str:
     return prompt_text(_get(cfg, "agent", "system_prompt", default=""))
 
 
-def persist_personality(value: Any) -> bool:
-    """Persist the personality selection — the ONLY sanctioned write path.
-
-    Writes the canonical name (or '') to ``display.personality`` in the active
-    SON_OF_ANTON_HOME config.toml atomically, preserving comments and ordering.
-    Never touches ``agent.system_prompt``. Returns True on success.
-    """
-    name = normalize_personality_name(value)
-    try:
-        from son_of_anton_constants import get_son_of_anton_home
-        from utils import atomic_toml_update
-
-        config_path = get_son_of_anton_home() / "config.toml"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_toml_update(config_path, "display.personality", name)
-        try:
-            import os
-
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        return True
-    except Exception:
-        return False

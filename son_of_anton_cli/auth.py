@@ -23,7 +23,6 @@ import logging
 import os
 import stat
 import sys
-import base64
 import hashlib
 import subprocess
 import threading
@@ -637,27 +636,6 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     except OSError:
         pass
     return auth_file
-
-
-def is_runtime_provider_routable(provider_id: str) -> bool:
-    """Return whether runtime resolution recognizes a provider identity.
-
-    This is a capability check, not a credential check. It follows the same
-    alias/plugin-aware normalization as ``resolve_provider`` while preserving
-    special runtime identities that intentionally live outside the registry.
-    """
-    normalized = (provider_id or "").strip().lower()
-    if not normalized:
-        return False
-    if normalized in {"auto", "openrouter", "custom", "moa"}:
-        return True
-    if normalized.startswith("custom:"):
-        return True
-    try:
-        resolve_provider(normalized)
-    except AuthError:
-        return False
-    return True
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1300,19 +1278,6 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
 # (NOUS_INFERENCE_BASE_URL) bypass validation — that's the documented
 # dev/staging escape hatch and the env source is already trusted (the
 # user set it themselves).
-
-
-def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
-    if not isinstance(token, str) or token.count(".") != 2:
-        return {}
-    payload = token.split(".")[1]
-    payload += "=" * ((4 - len(payload) % 4) % 4)
-    try:
-        raw = base64.urlsafe_b64decode(payload.encode("utf-8"))
-        claims = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return {}
-    return claims if isinstance(claims, dict) else {}
 
 
 # =============================================================================

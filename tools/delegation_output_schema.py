@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 # Exactly one retry turn — bounded by design. More retries make frontier
 # models drop fields that were right the first time.
-MAX_SCHEMA_RETRIES = 1
 
 _CONTRACT_HEADER = "OUTPUT CONTRACT (machine-validated)"
 

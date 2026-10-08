@@ -220,41 +220,5 @@ class PromptStash:
 # --------------------------------------------------------------------- gesture
 
 # Outcomes of a single Ctrl+S press.
-ACTION_NOOP = "noop"
-ACTION_STASHED = "stashed"
-ACTION_RESTORED = "restored"
-ACTION_OPEN_PANEL = "open_panel"
-ACTION_CLOSE_PANEL = "close_panel"
 
 
-def resolve_ctrl_s(
-    stash: PromptStash,
-    buffer_text: str,
-    images: Optional[Sequence[Any]] = None,
-) -> Tuple[str, Optional[Tuple[str, List[Any]]]]:
-    """Decide what one Ctrl+S press does. Returns ``(action, payload)``.
-
-    ``payload`` carries ``(text, images)`` for :data:`ACTION_RESTORED`, else
-    None. This is the whole decision table in one pure function so the
-    keybinding handler in ``cli.py`` stays a thin adapter.
-    """
-    # Panel open → Ctrl+S is the "close it" escape hatch.
-    if stash.panel_open:
-        stash.close_panel()
-        return ACTION_CLOSE_PANEL, None
-
-    # Something to park → park it. Never silently clobbers an existing stash:
-    # entries push onto a stack, so an earlier draft is still reachable.
-    if (buffer_text or "").strip() or images:
-        if stash.stash(buffer_text, images):
-            return ACTION_STASHED, None
-        return ACTION_NOOP, None
-
-    # Empty buffer → restore half of the gesture.
-    count = len(stash)
-    if count == 0:
-        return ACTION_NOOP, None
-    if count == 1:
-        return ACTION_RESTORED, stash.pop(0)
-    stash.open_panel()
-    return ACTION_OPEN_PANEL, None

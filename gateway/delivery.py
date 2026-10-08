@@ -131,32 +131,6 @@ def resolve_delivery_transport(
     return None
 
 
-def looks_like_private_chat_id(chat_id: Optional[str]) -> bool:
-    """True when ``chat_id`` is a positive int — a private-chat shape.
-
-    Private chats use positive chat IDs; groups/channels/supergroups
-    use negative IDs. This is the single source of truth for that heuristic,
-    reused by the handoff seed path in ``gateway/run.py`` so handoff-created
-    DM topics key the same way as inbound DM-topic messages.
-    """
-    if chat_id is None:
-        return False
-    try:
-        return int(chat_id) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _looks_like_int(value: Optional[str]) -> bool:
-    if value is None:
-        return False
-    try:
-        int(value)
-        return True
-    except (TypeError, ValueError):
-        return False
-
-
 def _send_result_failed(result: Any) -> bool:
     if isinstance(result, dict):
         return result.get("success") is False
@@ -169,20 +143,6 @@ def _send_result_error(result: Any) -> Optional[str]:
     else:
         error = getattr(result, "error", None)
     return str(error) if error else None
-
-
-def _is_thread_not_found_delivery_error(result: Any) -> bool:
-    error = _send_result_error(result)
-    return bool(error and "thread not found" in error.lower())
-
-
-def _send_result_error_kind(result: Any) -> Optional[str]:
-    """Return the machine-readable error_kind from a SendResult/dict, if any."""
-    if isinstance(result, dict):
-        kind = result.get("error_kind")
-    else:
-        kind = getattr(result, "error_kind", None)
-    return str(kind) if kind else None
 
 
 def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
@@ -567,7 +527,5 @@ class DeliveryRouter:
         if _send_result_failed(result):
             raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
         return result
-
-
 
 

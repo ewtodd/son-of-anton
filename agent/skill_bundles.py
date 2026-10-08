@@ -50,7 +50,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from son_of_anton_constants import get_son_of_anton_home
-from utils import dump_toml
 
 logger = logging.getLogger(__name__)
 
@@ -236,32 +235,6 @@ def resolve_bundle_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_bundles() else None
 
 
-def reload_bundles() -> Dict[str, Any]:
-    """Re-scan the bundles directory and return a diff.
-
-    Mirrors :func:`agent.skill_commands.reload_skills` so callers can use
-    the same display logic. Returns a dict with ``added``, ``removed``,
-    ``unchanged``, and ``total`` keys.
-    """
-    def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
-        return {k.lstrip("/"): (v or {}).get("description", "") for k, v in cmds.items()}
-
-    before = _snapshot(_bundles_cache)
-    new = scan_bundles()
-    after = _snapshot(new)
-
-    added_names = sorted(set(after) - set(before))
-    removed_names = sorted(set(before) - set(after))
-    unchanged = sorted(set(after) & set(before))
-
-    return {
-        "added": [{"name": n, "description": after[n]} for n in added_names],
-        "removed": [{"name": n, "description": before[n]} for n in removed_names],
-        "unchanged": unchanged,
-        "total": len(after),
-    }
-
-
 def list_bundles() -> List[Dict[str, Any]]:
     """Return a sorted list of bundle info dicts for display."""
     bundles = get_skill_bundles()
@@ -391,63 +364,3 @@ def build_bundle_invocation_message(
 # ---------------------------------------------------------------------------
 
 
-def bundle_path_for(name: str) -> Path:
-    """Return the canonical filesystem path for a bundle name."""
-    slug = _slugify(name)
-    if not slug:
-        raise ValueError(f"Bundle name {name!r} normalizes to an empty slug")
-    return _bundles_dir() / f"{slug}.toml"
-
-
-def save_bundle(
-    name: str,
-    skills: List[str],
-    description: str = "",
-    instruction: str = "",
-    overwrite: bool = False,
-) -> Path:
-    """Write a bundle to disk and invalidate the cache.
-
-    Raises ``FileExistsError`` if the target exists and ``overwrite`` is
-    False. Raises ``ValueError`` if the inputs are unusable.
-    """
-    name = (name or "").strip()
-    if not name:
-        raise ValueError("Bundle name is required")
-    cleaned_skills = [str(s).strip() for s in skills if str(s).strip()]
-    if not cleaned_skills:
-        raise ValueError("Bundle must reference at least one skill")
-
-    path = bundle_path_for(name)
-    if path.exists() and not overwrite:
-        raise FileExistsError(f"Bundle already exists at {path}")
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload: Dict[str, Any] = {"name": name, "skills": cleaned_skills}
-    if description:
-        payload["description"] = description
-    if instruction:
-        payload["instruction"] = instruction
-
-    path.write_text(dump_toml(payload), encoding="utf-8")
-    scan_bundles()  # refresh cache
-    return path
-
-
-def delete_bundle(name: str) -> Path:
-    """Delete a bundle by name. Returns the deleted path.
-
-    Raises ``FileNotFoundError`` if the bundle doesn't exist.
-    """
-    path = bundle_path_for(name)
-    if not path.exists():
-        raise FileNotFoundError(f"No bundle at {path}")
-    path.unlink()
-    scan_bundles()
-    return path
-
-
-def get_bundle(name: str) -> Optional[Dict[str, Any]]:
-    """Look up a bundle by name (slug-normalized)."""
-    slug = _slugify(name)
-    return get_skill_bundles().get(f"/{slug}")

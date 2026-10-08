@@ -14,7 +14,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,13 +86,6 @@ class GatewayRuntimeSnapshot:
     @property
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
-
-
-@dataclass(frozen=True)
-class ProfileGatewayProcess:
-    profile: str
-    path: Path
-    pid: int
 
 
 def _get_service_pids(all_profiles: bool = False) -> set:
@@ -657,186 +649,6 @@ def find_gateway_pids(
     return pids
 
 
-def find_profile_gateway_processes(
-    exclude_pids: set | None = None,
-) -> list[ProfileGatewayProcess]:
-    """Always empty — this install has one gateway, found via its own PID file.
-
-    This used to walk every profile's ``gateway.pid``. Sibling gateways now run
-    as separate accounts under their own SON_OF_ANTON_HOME; their PID files are
-    not readable from here and their processes are not ours to restart. Callers
-    keep the call site and fall through to the single-home paths.
-    """
-    return []
-
-
-def _gateway_run_args_for_profile(profile: str) -> list[str]:
-    """Argv that restarts this home's gateway. ``profile`` is vestigial."""
-    return [
-        get_python_path(), "-m", "son_of_anton_cli.main",
-        "gateway", "run", "--replace",
-    ]
-
-
-def _capture_gateway_argv(pid: int) -> list[str] | None:
-    """Return the live argv of a running gateway process, or ``None``.
-
-    Used to respawn gateways that have no profile→PID-file mapping; without
-    their original command line we cannot bring them back, so we snapshot it
-    here before the kill.
-
-    Best-effort: returns ``None`` if psutil is unavailable, the process is
-    gone, access is denied, or the argv doesn't look like a gateway command.
-    """
-    if pid <= 1:
-        return None
-    try:
-        import psutil  # type: ignore
-    except ImportError:
-        return None
-    try:
-        argv = list(psutil.Process(pid).cmdline() or [])
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return None
-    except Exception:
-        return None
-    if not argv:
-        return None
-    # Guard against snapshotting an unrelated process whose PID happened to be
-    # reported by the scan: only respawn things that actually look like a
-    # gateway run command line.
-    try:
-        from gateway.status import looks_like_gateway_command_line
-
-        if not looks_like_gateway_command_line(" ".join(argv)):
-            return None
-    except Exception:
-        pass
-    return argv
-
-
-def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | None:
-    """Choose who relaunches a profile gateway after ``son-of-anton update``.
-
-    A gateway started with ``--external-supervisor`` must exit back to that
-    manager. Starting Son of Anton's detached watcher as well would escape the
-    manager and race its replacement process. Ordinary foreground gateways
-    retain the existing detached-watcher behavior.
-    """
-    argv = _capture_gateway_argv(pid)
-    if argv and "--external-supervisor" in argv:
-        return "external-supervisor"
-    if launch_detached_profile_gateway_restart(profile, pid):
-        return "detached"
-    return None
-
-
-def launch_detached_gateway_restart_by_cmdline(
-    old_pid: int, run_argv: list[str]
-) -> bool:
-    """Relaunch a gateway by replaying its captured command line after exit.
-
-    Companion to ``launch_detached_profile_gateway_restart`` for gateways that
-    have no profile→PID-file mapping (Scheduled-Task / manually-launched
-    ``gateway run`` whose SON_OF_ANTON_HOME or argv doesn't match a known profile).
-    Uses the identical detached-watcher mechanism; only the respawn argv
-    differs (the process's own argv instead of a profile-derived one).
-    """
-    if old_pid <= 0 or not run_argv:
-        return False
-    return _spawn_gateway_restart_watcher(old_pid, list(run_argv))
-
-
-def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
-    """Relaunch a manually-run profile gateway after its current PID exits."""
-    if old_pid <= 0:
-        return False
-    return _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
-
-
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
-    """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits."""
-    if old_pid <= 0 or not run_argv:
-        return False
-
-    # The watcher is a tiny Python subprocess that polls the old PID and
-    # respawns the gateway once it's gone.  Detach with
-    # ``start_new_session=True`` (os.setsid in the child) so Ctrl+C in the
-    # CLI doesn't propagate and the watcher/gateway survive the CLI exiting.
-
-    respawn_cwd = ""
-    respawn_env_overlay: dict[str, str] = {}
-
-    # Serialized as JSON literals embedded in the watcher source so the
-    # inner respawn can apply cwd= / env= without extra argv plumbing.
-    respawn_cwd_literal = json.dumps(respawn_cwd)
-    respawn_env_literal = json.dumps(respawn_env_overlay)
-
-    watcher = textwrap.dedent(
-        """
-        import os
-        import subprocess
-        import sys
-        import time
-
-        pid = int(sys.argv[1])
-        cmd = sys.argv[2:]
-        _respawn_cwd = {respawn_cwd_literal}
-        _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            from gateway.status import _pid_exists
-            if not _pid_exists(pid):
-                break
-            time.sleep(0.2)
-
-        _popen_kwargs = {{
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "start_new_session": True,
-        }}
-        if _respawn_cwd:
-            _popen_kwargs["cwd"] = _respawn_cwd
-        if _respawn_env_overlay:
-            _popen_kwargs["env"] = {{**os.environ, **_respawn_env_overlay}}
-        subprocess.Popen(cmd, **_popen_kwargs)
-        """
-    ).strip().format(
-        respawn_cwd_literal=respawn_cwd_literal,
-        respawn_env_literal=respawn_env_literal,
-    )
-
-    watcher_argv = [
-        sys.executable,
-        "-c",
-        watcher,
-        str(old_pid),
-        *run_argv,
-    ]
-
-    # Detach the watcher process itself — so closing the user's terminal
-    # doesn't kill it.
-    try:
-        subprocess.Popen(
-            watcher_argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError:
-        # Defensive retry with the same POSIX detach kwargs.
-        try:
-            subprocess.Popen(
-                watcher_argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except OSError:
-            return False
-    return True
-
-
 def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
     selected_system = _select_systemd_scope(system)
     unit_exists = get_systemd_unit_path(system=selected_system).exists()
@@ -1251,26 +1063,6 @@ def _launchd_print_service_pid(domain: str, label: str) -> tuple[bool, int | Non
     return (True, _parse_launchd_pid_from_print_output(result.stdout))
 
 
-def _launchd_service_registered(label: str) -> bool:
-    """True when launchd knows ``label`` (``launchctl list <label>`` exit 0).
-
-    Registration is domain-agnostic and — unlike the ``launchctl print``
-    domain probes in ``_locate_launchd_gateway_service`` — stays true on
-    macOS 26+ hosts whose per-user domains reject service management, so
-    the update path can still hand the label to ``launchd_restart()``,
-    which owns that fallback.  ``FileNotFoundError``/``TimeoutExpired``
-    propagate: the caller treats gate errors as a best-effort skip,
-    matching the pre-fleet inline behavior.
-    """
-    result = subprocess.run(
-        ["launchctl", "list", label],
-        capture_output=True,
-        text=True, encoding='utf-8', errors='replace',
-        timeout=5,
-    )
-    return result.returncode == 0
-
-
 def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]:
     """Return ``(domain, pid)`` for ``label``, probing both per-user domains.
 
@@ -1409,9 +1201,6 @@ def kill_gateway_processes(
         except OSError as exc:
             print(f"Failed to kill PID {pid}: {exc}")
     return killed
-
-
-_REAPER_SUPERVISOR_WALK_LIMIT = 12
 
 
 def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
@@ -4592,43 +4381,6 @@ def _wait_for_gateway_exit(
     return True
 
 
-def _launchd_kickstart(label: str, domain: str) -> None:
-    """Hard-restart ``domain/label`` via ``launchctl kickstart -k``.
-
-    Raises ``CalledProcessError``/``TimeoutExpired`` — callers own the
-    per-label failure accounting during fleet restarts.
-    """
-    subprocess.run(
-        ["launchctl", "kickstart", "-k", f"{domain}/{label}"],
-        check=True,
-        capture_output=True,
-        text=True, encoding='utf-8', errors='replace',
-        timeout=90,
-    )
-
-
-def _wait_for_launchd_service_pid(
-    label: str, old_pid: int | None, timeout: float = 10.0, *, domain: str
-) -> bool:
-    """Poll ``domain/label`` until the service runs on a fresh PID.
-
-    launchd's exit → ``KeepAlive`` respawn transition is not instantaneous;
-    a one-shot check races that window and falsely reports the service as
-    down (same rationale as the systemd ``is-active`` poll in the update
-    path).  Poll every 0.5s up to ``timeout`` seconds before giving up.
-    ``TimeoutExpired`` from launchctl propagates — callers own per-label
-    failure accounting.
-    """
-    deadline = time.monotonic() + max(timeout, 0.5)
-    while True:
-        _loaded, pid = _launchd_print_service_pid(domain, label)
-        if pid is not None and pid > 0 and pid != old_pid:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.5)
-
-
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -5889,7 +5641,6 @@ def gateway_command(args):
         # error is raised.
         print(str(e))
         sys.exit(1)
-
 
 
 def _gateway_command_inner(args):

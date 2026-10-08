@@ -48,7 +48,6 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 SCANNER_BIN = "skillevaluator"
-SCANNER_NAME = "skillevaluator-tier1"
 
 # Keyless, deterministic Tier 1 checks. Schema/quality are excluded on
 # purpose: they are hygiene signal for the index pipeline

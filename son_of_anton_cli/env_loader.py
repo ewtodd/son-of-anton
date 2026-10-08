@@ -6,7 +6,6 @@ import codecs
 import io
 import os
 import sys
-import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -82,21 +81,6 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # in-process cache prevents redundant network calls, but the print, the
 # config re-parse, and the ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
-_SECRET_SOURCE_CACHE_LOCK = threading.RLock()
-
-
-def _known_son_of_anton_env_keys() -> set[str]:
-    """Return the combined set of known Son of Anton env-var keys.
-
-    Includes both ``OPTIONAL_ENV_VARS`` (setup-flow vars with metadata) and
-    ``_EXTRA_ENV_KEYS`` (provider/platform keys managed outside the setup
-    wizard).  Lazy-imported to avoid circular-dependency during early-bootstrap
-    ``load_son_of_anton_dotenv()`` calls.
-    """
-    from son_of_anton_cli.config import _EXTRA_ENV_KEYS
-    from son_of_anton_cli.config_defaults import OPTIONAL_ENV_VARS
-
-    return set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
 
 
 # Behavioral routing keys a parent Son of Anton process injects into child env and
@@ -189,14 +173,6 @@ def get_secret_source(env_var: str) -> str | None:
     must never treat it as authorization to persist the raw value.
     """
     return _SECRET_SOURCES.get(env_var)
-
-
-def get_secret_source_values(
-    son_of_anton_home: str | os.PathLike,
-) -> dict[str, str]:
-    """Return the external-secret value snapshot for ``son_of_anton_home``."""
-    home_key = str(Path(son_of_anton_home).resolve())
-    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
 
 
 def reset_secret_source_cache() -> None:

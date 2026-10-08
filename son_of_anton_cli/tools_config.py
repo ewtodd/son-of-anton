@@ -81,21 +81,6 @@ CONFIGURABLE_TOOLSETS = [
 ]
 
 
-def gui_toolset_label(label: str) -> str:
-    """Strip leading emoji/icons from toolset titles for GUI surfaces.
-
-    Registry labels use ``<emoji> <title>``; plugin toolsets prefix with ``🔌``.
-    CLI/TUI keeps the raw ``label`` — only HTTP APIs call this helper.
-    """
-    text = (label or "").strip()
-    if not text:
-        return text
-    parts = text.split(None, 1)
-    if len(parts) == 2 and parts[0] and not any(ch.isascii() and ch.isalnum() for ch in parts[0]):
-        return parts[1].strip()
-    return text
-
-
 # Toolsets that are OFF by default for new installs.
 # They're still in _SON_OF_ANTON_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
@@ -131,20 +116,6 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
     return allowed is None or platform in allowed
-
-
-def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
-    """Return the platform a platform-less configuration UI should target.
-
-    Most configurable toolsets retain the historical desktop/CLI target. A
-    toolset restricted away from that platform must instead be configured on
-    one of its supported platforms; otherwise the shared save helper correctly
-    drops it and the UI reports a successful no-op.
-    """
-    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    if not allowed or default in allowed:
-        return default
-    return sorted(allowed)[0]
 
 
 def _get_effective_configurable_toolsets():
@@ -431,66 +402,6 @@ def _run_post_setup(post_setup_key: str):
             _print_info("    Run manually: son-of-anton plugins enable observability/langfuse")
         _print_info("    Restart Son of Anton for tracing to take effect.")
         _print_info("    Verify: son-of-anton plugins list")
-
-
-
-def valid_post_setup_keys() -> Set[str]:
-    """Return the set of post-setup keys declared by any visible provider.
-
-    Collected from ``TOOL_CATEGORIES`` plus the plugin-registered web
-    providers (which can also carry a ``post_setup``). This is the
-    allowlist the ``son-of-anton tools post-setup`` command and the post-setup
-    endpoint validate against, so a caller can't drive ``_run_post_setup``
-    with an arbitrary key.
-    """
-    keys: Set[str] = set()
-    for cat in TOOL_CATEGORIES.values():
-        for prov in cat.get("providers", []):
-            ps = prov.get("post_setup")
-            if ps:
-                keys.add(ps)
-    # Plugin-registered providers can declare their own post_setup hooks.
-    for builder in (
-        _plugin_web_search_providers,
-    ):
-        try:
-            for prov in builder():
-                ps = prov.get("post_setup")
-                if ps:
-                    keys.add(ps)
-        except Exception:  # pragma: no cover — defensive; plugins optional
-            continue
-    return keys
-
-
-def run_post_setup_command(args) -> int:
-    """``son-of-anton tools post-setup <key>`` — non-interactive post-setup runner.
-
-    Runs the install/bootstrap hook a provider declares (pip install for
-    ddgs/langfuse, etc.). This is the stable, scriptable target the setup
-    flows spawn so they can drive backend setup without re-implementing
-    the install logic.
-    Returns a process exit code (0 ok, 2 unknown key).
-    """
-    key = getattr(args, "post_setup_key", None)
-    if not key:
-        _print_error("Usage: son-of-anton tools post-setup <key>")
-        return 2
-    valid = valid_post_setup_keys()
-    if key not in valid:
-        _print_error(
-            f"Unknown post-setup key: {key!r}. "
-            f"Valid keys: {', '.join(sorted(valid)) or '(none)'}"
-        )
-        return 2
-    _print_info(f"Running post-setup hook: {key}")
-    try:
-        _run_post_setup(key)
-    except Exception as exc:  # pragma: no cover — defensive
-        _print_error(f"Post-setup failed: {exc}")
-        return 1
-    _print_success(f"Post-setup '{key}' complete")
-    return 0
 
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
@@ -1232,33 +1143,6 @@ def _plugin_web_search_providers() -> list[dict]:
     return rows
 
 
-def web_provider_capabilities(backend: str) -> list:
-    """Return the capabilities (``search`` / ``extract``) a web backend supports.
-
-    Consults the plugin registry's provider instance (``supports_search`` /
-    ``supports_extract``) so the Capabilities GUI can offer per-capability
-    selection (``web.search_backend`` / ``web.extract_backend``) only where it
-    makes sense — e.g. ddgs and brave-free are search-only. Falls back to both
-    capabilities when the backend isn't registered (hardcoded setup-flow rows
-    like the managed Firecrawl entries resolve before plugin discovery in some
-    test contexts, and firecrawl itself supports both).
-    """
-    try:
-        from agent.web_search_registry import get_provider
-
-        provider = get_provider(backend)
-        if provider is not None:
-            caps = []
-            if provider.supports_search():
-                caps.append("search")
-            if provider.supports_extract():
-                caps.append("extract")
-            return caps
-    except Exception:
-        pass
-    return ["search", "extract"]
-
-
 def _visible_providers(
     cat: dict,
     config: dict,
@@ -1313,43 +1197,11 @@ def _post_setup_already_installed(post_setup_key: str) -> bool:
         return True
 
 
-def _module_installed(module_name: str) -> bool:
-    """Cheap importable-without-importing check (no heavy side effects)."""
-    import importlib.util
-
-    try:
-        return importlib.util.find_spec(module_name) is not None
-    except Exception:
-        return False
-
-
 # Python dependencies installed explicitly through ``son-of-anton tools`` are not
 # part of the managed runtime's locked ``all`` sync. A runtime replacement
 # therefore needs a small, static allowlist that can be snapshotted before the
 # old site-packages disappears and restored afterward. Keep these install
 # arguments in sync with the corresponding ``_run_post_setup`` branches.
-_RESTORABLE_PYTHON_TOOL_DEPENDENCIES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "ddgs": ("ddgs", ("-U", "ddgs")),
-    "langfuse": ("langfuse", ("langfuse",)),
-}
-
-
-def active_restorable_python_tool_dependencies() -> list[str]:
-    """Return ``son-of-anton tools`` Python dependencies present in this runtime."""
-    return [
-        name
-        for name, (module_name, _install_args) in (
-            _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.items()
-        )
-        if _module_installed(module_name)
-    ]
-
-
-def restorable_python_tool_dependency(
-    name: str,
-) -> tuple[str, tuple[str, ...]] | None:
-    """Return the import probe and pip arguments for an allowlisted tool."""
-    return _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.get(name)
 
 
 # post_setup_key -> predicate(): True when the install side-effect is already
@@ -1357,61 +1209,6 @@ def restorable_python_tool_dependency(
 # post_setup row (ddgs, langfuse) is honestly "ready" or still "needs_setup".
 # Mirrors the installed-checks ``_run_post_setup`` itself performs before
 # installing.
-_POST_SETUP_READY: dict = {
-    "ddgs": lambda: _module_installed("ddgs"),
-    "langfuse": lambda: _module_installed("langfuse"),
-}
-
-
-def provider_readiness_status(
-    provider: dict,
-    config: dict,
-    *,
-    features=None,
-    is_active: Optional[bool] = None,
-) -> str:
-    """Compute an honest readiness state for a provider picker row.
-
-    Returns one of:
-
-    - ``"ready"``       — usable as-is (keys set / entitled / installed).
-    - ``"needs_keys"``  — declares env vars and at least one is unset.
-    - ``"needs_auth"``  — needs a sign-in: Nous Portal login/entitlement for
-      managed Tool Gateway rows.
-    - ``"needs_setup"`` — keyless row whose ``post_setup`` install hook has
-      verifiably not run yet (see ``_POST_SETUP_READY``).
-
-    Keyless ≠ usable: this is the server-side truth the GUI "Ready" pill
-    renders from (the old client-side heuristic showed Ready for every
-    zero-env-var row).
-
-    ``features`` is accepted for caller compatibility and ignored.
-    ``is_active`` is the completed-setup fallback signal for post_setup
-    hooks with no registered installed-check (selecting a row runs its
-    hook, so the active row has been set up).
-    """
-    env_vars = provider.get("env_vars", [])
-    if env_vars:
-        if all(get_env_value(e["key"]) for e in env_vars):
-            return "ready"
-        return "needs_keys"
-
-    post_setup = provider.get("post_setup")
-    if post_setup:
-        predicate = _POST_SETUP_READY.get(post_setup)
-        if predicate is not None:
-            try:
-                return "ready" if predicate() else "needs_setup"
-            except Exception:
-                # Flaky detection must not manufacture a warning state.
-                return "ready"
-        # No reliable installed-check registered → treat the active-provider
-        # signal as "setup completed" (selecting the row runs the hook).
-        if is_active is None:
-            is_active = _is_provider_active(provider, config)
-        return "ready" if is_active else "needs_setup"
-
-    return "ready"
 
 
 def _toolset_needs_configuration_prompt(
@@ -1639,33 +1436,6 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
             section = config.get("web")
             if isinstance(section, dict):
                 section.pop("use_gateway", None)
-
-
-def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
-    """Non-interactively persist a provider selection for a toolset.
-
-    Resolves ``provider_name`` within ``ts_key``'s category (matching the
-    rows the GUI/CLI picker shows via :func:`_visible_providers`) and writes
-    the corresponding backend/provider config keys. Unlike
-    :func:`_configure_provider`, this does NOT prompt for API keys, run
-    post-setup hooks, gate on Nous Portal auth, or run interactive model
-    pickers — those are handled separately (env endpoints, post-setup
-    endpoints, the model picker) in the GUI.
-
-    Raises ``KeyError`` if the toolset has no category or the provider name
-    is not found among the visible providers.
-    """
-    cat = TOOL_CATEGORIES.get(ts_key)
-    if cat is None:
-        raise KeyError(f"Toolset has no configurable category: {ts_key}")
-
-    providers = _visible_providers(cat, config, force_fresh=True)
-    provider = next((p for p in providers if p.get("name") == provider_name), None)
-    if provider is None:
-        raise KeyError(f"Unknown provider {provider_name!r} for toolset {ts_key!r}")
-
-    managed_feature = provider.get("managed_nous_feature")
-    _write_provider_config(provider, config, managed_feature=managed_feature)
 
 
 def _configure_provider(
@@ -2095,7 +1865,6 @@ def _reconfigure_provider(
 
     if provider.get("post_setup"):
         _run_post_setup(provider["post_setup"])
-
 
 
 def _reconfigure_simple_requirements(ts_key: str):

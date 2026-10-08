@@ -11,7 +11,6 @@ import unicodedata
 from typing import Any
 
 # Canonical model-emitted control token for intentional silence.
-SILENT_REPLY_TOKEN = "NO_REPLY"
 
 # Exact whole-response markers that mean "the agent intentionally chose not to
 # reply".  Keep this list small and explicit; arbitrary empty output remains an

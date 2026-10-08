@@ -312,35 +312,6 @@ def _fetch_capabilities(token: str) -> Dict[str, Any]:
     return caps
 
 
-def _detect_capabilities(token: str, *, force: bool = False) -> Dict[str, Any]:
-    """Detect the bot's app-wide capabilities via GET /applications/@me.
-
-    Returns a dict with keys:
-
-    - ``has_members_intent``: GUILD_MEMBERS intent is enabled
-    - ``has_message_content``: MESSAGE_CONTENT intent is enabled
-    - ``detected``: detection succeeded (False means exposing everything
-      and letting runtime errors handle it)
-
-    Cached in a module-global. Pass ``force=True`` to re-fetch.
-    """
-    global _capability_cache
-    if token in _capability_cache and not force:
-        return _capability_cache[token]
-
-    caps = _fetch_capabilities(token)
-    _capability_cache[token] = caps
-    return caps
-
-
-def _reset_capability_cache() -> None:
-    """Test hook: clear the detection cache."""
-    global _capability_cache, _capability_bg_started
-    _capability_cache = {}
-    with _capability_bg_lock:
-        _capability_bg_started = set()
-
-
 # ---------------------------------------------------------------------------
 # Action implementations
 # ---------------------------------------------------------------------------
@@ -906,11 +877,6 @@ def get_dynamic_schema_core() -> Optional[Dict[str, Any]]:
 
 def get_dynamic_schema_admin() -> Optional[Dict[str, Any]]:
     return _get_dynamic_schema(_ADMIN_ACTIONS, "discord_admin")
-
-
-def get_dynamic_schema() -> Optional[Dict[str, Any]]:
-    """Backward-compat wrapper — returns core schema."""
-    return get_dynamic_schema_core()
 
 
 # ---------------------------------------------------------------------------

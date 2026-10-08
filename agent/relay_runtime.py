@@ -217,11 +217,6 @@ def _segments_config() -> dict[str, Any]:
     return _SEGMENTS_CONFIG
 
 
-def _reset_segments_config_for_tests() -> None:
-    global _SEGMENTS_CONFIG
-    _SEGMENTS_CONFIG = None
-
-
 class RelayOperationLease:
     """Keep process-wide Relay plugins alive across a deferred operation."""
 
@@ -1951,15 +1946,6 @@ def get_runtime(
     """Return the Relay host for the active Son of Anton profile."""
     host = HOST_REGISTRY.for_profile(profile_key, create=create)
     return host if isinstance(host, RelayRuntime) else None
-
-
-def get_host(
-    *,
-    create: bool = True,
-    profile_key: str | None = None,
-) -> RelayHost | None:
-    """Return the explicit real or reduced-capability host for a profile."""
-    return HOST_REGISTRY.for_profile(profile_key, create=create)
 
 
 def current_profile_key() -> str:

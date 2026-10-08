@@ -321,7 +321,6 @@ def _finish_markdown(lines: List[str]) -> str:
 # Current-session save helper (shared by CLI /save and gateway /save)
 # ---------------------------------------------------------------------------
 
-SAVE_FORMATS = ("json", "md", "html")
 
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]
@@ -341,7 +340,6 @@ Examples:
   /save html
   /save md notes.md
   /save html session.html redact"""
-
 
 
 def normalize_save_format(fmt: Optional[str]) -> str:

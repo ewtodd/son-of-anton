@@ -186,21 +186,6 @@ def strip_dangling_tool_call_tail(
     return agent_history[:-1]
 
 
-def sanitize_replay_history(
-    agent_history: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Apply both replay-tail strippers in the canonical order.
-
-    Convenience entry point for resume code paths: removes interrupted
-    assistant→tool blocks anywhere in the history, then removes a dangling
-    unanswered ``assistant(tool_calls)`` tail.  Returns the same list object
-    when there is nothing to strip.
-    """
-    if not agent_history:
-        return agent_history
-    return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Stale dangerous-confirmation text expiry (#59607)
 # ──────────────────────────────────────────────────────────────────────

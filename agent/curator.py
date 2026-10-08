@@ -1818,25 +1818,6 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
     return _ReviewRuntimeBinding(_main_provider, _main_model, None, None, {})
 
 
-def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
-    """Pick (provider, model) for the curator review fork.
-
-    Curator is a regular auxiliary task slot — ``auxiliary.curator.{provider,model}``
-    — so it participates in the canonical aux-model plumbing (``son-of-anton model`` →
-    auxiliary picker, the dashboard Models tab, ``auxiliary.curator.{timeout,
-    base_url,api_key,extra_body}``). ``provider: "auto"`` with an empty model
-    means "use the main chat model" — same default as every other aux task.
-
-    Legacy fallback: users who configured ``curator.auxiliary.{provider,model}``
-    under the previous one-off schema still work. Precedence:
-      1. ``auxiliary.curator.{provider,model}`` when both are set non-auto
-      2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
-      3. Main ``model.{provider,default/model}`` pair
-    """
-    b = _resolve_review_runtime(cfg)
-    return b.provider, b.model
-
-
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork to run the curator review prompt.
 

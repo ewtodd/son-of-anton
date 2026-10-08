@@ -20,7 +20,6 @@ from agent.credential_persistence import (
 )
 from son_of_anton_cli.auth import (
     PROVIDER_REGISTRY,
-    _decode_jwt_claims,
     _load_auth_store,
     read_credential_pool,
     write_credential_pool,
@@ -81,7 +80,6 @@ AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
-SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
 
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
@@ -252,15 +250,6 @@ class PooledCredential:
     @property
     def runtime_base_url(self) -> Optional[str]:
         return self.base_url
-
-
-def label_from_token(token: str, fallback: str) -> str:
-    claims = _decode_jwt_claims(token)
-    for key in ("email", "preferred_username", "upn"):
-        value = claims.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return fallback
 
 
 def _next_priority(entries: List[PooledCredential]) -> int:
@@ -468,17 +457,6 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
         if entry_url and entry_url == normalized_url:
             return f"{CUSTOM_POOL_PREFIX}{norm_name}"
     return None
-
-
-def list_custom_pool_providers() -> List[str]:
-    """Return all 'custom:*' pool keys that have entries in auth.json."""
-    pool_data = read_credential_pool(None)
-    return sorted(
-        key for key in pool_data
-        if key.startswith(CUSTOM_POOL_PREFIX)
-        and isinstance(pool_data.get(key), list)
-        and pool_data[key]
-    )
 
 
 def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:

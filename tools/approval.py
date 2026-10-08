@@ -78,21 +78,6 @@ _son_of_anton_interactive_ctx: contextvars.ContextVar[Optional[str]] = contextva
 )
 
 
-def set_son_of_anton_interactive_context(interactive: bool) -> contextvars.Token:
-    """Bind interactive mode for the current context (thread or asyncio task).
-
-    Use this instead of mutating ``os.environ["SON_OF_ANTON_INTERACTIVE"]`` from
-    concurrent executor threads. When unset (default), interactive detection
-    falls back to the ``SON_OF_ANTON_INTERACTIVE`` env var for legacy callers.
-    """
-    return _son_of_anton_interactive_ctx.set("1" if interactive else "")
-
-
-def reset_son_of_anton_interactive_context(token: contextvars.Token) -> None:
-    """Restore the prior value from :func:`set_son_of_anton_interactive_context`."""
-    _son_of_anton_interactive_ctx.reset(token)
-
-
 def _is_interactive_cli() -> bool:
     """True when running an interactive CLI/ACP session.
 
@@ -183,7 +168,6 @@ def _observe_smart_approval_verdict(payload: dict | None, verdict: str) -> None:
         choice=f"smart_{verdict}",
         decided_by="aux_llm",
     )
-
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -1316,13 +1300,11 @@ _READ_TOOL_SHORT_OPTIONS_WITH_ARG = {
     "man": frozenset("CRLmMSserEPp"),
     "ag": frozenset("gGmpW"),
 }
-_SHELL_PUNCTUATION = {";", "&", "&&", "|", "||", "(", ")", "{", "}"}
 _MAX_DETECTION_COMMAND_CHARS = 128_000
 _MAX_SEPARATOR_FREE_COMMAND_CHARS = 4_096
 _MAX_DETECTION_SEGMENTS = 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
-
 
 
 def _command_parser_limit_exceeded(command: str) -> bool:
@@ -1842,12 +1824,6 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
             break
         i += 1
     return (start, i, command[start:i])
-
-
-def _strip_optional_shell_quotes(word: str) -> str:
-    if len(word) >= 2 and word[0] == word[-1] and word[0] in ("'", '"'):
-        return word[1:-1]
-    return word
 
 
 def _is_simple_shell_literal(value: str) -> bool:
@@ -2622,42 +2598,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
-def list_gateway_approvals(session_key: str) -> list[dict]:
-    """Return replay-safe snapshots of unresolved approvals for one session."""
-    with _lock:
-        return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
-
-
-def ack_gateway_approval(session_key: str, request_id: str) -> bool:
-    """Record that a client received a particular pending approval request."""
-    with _lock:
-        for entry in _gateway_queues.get(session_key, []):
-            if entry.data.get("request_id") == request_id:
-                entry.acknowledged = True
-                return True
-    return False
-
-
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
-
-
-def get_pending_gateway_approval(session_key: str) -> dict | None:
-    """Return a copy of the oldest unresolved gateway approval for a session.
-
-    Reconnectable clients use this to restore an approval prompt whose original
-    notification was sent while their transport was detached.  The queue remains
-    authoritative: this is a read-only snapshot, not a claim on the approval.
-    """
-    if not session_key:
-        return None
-    with _lock:
-        queue = _gateway_queues.get(session_key)
-        if not queue:
-            return None
-        return dict(queue[0].data)
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -2905,7 +2849,6 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
         if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern):
             return True
     return False
-
 
 
 # =========================================================================
@@ -3218,13 +3161,6 @@ def is_approval_bypass_active_for_session(session_key: str) -> bool:
         _YOLO_MODE_FROZEN
         or is_session_yolo_enabled(session_key)
         or _get_approval_mode() == "off"
-    )
-
-
-def is_approval_bypass_active() -> bool:
-    """Return whether the current approval context has bypass enabled."""
-    return is_approval_bypass_active_for_session(
-        get_current_session_key(default="")
     )
 
 
@@ -3854,80 +3790,6 @@ def _run_approval_gate(
         save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}
-
-
-def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None,
-                            has_host_access: bool = False) -> dict:
-    """Check if a command is dangerous and handle approval.
-
-    This is the main entry point called by terminal_tool before executing
-    any command. It orchestrates detection, session checks, and prompting.
-
-    Args:
-        command: The shell command to check.
-        env_type: Terminal backend type ('local', 'ssh', etc.).
-        approval_callback: Optional CLI callback for interactive prompts.
-        has_host_access: Accepted for compatibility with legacy callers;
-            container backends were removed, so it is always False.
-
-    Returns:
-        {"approved": True/False, "message": str or None, ...}
-    """
-    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
-    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
-    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
-    # trusting the agent with your files and services, not trusting it
-    # to wipe the disk or power the box off.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc, command)
-
-    # User-defined deny rules (approvals.deny in config.toml): like the
-    # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
-    # user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
-    if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s",
-                       deny_pattern, command[:200])
-        return _user_deny_block_result(deny_pattern)
-
-    # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
-    # CLI --yolo remains process-scoped via the env var for local use.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
-        return {"approved": True, "message": None}
-
-    if _command_matches_permanent_allowlist(command):
-        return {"approved": True, "message": None}
-
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if not is_dangerous:
-        return {"approved": True, "message": None}
-
-    return _run_approval_gate(
-        pattern_key=pattern_key,
-        description=description,
-        display_target=command,
-        approval_callback=approval_callback,
-        cron_deny_message=(
-            f"BLOCKED: Command flagged as dangerous ({description}) "
-            "but cron jobs run without a user present to approve it. "
-            "Find an alternative approach that avoids this command. "
-            "To allow dangerous commands in cron jobs, set "
-            "approvals.cron_mode: approve in config.toml."
-        ),
-        single_query_deny_message=(
-            f"BLOCKED: Command flagged as dangerous ({description}) but "
-            "single-query mode (-q) runs without a user present to approve "
-            "it. Find an alternative approach that avoids this command. "
-            "To allow dangerous commands in single-query mode, set "
-            "approvals.single_query_mode: approve in config.toml."
-        ),
-        autoapprove_log_prefix=(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
-        ),
-    )
 
 
 def request_tool_approval(

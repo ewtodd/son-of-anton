@@ -1338,11 +1338,6 @@ def set_bundled_skills_opt_out(enabled: bool) -> dict:
     return {"ok": True, "changed": changed, "marker": str(marker), "message": message}
 
 
-def is_bundled_skills_opt_out() -> bool:
-    """Return True if the active profile carries the opt-out marker."""
-    return (_son_of_anton_home() / NO_BUNDLED_SKILLS_MARKER).exists()
-
-
 def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
     """Delete bundled skills that are present, manifest-tracked, AND unmodified.
 

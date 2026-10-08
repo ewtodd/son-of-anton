@@ -48,22 +48,6 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
 # Exact match, NOT substring — "token_count" and "session_id" must NOT match.
 # Ported from nearai/ironclaw#2529.
-_SENSITIVE_BODY_KEYS = frozenset({
-    "access_token",
-    "refresh_token",
-    "id_token",
-    "token",
-    "api_key",
-    "apikey",
-    "client_secret",
-    "password",
-    "auth",
-    "jwt",
-    "secret",
-    "private_key",
-    "authorization",
-    "key",
-})
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated
 # `export SON_OF_ANTON_REDACT_SECRETS=false`) cannot disable redaction
@@ -411,20 +395,10 @@ _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
-_URL_WITH_QUERY_RE = re.compile(
-    r"(https?|wss?|ftp)://"          # scheme
-    r"([^\s/?#]+)"                    # authority (may include userinfo)
-    r"([^\s?#]*)"                     # path
-    r"\?([^\s#]+)"                    # query (required)
-    r"(#\S*)?",                       # optional fragment
-)
 
 # URLs containing userinfo — `scheme://user:password@host` for ANY scheme
 # (not just DB protocols already covered by _DB_CONNSTR_RE above).
 # Catches things like `https://user:token@api.example.com/v1/foo`.
-_URL_USERINFO_RE = re.compile(
-    r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
-)
 
 # Strict provider-egress URL redaction accepts more URL-reference forms than
 # the display/log helpers above. Parameter delimiters stay in capture groups so
@@ -454,11 +428,6 @@ _STRICT_URL_USERINFO_RE = re.compile(
 # HTTP access logs often use a relative request target rather than a full URL:
 # `"POST /webhook?password=... HTTP/1.1"`. The full-URL redactor above only
 # sees strings containing `://`, so handle request-target query strings too.
-_HTTP_REQUEST_TARGET_QUERY_RE = re.compile(
-    r"\b((?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s+[^ \t\r\n\"']*?)"
-    r"\?([^ \t\r\n\"']+)",
-    re.IGNORECASE,
-)
 
 # Form-urlencoded body detection: conservative — only applies when the entire
 # text looks like a query string (k=v&k=v pattern with no newlines).
@@ -631,34 +600,6 @@ def _redact_query_string(query: str) -> str:
     return "&".join(parts)
 
 
-def _redact_url_query_params(text: str) -> str:
-    """Scan text for URLs with query strings and redact sensitive params.
-
-    Catches opaque tokens that don't match vendor prefix regexes, e.g.
-    `https://example.com/cb?code=ABC123&state=xyz` → `...?code=***&state=xyz`.
-    """
-    def _sub(m: re.Match) -> str:
-        scheme = m.group(1)
-        authority = m.group(2)
-        path = m.group(3)
-        query = _redact_query_string(m.group(4))
-        fragment = m.group(5) or ""
-        return f"{scheme}://{authority}{path}?{query}{fragment}"
-    return _URL_WITH_QUERY_RE.sub(_sub, text)
-
-
-def _redact_url_userinfo(text: str) -> str:
-    """Strip `user:password@` from HTTP/WS/FTP URLs.
-
-    DB protocols (postgres, mysql, mongodb, redis, amqp) are handled
-    separately by `_DB_CONNSTR_RE`.
-    """
-    return _URL_USERINFO_RE.sub(
-        lambda m: f"{m.group(1)}://{m.group(2)}:***@",
-        text,
-    )
-
-
 def _canonical_url_param_name(name: str) -> str:
     """Decode a URL parameter name for bounded, case-insensitive matching."""
     decoded = name
@@ -692,40 +633,6 @@ def _redact_strict_url_credentials(text: str) -> str:
 
     text = _STRICT_URL_PARAM_RE.sub(_redact_param, text)
     return _STRICT_URL_USERINFO_RE.sub(_redact_userinfo, text)
-
-
-def redact_cdp_url(value: object) -> str:
-    """Mask secrets in a CDP/browser endpoint URL before it is logged.
-
-    The global ``redact_sensitive_text`` deliberately passes web-URL query
-    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
-    magic-link / pre-signed URLs the agent is meant to follow -- see the
-    web-URL note above). CDP discovery endpoints are NOT such a workflow:
-    their query-string tokens and userinfo passwords are pure credentials
-    that must never reach the logs. So for CDP URLs we opt INTO the two URL
-    redactors that the global pass leaves off.
-
-    This is the single source of truth for redacting a CDP URL that is passed
-    *directly* to a log or error message. Callers that instead need to redact an
-    exception whose text embeds the URL (e.g. a ``websockets`` connect error)
-    should route that through their own error-text helper, which delegates here
-    -- see ``tools.browser_supervisor._redact_cdp_error_text``.
-    """
-    text = redact_sensitive_text("" if value is None else str(value))
-    if not text:
-        return text
-    text = _redact_url_query_params(text)
-    text = _redact_url_userinfo(text)
-    return text
-
-
-def _redact_http_request_target_query_params(text: str) -> str:
-    """Redact sensitive query params in HTTP access-log request targets."""
-    def _sub(m: re.Match) -> str:
-        prefix = m.group(1)
-        query = _redact_query_string(m.group(2))
-        return f"{prefix}?{query}"
-    return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
 
 
 def _redact_form_body(text: str) -> str:
@@ -1388,32 +1295,6 @@ def register_redaction_patterns(patterns, source: str = "plugin") -> int:
             "%s: registered %d redaction pattern(s)", source, len(accepted)
         )
     return len(accepted)
-
-
-def _reset_plugin_redaction_patterns() -> None:
-    """Drop all plugin-registered patterns (tests/teardown only)."""
-    with _registry_lock:
-        _PLUGIN_PREFIX_PATTERNS.clear()
-        _rebuild_prefix_matcher()
-
-
-_HTTP_METHOD_SUBSTRINGS = (
-    "GET ",
-    "POST ",
-    "PUT ",
-    "PATCH ",
-    "DELETE ",
-    "HEAD ",
-    "OPTIONS ",
-    "TRACE ",
-    "CONNECT ",
-)
-
-
-def _has_http_method_substring(text: str) -> bool:
-    """Cheap pre-check before scanning for access-log request targets."""
-    upper = text.upper()
-    return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
 class RedactingFormatter(logging.Formatter):

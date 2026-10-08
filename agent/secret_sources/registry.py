@@ -273,15 +273,6 @@ def _ensure_builtin_sources() -> None:
             )
 
 
-def _reset_registry_for_tests() -> None:
-    global _BUILTINS_LOADED
-    with _REGISTRY_LOCK:
-        _SOURCES.clear()
-        _SOURCE_ORIGINS.clear()
-        _SCOPED_SOURCES.clear()
-        _BUILTINS_LOADED = False
-
-
 # ---------------------------------------------------------------------------
 # Orchestrated apply
 # ---------------------------------------------------------------------------

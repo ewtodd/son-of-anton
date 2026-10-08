@@ -42,7 +42,6 @@ LEDGER_FILENAME = "spawn-ledger.json"
 
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
-REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway"})
 
 _LEDGER_LOCK = threading.Lock()
 
@@ -85,20 +84,6 @@ class SpawnTag:
     purpose: str
     spawner_pid: int
     spawner_create: Optional[float]
-
-
-def build_spawn_tag(purpose: str, *, project_root: Optional[Path] = None) -> str:
-    """Value for the child's ``SON_OF_ANTON_SPAWN`` env var, stamped by the spawner."""
-    create = _own_create_time()
-    create_part = f"{create:.3f}" if create is not None else "-"
-    return ":".join(
-        (_TAG_VERSION, install_id(project_root), purpose, str(os.getpid()), create_part)
-    )
-
-
-def spawn_env(purpose: str, *, project_root: Optional[Path] = None) -> dict[str, str]:
-    """Env fragment a spawner merges into a child's environment."""
-    return {SPAWN_ENV_VAR: build_spawn_tag(purpose, project_root=project_root)}
 
 
 def parse_spawn_tag(raw: object) -> Optional[SpawnTag]:
@@ -273,50 +258,6 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None) -> bool:
         except OSError:
             logger.debug("spawn ledger write failed", exc_info=True)
             return False
-
-
-def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
-    """Live-verified ledger entries for THIS install.
-
-    Entries whose ``(pid, create_time)`` no longer matches a live process are
-    excluded (PID reuse reads as dead, thanks to the create-time pair). A
-    corrupt ledger is quarantined and read as empty — identical philosophy to
-    the backend-ownership fix (#89298): never let corruption erase or fake
-    a roster; never let it block the caller either.
-    """
-    want_install = install_id(project_root)
-    path = _ledger_path()
-    with _LEDGER_LOCK:
-        entries = _read_ledger(path)
-        if entries is None:
-            _quarantine_ledger(path)
-            return []
-    out: list[dict] = []
-    for e in entries:
-        if e.get("install") != want_install:
-            continue
-        pid = e.get("pid")
-        if not isinstance(pid, int):
-            continue
-        if _pid_alive_matches(pid, e.get("create_time")) is False:
-            continue
-        out.append(e)
-    return out
-
-
-def spawner_is_dead(entry: dict) -> Optional[bool]:
-    """Is the recorded spawner of this entry provably gone?
-
-    ``True`` → owner gone (orphaned by identity, not by PPID guessing).
-    ``False`` → owner still alive. ``None`` → no spawner recorded / unprovable.
-    """
-    spawner_pid = entry.get("spawner_pid")
-    if not isinstance(spawner_pid, int) or spawner_pid <= 0:
-        return None
-    alive = _pid_alive_matches(spawner_pid, entry.get("spawner_create"))
-    if alive is None:
-        return None
-    return not alive
 
 
 # ---------------------------------------------------------------------------

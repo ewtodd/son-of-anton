@@ -252,107 +252,9 @@ def ensure_uv(
     return _UvResult(result)
 
 
-def _uv_self_update_is_fresh(now: float | None = None) -> bool:
-    """Return True when ``uv self update`` ran recently enough to skip.
-
-    uv releases roughly weekly while many users run ``son-of-anton update`` daily;
-    re-running a blocking network self-update on every invocation is waste
-    and, offline, an unbounded hang risk. A stamp file under SON_OF_ANTON_HOME
-    caches the last successful self-update time.
-    """
-    try:
-        from son_of_anton_constants import get_son_of_anton_home
-
-        stamp = get_son_of_anton_home() / "cache" / ".uv_self_update_stamp"
-        age = (now if now is not None else time.time()) - stamp.stat().st_mtime
-        return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
-    except Exception:
-        return False
-
-
-def _touch_uv_self_update_stamp() -> None:
-    try:
-        from son_of_anton_constants import get_son_of_anton_home
-
-        stamp = get_son_of_anton_home() / "cache" / ".uv_self_update_stamp"
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
-    except OSError:
-        pass
-
-
 # uv ships releases ~weekly; refresh the managed binary at most this often.
-UV_SELF_UPDATE_INTERVAL_SECONDS = 7 * 24 * 3600
 # `uv self update` is a network call; unbounded it can hang forever on a
 # blackholed connection (no default timeout in uv's downloader path).
-UV_SELF_UPDATE_TIMEOUT_SECONDS = 60
-
-
-def update_managed_uv(
-    *,
-    repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
-    force: bool = False,
-) -> Optional[str]:
-    """Run ``uv self update`` on the managed uv binary.
-
-    Call this during ``son-of-anton update`` so the managed copy stays current.
-    Returns the managed path when uv is available and ``None`` otherwise.
-    A self-update failure is non-fatal because the old version still works.
-    ``repair_observer``, when provided, receives the runtime repair result.
-
-    The network self-update is skipped when it succeeded within the last
-    ``UV_SELF_UPDATE_INTERVAL_SECONDS`` (7 days) unless ``force=True``; the
-    vulnerable-runtime repair probe below ALWAYS runs — CVE-driven runtime
-    repair must never be gated behind the freshness stamp.
-    """
-    existing = resolve_uv()
-    if not existing:
-        # Not installed yet — ensure_uv() will handle that elsewhere.
-        return None
-
-    if force or not _uv_self_update_is_fresh():
-        try:
-            result = subprocess.run(
-                [existing, "self", "update"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-                timeout=UV_SELF_UPDATE_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            logger.debug("uv self update timed out after %ss", UV_SELF_UPDATE_TIMEOUT_SECONDS)
-            result = None
-        if result is not None and result.returncode == 0:
-            _touch_uv_self_update_stamp()
-            version = subprocess.run(
-                [existing, "--version"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-            ).stdout.strip()
-            print(f"  ✓ Managed uv updated ({version})")
-        elif result is not None:
-            # Non-fatal — old uv still works fine.
-            logger.debug(
-                "uv self update failed (rc=%d): %s", result.returncode, result.stderr
-            )
-
-    # Keep this hook inside the long-standing API. During an update, main.py is
-    # already imported from the old checkout, then ``git pull`` replaces this
-    # module on disk before the updater imports it. Calling the repair here is
-    # what makes the migration happen on that first update.
-    try:
-        repair = repair_vulnerable_runtime(existing)
-        if repair_observer is not None:
-            repair_observer(repair)
-        if repair.status == "failed":
-            _report_runtime_repair_failure(repair)
-    except Exception as exc:
-        # Runtime refresh is deliberately non-fatal. The live venv was not
-        # touched unless a fully prepared candidate reached cutover.
-        logger.warning("Managed Python runtime repair failed: %s", exc)
-        print(f"  ⚠ Managed Python runtime repair skipped: {exc}")
-    return existing
 
 
 # ---------------------------------------------------------------------------
@@ -1288,5 +1190,3 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             pass
 
 
-def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
-    True  # dont remove me. ask ethernet

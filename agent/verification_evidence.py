@@ -266,16 +266,6 @@ def _canonical_tokens(canonical: str) -> list[str]:
         return []
 
 
-def _find_subsequence(tokens: list[str], needle: list[str]) -> Optional[int]:
-    if not tokens or not needle or len(needle) > len(tokens):
-        return None
-    cleaned = [_clean_token(t) for t in tokens]
-    for idx in range(0, len(cleaned) - len(needle) + 1):
-        if cleaned[idx:idx + len(needle)] == needle:
-            return idx
-    return None
-
-
 def _strip_command_prefix(tokens: list[str]) -> list[str]:
     """Remove harmless command prefixes before matching canonical commands."""
     remaining = list(tokens)
@@ -579,51 +569,6 @@ def record_terminal_result(
     )
     if evidence is None:
         return None
-    return _insert_evidence(evidence)
-
-
-def record_verify_run(
-    *,
-    root: str | Path,
-    session_id: str | None = None,
-    ok: bool,
-    command: str = "son-of-anton verify",
-    scope: str = "full",
-    output: str = "",
-) -> Optional[dict[str, Any]]:
-    """Record a completed ``son-of-anton verify`` run as verification evidence.
-
-    Explicit CLI-side write: unlike :func:`record_terminal_result` there is
-    nothing to classify — the caller (the ``son-of-anton verify`` command) already
-    knows the run was a verification pass and whether it succeeded. A passing
-    run marks the workspace ``passed`` for the verify-on-stop guard exactly
-    like a passing canonical test command would; a failing run records the
-    failure so the guard keeps asking for a fix.
-
-    ``root`` is re-resolved through :func:`agent.coding_context.project_facts_for`
-    so the recorded workspace root matches what :func:`verification_status`
-    derives when the stop guard later looks the evidence up.
-    """
-    try:
-        from agent.coding_context import project_facts_for
-
-        facts = project_facts_for(root)
-    except Exception:
-        facts = None
-
-    resolved = str(Path(root).resolve())
-    evidence = VerificationEvidence(
-        command=command,
-        canonical_command="son-of-anton verify",
-        kind="verify",
-        scope=scope if scope in {"full", "targeted"} else "full",
-        status="passed" if ok else "failed",
-        exit_code=0 if ok else 1,
-        cwd=resolved,
-        root=str((facts or {}).get("root") or resolved),
-        session_id=str(session_id or "default"),
-        output_summary=_summarize_output(output),
-    )
     return _insert_evidence(evidence)
 
 

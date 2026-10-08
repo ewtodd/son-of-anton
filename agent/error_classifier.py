@@ -111,7 +111,6 @@ class ClassifiedError:
         return bool(self.error_context.get("billing_unverified"))
 
 
-
 # ── Provider-specific patterns ──────────────────────────────────────────
 
 # Patterns that indicate billing exhaustion (not transient rate limit)
@@ -543,9 +542,6 @@ _AUTH_PATTERNS = [
 ]
 
 # Anthropic thinking block signature patterns
-_THINKING_SIG_PATTERNS = [
-    "signature",  # Combined with "thinking" check
-]
 
 # Message-string patterns that indicate a provider-side timeout even when
 # the exception type is generic (e.g. RuntimeError from a local shim that

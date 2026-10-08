@@ -143,34 +143,6 @@ def record_restart_interrupted_boot(
     return boots
 
 
-def is_restart_loop_tripped(
-    max_restarts: int = DEFAULT_MAX_RESTARTS,
-    window_seconds: int = DEFAULT_WINDOW_SECONDS,
-    *,
-    now: Optional[float] = None,
-    max_gap_seconds: int = DEFAULT_MAX_GAP_SECONDS,
-) -> bool:
-    """Return True if the gateway has restarted ``>= max_restarts`` times with
-    restart-interrupted sessions in one unbroken chain ending at ``now``.
-
-    Reads the persisted boot log written by
-    ``record_restart_interrupted_boot`` and counts the boots that still chain
-    together (consecutive gaps within ``max_gap_seconds``), so the verdict does
-    not depend on how fast the crash cycle happens to be.
-    Fails OPEN (returns False) on any error — a broken breaker must never
-    wedge a healthy gateway.
-    """
-    if max_restarts <= 0:
-        return False
-    ts = time.time() if now is None else now
-    gap = _chain_gap(window_seconds, max_gap_seconds)
-    try:
-        recent = _chain_ending_at(_load_boots(), ts, gap)
-    except Exception:  # pragma: no cover — _load_boots already guards
-        return False
-    return len(recent) >= max_restarts
-
-
 def clear() -> None:
     """Remove the persisted boot log (used on clean shutdown / by tests)."""
     try:

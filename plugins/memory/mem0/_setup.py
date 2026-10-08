@@ -50,16 +50,6 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     return val or (default or "")
 
 
-def has_oss_flags() -> bool:
-    """Check if OSS-related flags are present in sys.argv."""
-    flags = parse_flags(sys.argv[1:])
-    if flags["mode"] == "oss":
-        return True
-    if any(flags.get(k) for k in ("oss_llm_key", "oss_vector_path", "oss_vector_url")):
-        return True
-    return False
-
-
 def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     """Parse CLI flags from argv. Returns dict of flag values."""
     args = argv if argv is not None else sys.argv[1:]

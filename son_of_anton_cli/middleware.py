@@ -23,8 +23,6 @@ LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
 
 # Back-compat aliases for older PoC branches that used API terminology.
-API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE
-API_EXECUTION_MIDDLEWARE = LLM_EXECUTION_MIDDLEWARE
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE,
@@ -176,14 +174,6 @@ def apply_tool_request_middleware(
     )
 
 
-def apply_api_request_middleware(
-    request: Dict[str, Any],
-    **context: Any,
-) -> RequestMiddlewareResult:
-    """Compatibility wrapper for older ``api_request`` naming."""
-    return apply_llm_request_middleware(request, **context)
-
-
 def run_llm_execution_middleware(
     request: Dict[str, Any],
     next_call: Callable[[Dict[str, Any]], Any],
@@ -222,15 +212,6 @@ def run_tool_execution_middleware(
         original_args=context.pop("original_args", args),
         **context,
     )
-
-
-def run_api_execution_middleware(
-    request: Dict[str, Any],
-    next_call: Callable[[Dict[str, Any]], Any],
-    **context: Any,
-) -> Any:
-    """Compatibility wrapper for older ``api_execution`` naming."""
-    return run_llm_execution_middleware(request, next_call, **context)
 
 
 def _invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

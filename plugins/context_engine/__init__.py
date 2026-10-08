@@ -33,52 +33,6 @@ logger = logging.getLogger(__name__)
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 
 
-def discover_context_engines() -> List[Tuple[str, str, bool]]:
-    """Scan plugins/context_engine/ for available engines.
-
-    Returns list of (name, description, is_available) tuples.
-    Does NOT import the engines — just reads plugin.toml for metadata
-    and does a lightweight availability check.
-    """
-    results = []
-    if not _CONTEXT_ENGINE_PLUGINS_DIR.is_dir():
-        return results
-
-    for child in sorted(_CONTEXT_ENGINE_PLUGINS_DIR.iterdir()):
-        if not child.is_dir() or child.name.startswith(("_", ".")):
-            continue
-        init_file = child / "__init__.py"
-        if not init_file.exists():
-            continue
-
-        # Read description from plugin.toml if available
-        desc = ""
-        manifest_file = child / "plugin.toml"
-        if manifest_file.exists():
-            try:
-                import tomllib
-                with open(manifest_file, encoding="utf-8-sig") as f:
-                    meta = tomllib.loads(f.read()) or {}
-                desc = meta.get("description", "")
-            except Exception:
-                pass
-
-        # Quick availability check — try loading and calling is_available()
-        available = True
-        try:
-            engine = _load_engine_from_dir(child)
-            if engine is None:
-                available = False
-            elif hasattr(engine, "is_available"):
-                available = engine.is_available()
-        except Exception:
-            available = False
-
-        results.append((child.name, desc, available))
-
-    return results
-
-
 def load_context_engine(name: str) -> Optional["ContextEngine"]:
     """Load and return a ContextEngine instance by name.
 

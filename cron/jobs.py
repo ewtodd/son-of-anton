@@ -84,10 +84,8 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 # so status can tell whether the ticker THREAD is alive, not just whether the
 # gateway PROCESS exists — a ticker that dies silently inside a live gateway
 # would otherwise report healthy (#32612, #32895).
-TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
 # Last tick that completed WITHOUT raising. Distinguishing this from the plain
 # heartbeat lets status detect a ticker that is alive but failing every tick.
-TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
 # Default ticker loop interval (seconds). The single source of truth shared by
 # the in-process ticker (cron/scheduler_provider.py) and the staleness
 # threshold in `son-of-anton cron status` (son_of_anton_cli/cron.py), so the two never
@@ -1001,14 +999,6 @@ def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str
             fh.write(json.dumps(entry) + "\n")
     except Exception as exc:  # never let telemetry break a tick
         logger.debug("Could not append persisted-error-recovery record: %s", exc)
-
-
-def get_persisted_error_recovery_stats() -> Dict[str, Any]:
-    """Probe-visible snapshot of persisted-error recoveries."""
-    return {
-        "persisted_error_recoveries": _persisted_error_recoveries,
-        "recent": list(_persisted_error_recoveries_recent),
-    }
 
 
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
@@ -2401,43 +2391,6 @@ def mark_drift_alerted(job_id: str) -> bool:
     return _set_alert_flag(job_id, "drift_alerted", True)
 
 
-def clear_drift_alerted(job_id: str) -> None:
-    """Clear the drift alert-dedup marker (resolution matches again)."""
-    _set_alert_flag(job_id, "drift_alerted", False)
-
-
-def note_fire_forward_failure(job_id: str, detail: str) -> bool:
-    """Durably record that a scheduled fire could not be handed to the runner.
-
-    Written by the dashboard fire transport when the loopback forward to the
-    gateway fails (gateway unreachable / listener not bound) —
-    the shape behind "job runs manually but never auto-fires". Without this
-    stamp the miss is invisible outside gui.log: no execution row is created
-    (the claim never happens) and ``last_status``/``last_error`` only cover
-    runs that actually started.
-
-    Stored as ``last_fire_error`` (``{"at": iso, "detail": str}``) on the job
-    record so `cronjob list`, the CLI, and the dashboard all surface it.
-    Cleared by the next successful run (``mark_job_run``). Repeated failures
-    overwrite in place — latest miss wins; per-fire history lives in the
-    scheduler's own logs.
-
-    Returns True when a job record was found and stamped.
-    """
-    with _jobs_lock():
-        jobs = load_jobs()
-        for i, job in enumerate(jobs):
-            if job["id"] == job_id:
-                job["last_fire_error"] = {
-                    "at": _son_of_anton_now().isoformat(),
-                    "detail": str(detail or "")[:500],
-                }
-                jobs[i] = job
-                save_jobs(jobs)
-                return True
-    return False
-
-
 def _mark_job_run_locked(
     job_id: str,
     success: bool,
@@ -2809,23 +2762,6 @@ def advance_next_runs(job_ids) -> int:
         if advanced:
             save_jobs(jobs)
         return advanced
-
-
-def advance_next_run(job_id: str) -> bool:
-    """Preemptively advance next_run_at for a recurring job before execution.
-
-    Call this BEFORE run_job() so that if the process crashes mid-execution,
-    the job won't re-fire on the next gateway restart.  This converts the
-    scheduler from at-least-once to at-most-once for recurring jobs — missing
-    one run is far better than firing dozens of times in a crash loop.
-
-    One-shot jobs are left unchanged so they can still retry on restart.
-
-    Returns True if next_run_at was advanced, False otherwise.
-    """
-    # >= 1 (not == 1): a corrupted jobs file with duplicate ids advances
-    # every matching record; the wrapper still reports the advance.
-    return advance_next_runs([job_id]) >= 1
 
 
 def _machine_id() -> str:

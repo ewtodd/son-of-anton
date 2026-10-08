@@ -40,22 +40,13 @@ from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
 
 from agent.file_safety import (
-    build_write_denied_paths,
-    build_write_denied_prefixes,
     get_write_denied_error,
-    is_write_denied as _shared_is_write_denied,
 )
 
 
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
 # ---------------------------------------------------------------------------
-
-_HOME = str(Path.home())
-
-WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
-
-WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -147,11 +138,6 @@ def _strip_bom(text: str) -> tuple[str, bool]:
 def _has_bom(text: Optional[str]) -> bool:
     """True if ``text`` begins with a UTF-8 BOM."""
     return bool(text) and text.startswith(_UTF8_BOM)
-
-
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path)
 
 
 # =============================================================================
@@ -755,8 +741,6 @@ LINTERS_INPROC = {
 _FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.toml'})
 
 # Max limits for read operations
-MAX_LINES = 2000
-MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 DEFAULT_READ_OFFSET = 1
 DEFAULT_READ_LIMIT = 2000

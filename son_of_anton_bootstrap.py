@@ -18,9 +18,6 @@ Idempotent: safe to import multiple times.
 from __future__ import annotations
 
 import os
-import sys
-
-_bootstrap_applied = False
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -36,42 +33,6 @@ def apply_windows_utf8_bootstrap() -> bool:
 def suppress_platform_ver_console() -> None:
     """Legacy Windows ``platform._syscmd_ver`` guard; no-op on Nix platforms."""
     return None
-
-
-def harden_import_path(src_root: str | None = None) -> None:
-    """Stop a package in the current directory from shadowing Son of Anton modules.
-
-    Son of Anton ships top-level modules with common names (``utils``, ``proxy``,
-    ``ui``).  Python always seeds ``sys.path`` with the current directory, so
-    launching an entry point from a project that has its own ``utils/`` package
-    makes ``from utils import ...`` resolve to the *user's* package and crash
-    with an ImportError before the gateway can even start.
-
-    The current directory reaches ``sys.path`` two ways, and a complete guard
-    has to handle both:
-
-      - As the empty string ``""`` (or ``"."``) that Python inserts at
-        ``sys.path[0]`` for ``-m`` / script launches.
-      - As its own *absolute* path, when a venv activation or a project that
-        adds itself to ``PYTHONPATH`` puts the directory there explicitly.
-
-    We drop the relative forms outright, then force the real Son of Anton source root
-    to the front — relocating it ahead of any absolute cwd entry rather than
-    only inserting when absent, so an absolute cwd path can't keep winning.
-
-    ``src_root`` defaults to the directory this module lives in, which is the
-    repository root for every shipped entry point, so the guard is
-    self-sufficient and does not depend on the spawner exporting an env var.
-    """
-    root = src_root or os.environ.get("SON_OF_ANTON_PYTHON_SRC_ROOT") or os.path.dirname(
-        os.path.abspath(__file__)
-    )
-
-    sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-
-    root_abs = os.path.abspath(root)
-    sys.path[:] = [p for p in sys.path if os.path.abspath(p) != root_abs]
-    sys.path.insert(0, root)
 
 
 def activate_durable_lazy_target() -> None:

@@ -197,11 +197,6 @@ def _classify_write_denial(path: str) -> Optional[str]:
     return None
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
-    return _classify_write_denial(path) is not None
-
-
 def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     """Return a user/model-facing error when writes to ``path`` are blocked."""
     denial = _classify_write_denial(path)

@@ -165,11 +165,6 @@ MAX_DESCRIPTION_LENGTH = 1024
 
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.
-_PLATFORM_MAP = {
-    "macos": "darwin",
-    "linux": "linux",
-    "windows": "win32",
-}
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REMOTE_ENV_BACKENDS = frozenset(
     {"ssh"}
@@ -617,7 +612,6 @@ def _parse_tags(tags_value) -> List[str]:
         tags_value = tags_value[1:-1]
 
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
-
 
 
 def _get_disabled_skill_names() -> Set[str]:
@@ -1847,8 +1841,6 @@ def skill_view(
 
     except Exception as e:
         return tool_error(str(e), success=False)
-
-
 
 
 if __name__ == "__main__":

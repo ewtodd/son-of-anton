@@ -49,7 +49,6 @@ import re
 import shlex
 import threading
 import time
-import uuid
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -63,7 +62,6 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/son-of-anton-results"
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
-HEREDOC_MARKER = "SON_OF_ANTON_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
@@ -237,13 +235,6 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     if last_nl > max_chars // 2:
         truncated = truncated[:last_nl + 1]
     return truncated, True
-
-
-def _heredoc_marker(content: str) -> str:
-    """Return a heredoc delimiter that doesn't collide with content."""
-    if HEREDOC_MARKER not in content:
-        return HEREDOC_MARKER
-    return f"SON_OF_ANTON_PERSIST_{uuid.uuid4().hex[:8]}"
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:

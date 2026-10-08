@@ -244,19 +244,6 @@ def find_provider_entry_point(name: str):
 # Public API
 # ---------------------------------------------------------------------------
 
-def list_memory_provider_names() -> List[str]:
-    """Cheap name-only listing of discoverable memory providers.
-
-    Unlike :func:`discover_memory_providers`, this does NOT import provider
-    modules or run availability checks — a directory scan plus entry-point
-    *enumeration*, which reads distribution metadata without executing any of
-    it. Safe to call at module-import time (e.g. when building the dashboard
-    config schema, where it fills the ``memory.provider`` dropdown).
-    """
-    names = {name for name, _ in _iter_provider_dirs()}
-    names.update(ep.name for ep in _iter_entry_points())
-    return sorted(names)
-
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     """Scan directory and pip entry-point memory providers.

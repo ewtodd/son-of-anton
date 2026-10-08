@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 # ANSI building blocks for conversation display
 # =========================================================================
 
-_GOLD = "\033[1;33m"  # bold yellow — kitty palette drives the hue
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -111,10 +110,6 @@ def pick_banner_logo(term_width: int, skin_logo: str = "") -> str:
     if term_width >= LOGO_STACKED_MIN_COLUMNS:
         return SON_OF_ANTON_AGENT_LOGO_STACKED
     return ""
-
-
-
-
 
 
 # =========================================================================
@@ -817,17 +812,6 @@ def _format_context_length(tokens: int) -> str:
             return f"{rounded}K"
         return f"{val:.1f}K"
     return str(tokens)
-
-
-def _display_toolset_name(toolset_name: str) -> str:
-    """Normalize internal/legacy toolset identifiers for banner display."""
-    if not toolset_name:
-        return "unknown"
-    return (
-        toolset_name[:-6]
-        if toolset_name.endswith("_tools")
-        else toolset_name
-    )
 
 
 # =========================================================================

@@ -182,19 +182,6 @@ def _session_end_reason(db, session_id: str) -> Optional[str]:
         return None
 
 
-def _is_compaction_ended(db, session_id: str) -> bool:
-    """Return True if *session_id* itself ended with ``end_reason='compaction'``.
-
-    Unlike the ``has_compaction_hop`` flag from :func:`_resolve_to_parent`
-    (which is True for any descendant of a compaction-ended ancestor), this
-    checks only the session's own ``end_reason``. A delegation child created
-    under a compaction continuation has ``parent_session_id`` set but its own
-    ``end_reason`` is ``None`` — its content is still live to the parent agent,
-    so it must stay excluded from discovery.
-    """
-    return _session_end_reason(db, session_id) == "compaction"
-
-
 def _session_left_live_context(db, session_id: str) -> bool:
     """True when *session_id*'s transcript is no longer in anyone's live context.
 

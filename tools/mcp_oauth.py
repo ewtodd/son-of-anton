@@ -206,13 +206,6 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
 
 
-def _find_free_port() -> int:
-    """Find an available TCP port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 # Bound-but-not-listening sockets reserved for pending OAuth callback flows,
 # keyed by port. Holding the socket from port-selection time until
 # _wait_for_callback adopts it closes the TOCTOU window where another process
@@ -893,27 +886,6 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
     return _redirect_handler
 
 
-async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback on the legacy module-level port.
-
-    Kept for backwards compatibility with callers that never went through
-    :func:`build_oauth_auth`'s per-flow wiring. New code paths receive a
-    per-flow waiter from :func:`_make_callback_waiter` so concurrent OAuth
-    flows cannot cross ports (#34260).
-
-    Raises:
-        RuntimeError: If ``_oauth_port`` has not been set, which would indicate
-            that ``build_oauth_auth`` was skipped — the asserting form below
-            was a silent bug when running Python with ``-O``/``-OO``.
-    """
-    if _oauth_port is None:
-        raise RuntimeError(
-            "OAuth callback port not set — build_oauth_auth must be called "
-            "before _wait_for_oauth_callback"
-        )
-    return await _make_callback_waiter(_oauth_port)()
-
-
 def _make_callback_waiter(
     port: int, cimd_url: str | None = None, timeout: float = 300.0
 ):
@@ -1158,110 +1130,6 @@ def _paste_callback_reader(result: dict) -> None:
 # ---------------------------------------------------------------------------
 # OAuth provider compatibility shims
 # ---------------------------------------------------------------------------
-
-
-SonOfAntonOAuthClientProvider: Any = None
-
-
-def _get_son_of_anton_oauth_provider_class() -> type | None:
-    global SonOfAntonOAuthClientProvider
-    if SonOfAntonOAuthClientProvider is not None:
-        return SonOfAntonOAuthClientProvider
-    if not _ensure_sdk_loaded():
-        return None
-
-    class _SonOfAntonOAuthClientProvider(OAuthClientProvider):
-        """OAuth provider with pragmatic fixes for real-world MCP providers.
-
-        Supabase MCP dynamic registration returns ``client_secret`` but omits
-        ``token_endpoint_auth_method``. The upstream MCP SDK treats the missing
-        method as ``none`` and therefore omits ``client_secret`` from the token
-        request, causing Supabase to reject the exchange and the browser to show
-        the authorization page again. Coerce the in-memory client info right before
-        token/refresh requests as well as persisting the fixed shape in storage.
-
-        ``token_user_agent`` (from ``oauth.user_agent``) is stamped onto the
-        token-endpoint requests the SDK builds — some authorization servers
-        and WAFs reject httpx's default User-Agent there (#75576).
-        """
-
-        def __init__(self, *args: Any, token_user_agent: "str | None" = None, **kwargs: Any):
-            super().__init__(*args, **kwargs)
-            self._son_of_anton_token_user_agent = token_user_agent
-
-        def _stamp_token_user_agent(self, request):
-            ua = getattr(self, "_son_of_anton_token_user_agent", None)
-            if ua:
-                request.headers["User-Agent"] = ua
-            return request
-
-        def _coerce_client_secret_post(self) -> None:
-            info = getattr(self.context, "client_info", None)
-            if not info or not getattr(info, "client_secret", None):
-                return
-            method = getattr(info, "token_endpoint_auth_method", None)
-            if method not in (None, "none", ""):
-                return
-            data = info.model_dump(mode="json", exclude_none=True)
-            data["token_endpoint_auth_method"] = "client_secret_post"
-            self.context.client_info = OAuthClientInformationFull.model_validate(data)
-
-        async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
-            self._coerce_client_secret_post()
-            request = await super()._exchange_token_authorization_code(*args, **kwargs)
-            return self._stamp_token_user_agent(request)
-
-        async def _refresh_token(self):
-            self._coerce_client_secret_post()
-            request = await super()._refresh_token()
-            return self._stamp_token_user_agent(request)
-
-        async def _handle_token_response(self, response):
-            """Accept any 2xx token response and avoid leaking token bodies in errors."""
-            if 200 <= response.status_code < 300:
-                from mcp.client.auth.utils import handle_token_response_scopes
-                from mcp.client.auth.oauth2 import OAuthTokenError
-                from httpx import HTTPError
-
-                try:
-                    token_response = await handle_token_response_scopes(response)
-                except (HTTPError, OAuthTokenError):
-                    raise OAuthTokenError("Invalid token response") from None
-                self.context.current_tokens = token_response
-                self.context.update_token_expiry(token_response)
-                await self.context.storage.set_tokens(token_response)
-                return
-
-            from mcp.client.auth.oauth2 import OAuthTokenError
-
-            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
-
-        async def _handle_refresh_response(self, response) -> bool:
-            """Accept any 2xx refresh response and avoid logging token bodies."""
-            if not (200 <= response.status_code < 300):
-                logger.warning("Token refresh failed: %s", response.status_code)
-                self.context.clear_tokens()
-                return False
-
-            from pydantic import ValidationError
-            from httpx import HTTPError
-
-            try:
-                content = await response.aread()
-                token_response = OAuthToken.model_validate_json(content)
-                self.context.current_tokens = token_response
-                self.context.update_token_expiry(token_response)
-                await self.context.storage.set_tokens(token_response)
-                return True
-            except (HTTPError, ValidationError):
-                logger.warning("Invalid refresh response: %s", response.status_code)
-                self.context.clear_tokens()
-                return False
-
-    _SonOfAntonOAuthClientProvider.__name__ = "SonOfAntonOAuthClientProvider"
-    _SonOfAntonOAuthClientProvider.__qualname__ = "SonOfAntonOAuthClientProvider"
-    SonOfAntonOAuthClientProvider = _SonOfAntonOAuthClientProvider
-    return SonOfAntonOAuthClientProvider
 
 
 # ---------------------------------------------------------------------------
@@ -1876,81 +1744,3 @@ def humanize_oauth_registration_error(
     )
 
 
-def build_oauth_auth(
-    server_name: str,
-    server_url: str,
-    oauth_config: dict | None = None,
-) -> "OAuthClientProvider | None":
-    """Build an ``httpx.Auth``-compatible OAuth handler for an MCP server.
-
-    Public API preserved for backwards compatibility. New code should use
-    :func:`tools.mcp_oauth_manager.get_manager` so OAuth state is shared
-    across config-time, runtime, and reconnect paths.
-
-    Args:
-        server_name: Server key in mcp_servers config (used for storage).
-        server_url: MCP server endpoint URL.
-        oauth_config: Optional dict from the ``oauth:`` block in config.toml.
-
-    Returns:
-        An ``OAuthClientProvider`` instance, or None if the MCP SDK lacks
-        OAuth support.
-    """
-    if not _OAUTH_AVAILABLE or (
-        OAuthClientProvider is None and not _ensure_sdk_loaded()
-    ):
-        logger.warning(
-            "MCP OAuth requested for '%s' but SDK auth types are not available. "
-            "Install with: pip install 'mcp>=1.26.0'",
-            server_name,
-        )
-        return None
-
-    cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
-    apply_oauth_provider_defaults(
-        cfg, server_name=server_name, server_url=server_url
-    )
-    storage = SonOfAntonTokenStorage(server_name)
-
-    if not _is_interactive() and not storage.has_cached_tokens():
-        raise OAuthNonInteractiveError(
-            "MCP OAuth for "
-            f"'{server_name}': non-interactive environment and no cached tokens "
-            "found. The OAuth flow requires browser authorization. Run "
-            f"`son-of-anton mcp login {server_name}` interactively first to complete "
-            "initial authorization, then cached tokens will be reused."
-        )
-
-    _configure_callback_port(cfg, storage)
-    client_metadata = _build_client_metadata(cfg)
-    _maybe_preregister_client(storage, cfg, client_metadata)
-
-    # Use closure factories to avoid global state pollution (#44588, #34260).
-    resolved_port = cfg.get("_resolved_port", _oauth_port)
-    redirect_handler = _make_redirect_handler(
-        resolved_port, redirect_uri=cfg.get("redirect_uri") or None
-    )
-    callback_handler = _make_callback_waiter(
-        resolved_port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))
-    )
-
-    provider_class = _get_son_of_anton_oauth_provider_class()
-    if provider_class is None:
-        logger.warning(
-            "MCP OAuth requested for '%s' but the provider class is unavailable",
-            server_name,
-        )
-        return None
-
-    return provider_class(
-        server_url=server_url,
-        client_metadata=client_metadata,
-        storage=storage,
-        redirect_handler=redirect_handler,
-        # mcp 2.0 removed the provider's own `timeout` argument; the configured
-        # `oauth.timeout` is applied inside the callback waiter above, which is
-        # where the browser round-trip is actually awaited.
-        callback_handler=callback_handler,
-        token_user_agent=token_request_user_agent(cfg),
-        **cimd_provider_kwargs(cfg),
-    )

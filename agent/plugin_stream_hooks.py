@@ -150,10 +150,6 @@ def has_stream_observer_hooks() -> bool:
     return any(_registered_callbacks(name) for name in ("on_stream_start", "on_stream_delta", "on_stream_end"))
 
 
-def has_reasoning_stream_observer_hooks() -> bool:
-    return stream_reasoning_deltas_enabled() and bool(_registered_callbacks("on_stream_delta"))
-
-
 def stream_reasoning_deltas_enabled() -> bool:
     """Return True only when the user opted plugins into reasoning deltas."""
     try:
@@ -166,11 +162,3 @@ def stream_reasoning_deltas_enabled() -> bool:
         return False
 
 
-def shutdown_plugin_stream_hook_dispatcher(timeout: float = 1.0) -> None:
-    """Stop background stream hook dispatchers; used by tests and clean shutdown paths."""
-    global _dispatchers
-    with _dispatcher_lock:
-        dispatchers = list(_dispatchers.values())
-        _dispatchers = {}
-    for dispatcher in dispatchers:
-        _stop_dispatcher(dispatcher, timeout=timeout)

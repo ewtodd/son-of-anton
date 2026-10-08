@@ -12,7 +12,6 @@ from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
@@ -928,7 +927,6 @@ def _usage_count(value: Any) -> int:
     return max(0, _to_int(value))
 
 
-
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
@@ -975,7 +973,6 @@ def resolve_billing_route(
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
-
 
 
 def _normalize_anthropic_model_name(model: str) -> str:
@@ -1327,7 +1324,6 @@ def has_known_pricing(
         return True
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     return entry is not None
-
 
 
 def format_duration_compact(seconds: float) -> str:

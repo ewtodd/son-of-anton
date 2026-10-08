@@ -242,7 +242,6 @@ except Exception as e:
 # Backward-compat constants  (built once after discovery)
 # =============================================================================
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
@@ -290,14 +289,6 @@ _tool_defs_cache_lock = threading.Lock()
 # set (the handful of distinct platform/toolset combos a gateway actually
 # serves) while keeping the cap small. (#19251)
 _TOOL_DEFS_CACHE_MAX = 8
-
-
-def _clear_tool_defs_cache() -> None:
-    """Drop memoized get_tool_definitions() results. Called when dynamic
-    schema dependencies change (e.g. discord capability cache reset,
-    execute_code sandbox reconfigured)."""
-    with _tool_defs_cache_lock:
-        _tool_defs_cache.clear()
 
 
 def get_tool_definitions(

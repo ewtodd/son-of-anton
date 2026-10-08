@@ -207,17 +207,6 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     return registered
 
 
-def iter_configured_targets(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
-    """Parse ``hooks.outbound`` without registering anything.
-    Used by ``son-of-anton hooks list``."""
-    if not isinstance(cfg, dict):
-        return []
-    hooks_cfg = cfg.get("hooks")
-    return _parse_outbound_block(
-        hooks_cfg.get("outbound") if isinstance(hooks_cfg, dict) else None
-    )
-
-
 def flush(timeout: float = 5.0) -> bool:
     """Block until all queued deliveries are done (or *timeout* elapses).
     Returns ``True`` when the queue fully drained.  Test/shutdown helper."""

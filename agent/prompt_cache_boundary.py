@@ -88,7 +88,3 @@ def find_stable_prefix(content: str) -> Optional[str]:
         return best
 
 
-def clear_stable_prefixes() -> None:
-    """Test isolation helper."""
-    with _lock:
-        _prefixes.clear()

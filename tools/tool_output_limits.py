@@ -89,12 +89,6 @@ def get_tool_output_limits() -> Dict[str, int]:
     return _cached_limits
 
 
-def _reset_tool_output_limits_cache() -> None:
-    """Reset the cached limits — for tests or after config hot-reload."""
-    global _cached_limits
-    _cached_limits = None
-
-
 def get_max_bytes() -> int:
     """Shortcut for terminal-tool callers that only need the byte cap."""
     return get_tool_output_limits()["max_bytes"]

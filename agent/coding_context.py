@@ -644,22 +644,6 @@ def coding_selection(
     ).toolset_selection(config)
 
 
-def coding_system_blocks(
-    *,
-    platform: Optional[str] = None,
-    cwd: Optional[str | Path] = None,
-    config: Optional[dict[str, Any]] = None,
-    model: Optional[str] = None,
-) -> list[str]:
-    """Stable system-prompt blocks for the current posture (empty when general).
-
-    ``model`` steers the brief's edit-format nudge toward the model's family.
-    """
-    return resolve_runtime_mode(
-        platform=platform, cwd=cwd, config=config, model=model
-    ).system_blocks()
-
-
 def coding_system_prompt_parts(
     *,
     platform: Optional[str] = None,

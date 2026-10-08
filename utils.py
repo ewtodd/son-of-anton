@@ -542,26 +542,6 @@ def atomic_toml_update(
     atomic_toml_write(path, data)
 
 
-def atomic_toml_save(
-    path: Union[str, Path],
-    new_state: dict,
-) -> None:
-    """Persist a full config-state mapping as TOML.
-
-    The old ruamel round-trip saver preserved comments; TOML has no stdlib
-    equivalent, so the document is rewritten wholesale from *new_state* and
-    comments are lost. Keeps the fail-closed guard against clobbering an
-    existing-but-unreadable config file. The import is lazy because
-    ``son_of_anton_cli.config`` imports from this module.
-    """
-    from son_of_anton_cli.config import require_readable_config_before_write
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    require_readable_config_before_write(path)
-    atomic_toml_write(path, new_state)
-
-
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────
 
 
@@ -627,11 +607,6 @@ def env_float(key: str, default: float = 0.0) -> float:
         return float(raw)
     except (ValueError, TypeError):
         return default
-
-
-def env_bool(key: str, default: bool = False) -> bool:
-    """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
 
 
 # ─── Proxy Helpers ────────────────────────────────────────────────────────────

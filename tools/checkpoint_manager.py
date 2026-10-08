@@ -212,17 +212,6 @@ def _store_path(base: Optional[Path] = None) -> Path:
     return (base or CHECKPOINT_BASE) / _STORE_DIRNAME
 
 
-def _shadow_repo_path(working_dir: str) -> Path:  # pragma: no cover — kept for BC
-    """Return the shared store path.
-
-    Retained for backward-compatibility with callers / tests that imported
-    this helper.  Under v2 the shadow git storage is shared across all
-    projects — per-project isolation lives in refs and indexes, not in
-    separate repo directories.
-    """
-    return _store_path()
-
-
 def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
@@ -719,27 +708,6 @@ def _dir_size_bytes(path: Path) -> int:
 # those markers, but inside the shared store + under ``projects/<hash>.json``.
 # The shim initialises the store and registers the project so the old
 # surface keeps roughly the same shape.
-def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
-    """Backwards-compatible initialiser.
-
-    In v1 ``shadow_repo`` was a per-project dir; in v2 it's the shared
-    ``store/`` path (or a test path that we respect).  We initialise the
-    store at ``shadow_repo``, create per-project markers, and return None
-    on success.
-    """
-    err = _init_store(shadow_repo, working_dir)
-    if err:
-        return err
-    _register_project(shadow_repo, working_dir)
-    # Compat marker for tests that look at SON_OF_ANTON_WORKDIR
-    # (write in addition to the JSON metadata).
-    try:
-        (shadow_repo / "SON_OF_ANTON_WORKDIR").write_text(
-            str(_normalize_path(working_dir)) + "\n", encoding="utf-8"
-        )
-    except OSError:
-        pass
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2065,89 +2033,6 @@ def maybe_auto_prune_checkpoints(
 # Public helpers for `son-of-anton checkpoints` CLI
 # ---------------------------------------------------------------------------
 
-def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
-    """Return a summary of the shadow store.
-
-    ``{"base": path, "store_size_bytes": N, "legacy_size_bytes": N,
-       "total_size_bytes": N, "project_count": N, "projects": [...],
-       "pre_v2_projects": [...], "legacy_archives": [...]}``
-
-    ``pre_v2_projects`` covers shadow repos still on the pre-v2 per-project
-    layout (``base/<hash>/HEAD``) — distinct from ``legacy_archives``, which
-    are already-migrated ``legacy-<ts>/`` dirs. Callers that preview an
-    orphan-deletion sweep must include both ``projects`` and
-    ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
-    both layouts.
-    """
-    base = checkpoint_base or CHECKPOINT_BASE
-    out: Dict = {
-        "base": str(base),
-        "store_size_bytes": 0,
-        "legacy_size_bytes": 0,
-        "total_size_bytes": 0,
-        "project_count": 0,
-        "projects": [],
-        "pre_v2_projects": [],
-        "legacy_archives": [],
-    }
-    if not base.exists():
-        return out
-
-    store = _store_path(base)
-    if store.exists():
-        out["store_size_bytes"] = _dir_size_bytes(store)
-        if (store / "HEAD").exists():
-            for meta in _list_projects(store):
-                dir_hash = meta.get("_hash") or ""
-                workdir = meta.get("workdir") or ""
-                ref = _ref_name(dir_hash)
-                ok, count_out, _ = _run_git(
-                    ["rev-list", "--count", ref], store, str(base),
-                    allowed_returncodes={128},
-                )
-                try:
-                    commits = int(count_out) if ok else 0
-                except ValueError:
-                    commits = 0
-                out["projects"].append({
-                    "hash": dir_hash,
-                    "workdir": workdir,
-                    "exists": bool(workdir) and Path(workdir).exists(),
-                    "created_at": meta.get("created_at"),
-                    "last_touch": meta.get("last_touch"),
-                    "commits": commits,
-                })
-    out["project_count"] = len(out["projects"])
-
-    out["pre_v2_projects"] = [
-        {
-            "path": str(r["path"]),
-            "workdir": r["workdir"],
-            "exists": r["exists"],
-        }
-        for r in _pre_v2_shadow_repos(base)
-    ]
-
-    for child in base.iterdir():
-        if child.is_dir() and child.name.startswith(_LEGACY_PREFIX):
-            try:
-                size = _dir_size_bytes(child)
-            except OSError:
-                size = 0
-            out["legacy_size_bytes"] += size
-            try:
-                mt = child.stat().st_mtime
-            except OSError:
-                mt = 0
-            out["legacy_archives"].append({
-                "name": child.name,
-                "size_bytes": size,
-                "mtime": mt,
-            })
-
-    out["total_size_bytes"] = _dir_size_bytes(base)
-    return out
-
 
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
@@ -2168,23 +2053,3 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     return out
 
 
-def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
-    """Delete all ``legacy-*`` archive directories.
-
-    Returns ``{"bytes_freed": N, "deleted": count}``.
-    """
-    base = checkpoint_base or CHECKPOINT_BASE
-    out = {"bytes_freed": 0, "deleted": 0}
-    if not base.exists():
-        return out
-    for child in list(base.iterdir()):
-        if not child.is_dir() or not child.name.startswith(_LEGACY_PREFIX):
-            continue
-        try:
-            size = _dir_size_bytes(child)
-            shutil.rmtree(child)
-            out["bytes_freed"] += size
-            out["deleted"] += 1
-        except OSError as exc:
-            logger.warning("Could not delete legacy archive %s: %s", child, exc)
-    return out

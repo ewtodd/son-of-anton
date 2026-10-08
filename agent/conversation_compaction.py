@@ -215,16 +215,6 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # Sample-formatted instances of every routine compaction status line, for
 # behavioral tests that iterate the ACTUAL emitted wording (formatted from the
 # same constants the emission sites use) through the gateway noise filter.
-ROUTINE_COMPACTION_STATUS_SAMPLES = (
-    COMPACTION_STATUS,
-    IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
-    COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=250000, attempt=1, cap=3),
-    COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=30, after=12),
-    COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=250000, after=120000),
-    COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
-        new_ctx=120000, old_ctx=250000
-    ),
-)
 
 
 def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
@@ -776,10 +766,6 @@ _COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
 _COMPACT_EXECUTOR_MAX_WORKERS = 4
 _compact_admission_lock = threading.Lock()
 _compact_admitted_count = 0
-
-
-class CompactionExecutorSaturatedError(RuntimeError):
-    """All compaction pool slots are occupied; submission was refused."""
 
 
 def _try_admit_compaction_job() -> bool:

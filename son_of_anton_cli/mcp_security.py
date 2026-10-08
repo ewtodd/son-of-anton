@@ -177,5 +177,3 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     return issues
 
 
-def is_mcp_server_entry_suspicious(name: str, entry: dict[str, Any]) -> bool:
-    return bool(validate_mcp_server_entry(name, entry))

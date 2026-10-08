@@ -43,8 +43,6 @@ _SON_OF_ANTON_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
 # gateway config handler, and the /help command registry. Keep in sync
 # with ``INDICATOR_STYLES`` / ``DEFAULT_INDICATOR_STYLE`` in
 # ``ui-tui/src/app/interfaces.ts`` on the frontend side.
-INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
-DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
 
 def set_son_of_anton_home_override(path: str | Path | None) -> Token:
@@ -153,18 +151,6 @@ def get_son_of_anton_home() -> Path:
         _warn_profile_fallback_once()
 
     return _son_of_anton_home_from_env()
-
-
-USER_CONFIG_NAME = "config.toml"
-
-
-def get_user_config_path(home: str | Path | None = None) -> Path:
-    """Return the user config file for *home* (default: SON_OF_ANTON_HOME).
-
-    TOML is the only supported format; there is no YAML fallback.
-    """
-    base = Path(home) if home is not None else get_son_of_anton_home()
-    return base / USER_CONFIG_NAME
 
 
 def son_of_anton_home_key(path: str | Path | None = None) -> str:
@@ -645,51 +631,6 @@ def with_son_of_anton_node_path(env: dict[str, str] | None = None) -> dict[str, 
             parts.insert(0, entry)
     merged["PATH"] = os.pathsep.join(parts)
     return merged
-
-
-def agent_browser_runnable(path: str | None) -> bool:
-    """Return True only when *path* is an agent-browser CLI that actually runs.
-
-    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
-    agent-browser's npm ``postinstall`` re-points a *global* install symlink
-    (e.g. ``/opt/homebrew/bin/agent-browser``) at our local
-    ``node_modules/agent-browser/bin/...`` binary, which then disappears on the
-    next ``son-of-anton update`` — leaving a **dangling symlink** that ``which`` still
-    reports but exec fails on with exit 127 (issue #48521). Callers that trust
-    such a path silently break every browser tool.
-
-    This validates the candidate by resolving it to a real, executable file and
-    running ``--version`` with a short timeout. Returns True only on a clean
-    (exit 0) run, so a dead/wrong-arch/hung binary is rejected and the caller
-    can fall through to the next resolution candidate.
-
-    Special cases:
-      * ``None`` / empty → False.
-      * The ``"npx agent-browser"`` fallback form (contains a space, not a real
-        file) → True; npx resolves and validates the package at run time, so
-        there is nothing to stat here.
-    """
-    if not path:
-        return False
-    # The npx fallback is a two-token command string, not a filesystem path.
-    if " " in path and path.split()[0].endswith("npx"):
-        return True
-    # exists() follows symlinks — a dangling link returns False here, so we
-    # never even spawn a subprocess for the broken-link case.
-    if not os.path.exists(path) or not os.access(path, os.X_OK):
-        return False
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            [path, "--version"],
-            capture_output=True,
-            timeout=10,
-            env=with_son_of_anton_node_path(),
-        )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return False
-    return result.returncode == 0
 
 
 def _legacy_path_has_content(path: Path) -> bool:
@@ -1281,9 +1222,6 @@ def _custom_provider_reasoning_decl(
         return None
 
 
-
-
-
 def get_config_path() -> Path:
     """Return the path to ``config.toml`` under SON_OF_ANTON_HOME.
 
@@ -1296,7 +1234,6 @@ def get_config_path() -> Path:
 def get_skills_dir() -> Path:
     """Return the path to the skills directory under SON_OF_ANTON_HOME."""
     return get_son_of_anton_home() / "skills"
-
 
 
 def get_env_path() -> Path:

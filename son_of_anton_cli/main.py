@@ -245,15 +245,6 @@ def _set_process_title() -> None:
 # once the agent loop is threaded into it.
 
 
-def _read_openai_version_fast() -> str | None:
-    """Read OpenAI SDK version without importing ``importlib.metadata``."""
-    return _startup_fast.read_openai_version()
-
-
-def _print_fast_version_info() -> None:
-    _startup_fast.print_fast_version_info()
-
-
 def _try_ultrafast_version() -> bool:
     """Handle ``son-of-anton --version`` before config/logging imports."""
     return _startup_fast.try_fast_version()
@@ -306,7 +297,6 @@ def _require_tty(command_name: str) -> None:
 # Add project root to path
 PROJECT_ROOT = Path(_project_root_str_fast())
 _ensure_project_root_on_path_fast()
-
 
 
 # Load .env from ~/.son-of-anton/.env first, then project root as dev fallback.
@@ -2565,20 +2555,6 @@ def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
             return None
 
 
-
-
-
-
-
-
-
-
-_DEFAULT_QWEN_PORTAL_MODELS = [
-    "qwen3-coder-plus",
-    "qwen3-coder",
-]
-
-
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
     """Prompt for a custom provider API mode.
 
@@ -2753,8 +2729,6 @@ def _save_custom_provider(
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.toml)')
 
 
-
-
 def _remove_custom_provider(config):
     """Let the user remove a saved custom provider from config.toml."""
     from son_of_anton_cli.config import load_config, save_config
@@ -2813,8 +2787,6 @@ def _remove_custom_provider(config):
     print(f'✅ Removed "{removed_name}" from custom providers.')
 
 
-
-
 # Lazy-export the model catalog at module level. Tests and a handful of
 # downstream call sites read `son_of_anton_cli.main._PROVIDER_MODELS` directly,
 # so the symbol needs to be reachable as a module attribute. But importing
@@ -2844,7 +2816,6 @@ _LAZY_COMMAND_EXPORTS = {
 _LAZY_COMMAND_ATTR_TO_MODULE = {
     attr: module for module, attrs in _LAZY_COMMAND_EXPORTS.items() for attr in attrs
 }
-
 
 
 def _self():
@@ -2892,90 +2863,6 @@ def _set_reasoning_effort(config, effort: str) -> None:
         agent_cfg = {}
         config["agent"] = agent_cfg
     agent_cfg["reasoning_effort"] = effort
-
-
-def _prompt_reasoning_effort_selection(efforts, current_effort=""):
-    """Prompt for a reasoning effort. Returns effort, 'none', or None to keep current."""
-    deduped = list(
-        dict.fromkeys(
-            str(effort).strip().lower() for effort in efforts if str(effort).strip()
-        )
-    )
-    canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
-    ordered = [effort for effort in canonical_order if effort in deduped]
-    ordered.extend(effort for effort in deduped if effort not in canonical_order)
-    if not ordered:
-        return None
-
-    def _label(effort):
-        if effort == current_effort:
-            return f"{effort}  ← currently in use"
-        return effort
-
-    disable_label = "Disable reasoning"
-    skip_label = "Skip (keep current)"
-
-    if current_effort == "none":
-        default_idx = len(ordered)
-    elif current_effort in ordered:
-        default_idx = ordered.index(current_effort)
-    elif "medium" in ordered:
-        default_idx = ordered.index("medium")
-    else:
-        default_idx = 0
-
-    try:
-        from son_of_anton_cli.curses_ui import curses_radiolist
-
-        choices = [_label(effort) for effort in ordered]
-        choices.append(disable_label)
-        choices.append(skip_label)
-        idx = curses_radiolist(
-            "Select reasoning effort:",
-            choices,
-            selected=default_idx,
-            cancel_returns=-1,
-        )
-        if idx < 0:
-            return None
-        print()
-        if idx < len(ordered):
-            return ordered[idx]
-        if idx == len(ordered):
-            return "none"
-        return None
-    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
-        pass
-
-    print("Select reasoning effort:")
-    for i, effort in enumerate(ordered, 1):
-        print(f"  {i}. {_label(effort)}")
-    n = len(ordered)
-    print(f"  {n + 1}. {disable_label}")
-    print(f"  {n + 2}. {skip_label}")
-    print()
-
-    while True:
-        try:
-            choice = input(f"Choice [1-{n + 2}] (default: keep current): ").strip()
-            if not choice:
-                return None
-            idx = int(choice)
-            if 1 <= idx <= n:
-                return ordered[idx - 1]
-            if idx == n + 1:
-                return "none"
-            if idx == n + 2:
-                return None
-            print(f"Please enter 1-{n + 2}")
-        except ValueError:
-            print("Please enter a number")
-        except (KeyboardInterrupt, EOFError):
-            return None
-
-
-
-
 
 
 def _prompt_api_key(
@@ -3064,14 +2951,6 @@ def _prompt_api_key(
     # Keep (default, or any other input)
     print()
     return existing_key, False
-
-
-
-
-
-
-
-
 
 
 def cmd_status(args):
@@ -3456,7 +3335,6 @@ def _recover_core_update_marker_locked() -> None:
 
 
 # Set on the re-exec'd child so it can never spawn another one.
-_UPDATE_REEXEC_ENV = "SON_OF_ANTON_UPDATE_REEXEC"
 
 
 def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
@@ -3731,248 +3609,6 @@ def _repair_venv_via_import_probes(
     return "failed"
 
 
-def _install_python_dependencies_with_optional_fallback(
-    install_cmd_prefix: list[str],
-    *,
-    env: dict[str, str] | None = None,
-    group: str = "all",
-) -> None:
-    """Install base deps plus as many optional extras as the environment supports.
-
-    By default this targets ``.[all]``.
-    """
-    def _install(args: list[str]) -> None:
-        _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
-
-    try:
-        _install(["install", "-e", f".[{group}]"])
-        _verify_console_scripts_installed(install_cmd_prefix, env=env)
-        return
-    except subprocess.CalledProcessError:
-        print(
-            "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
-        )
-
-    _install(["install", "-e", "."])
-
-    failed_extras: list[str] = []
-    installed_extras: list[str] = []
-    for extra in _load_installable_optional_extras(group=group):
-        try:
-            _install(["install", "-e", f".[{extra}]"])
-            installed_extras.append(extra)
-        except subprocess.CalledProcessError:
-            failed_extras.append(extra)
-
-    if installed_extras:
-        print(
-            f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}"
-        )
-    if failed_extras:
-        print(
-            f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}"
-        )
-
-    # Belt-and-suspenders: verify every declared core dependency from
-    # pyproject.toml's [project.dependencies] is actually importable in the
-    # target venv. uv's incremental resolver has — in the wild — produced
-    # partial installs where a newly added base dep (e.g. ``pathspec``)
-    # silently fails to land on top of a half-stale venv, and the only
-    # symptom is a downstream subprocess crashing with ModuleNotFoundError
-    # hours later inside ``son-of-anton update``'s desktop-rebuild or skill-sync
-    # stage. Reinstall with --reinstall to force resolution if anything is
-    # missing, then re-verify so the failure surfaces here instead of
-    # downstream.
-    _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
-    _verify_console_scripts_installed(install_cmd_prefix, env=env)
-
-
-def _verify_console_scripts_installed(
-    install_cmd_prefix: list[str],
-    *,
-    env: dict[str, str] | None = None,
-) -> None:
-    """Windows-only entry-point shim verification; no-op on Nix platforms.
-    """
-    return None
-
-
-def _verify_core_dependencies_installed(
-    install_cmd_prefix: list[str],
-    *,
-    env: dict[str, str] | None = None,
-    group: str = "all",
-) -> None:
-    """Check that every base dep from pyproject.toml is importable; if not, retry.
-
-    Reads ``pyproject.toml`` directly (so we don't trust the venv's stale
-    metadata), filters out deps gated by ``;`` environment markers that don't
-    apply to this platform, and runs ``importlib.metadata.version()`` in the
-    venv interpreter for each one. If anything is missing we reinstall the
-    base group with ``--reinstall`` to force uv to re-resolve, then check
-    again. We treat the final state as a warning rather than a hard failure
-    so a single broken-on-PyPI dep can't block an otherwise-successful
-    update — but the warning makes the partial install visible at the spot
-    that caused it, instead of hours later in a downstream subprocess.
-    """
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover — Python < 3.11 unsupported but be safe
-        return
-
-    pyproject = PROJECT_ROOT / "pyproject.toml"
-    if not pyproject.is_file():
-        return
-
-    try:
-        with open(pyproject, "rb") as f:
-            data = tomllib.load(f)
-        raw_deps = data.get("project", {}).get("dependencies", []) or []
-    except Exception as e:
-        logger.debug("dep verification: failed to read pyproject.toml: %s", e)
-        return
-
-    # Parse each "name OP version ; marker" string into (dist_name, marker_obj).
-    # We use packaging.requirements when available (it ships with pip/uv envs),
-    # falling back to a naive split that's good enough for the canonical
-    # ``name==version[; marker]`` style this repo uses.
-    deps: list[tuple[str, "object | None"]] = []
-    try:
-        from packaging.requirements import Requirement  # type: ignore
-
-        for spec in raw_deps:
-            try:
-                req = Requirement(spec)
-                deps.append((req.name, req.marker))
-            except Exception:
-                continue
-    except Exception:
-        for spec in raw_deps:
-            head = spec.split(";", 1)[0]
-            for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
-                if op in head:
-                    head = head.split(op, 1)[0]
-                    break
-            name = head.strip().split("[", 1)[0].strip()
-            if name:
-                deps.append((name, None))
-
-    # Apply environment markers to drop deps that don't apply on this platform
-    # (e.g. ``ptyprocess ; sys_platform != 'win32'`` evaluates True here).
-    # Without markers we'd false-positive every cross-platform exclusion.
-    applicable: list[str] = []
-    for name, marker in deps:
-        if marker is None:
-            applicable.append(name)
-            continue
-        try:
-            if marker.evaluate():  # type: ignore[union-attr]
-                applicable.append(name)
-        except Exception:
-            applicable.append(name)
-
-    if not applicable:
-        return
-
-    # Run the check inside the venv Python — sys.executable here may be the
-    # outer Python that drove ``son-of-anton update``, not the venv we just wrote
-    # to. The uv install_cmd_prefix encodes which environment we targeted
-    # (either ``[uv, pip]`` with VIRTUAL_ENV in env, or
-    # ``[sys.executable, -m, pip]`` for the in-process Python); resolve the
-    # right interpreter for the verification.
-    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
-    if venv_python is None:
-        return
-
-    def _missing_deps() -> list[str]:
-        check_script = (
-            "import importlib.metadata as md, sys\n"
-            "missing=[]\n"
-            "for name in sys.argv[1:]:\n"
-            "    try: md.version(name)\n"
-            "    except md.PackageNotFoundError: missing.append(name)\n"
-            "print('\\n'.join(missing))\n"
-        )
-        try:
-            result = subprocess.run(
-                [str(venv_python), "-c", check_script, *applicable],
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                check=False,
-                env=env,
-            )
-        except Exception as e:
-            logger.debug("dep verification: subprocess failed: %s", e)
-            return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
-    missing = _missing_deps()
-    if not missing:
-        return
-
-    print(
-        f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
-        f"{', '.join(missing[:8])}{'...' if len(missing) > 8 else ''}"
-    )
-    print("  → Reinstalling base group with --reinstall to repair...")
-
-    # Reinstall base group with --reinstall so uv re-resolves from scratch
-    # against the current pyproject. We don't pass ``[{group}]`` here on
-    # purpose — the missing dep is in *base* deps; rerunning the full all-
-    # extras install can cost minutes and trips on whatever optional extra
-    # was already broken upstream. Base is fast and is what's actually wrong.
-    repair_args = ["install", "--reinstall", "-e", "."]
-    try:
-        _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
-    except subprocess.CalledProcessError as e:
-        logger.warning("dep verification: repair install failed: %s", e)
-        print("  ⚠ Repair install failed; check `son-of-anton update` output above.")
-        return
-
-    still_missing = _missing_deps()
-    if not still_missing:
-        print("  ✓ All declared core dependencies now installed")
-        return
-
-    # Last-ditch: install each remaining missing dep with its pin directly.
-    # Useful when uv's resolver thinks the env is satisfied but the on-disk
-    # package metadata says otherwise (rare but observed).
-    name_to_spec = {}
-    for spec in raw_deps:
-        head = spec.split(";", 1)[0].strip()
-        bare = head
-        for op in ("==", ">=", "<=", "~=", ">", "<", "!="):
-            if op in bare:
-                bare = bare.split(op, 1)[0]
-                break
-        name_to_spec[bare.strip().split("[", 1)[0].strip()] = head
-
-    specs = [name_to_spec.get(n, n) for n in still_missing]
-    print(
-        f"  → Force-installing remaining missing dep(s): {', '.join(specs)}"
-    )
-    try:
-        _run_install_with_heartbeat(
-            install_cmd_prefix + ["install", "--reinstall", *specs], env=env
-        )
-    except subprocess.CalledProcessError as e:
-        logger.warning("dep verification: per-package repair failed: %s", e)
-        print(
-            f"  ⚠ Could not install: {', '.join(still_missing)}. "
-            "Run `son-of-anton update --force` after closing other son-of-anton processes."
-        )
-        return
-
-    final_missing = _missing_deps()
-    if final_missing:
-        print(
-            f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
-            "Run `son-of-anton update --force` after closing other son-of-anton processes."
-        )
-    else:
-        print("  ✓ All declared core dependencies now installed")
-
-
 def _resolve_install_target_python(
     install_cmd_prefix: list[str], env: dict[str, str] | None
 ) -> Path | None:
@@ -4000,200 +3636,6 @@ def _resolve_install_target_python(
             return first
 
     return None
-
-
-def _resolve_node_runtime_npm() -> str | None:
-    """Resolve an npm executable that belongs to the host's Node runtime."""
-    from son_of_anton_constants import find_node_executable
-
-    return find_node_executable("npm")
-
-
-class _UpdateOutputStream:
-    """Stream wrapper used during ``son-of-anton update`` to survive terminal loss.
-
-    Wraps the process's original stdout/stderr so that:
-
-    * Every write is also mirrored to an append-only log file
-      (``~/.son-of-anton/logs/update.log``) that users can inspect after the
-      terminal disconnects.
-    * Writes to the original stream that fail with ``BrokenPipeError`` /
-      ``OSError`` / ``ValueError`` (closed file) no longer cascade into
-      process exit — the update keeps going, only the on-screen output
-      stops.
-
-    Combined with ``SIGHUP -> SIG_IGN`` installed by
-    ``_install_hangup_protection``, this makes ``son-of-anton update`` safe to
-    run in a plain SSH session that might disconnect mid-install.
-    """
-
-    def __init__(self, original, log_file):
-        self._original = original
-        self._log = log_file
-        self._original_broken = False
-
-    def write(self, data):
-        # Mirror to the log file first — it's the most reliable destination.
-        if self._log is not None:
-            try:
-                self._log.write(data)
-            except Exception:
-                # Log errors should never abort the update.
-                pass
-
-        if self._original_broken:
-            return len(data) if isinstance(data, (str, bytes)) else 0
-
-        try:
-            return self._original.write(data)
-        except (BrokenPipeError, OSError, ValueError):
-            # Terminal vanished (SSH disconnect, shell close).  Stop trying
-            # to write to it, but keep the update running.
-            self._original_broken = True
-            return len(data) if isinstance(data, (str, bytes)) else 0
-
-    def flush(self):
-        if self._log is not None:
-            try:
-                self._log.flush()
-            except Exception:
-                pass
-        if self._original_broken:
-            return
-        try:
-            self._original.flush()
-        except (BrokenPipeError, OSError, ValueError):
-            self._original_broken = True
-
-    def isatty(self):
-        if self._original_broken:
-            return False
-        try:
-            return self._original.isatty()
-        except Exception:
-            return False
-
-    def fileno(self):
-        # Some tools probe fileno(); defer to the underlying stream and let
-        # callers handle failures (same behaviour as the unwrapped stream).
-        return self._original.fileno()
-
-    def __getattr__(self, name):
-        return getattr(self._original, name)
-
-
-def _install_hangup_protection(gateway_mode: bool = False):
-    """Protect ``cmd_update`` from SIGHUP and broken terminal pipes.
-
-    Users commonly run ``son-of-anton update`` in an SSH session or a terminal
-    that may close mid-install.  Without protection, ``SIGHUP`` from the
-    terminal kills the Python process during ``pip install`` and leaves
-    the venv half-installed; the documented workaround ("use screen /
-    tmux") shouldn't be required for something as routine as an update.
-
-    Protections installed:
-
-    1. ``SIGHUP`` is set to ``SIG_IGN``.  POSIX preserves ``SIG_IGN``
-       across ``exec()``, so pip and git subprocesses also stop dying on
-       hangup.
-    2. ``sys.stdout`` / ``sys.stderr`` are wrapped to mirror output to
-       ``~/.son-of-anton/logs/update.log`` and to silently absorb
-       ``BrokenPipeError`` when the terminal vanishes.
-
-    ``SIGINT`` (Ctrl-C) and ``SIGTERM`` (systemd shutdown) are
-    **intentionally left alone** — those are legitimate cancellation
-    signals the user or OS sent on purpose.
-
-    In gateway mode (``son-of-anton update --gateway``) the update is already
-    spawned detached from a terminal, so this function is a no-op.
-
-    Returns a dict that ``cmd_update`` can pass to
-    ``_finalize_update_output`` on exit.  Returning a dict rather than a
-    tuple keeps the call site forward-compatible with future additions.
-    """
-    state = {
-        "prev_stdout": sys.stdout,
-        "prev_stderr": sys.stderr,
-        "log_file": None,
-        "installed": False,
-    }
-
-    if gateway_mode:
-        return state
-
-    import signal as _signal
-
-    # (1) Ignore SIGHUP for the remainder of this process.
-    if hasattr(_signal, "SIGHUP"):
-        try:
-            _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)
-        except (ValueError, OSError):
-            # Called from a non-main thread — not fatal.  The update still
-            # runs, just without hangup protection.
-            pass
-
-    # (2) Mirror output to update.log and wrap stdio for broken-pipe
-    # tolerance.  Any failure here is non-fatal; we just skip the wrap.
-    try:
-        # Late-bound import so tests can monkeypatch
-        # son_of_anton_cli.config.get_son_of_anton_home to simulate setup failure.
-        from son_of_anton_cli.config import get_son_of_anton_home as _get_son_of_anton_home
-
-        logs_dir = _get_son_of_anton_home() / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        log_path = logs_dir / "update.log"
-        log_file = open(log_path, "a", buffering=1, encoding="utf-8")
-
-        import datetime as _dt
-
-        log_file.write(
-            f"\n=== son-of-anton update started "
-            f"{_dt.datetime.now().isoformat(timespec='seconds')} ===\n"
-        )
-
-        state["log_file"] = log_file
-        sys.stdout = _UpdateOutputStream(state["prev_stdout"], log_file)
-        sys.stderr = _UpdateOutputStream(state["prev_stderr"], log_file)
-        state["installed"] = True
-    except Exception:
-        # Leave stdio untouched on any setup failure.  Update continues
-        # without mirroring.
-        state["log_file"] = None
-
-    return state
-
-
-def _finalize_update_output(state):
-    """Restore stdio and close the update.log handle opened by ``_install_hangup_protection``."""
-    if not state:
-        return
-    if state.get("installed"):
-        try:
-            sys.stdout = state.get("prev_stdout", sys.stdout)
-        except Exception:
-            pass
-        try:
-            sys.stderr = state.get("prev_stderr", sys.stderr)
-        except Exception:
-            pass
-    log_file = state.get("log_file")
-    if log_file is not None:
-        try:
-            log_file.flush()
-            log_file.close()
-        except Exception:
-            pass
-
-
-def _resolve_update_branch(args) -> str:
-    """Normalize ``args.branch`` into a non-empty branch name.
-
-    Centralizes the "default to main, accept --branch override, treat empty
-    or whitespace-only values as the default" parsing so every consumer of
-    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
-    the same answer.
-    """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
 def _size_delta_label(saved_mb: float) -> str:
@@ -4307,16 +3749,6 @@ def cmd_completion(args, parser=None):
         print(generate_fish(parser))
     else:
         print(generate_bash(parser))
-
-
-def _build_provider_choices() -> list[str]:
-    """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
-    try:
-        from son_of_anton_cli.models import CANONICAL_PROVIDERS as _cp
-        return ["auto"] + [p.slug for p in _cp]
-    except Exception:
-        # Fallback: static list guarantees the CLI always works
-        return ["auto", "openai-api", "custom"]
 
 
 # Top-level subcommands that argparse knows about WITHOUT running plugin

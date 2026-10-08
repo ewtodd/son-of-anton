@@ -11,23 +11,6 @@ import contextlib
 import sqlite3
 
 
-def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
-    """``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
-
-    Returns ``True`` when this call added the column. Swallows the
-    ``duplicate column name`` error a concurrent migrator may have run first
-    (issue #21708). ``column`` is the human-readable name for the call site;
-    ``ddl`` carries the actual definition.
-    """
-    try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-        return True
-    except sqlite3.OperationalError as exc:
-        if "duplicate column name" in str(exc).lower():
-            return False
-        raise
-
-
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
     """An IMMEDIATE write transaction: at most one concurrent writer wins.

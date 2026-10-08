@@ -41,7 +41,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Mapping
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -928,9 +928,6 @@ _deferred_agent_startup_done = False
 # reporting + mouse tracking). Gates the on-exit terminal reset so non-TUI
 # one-shot CLI runs — which also register _run_cleanup via atexit — don't emit
 # escape codes for modes they never enabled (#36823).
-_tui_input_modes_active = False
-
-
 
 
 def _prepare_deferred_agent_startup() -> None:
@@ -1354,8 +1351,6 @@ def _finalize_single_query(cli) -> None:
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
-
-
 
 
 # =============================================================================
@@ -2728,7 +2723,6 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_ACCENT_ANSI_DEFAULT = "\033[1;33m"  # bold yellow on the terminal palette
 _BOLD = "\033[1m"
 _RST = "\033[0m"
 _STREAM_PAD = ""  # No indent for streamed response text — leading whitespace pollutes
@@ -2975,8 +2969,6 @@ def _query_osc11_background() -> str | None:
             pass
 
 
-
-
 def _detect_light_mode() -> bool:
     global _LIGHT_MODE_CACHE
     if _LIGHT_MODE_CACHE is not None:
@@ -3119,7 +3111,6 @@ try:
         _detect_light_mode()
 except Exception:
     pass
-
 
 
 class _SkinAwareAnsi:
@@ -3406,8 +3397,6 @@ def _record_output_history(text: str) -> None:
         _record_output_history_entry(line)
 
 
-
-
 def _cprint(text: str, strip: bool = True):
     """Write one ANSI-colored chrome line.
 
@@ -3597,9 +3586,6 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     return resolved
 
 
-
-
-
 def _detect_file_drop(user_input: str) -> "dict | None":
     """Detect if *user_input* starts with a real local file path.
 
@@ -3672,211 +3658,16 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     }
 
 
-def _format_image_attachment_badges(attached_images: list[Path], image_counter: int, width: int | None = None) -> str:
-    """Format the attached-image badge row for the interactive CLI.
-
-    Narrow terminals should get a compact summary that fits on a
-    single row, while wider terminals can show the classic per-image badges.
-    """
-    if not attached_images:
-        return ""
-
-    width = width or shutil.get_terminal_size((80, 24)).columns
-
-    def _trunc(name: str, limit: int) -> str:
-        return name if len(name) <= limit else name[: max(1, limit - 3)] + "..."
-
-    if width < 52:
-        if len(attached_images) == 1:
-            return f"[{_trunc(attached_images[0].name, 20)}]"
-        return f"[{len(attached_images)} images attached]"
-
-    if width < 80:
-        if len(attached_images) == 1:
-            return f"[{_trunc(attached_images[0].name, 32)}]"
-        first = _trunc(attached_images[0].name, 20)
-        extra = len(attached_images) - 1
-        return f"[{first}] [+{extra}]"
-
-    base = image_counter - len(attached_images) + 1
-    return " ".join(
-        f"[Image #{base + i}]"
-        for i in range(len(attached_images))
-    )
-
-
-def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
-    """Auto-attach clipboard images only for image-only paste gestures."""
-    return not pasted_text.strip()
-
-
-def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
-    from son_of_anton_cli.input_sanitize import strip_leaked_bracketed_paste_wrappers
-
-    return strip_leaked_bracketed_paste_wrappers(text)
-
-
-
-
-
-
 # Cursor Position Report (CPR / DSR) response, format ``ESC[<row>;<col>R``.
 # prompt_toolkit's _on_resize() + renderer send ``ESC[6n`` queries to the
 # terminal; under resize storms or tab switches the terminal's reply can
 # race past the input parser and end up in the input buffer as literal
 # text (see issue #14692). Also matches the visible-form ``^[[<row>;<col>R``
 # that appears when the ESC byte was stripped by a prior filter.
-_DSR_CPR_ESC_RE = re.compile(r"\x1b\[\d+;\d+R")
-_DSR_CPR_VISIBLE_RE = re.compile(r"\^\[\[\d+;\d+R")
-_SGR_MOUSE_ESC_RE = re.compile(r"\x1b\[<\d+;\d+;\d+[Mm]")
-_SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
 # Some terminals/filters can drop ESC and literal "^[[", leaving only
 # "<btn;col;rowM" fragments in the buffer. Keep this broad on purpose:
 # these fragments are extremely unlikely to be intentional user input, and
 # stripping them is better than sending corrupted prompts.
-_SGR_MOUSE_BARE_RE = re.compile(r"<\d+;\d+;\d+[Mm]")
-_TERMINAL_INPUT_MODE_RESET_SEQ = (
-    "\x1b[?1006l"  # disable SGR mouse
-    "\x1b[?1003l"  # disable any-motion tracking
-    "\x1b[?1002l"  # disable button-motion tracking
-    "\x1b[?1000l"  # disable click tracking
-    "\x1b[?1004l"  # disable focus events
-    "\x1b[?2004l"  # disable bracketed paste
-    "\x1b[?1049l"  # leave alt screen (if stuck there)
-    "\x1b[<u"      # pop kitty keyboard mode
-    "\x1b[>4m"     # reset modifyOtherKeys
-    "\x1b[0m"      # reset text attributes
-    "\x1b[?25h"    # ensure cursor visible
-)
-_KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
-_MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
-_EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
-
-
-_BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
-
-
-def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the terminal is Ghostty (either detection path).
-
-    Ghostty must be pushed ONLY modifyOtherKeys, not the Kitty keyboard
-    protocol: its Kitty disambiguate-mode implementation strips the Alt
-    modifier from the Backspace key, so Option+Backspace arrives as bare
-    \\x7f instead of the CSI-u form ``\\x1b[127;3u`` the protocol calls for
-    (upstream Ghostty bug), breaking backward-kill-word (#87630
-    regression).  Ghostty implements modifyOtherKeys correctly (it then
-    emits ``\\x1b[27;3;127~``, which the alias table also maps).
-
-    Matches exactly the two conditions that admit Ghostty through
-    ``_terminal_supports_extended_enter_keys``.
-    """
-    if env is None:
-        env = os.environ
-    return (
-        (env.get("TERM_PROGRAM") or "").strip() == "ghostty"
-        or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
-    )
-
-
-def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether it is safe/useful to request modified Enter key reporting.
-
-    The classic CLI already maps Kitty CSI-u / xterm modifyOtherKeys Shift+Enter
-    byte sequences to the newline handler. Some terminals (notably iTerm2) only
-    emit those distinct sequences after the application asks for extended key
-    mode. Keep this allowlist aligned with the Ink TUI, which enables the same
-    modes for these terminals.
-    """
-    if env is None:
-        env = os.environ
-    term_program = (env.get("TERM_PROGRAM") or "").strip()
-    term = (env.get("TERM") or "").strip().lower()
-    if term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}:
-        return True
-    if env.get("KITTY_WINDOW_ID") or "kitty" in term:
-        return True
-    if term == "xterm-ghostty":
-        return True
-    if term.startswith("tmux") or term_program.lower() == "tmux":
-        return True
-    return False
-
-
-
-
-
-
-def _is_backslash_line_continuation(text: str) -> bool:
-    """True when Enter should turn a trailing backslash into a newline."""
-    return bool(_BACKSLASH_LINE_CONTINUATION_RE.search(text or ""))
-
-
-def _apply_backslash_line_continuation(text: str) -> str:
-    """Replace a trailing ``\\`` marker with an actual newline."""
-    return _BACKSLASH_LINE_CONTINUATION_RE.sub("", text or "") + "\n"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
-    """Strip leaked terminal control-response sequences from user input.
-
-    Covers Cursor Position Report (CPR / DSR) responses — ``ESC[<row>;<col>R``
-    and the visible ``^[[<row>;<col>R`` form. These are replies the terminal
-    sends back to queries prompt_toolkit makes during ``_on_resize`` /
-    ``_request_absolute_cursor_position``. When the input parser drops one
-    (resize storms, multiplexer focus changes, slow PTYs) the response
-    lands in the input buffer as literal text and corrupts what the user
-    typed.
-
-    Also strips leaked SGR mouse-report fragments (``ESC[<...M/m`` and
-    degraded visible forms). Returns ``(cleaned_text, had_mouse_reports)``
-    so callers can trigger an in-place terminal mode recovery when needed.
-    """
-    if not text:
-        return text, False
-
-    has_esc = "\x1b[" in text
-    has_visible = "^[" in text
-    has_bare_mouse = "<" in text and ";" in text and ("M" in text or "m" in text)
-    if not (has_esc or has_visible or has_bare_mouse):
-        return text, False
-
-    had_mouse_reports = False
-
-    if has_esc:
-        text = _DSR_CPR_ESC_RE.sub("", text)
-        text, count = _SGR_MOUSE_ESC_RE.subn("", text)
-        had_mouse_reports = had_mouse_reports or count > 0
-
-    if has_visible:
-        text = _DSR_CPR_VISIBLE_RE.sub("", text)
-        text, count = _SGR_MOUSE_VISIBLE_RE.subn("", text)
-        had_mouse_reports = had_mouse_reports or count > 0
-
-    if has_bare_mouse:
-        text, count = _SGR_MOUSE_BARE_RE.subn("", text)
-        had_mouse_reports = had_mouse_reports or count > 0
-
-    return text, had_mouse_reports
-
-
-def _strip_leaked_terminal_responses(text: str) -> str:
-    """Compatibility wrapper returning only cleaned text."""
-    cleaned, _ = _strip_leaked_terminal_responses_with_meta(text)
-    return cleaned
-
-
 
 
 def _status_bar_visible_from_display_config(display_config: object) -> bool:
@@ -3982,10 +3773,7 @@ class ChatConsole:
         yield self
 
 
-
-
 # ASCII Art - Son of Anton nucleus (compact, fits in left panel)
-
 
 
 def _build_compact_banner() -> str:
@@ -4035,7 +3823,6 @@ def _build_compact_banner() -> str:
         f"[{border_color}]║ [{dim_color}]{line2} [{border_color}]║\n"
         f"[{border_color}]╚{bar}╝\n"
     )
-
 
 
 # ============================================================================
@@ -4199,8 +3986,6 @@ def save_config_value(key_path: str, value: any) -> bool:
     except Exception as e:
         logger.error("Failed to save config: %s", e)
         return False
-
-
 
 
 # ============================================================================
@@ -4903,11 +4688,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pass
 
 
-
-
-
-
-
     def _schedule_status_bar_unsuppress(self, app, delay: float = 0.35) -> None:
         """Clear the post-resize status-bar suppression after the reflow settles.
 
@@ -4949,7 +4729,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             # Fail open: never leave the bar stuck hidden.
             self._status_bar_suppressed_after_resize = False
-
 
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
@@ -5369,8 +5148,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception:
                 width = 80
         return max(32, int(width or 80))
-
-
 
 
     def _render_spinner_text(self) -> str:
@@ -6352,7 +6129,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._invalidate(min_interval=0.0)
 
 
-
     def _inline_pastes(self, buffer) -> None:
         """Replace collapsed-paste placeholders in ``buffer`` with real content.
 
@@ -6383,7 +6159,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 buffer.text = ""
             except Exception:
                 pass
-
 
 
     def _install_tool_callbacks(self) -> None:
@@ -6945,7 +6720,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
 
-
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
         """Render the resume panel at the current terminal width for resize replay."""
         from io import StringIO
@@ -6997,9 +6771,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return ref
 
 
-
-
-
     def _write_osc52_clipboard(self, text: str) -> None:
         """Copy *text* to terminal clipboard via OSC 52.
 
@@ -7026,9 +6797,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         sys.stdout.write(seq)
         sys.stdout.flush()
-
-
-
 
 
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
@@ -8782,7 +8550,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 logger.warning("CLI one-turn model restore failed: %s", exc)
 
 
-
     def _clear_persisted_context_for_model_switch(self, result) -> None:
         """Drop a global context pin when its configured owner changes."""
         try:
@@ -9412,8 +9179,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             SonOfAntonCLI._persist_model_switch_to_session(self, result)
 
 
-
-
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -9487,9 +9252,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return True
 
 
-
     
-
 
 
     def _show_gateway_status(self):
@@ -10371,7 +10134,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"  {_DIM}↻ Loop: {mgr.state.remaining_label()}.{_RST}")
 
 
-
     def _owns_process_notification(self, event: dict) -> bool:
         """Return whether this CLI session provably owns a delegation event.
 
@@ -10573,7 +10335,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
 
-
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off.
 
@@ -10766,8 +10527,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             db.set_session_yolo(session_key, enabled)
         except Exception:
             pass
-
-
 
 
     def _on_reasoning(self, reasoning_text: str):
@@ -11042,7 +10801,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     committed=False,
                 )
                 print(f"  Compaction failed: {e}")
-
 
 
     def _handle_usage_command(self, cmd_original: str):
@@ -12253,7 +12011,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return choices
 
 
-
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
 
@@ -13219,7 +12976,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return symbol, symbol
 
 
-
     def _build_tui_style_dict(self) -> dict[str, str]:
         """Layer the active skin's prompt_toolkit colors over the base TUI style.
 
@@ -13287,7 +13043,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         are inserted between the spacer and the status bar.
         """
         return []
-
 
 
 # ============================================================================
