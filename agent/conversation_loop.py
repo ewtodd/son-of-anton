@@ -34,7 +34,6 @@ from agent.conversation_compaction import (
     compaction_skipped_due_to_lock,
     conversation_history_after_compaction,
 )
-from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
@@ -1787,13 +1786,6 @@ def run_conversation(
     # reused as the final response — not merely because any interim was
     # streamed. (#65919 review: response-loss blocker)
     _pending_verification_response_previewed = False
-
-    # Per-turn tally of consecutive successful credential-pool token refreshes,
-    # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
-    # ``try_refresh_current()`` "succeed" forever on a single-entry OAuth pool,
-    # so this tally caps same-entry refreshes and lets the fallback chain take
-    # over instead of spinning. Reset here so each turn starts fresh. See #26080.
-    agent._auth_pool_refresh_counts = {}
 
     # Reset the per-turn usage holder forwarded to the context engine's
     # on_turn_complete() observation hook. Set after each successful provider

@@ -45,14 +45,6 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 logger = logging.getLogger(__name__)
 
 
-# Max consecutive successful credential-pool token refreshes of the SAME entry
-# on a persistent auth failure before we give up and let the fallback chain
-# activate. A single-entry OAuth pool can re-mint a fresh token indefinitely
-# even when the upstream keeps rejecting it, so without this cap the retry loop
-# spins forever and never reaches ``_try_activate_fallback``. See #26080.
-_MAX_AUTH_REFRESH_ATTEMPTS = 2
-
-
 _REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 
@@ -1160,26 +1152,9 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.auth:
         # Subscription/entitlement 403s look like auth failures on the wire
-        # but refresh cannot fix them — the OAuth token is already valid,
-        # the account simply lacks the entitlement.  Without this guard,
-        # the refresh path keeps minting fresh tokens against the
-        # same unsubscribed account and the main agent loop spins re-issuing
+        # but there is no token to refresh — the account simply lacks the
+        # entitlement.  Without this guard the agent loop spins re-issuing
         # the same 403 until the user Ctrl+C's.
-        #
-        # Defense-in-depth for #26847: xAI's backend has been seen to 403
-        # standard SuperGrok subscribers with bodies that don't match the
-        # existing entitlement keyword set in ``_is_entitlement_failure``.
-        # Any 403 against ``xai-oauth`` is treated as entitlement here so
-        # the refresh loop can't spin in those cases either.
-        #
-        # Exception (#29344): xAI's ``[WKE=unauthenticated:...]`` suffix and
-        # the ``OAuth2 access token could not be validated`` phrasing are
-        # xAI's authoritative "this is a stale token, not entitlement"
-        # signal.  When either fires we must NOT apply the catch-all
-        # override — refresh is the recoverable path for these bodies, and
-        # blanket-classifying them as entitlement was the bug that left
-        # long-running TUI sessions stuck on stale tokens until the user
-        # exited and reopened.
         is_entitlement = agent._is_entitlement_failure(error_context, status_code)
         _auth_haystack = " ".join(
             str(error_context.get(k) or "").lower()
@@ -1192,65 +1167,20 @@ def recover_with_credential_pool(
             and "oauth authentication is currently not allowed for this organization" in _auth_haystack
         ):
             is_entitlement = True
-        if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
-            _is_xai_auth_failure = (
-                "[wke=unauthenticated:" in _auth_haystack
-                or "oauth2 access token could not be validated" in _auth_haystack
-            )
-            if not _is_xai_auth_failure:
-                is_entitlement = True
         if is_entitlement:
             _ra().logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "
-                "skipping pool refresh (account lacks subscription, "
-                "not a transient auth failure).",
+                "not a transient auth failure.",
                 status_code if status_code is not None else "auth",
                 agent.provider or "provider",
             )
             return False, has_retried_429
-        # Refresh the entry that supplied the failing key, not current():
-        # the shared pointer can reference a different, healthy entry, and
-        # refreshing it would consume that entry's single-use refresh token
-        # (or mark it exhausted on failure) for a failure it never had.
-        refresh_kwargs = {"api_key_hint": _api_key_hint}
-        if _credential_id:
-            refresh_kwargs["credential_id"] = _credential_id
-        refreshed = pool.try_refresh_matching(**refresh_kwargs)
-        if refreshed is not None:
-            # ``try_refresh_matching()`` re-mints a fresh OAuth token and reports
-            # success even when the upstream keeps rejecting it — a single-entry
-            # pool (common for OAuth/Max subscribers) has nothing to rotate to,
-            # so a bare "refreshed → retry" loop spins forever on the same dead
-            # token and the configured fallback never activates. Cap consecutive
-            # same-entry refreshes and fall through to fallback once exceeded.
-            # See #26080.
-            refreshed_id = getattr(refreshed, "id", None)
-            if refreshed_id is not None:
-                refresh_counts = getattr(agent, "_auth_pool_refresh_counts", None)
-                if refresh_counts is None:
-                    refresh_counts = {}
-                    agent._auth_pool_refresh_counts = refresh_counts
-                refresh_key = (agent.provider, refreshed_id)
-                refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
-                if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
-                    _ra().logger.warning(
-                        "Credential auth failure persists after %s refreshes for "
-                        "pool entry %s — treating as unrecoverable and allowing "
-                        "fallback to activate.",
-                        refresh_counts[refresh_key] - 1,
-                        refreshed_id,
-                    )
-                    return False, has_retried_429
-            _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-            agent._swap_credential(refreshed)
-            return True, has_retried_429
-        # Refresh failed — rotate to next credential instead of giving up.
-        # The failed entry is already marked exhausted by the refresh attempt.
+        # Auth failure — rotate to the next pool entry.
         rotate_status = status_code if status_code is not None else 401
         next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
-                "Credential %s (auth refresh failed) — rotated to pool entry %s",
+                "Credential %s (auth) — rotated to pool entry %s",
                 rotate_status,
                 getattr(next_entry, "id", "?"),
             )
@@ -1909,8 +1839,6 @@ def _direct_native_anthropic_tool_cache_capability(
     model: Optional[str] = None,
 ) -> bool:
     """Return whether this resolved destination accepts native tool markers."""
-    eff_base_url = base_url if base_url is not None else (agent.base_url or "")
-    eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     return False
 
 

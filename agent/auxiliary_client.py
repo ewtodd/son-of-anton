@@ -34,11 +34,9 @@ Payment / credit exhaustion fallback:
 
 import contextlib
 import contextvars
-import copy
 import functools
 import hashlib
 import inspect
-import json
 import logging
 import os
 import re
@@ -151,7 +149,7 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from son_of_anton_cli.config import get_son_of_anton_home
-from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -985,7 +983,6 @@ _NVIDIA_NIM_CLOUD_HEADERS = {
 
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
-from son_of_anton_cli import __version__ as _SON_OF_ANTON_VERSION
 
 
 # Default auxiliary models per provider
@@ -2619,10 +2616,6 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     hint = failed_api_key or None
 
     if _is_auth_error(exc):
-        refreshed = pool.try_refresh_current()
-        if refreshed is not None:
-            _evict_cached_clients(normalized)
-            return True
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
@@ -2794,55 +2787,6 @@ async def _retry_same_provider_async(
         ),
         task,
     )
-
-
-def _refresh_provider_credentials(provider: str) -> bool:
-    """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
-    normalized = _normalize_aux_provider(provider)
-    try:
-        if normalized == "xai-oauth":
-            # Preference: pool-level refresh (uses refresh_token from pool entry),
-            # then fall back to singleton auth-store resolver.
-            pool = load_pool(normalized)
-            if pool and pool.has_credentials():
-                # Ensure a current entry is selected before trying to refresh.
-                pool.select()
-                refreshed = pool.try_refresh_current()
-                if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
-                    _evict_cached_clients(normalized)
-                    return True
-            from son_of_anton_cli.auth import resolve_xai_oauth_runtime_credentials
-
-            creds = resolve_xai_oauth_runtime_credentials(force_refresh=True)
-            if not str(creds.get("api_key", "") or "").strip():
-                return False
-            _evict_cached_clients(normalized)
-            return True
-    except Exception as exc:
-        logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
-        return False
-    return False
-
-
-def _auth_refresh_provider_for_route(
-    resolved_provider: Optional[str],
-    client_base_url: str,
-) -> str:
-    """Return the provider whose short-lived credentials should be refreshed.
-
-    Auto-routed auxiliary calls keep ``resolved_provider == "auto"`` even
-    after _get_cached_client() selects a concrete backend. Infer the backend
-    from the selected client's base URL so auth refresh works for auto →
-    Copilot/Anthropic/Nous routes too. (#20832)
-    """
-    normalized = _normalize_aux_provider(resolved_provider)
-    if normalized and normalized != "auto":
-        return normalized
-    if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
-        return "copilot"
-    if base_url_host_matches(client_base_url, "api.anthropic.com"):
-        return "anthropic"
-    return normalized
 
 
 def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[Dict[str, Any]]:
@@ -3063,56 +3007,10 @@ def _call_fallback_candidate_sync(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider = _auth_refresh_provider_for_route(
-            destination.provider, destination.base_url
-        )
-        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
-            retry_client, retry_model = _get_cached_client(
-                fb_provider,
-                destination.model,
-                base_url=destination.base_url or None,
-                api_mode=destination.api_mode,
-            )
-            if retry_client is not None:
-                retry_destination = _FallbackDestination(
-                    fb_provider,
-                    destination.base_url
-                    or str(getattr(retry_client, "base_url", "") or ""),
-                    destination.api_mode,
-                    retry_model or destination.model,
-                )
-                retry_messages, retry_tools = _replan_synchronous_cache_sections(
-                    messages,
-                    tools,
-                    destination=retry_destination,
-                )
-                retry_kwargs = _build_call_kwargs(
-                    retry_destination.provider,
-                    retry_destination.model,
-                    retry_messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=retry_tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config,
-                    base_url=retry_destination.base_url, task=task)
-                try:
-                    return _validate_llm_response(
-                        _relay_sync_completion(
-                            retry_client,
-                            retry_kwargs,
-                            provider=retry_destination.provider,
-                            api_mode=retry_destination.api_mode,
-                        ),
-                        task,
-                    )
-                except Exception as retry_err:
-                    if not _is_auth_error(retry_err):
-                        raise
-        # Refresh unavailable or the refreshed credential still 401s —
-        # the token is dead (expired setup token with no refresh token).
+        # The candidate's credential is stale/unrefreshable.
         # Quarantine the candidate so subsequent chain walks skip it, and
         # let the caller move on instead of aborting the whole task.
-        _mark_provider_unhealthy(fb_provider or fb_label)
+        _mark_provider_unhealthy(fb_label)
         logger.warning(
             "Auxiliary %s: fallback candidate %s has a stale/unrefreshable "
             "credential (%s) — skipping to next fallback",
@@ -3169,53 +3067,7 @@ async def _call_fallback_candidate_async(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider = _auth_refresh_provider_for_route(
-            destination.provider, destination.base_url
-        )
-        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
-            retry_client, retry_model = _get_cached_client(
-                fb_provider,
-                destination.model,
-                async_mode=True,
-                base_url=destination.base_url or None,
-                api_mode=destination.api_mode,
-            )
-            if retry_client is not None:
-                retry_destination = _FallbackDestination(
-                    fb_provider,
-                    destination.base_url
-                    or str(getattr(retry_client, "base_url", "") or ""),
-                    destination.api_mode,
-                    retry_model or destination.model,
-                )
-                retry_messages, retry_tools = _replan_synchronous_cache_sections(
-                    messages,
-                    tools,
-                    destination=retry_destination,
-                )
-                retry_kwargs = _build_call_kwargs(
-                    retry_destination.provider,
-                    retry_destination.model,
-                    retry_messages,
-                    temperature=temperature, max_tokens=max_tokens,
-                    tools=retry_tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config,
-                    base_url=retry_destination.base_url, task=task)
-                try:
-                    return _validate_llm_response(
-                        await _relay_async_completion(
-                            retry_client,
-                            retry_kwargs,
-                            provider=retry_destination.provider,
-                            api_mode=retry_destination.api_mode,
-                        ),
-                        task,
-                    )
-                except Exception as retry_err:
-                    if not _is_auth_error(retry_err):
-                        raise
-        _mark_provider_unhealthy(fb_provider or fb_label)
+        _mark_provider_unhealthy(fb_label)
         logger.warning(
             "Auxiliary %s (async): fallback candidate %s has a stale/unrefreshable "
             "credential (%s) — skipping to next fallback",
@@ -7054,39 +6906,6 @@ def _call_llm_impl(
                     raise
                 first_err = retry_err
 
-        # ── Auth refresh retry ───────────────────────────────────────
-        auth_refresh_provider = _auth_refresh_provider_for_route(
-            resolved_provider, _base_info)
-        if (_is_auth_error(first_err)
-                and auth_refresh_provider not in {"auto", "", None}):
-            if _refresh_provider_credentials(auth_refresh_provider):
-                if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
-                    # The stale client is cached under the route label
-                    # (e.g. "auto"), not the concrete backend we refreshed.
-                    _evict_cached_clients(resolved_provider)
-                logger.info(
-                    "Auxiliary %s: refreshed %s credentials after auth error, retrying",
-                    task or "call", auth_refresh_provider,
-                )
-                return _retry_same_provider_sync(
-                    task=task,
-                    resolved_provider=auth_refresh_provider,
-                    resolved_model=resolved_model or final_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    main_runtime=main_runtime,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config,
-                    extra_headers=extra_headers,
-                )
-
         # ── Same-provider credential-pool recovery ─────────────────────
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
         # Capture the exact API key used so mark_exhausted_and_rotate can find
@@ -7694,37 +7513,6 @@ async def _async_call_llm_impl(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
-
-        # ── Auth refresh retry (mirrors sync call_llm) ───────────────
-        auth_refresh_provider = _auth_refresh_provider_for_route(
-            resolved_provider, _client_base)
-        if (_is_auth_error(first_err)
-                and auth_refresh_provider not in {"auto", "", None}):
-            if _refresh_provider_credentials(auth_refresh_provider):
-                if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
-                    # The stale client is cached under the route label
-                    # (e.g. "auto"), not the concrete backend we refreshed.
-                    _evict_cached_clients(resolved_provider)
-                logger.info(
-                    "Auxiliary %s (async): refreshed %s credentials after auth error, retrying",
-                    task or "call", auth_refresh_provider,
-                )
-                return await _retry_same_provider_async(
-                    task=task,
-                    resolved_provider=auth_refresh_provider,
-                    resolved_model=resolved_model or final_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config,
-                )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)

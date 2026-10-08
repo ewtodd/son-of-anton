@@ -5023,18 +5023,6 @@ class AIAgent:
                 env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).strip().rstrip("/")
             default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
             base_url = env_url or default_base
-            if self.provider == "kimi-coding":
-                from son_of_anton_cli.auth import _resolve_kimi_base_url
-
-                base_url = _resolve_kimi_base_url(
-                    api_key, pconfig.inference_base_url, env_url
-                ).rstrip("/")
-            elif self.provider == "zai":
-                from son_of_anton_cli.auth import _resolve_zai_base_url
-
-                base_url = _resolve_zai_base_url(
-                    api_key, pconfig.inference_base_url, env_url
-                ).rstrip("/")
         elif self.provider == "custom":
             # Named custom provider (#67935): identity lives in config
             # (``providers.<name>`` / ``custom_providers``), the credential in
