@@ -128,21 +128,6 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-@dataclass
-class ProviderInfo:
-    """A provider record from the vendor catalog.
-
-    The catalog is removed; ``get_provider_info`` always returns None. The
-    dataclass is kept so its name (referenced in annotations and a few
-    imports) stays importable.
-    """
-
-    id: str = ""
-    name: str = ""
-    api: str = ""
-    env: tuple = ()
-
-
 # --------------------------------------------------------------------------- #
 # Per-model metadata overrides (config.toml -> model_overrides)               #
 # --------------------------------------------------------------------------- #
@@ -406,44 +391,3 @@ def get_model_info(
     return info
 
 
-# --------------------------------------------------------------------------- #
-# No-op vendor-catalog stubs                                                  #
-# --------------------------------------------------------------------------- #
-#
-# The models.dev vendor catalog (the 109-provider registry, its disk cache,
-# the ``PROVIDER_TO_MODELS_DEV`` id map, and the live model listings) has
-# been removed. These entry points remain for source compatibility with the
-# picker/switching paths that referenced them; every one of them now
-# reports "no vendor catalog" (empty / False) so those paths fall back to
-# their static lists and config-driven metadata.
-
-PROVIDER_TO_MODELS_DEV: Dict[str, str] = {}
-
-
-def fetch_models_dev(
-    allow_network: bool = True, force_refresh: bool = False
-) -> Dict[str, Any]:
-    """The vendor catalog registry (always empty — catalog removed)."""
-    return {}
-
-
-def list_agentic_models(provider: str) -> list:
-    """Agentic-capable model ids from the vendor catalog (always empty)."""
-    return []
-
-
-def list_provider_models(provider: str) -> list:
-    """Model ids for *provider* from the vendor catalog (always empty)."""
-    return []
-
-
-def _get_provider_models(provider: str) -> Dict[str, Any]:
-    """Raw model entries for *provider* from the vendor catalog (empty)."""
-    return {}
-
-
-def get_provider_info(
-    provider: str, *, allow_network: bool = True
-) -> Optional[ProviderInfo]:
-    """Vendor-catalog provider record (always None — catalog removed)."""
-    return None

@@ -689,35 +689,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             effective_base = override
 
     # Model selection — resolution order:
-    #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
-    #   2. Curated static fallback list (offline insurance)
-    #   3. Live /models endpoint probe (small providers without models.dev data)
+    #   1. Curated static fallback list (offline insurance)
+    #   2. Live /models endpoint probe (providers without a static list)
     curated = _PROVIDER_MODELS.get(provider_id, [])
 
-    # Try models.dev first — returns tool-capable models, filtered for noise
-    mdev_models: list = []
-    try:
-        from agent.models_dev import list_agentic_models
-
-        mdev_models = list_agentic_models(provider_id)
-    except Exception:
-        pass
-
-    if mdev_models:
-        # Merge models.dev with curated list so newly added models
-        # (not yet in models.dev) still appear in the picker.
-        if curated:
-            seen = {m.lower() for m in mdev_models}
-            merged = list(mdev_models)
-            for m in curated:
-                if m.lower() not in seen:
-                    merged.append(m)
-                    seen.add(m.lower())
-            model_list = merged
-        else:
-            model_list = mdev_models
-        print(f"  Found {len(model_list)} model(s) from models.dev registry")
-    elif curated and len(curated) >= 8:
+    if curated and len(curated) >= 8:
         # Curated list is substantial — use it directly, skip live probe
         model_list = curated
         print(
@@ -740,21 +716,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         # else: no defaults either, will fall through to raw input
 
     if model_list:
-        # Per-model pricing, when the provider supports it (via the models.dev
-        # disk cache or cached /models endpoints). get_pricing_for_provider()
-        # is memoized in-process and returns {} for providers without pricing
-        # — never a blocking fetch beyond the catalog lookup above.
-        pricing: dict = {}
-        try:
-            from son_of_anton_cli.models import get_pricing_for_provider
-
-            pricing = get_pricing_for_provider(provider_id) or {}
-        except Exception:
-            pricing = {}
         selected = _prompt_model_selection(
             model_list,
             current_model=current_model,
-            pricing=pricing,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=existing_key,

@@ -8367,7 +8367,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
-        import threading
         from son_of_anton_cli.curses_ui import curses_single_select
 
         result = [None]

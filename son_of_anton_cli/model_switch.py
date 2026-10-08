@@ -44,15 +44,8 @@ from agent.models_dev import (
     ModelInfo,
     get_model_capabilities,
     get_model_info,
-    list_provider_models,
 )
 from utils import base_url_host_matches, base_url_hostname
-
-# Providers whose picker model list should NOT be capped by max_models.
-# OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
-# be visible so users can pick any model they have access to.
-_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
-
 logger = logging.getLogger(__name__)
 
 
@@ -395,7 +388,6 @@ def format_model_for_display(model_name: str) -> str:
     return model_name
 
 
-
 # ---------------------------------------------------------------------------
 # Model aliases -- short names -> (vendor, family) with NO version numbers.
 # Resolved dynamically against the live models.dev catalog.
@@ -663,22 +655,6 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
         force_refresh=force_refresh,
         is_session=is_session,
         is_once=is_once,
-    )
-
-
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Parse legacy /model flags and return the historical 5-tuple.
-
-    New call sites that care about ``--once`` should use
-    :func:`parse_model_flags_detailed`.
-    """
-    parsed = parse_model_flags_detailed(raw_args)
-    return (
-        parsed.model_input,
-        parsed.explicit_provider,
-        parsed.is_global,
-        parsed.force_refresh,
-        parsed.is_session,
     )
 
 
@@ -1088,20 +1064,12 @@ def resolve_alias(
 
     vendor, family = identity
 
-    # Build catalog from models.dev, then merge in static _PROVIDER_MODELS
-    # entries that models.dev may be missing (e.g. newly added models not
-    # yet synced to the registry).
-    catalog = list_provider_models(current_provider)
+    # Build the catalog from the static provider list.
     try:
         from son_of_anton_cli.models import _PROVIDER_MODELS
-        static = _PROVIDER_MODELS.get(current_provider, [])
-        if static:
-            seen = {m.lower() for m in catalog}
-            for m in static:
-                if m.lower() not in seen:
-                    catalog.append(m)
+        catalog = list(_PROVIDER_MODELS.get(current_provider, []))
     except Exception:
-        pass
+        catalog = []
 
     # For aggregators, models are vendor/model-name format
     aggregator = is_aggregator(current_provider)
@@ -1622,23 +1590,6 @@ def switch_model(
         # whose live /v1/models returns bare IDs (e.g. "deepseek-v4-flash") that
         # coincidentally match entries in native providers' static catalogs.
         resolved_in_current_catalog = False
-        if is_aggregator(target_provider) and not resolved_alias:
-            catalog = list_provider_models(target_provider)
-            if catalog:
-                new_model_lower = new_model.lower()
-                for mid in catalog:
-                    if mid.lower() == new_model_lower:
-                        new_model = mid
-                        resolved_in_current_catalog = True
-                        break
-                else:
-                    for mid in catalog:
-                        if "/" in mid:
-                            _, bare = mid.split("/", 1)
-                            if bare.lower() == new_model_lower:
-                                new_model = mid
-                                resolved_in_current_catalog = True
-                                break
 
         # --- Step d.5: configured-provider exact-match detection (#45006) ---
         # If the typed model is declared in user/custom provider config, route
@@ -2265,24 +2216,19 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
 
 
 def _collect_authed_provider_slugs(
-    models_dev_data: dict,
-    curated: dict[str, list[str]],
     excluded: list[str],
 ) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
-    Mirrors the credential-check logic from sections 1, 2, and 2b of
+    Mirrors the credential-check logic from sections 2 and 2b of
     :func:`list_authenticated_providers` but **only** collects the provider
     slugs — it never calls ``cached_provider_model_ids``.  The returned list
     is consumed by :func:`_prefetch_provider_models_parallel` to warm the disk
     cache in parallel before the serial picker build loop starts.
 
-    :param models_dev_data: The models.dev registry dict (from ``fetch_models_dev()``).
-    :param curated: The curated model-lists dict (``_PROVIDER_MODELS`` + extras).
     :param excluded: Provider slugs to exclude (from ``model_catalog.excluded_providers``).
     :returns: List of normalized provider slugs that have credentials.
     """
-    from agent.models_dev import PROVIDER_TO_MODELS_DEV
     from son_of_anton_cli.auth import PROVIDER_REGISTRY, _load_auth_store
     from son_of_anton_cli.providers import SON_OF_ANTON_OVERLAYS
     from son_of_anton_cli.models import CANONICAL_PROVIDERS
@@ -2291,60 +2237,11 @@ def _collect_authed_provider_slugs(
     slugs: list[str] = []
     seen: set[str] = set()
 
-    # --- Section 1: Son of Anton-mapped providers (PROVIDER_TO_MODELS_DEV) ---
-    for son_of_anton_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        _canonical = son_of_anton_id
-        try:
-            from providers import get_provider_profile as _gpp
-            _prof = _gpp(son_of_anton_id)
-            if _prof is not None:
-                _canonical = _prof.name
-        except Exception:
-            pass
-        if _canonical != son_of_anton_id:
-            continue
-        if son_of_anton_id.lower() in seen:
-            continue
-        if son_of_anton_id.lower() in _excluded_set or mdev_id.lower() in _excluded_set:
-            continue
-        pdata = models_dev_data.get(mdev_id)
-        if not isinstance(pdata, dict):
-            continue
-        pconfig = PROVIDER_REGISTRY.get(son_of_anton_id)
-        if pconfig and pconfig.auth_type != "api_key":
-            continue
-        from son_of_anton_cli.auth import is_runtime_provider_routable
-        if not is_runtime_provider_routable(son_of_anton_id):
-            continue
-        if pconfig and pconfig.api_key_env_vars:
-            env_vars = list(pconfig.api_key_env_vars)
-        else:
-            env_vars = pdata.get("env", [])
-            if not isinstance(env_vars, list):
-                continue
-        has_creds = any(_scoped_key_env(ev) for ev in env_vars)
-        if not has_creds:
-            try:
-                store = _load_auth_store()
-                raw_pool_present = bool(
-                    store and store.get("credential_pool", {}).get(son_of_anton_id)
-                )
-                if raw_pool_present:
-                    has_creds = _credential_pool_is_usable(
-                        son_of_anton_id, raw_pool_present=True
-                    )
-            except Exception:
-                pass
-        if has_creds:
-            slugs.append(son_of_anton_id)
-            seen.add(son_of_anton_id.lower())
-
-    # --- Section 2: Son of Anton-only providers (SON_OF_ANTON_OVERLAYS) ---
-    _mdev_to_son_of_anton = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
+    # --- Section 2: overlay providers (SON_OF_ANTON_OVERLAYS) ---
     for pid, overlay in SON_OF_ANTON_OVERLAYS.items():
         if pid.lower() in seen:
             continue
-        son_of_anton_slug = _mdev_to_son_of_anton.get(pid, pid)
+        son_of_anton_slug = pid
         if son_of_anton_slug.lower() in seen:
             continue
         if pid.lower() in _excluded_set or son_of_anton_slug.lower() in _excluded_set:
@@ -2456,12 +2353,6 @@ def list_authenticated_providers(
     endpoint.
     """
     import os
-    from agent.models_dev import (
-        PROVIDER_TO_MODELS_DEV,
-        fetch_models_dev,
-        get_provider_info as _mdev_pinfo,
-    )
-    from son_of_anton_cli.auth import PROVIDER_REGISTRY
     from son_of_anton_cli.models import (
         _PROVIDER_MODELS, cached_provider_model_ids,
         clear_provider_models_cache,
@@ -2523,10 +2414,6 @@ def list_authenticated_providers(
         if normed:
             _builtin_endpoints.add(normed)
 
-
-
-    data = fetch_models_dev()
-
     # Build curated model lists keyed by son-of-anton provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
 
@@ -2545,7 +2432,7 @@ def list_authenticated_providers(
     _prefetch_slugs: list[str] = []
     if not refresh:
         _prefetch_slugs = _collect_authed_provider_slugs(
-            data, curated, excluded_providers or []
+            excluded_providers or []
         )
     if len(_prefetch_slugs) > 3:
         try:
@@ -2553,134 +2440,16 @@ def list_authenticated_providers(
         except Exception:
             pass  # best-effort; serial path still works as fallback
 
-    # --- 1. Check Son of Anton-mapped providers ---
-    for son_of_anton_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Resolve the canonical provider profile name.  Skip son_of_anton_ids
-        # that are mere aliases resolving to a different canonical profile
-        # (e.g. "kimi" and "moonshot" both → "kimi-coding").  Only process
-        # entries whose son_of_anton_id matches the canonical profile name so
-        # distinct profiles (e.g. kimi-coding, kimi-coding-cn) each get
-        # their own picker row.
-        _canonical = son_of_anton_id
-        try:
-            from providers import get_provider_profile as _gpp
-            _prof = _gpp(son_of_anton_id)
-            if _prof is not None:
-                _canonical = _prof.name
-        except Exception:
-            pass
-        if _canonical != son_of_anton_id:
-            continue
 
-        # Skip duplicates: another entry with the same slug was already
-        # emitted (e.g. two PROVIDER_TO_MODELS_DEV entries routing to the
-        # same son_of_anton_id).  Distinct canonical profiles that share a
-        # models.dev ID (e.g. kimi-coding and kimi-coding-cn → kimi-for-coding)
-        # are both allowed through since they have different slugs.
-        slug = son_of_anton_id
-        if slug.lower() in seen_slugs:
-            continue
-        if son_of_anton_id.lower() in _excluded or mdev_id.lower() in _excluded:
-            continue
-        pdata = data.get(mdev_id)
-        if not isinstance(pdata, dict):
-            continue
-
-        # Prefer auth.py PROVIDER_REGISTRY for env var names — it's our
-        # source of truth.  models.dev can have wrong mappings (e.g.
-        # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
-        pconfig = PROVIDER_REGISTRY.get(son_of_anton_id)
-        # Skip non-API-key auth providers here — they are handled in
-        # section 2 (SON_OF_ANTON_OVERLAYS) with proper auth store checking.
-        if pconfig and pconfig.auth_type != "api_key":
-            continue
-        # models.dev catalogs include providers Son of Anton may not route yet.
-        # Gate on runtime capability rather than registry membership: special
-        # providers and plugin aliases can be routable without a registry row.
-        from son_of_anton_cli.auth import is_runtime_provider_routable
-        if not is_runtime_provider_routable(son_of_anton_id):
-            continue
-        if pconfig and pconfig.api_key_env_vars:
-            env_vars = list(pconfig.api_key_env_vars)
-        else:
-            env_vars = pdata.get("env", [])
-            if not isinstance(env_vars, list):
-                continue
-
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
-        if not has_creds:
-            try:
-                from son_of_anton_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                raw_pool_present = bool(
-                    store and store.get("credential_pool", {}).get(son_of_anton_id)
-                )
-                if raw_pool_present:
-                    has_creds = _credential_pool_is_usable(
-                        son_of_anton_id, raw_pool_present=True
-                    )
-            except Exception:
-                pass
-        if not has_creds:
-            continue
-
-        # Unified pathway: route through cached_provider_model_ids() so the
-        # /model picker sees the SAME list `son-of-anton model` would build, with
-        # disk caching to keep the picker open snappy. Falls back to the
-        # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(son_of_anton_id)
-        if not model_ids:
-            model_ids = curated.get(son_of_anton_id, [])
-        # A providers.<built-in>.models block extends the provider's discovered
-        # catalog. Section 3 cannot emit it later because this built-in row owns
-        # the slug, so merge declarations here before applying max_models.
-        configured_models: list[str] = []
-        if isinstance(user_providers, dict):
-            configured = user_providers.get(son_of_anton_id)
-            if isinstance(configured, dict):
-                configured_models = _declared_model_ids(configured.get("models"))
-        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
-        total = len(model_ids)
-        if son_of_anton_id in _UNCAPPED_PICKER_PROVIDERS:
-            top = model_ids  # Aggregator: show full catalog regardless of max_models
-        else:
-            top = model_ids[:max_models] if max_models is not None else model_ids
-
-        pinfo = _mdev_pinfo(mdev_id)
-        display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
-
-        results.append({
-            "slug": slug,
-            "name": display_name,
-            "is_current": (
-                slug == current_provider
-                or son_of_anton_id == current_provider
-                or mdev_id == current_provider
-            ),
-            "is_user_defined": False,
-            "models": top,
-            "total_models": total,
-            "source": "built-in",
-        })
-        seen_slugs.add(slug.lower())
-        _record_builtin_endpoint(slug)
-
-    # --- 2. Check Son of Anton-only providers (nous, copilot, opencode-go) ---
+    # --- 2. Check overlay providers ---
     from son_of_anton_cli.providers import SON_OF_ANTON_OVERLAYS
     from son_of_anton_cli.auth import PROVIDER_REGISTRY as _auth_registry
-
-    # Build reverse mapping: models.dev ID → Son of Anton provider ID.
-    # SON_OF_ANTON_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
-    # while _PROVIDER_MODELS and config.toml use Son of Anton IDs ("copilot").
-    _mdev_to_son_of_anton = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in SON_OF_ANTON_OVERLAYS.items():
         if pid.lower() in seen_slugs:
             continue
 
-        # Resolve Son of Anton slug — e.g. "github-copilot" → "copilot"
-        son_of_anton_slug = _mdev_to_son_of_anton.get(pid, pid)
+        son_of_anton_slug = pid
         if son_of_anton_slug.lower() in seen_slugs:
             continue
         if pid.lower() in _excluded or son_of_anton_slug.lower() in _excluded:
@@ -2765,10 +2534,7 @@ def list_authenticated_providers(
             if not model_ids:
                 model_ids = curated.get(son_of_anton_slug, []) or curated.get(pid, [])
         total = len(model_ids)
-        if son_of_anton_slug in _UNCAPPED_PICKER_PROVIDERS:
-            top = model_ids  # Aggregator: show full catalog regardless of max_models
-        else:
-            top = model_ids[:max_models] if max_models is not None else model_ids
+        top = model_ids[:max_models] if max_models is not None else model_ids
 
         results.append({
             "slug": son_of_anton_slug,
@@ -2785,7 +2551,7 @@ def list_authenticated_providers(
 
     # --- 2b. Cross-check canonical provider list ---
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
-    # in PROVIDER_TO_MODELS_DEV or SON_OF_ANTON_OVERLAYS (keeps /model in sync
+    # in SON_OF_ANTON_OVERLAYS (keeps /model in sync
     # with `son-of-anton model`).
     try:
         from son_of_anton_cli.models import CANONICAL_PROVIDERS as _canon_provs
