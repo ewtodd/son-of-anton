@@ -201,7 +201,7 @@ class AIAgent:
         base_url: str = None,
         api_key: str = None,
         provider: str = None,
-        api_mode: str = None,              # "chat_completions" | "codex_responses" | ...
+        api_mode: str = None,              # "chat_completions" (the only wire the fork speaks)
         model: str = "",                   # empty → resolved from config/provider later
         max_iterations: int = 500,
         enabled_toolsets: list = None,
