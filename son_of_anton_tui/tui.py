@@ -873,7 +873,7 @@ if _TEXTUAL_AVAILABLE:
         def compose(self) -> ComposeResult:
             with Horizontal(id="split"):
                 with Vertical(id="content"):
-                    yield VirtualFeed(self._feed_style())
+                    yield VirtualFeed(self._feed_style(), wordmark_art=_wordmark_for_width)
                     with Vertical(id="dock"):
                         yield OptionList(id="completer")
                         with Vertical(id="prompt-frame"):
@@ -935,7 +935,6 @@ if _TEXTUAL_AVAILABLE:
             self._panel = self.query_one("#context", Vertical)
             self._prompt.focus()
             self._apply_sidebar(self.size.width)
-            self._show_wordmark()
             self._show_intro()
             self._feed.anchor()
             self.begin_capture_print(self, stdout=True, stderr=True)
@@ -966,18 +965,14 @@ if _TEXTUAL_AVAILABLE:
 
         def on_resize(self, event: Any) -> None:
             self._apply_sidebar(event.size.width)
-            # The wordmark is sized from the mounted feed, which has not been
-            # re-laid-out yet at this point, so measure again once it has.
+            # The feed adopts its real width from its own resize (which fires
+            # after layout); this callback only refreshes the backend console
+            # width the classic CLI output wraps to.
             self.call_after_refresh(self._on_resized)
 
         def _on_resized(self) -> None:
-            self._show_wordmark()
             if self.backend is not None:
                 self.backend.set_feed_width(self._feed_inner_width())
-            try:
-                self._feed.set_width(self._feed_inner_width())
-            except Exception:
-                pass
 
         def _wide(self, width: Optional[int] = None) -> bool:
             return (self.size.width if width is None else width) > SIDEBAR_THRESHOLD
@@ -1030,13 +1025,6 @@ if _TEXTUAL_AVAILABLE:
                 error=_rich_color(_skin_accent("ui_error", "ansi_red")),
                 panel=self._surfaces.get("panel", ""),
             )
-
-        def _show_wordmark(self) -> None:
-            """Nudge the wordmark to re-fit (it sizes itself on its own resize)."""
-            try:
-                self._feed.set_wordmark(_wordmark_for_width(self._feed_inner_width()))
-            except Exception:
-                pass
 
         def _show_intro(self) -> None:
             parts = []

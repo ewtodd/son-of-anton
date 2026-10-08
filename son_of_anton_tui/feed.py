@@ -308,22 +308,23 @@ class _StaticBlock(_Block):
 
 
 class _WordmarkBlock(_Block):
-    """The ASCII wordmark, centered, bold primary, never wrapping."""
+    """The ASCII wordmark, centered, bold primary, never wrapping.
 
-    __slots__ = ("art",)
+    The variant is chosen from the width at render time (``art_fn``), so it
+    re-fits on every width change without the app measuring anything.
+    """
 
-    def __init__(self) -> None:
+    __slots__ = ("art_fn",)
+
+    def __init__(self, art_fn: Any) -> None:
         super().__init__("wordmark")
-        self.art = ""
-
-    def set_art(self, art: str) -> None:
-        self.art = art
-        self.dirty = True
+        self.art_fn = art_fn
 
     def render(self, width: int, styles: FeedStyle) -> None:
+        art = self.art_fn(max(1, width)) or ""
         out: list[Strip] = []
         style = _combine("bold", styles.primary)
-        for line in (self.art.splitlines() or [""]):
+        for line in (art.splitlines() or [""]):
             pad = max(0, (width - len(line)) // 2)
             out.extend(_to_strips(Text(" " * pad + line, style=style, overflow="crop"), width))
         self.lines = out
@@ -518,7 +519,7 @@ class VirtualFeed(ScrollView):
     # alwaysSeparate set).
     _SEPARATE_AFTER = ("user", "markdown", "reasoning")
 
-    def __init__(self, styles: FeedStyle, **kwargs: Any) -> None:
+    def __init__(self, styles: FeedStyle, *, wordmark_art: Any = None, **kwargs: Any) -> None:
         super().__init__(id="feed", **kwargs)
         self._styles = styles
         self._blocks: list[_Block] = []
@@ -531,6 +532,28 @@ class VirtualFeed(ScrollView):
         self._intro: Optional[_StaticBlock] = None
         self._selection: Optional[list] = None
         self._selecting = False
+        if wordmark_art is not None:
+            self._wordmark = _WordmarkBlock(wordmark_art)
+            self._blocks.append(self._wordmark)
+            self._sync(0)
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._adopt_real_width()
+
+    def on_resize(self, event: events.Resize) -> None:
+        # The widget's own resize fires after layout with the real width, so
+        # the content always tracks the viewport. The app-level resize handler
+        # runs earlier and sees pre-layout geometry, which left the header one
+        # frame stale on every terminal resize.
+        self._adopt_real_width()
+
+    def _adopt_real_width(self) -> None:
+        width = self.scrollable_content_region.width
+        if width <= 0:
+            return
+        width = max(1, width - (0 if self.show_vertical_scrollbar else 1))
+        self.set_width(width)
 
     # ---------------- geometry ----------------
 
@@ -611,17 +634,6 @@ class VirtualFeed(ScrollView):
         self.refresh()
 
     # ---------------- chrome ----------------
-
-    def set_wordmark(self, art: str) -> None:
-        if self._wordmark is None:
-            self._wordmark = _WordmarkBlock()
-            self._wordmark.set_art(art)
-            self._wordmark.render(self._width, self._styles)
-            self._blocks.insert(0, self._wordmark)
-            self._sync(0)
-        else:
-            self._wordmark.set_art(art)
-            self.changed(self._wordmark)
 
     def set_intro(self, renderable: Any) -> None:
         if self._intro is None:

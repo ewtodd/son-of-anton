@@ -1140,6 +1140,19 @@ def test_wordmark_never_outgrows_its_column_across_resizes() -> None:
                 assert widest() <= feed._width, (
                     f"wordmark is {widest()} columns in a {feed._width}-column feed at term width {width}"
                 )
+                # The feed must track its real content width on its own resize —
+                # the app-level handler sees pre-layout geometry and used to
+                # leave the header one frame stale on every terminal resize.
+                assert feed._width == app._feed_inner_width(), (
+                    f"feed width {feed._width} drifted from the real {app._feed_inner_width()} at term width {width}"
+                )
+                # The art variant must match the width it was rendered at.
+                art = _tui._wordmark_for_width(feed._width)
+                rendered_first = "".join(s.text for s in wordmark.lines[0]).strip()
+                art_first = art.splitlines()[0].strip()
+                assert rendered_first == art_first, (
+                    f"wordmark rendered {rendered_first[:30]!r} but {feed._width} columns wants {art_first[:30]!r}"
+                )
 
     asyncio.run(run())
 
