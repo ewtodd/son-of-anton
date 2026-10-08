@@ -49,7 +49,6 @@ from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, env_float, env_int
 
 logger = logging.getLogger(__name__)
-_OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
@@ -703,37 +702,6 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
-def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
-    """Stale-stream patience for a provider that is never a local endpoint.
-
-    Mirrors the main streaming path's derivation — provider config → env base
-    → context-size scaling → reasoning-model floor — minus the local-endpoint
-    ``float('inf')``/900s disable branch, which cannot apply to Bedrock (its
-    endpoint is always the AWS cloud). Factored so the Bedrock streaming
-    watchdog shares the exact same patience budget as the OpenAI/Anthropic
-    stale-stream detector below.
-    """
-    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
-    if _cfg_stale is not None:
-        _base = _cfg_stale
-    else:
-        _base = env_float("SON_OF_ANTON_STREAM_STALE_TIMEOUT", 180.0)
-    _est_tokens = estimate_request_context_tokens(api_kwargs)
-    if _est_tokens > 100_000:
-        _timeout = max(_base, 300.0)
-    elif _est_tokens > 50_000:
-        _timeout = max(_base, 240.0)
-    else:
-        _timeout = _base
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-    _model_id = api_kwargs.get("model") or ""
-    _reasoning_floor = get_reasoning_stale_timeout_floor(_model_id)
-    if _reasoning_floor is not None:
-        _timeout = max(_timeout, _reasoning_floor)
-    return _timeout
-
-
-
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
@@ -1339,7 +1307,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
     return result["response"]
 
 
-
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     if tools_for_api is None:
@@ -1477,7 +1444,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
     )
-
 
 
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
@@ -1704,7 +1670,6 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     return msg
 
 
-
 def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     """Point the cached system prompt's ``Model:``/``Provider:`` lines at
     the active runtime after a provider switch.
@@ -1749,7 +1714,6 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     unusable without the network anymore.
     """
     return None
-
 
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
@@ -2106,7 +2070,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return agent._try_activate_fallback(reason)  # try next in chain
 
 
-
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     agent._safe_print(
@@ -2403,7 +2366,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         )
 
     return final_response
-
 
 
 def cleanup_task_resources(agent, task_id: str) -> None:
@@ -4017,7 +3979,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────
-
 
 
 __all__ = [

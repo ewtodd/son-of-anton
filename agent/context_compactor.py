@@ -262,8 +262,6 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
             msg.pop(_DB_PERSISTED_MARKER, None)
 
 
-
-
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
 # Without it, weak models read the verbatim "## Active Task" quote as fresh
@@ -1294,38 +1292,15 @@ def _serialized_length_for_budget(value: Any) -> int:
         return len(str(value))
 
 
-# Provider replay/metadata fields that ride the wire on every request but are
-# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
-# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
-# ``encrypted_content`` that can dominate the serialized session (a measured
-# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+# Thinking-text keys charged only for the newest assistant turn on transports
+# that replay stale thinking (Anthropic strips all-but-newest at convert time,
+# Bedrock Converse never replays it, and strict chat-completions providers
+# either reject the field or receive a one-space echo pad — #73624).
 #
 # ``reasoning_details`` is handled separately (see
 # ``_reasoning_details_text_chars``): its signed/base64 envelope is excluded
 # from the budget, mirroring the preflight estimator's exclusion in
 # ``model_metadata._estimate_message_tokens_without_images`` (#73298).
-_REPLAY_BUDGET_KEYS = (
-    "reasoning",
-    "reasoning_content",
-    "codex_reasoning_items",
-    "codex_message_items",
-)
-
-# Subset of ``_REPLAY_BUDGET_KEYS`` that every transport replays on EVERY
-# retained assistant turn (Codex Responses items ride the wire each request;
-# message items are required for prefix-cache continuity).  The remaining
-# generic thinking-text keys (``reasoning`` / ``reasoning_content``) are
-# replayed for at most the NEWEST assistant turn on non-Codex transports —
-# Anthropic strips all-but-newest at convert time, Bedrock Converse never
-# replays thinking at all, and strict chat-completions providers either
-# reject the field or receive a one-space echo pad (#73624).  Charging them
-# on every message spent 19-24% of the tail budget on bytes that provably
-# never reach the wire, so the tail cut landed early and each compaction
-# discarded more real transcript than configured.
-_ALWAYS_REPLAYED_BUDGET_KEYS = (
-    "codex_reasoning_items",
-    "codex_message_items",
-)
 _NEWEST_TURN_ONLY_BUDGET_KEYS = (
     "reasoning",
     "reasoning_content",
@@ -1376,14 +1351,9 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     tail overshot ``tail_token_budget`` and compaction became ineffective.
     See issue #28053.
 
-    Also counts provider replay fields.  Wire-replayed-every-turn fields
-    (``_ALWAYS_REPLAYED_BUDGET_KEYS``) are charged unconditionally: the
-    preflight "should I compact?" estimator sees the full message shape, so
-    the tail walk must use the same size class; otherwise an assistant
-    message with tiny visible content but large hidden replay blobs is
-    protected as if it were small and compaction re-fires continuously
-    (#55572).  Accounting-only here: this budget walk does not mutate or
-    prune.
+    Also counts provider thinking-text replay fields (see
+    ``_NEWEST_TURN_ONLY_BUDGET_KEYS``).  Accounting-only here: this budget
+    walk does not mutate or prune.
 
     ``charge_stale_thinking`` controls the generic thinking-text keys
     (``_NEWEST_TURN_ONLY_BUDGET_KEYS`` + the ``reasoning_details`` text
@@ -1404,8 +1374,6 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += estimate_tokens_rough(str(tc))
-    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
-        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     if not charge_stale_thinking:
         return tokens
     for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:

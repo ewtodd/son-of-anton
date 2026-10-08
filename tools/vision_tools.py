@@ -29,7 +29,6 @@ Usage:
 """
 
 import base64
-import contextlib
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -223,15 +222,6 @@ def _image_url_shape_ok(url: str) -> bool:
     if not parsed.netloc:
         return False
     return True
-
-
-def _validate_image_url(url: str) -> bool:
-    """Validate image URL for sync callers and tests (SSRF via sync DNS check)."""
-    if not _image_url_shape_ok(url):
-        return False
-    # Block private/internal addresses to prevent SSRF
-    from tools.url_safety import is_safe_url
-    return is_safe_url(url)
 
 
 async def _validate_image_url_async(url: str) -> bool:
@@ -1120,21 +1110,6 @@ def _build_native_vision_tool_result(
     }
 
 
-@contextlib.asynccontextmanager
-async def _vision_concurrency_slot():
-    """Deprecated no-op shim kept for backward compatibility.
-
-    The fan-out cap was narrowed to the CPU-bound encode/resize burst only
-    (see :data:`_vision_cpu_executor` / :func:`_run_encode_on_cpu_executor`).
-    Holding a slot across the whole analysis serialized legitimate multi-image
-    workflows behind the slow LLM call, which is exactly what we don't want.
-    This context manager no longer gates anything; encode/resize is bounded
-    where it actually runs. Retained only so any external caller importing it
-    keeps working.
-    """
-    yield
-
-
 async def _vision_analyze_native(
     image_url: str,
     question: str,
@@ -1646,7 +1621,6 @@ def check_vision_requirements() -> bool:
             return client is not None
     except Exception:
         return False
-
 
 
 if __name__ == "__main__":

@@ -205,16 +205,6 @@ def _getenv_str(name: str, default: str = "") -> str:
     return val if val is not None else default
 
 
-def _getenv_int(name: str, default: int) -> int:
-    raw = _getenv(name, None)
-    if raw is None:
-        return default
-    try:
-        return int(str(raw).strip(), 10)
-    except (TypeError, ValueError):
-        return default
-
-
 # Module-level cache for bundled platform plugin names (lives outside the
 # enum so it doesn't become an accidental enum member).
 _Platform__bundled_plugin_names: Optional[set] = None
@@ -331,27 +321,10 @@ def platform_credential_hint(platform: "Platform") -> str:
 # dashboard's pre-write mutation validation (son_of_anton_cli/web_server.py).
 # Stored as platform .value strings. No built-in platform binds a TCP port
 # anymore; plugin platforms can still register here dynamically if needed.
-PORT_BINDING_PLATFORM_VALUES = frozenset()
 
 # Platforms whose port-binding status depends on connection mode. Maps
 # platform value → the mode value that actually binds (#52563). Empty: no
 # built-in platform has a mode-conditional listener anymore.
-PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {}
-
-
-def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
-    """Return True when *platform_value* actually binds a port for *extra* config.
-
-    No built-in platform binds a TCP port anymore; plugin platforms may still
-    register port-binding values dynamically.
-    """
-    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
-        return False
-    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
-    if expected_mode is not None:
-        actual = str((extra or {}).get("connection_mode", "websocket")).strip().lower()
-        return actual == expected_mode
-    return True
 
 
 @dataclass

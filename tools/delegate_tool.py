@@ -191,18 +191,6 @@ def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]
     return None
 
 
-def set_spawn_paused(paused: bool) -> bool:
-    """Globally block/unblock new delegate_task spawns.
-
-    Active children keep running; only NEW calls to delegate_task fail fast
-    with a "spawning paused" error until unblocked.  Returns the new state.
-    """
-    global _spawn_paused
-    with _spawn_pause_lock:
-        _spawn_paused = bool(paused)
-        return _spawn_paused
-
-
 def is_spawn_paused() -> bool:
     with _spawn_pause_lock:
         return _spawn_paused
@@ -347,30 +335,6 @@ def _capture_gateway_steer_authority(
     this stays a no-op bridge that always returns ``(None, None)``.
     """
     return None, None
-
-
-def list_active_subagents() -> List[Dict[str, Any]]:
-    """Snapshot of the currently running subagent tree.
-
-    Each record: {subagent_id, parent_id, depth, goal, model, started_at,
-    tool_count, status}.  Safe to call from any thread — returns a copy.
-    """
-    with _active_subagents_lock:
-        return [
-            {
-                k: v
-                for k, v in r.items()
-                if k
-                not in {
-                    "agent",
-                    "owner_session_id",
-                    "owner_transport",
-                    "owner_session_record",
-                    "accepting_steer",
-                }
-            }
-            for r in _active_subagents.values()
-        ]
 
 
 def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) -> bool:

@@ -90,21 +90,6 @@ def _ra():
     return run_agent
 
 
-AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "tour", "delegate_task"}
-)
-
-
-def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
-    """Return True when an agent-level tool path emits its own post hook."""
-    if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
-        return True
-    if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
-        return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    return bool(memory_manager and memory_manager.has_tool(function_name))
-
-
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
@@ -273,7 +258,6 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
         i += 1
     
     return trajectory
-
 
 
 def sanitize_tool_call_arguments(
@@ -797,7 +781,6 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
     return repairs
 
 
-
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
@@ -893,7 +876,6 @@ def strip_think_blocks(agent, content: str) -> str:
     #     OpenClaw's intentional asymmetry.)
     content = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', content)
     return content
-
 
 
 def sync_credential_pool_entry_id(agent) -> None:
@@ -1190,7 +1172,6 @@ def recover_with_credential_pool(
     return False, has_retried_429
 
 
-
 def try_recover_primary_transport(
     agent, api_error: Exception, *, retry_count: int, max_retries: int,
 ) -> bool:
@@ -1279,7 +1260,6 @@ def try_recover_primary_transport(
 # ── End provider fallback ──────────────────────────────────────────────
 
 
-
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -1366,7 +1346,6 @@ def drop_thinking_only_and_merge_users(
         merges,
     )
     return merged
-
 
 
 def restore_primary_runtime(agent) -> bool:
@@ -1651,7 +1630,6 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
 })
 
 
-
 def extract_reasoning(agent, assistant_message) -> Optional[str]:
     """
     Extract reasoning/thinking content from an assistant message.
@@ -1731,7 +1709,6 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         return "\n\n".join(reasoning_parts)
     
     return None
-
 
 
 def dump_api_request_debug(
@@ -1827,7 +1804,6 @@ def dump_api_request_debug(
         if agent.verbose_logging:
             logger.warning("Failed to dump API request debug payload: %s", dump_error)
         return None
-
 
 
 def _direct_native_anthropic_tool_cache_capability(
@@ -2319,7 +2295,6 @@ def anthropic_prompt_cache_policy(
         return True, False
 
     return False, False
-
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
@@ -3153,7 +3128,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     )
 
 
-
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
@@ -3246,7 +3220,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         return matches[0]
 
     return None
-
 
 
 # Placeholder substituted for an empty non-final message that would otherwise
@@ -3586,7 +3559,6 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return messages
 
 
-
 def looks_like_intermediate_ack(
     agent,
     assistant_content: str,
@@ -3692,18 +3664,6 @@ def intent_ack_continuation_mode(agent) -> str:
         model_lower = (agent.model or "").lower()
         return "all" if any(p.lower() in model_lower for p in mode if isinstance(p, str)) else "off"
     return "off"
-
-
-def intent_ack_continuation_enabled(agent) -> bool:
-    """Whether intent-ack continuation should fire at all for this turn.
-
-    The ``intent_ack_continuations < 2`` per-turn cap and the
-    ``looks_like_intermediate_ack`` detector are applied by the caller;
-    this only decides the on/off gate.
-    """
-    return intent_ack_continuation_mode(agent) != "off"
-
-
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
@@ -3942,7 +3902,6 @@ def cleanup_dead_connections(agent) -> bool:
     return False
 
 
-
 def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     """Extract structured rate-limit details from provider errors."""
     context: Dict[str, Any] = {}
@@ -4026,7 +3985,6 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     return context
 
 
-
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Append any pending /steer text to the last tool result in this turn.
 
@@ -4091,7 +4049,6 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
-
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
 
@@ -4153,7 +4110,6 @@ def force_close_tcp_sockets(client: Any) -> int:
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)
     return shutdown_count
-
 
 
 __all__ = [

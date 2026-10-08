@@ -372,20 +372,6 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
-_GATEWAY_PROVIDER_ERROR_RE = re.compile(
-    r"("  # infrastructure/provider error preambles, not ordinary assistant prose
-    r"api\s+(?:call\s+)?failed"
-    r"|provider\s+authentication\s+failed"
-    r"|non-retryable\s+error"
-    r"|rate\s+limited\s+after\s+\d+\s+retries"
-    r"|error\s+code\s*:"
-    r"|\bhttp\s*\d{3}\b"
-    r"|incorrect\s+api\s+key"
-    r"|invalid\s+api\s+key"
-    r")",
-    re.IGNORECASE,
-)
-
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
     r"cybersecurity\s+risk"
@@ -6387,7 +6373,6 @@ class TurnRunner:
         }
 
 
-
 # Sentinel for "no explicit session DB has been pinned on this runner", so the
 # ``_session_db`` property can distinguish "resolve from the active profile
 # scope" from a deliberate ``runner._session_db = None`` (which disables
@@ -6746,7 +6731,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
-
 
 
         # Ensure tirith security scanner is available (downloads if needed)
@@ -14282,10 +14266,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return check
 
 
-
-
-
-
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self._adapter_for_source(source)
@@ -15802,9 +15782,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         if canonical == "perm":
             return await self._handle_perm_command(event)
-
-
-
 
 
         if canonical == "save":
@@ -18990,8 +18967,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return "\n".join(lines)
 
 
-
-
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
     ) -> Optional[str]:
@@ -19035,11 +19010,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return f"/{canonical_cmd} is admin-only here. {suffix}"
 
 
-
-
-
-
-
     def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
         """Find running-agent keys for OTHER participants in the same thread.
 
@@ -19078,10 +19048,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if key == prefix or key.startswith(prefix + ":"):
                 matches.append(key)
         return matches
-
-
-
-
 
 
     # ────────────────────────────────────────────────────────────────
@@ -19267,7 +19233,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start heartbeat poller", exc_info=True)
-
 
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
@@ -20085,11 +20050,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 pass
 
 
-
-
-
-
-
     def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
         """Return True only for Discord threads Son of Anton just auto-created."""
         return (
@@ -20450,7 +20410,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return t("gateway.reload_mcp.failed", error=e)
 
 
-
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)
     # ------------------------------------------------------------------
@@ -20730,7 +20689,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
-
     # Built-in messaging platforms where the ``/update`` command is allowed.
     # Plugin-migrated platforms (discord, slack) are NOT listed here — they
     # declare ``allow_update_command=True`` on their ``PlatformEntry`` and are
@@ -20738,7 +20696,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
         Platform.SIGNAL, Platform.LOCAL,
     })
-
 
 
     def _schedule_update_notification_watch(self) -> None:
@@ -26911,21 +26868,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
 
         stop_event.wait(timeout=interval)
     logger.info("Gateway housekeeping stopped")
-
-
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
-    """DEPRECATED shim — preserved for backward compatibility.
-
-    The cron trigger now lives behind the ``CronScheduler`` provider
-    (``cron.scheduler_provider``); the gateway resolves a provider and runs its
-    ``start()`` directly (see ``start_gateway``). This shim runs ONLY the
-    built-in in-process tick loop, exactly as before, for any external caller
-    or test that still references this symbol (e.g. son_of_anton_cli/debug.py). It no
-    longer runs gateway housekeeping — that moved to
-    ``_start_gateway_housekeeping``.
-    """
-    from cron.scheduler_provider import InProcessCronScheduler
-    InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
 def _stop_cron_provider(provider) -> None:
