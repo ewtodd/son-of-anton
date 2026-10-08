@@ -2,7 +2,7 @@
 
 [project]
 name = "son-of-anton"
-version = "0.3.0"
+version = "0.4.0"
 description = "Always-on agent harness with physics research modes (hard fork of Nous Research's hermes-agent)"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
