@@ -807,38 +807,6 @@ class VoiceReceiver:
             pass
         return 0
 
-    def check_silence(self) -> list:
-        """Return list of (user_id, pcm_bytes) for completed utterances."""
-        now = time.monotonic()
-        completed = []
-
-        with self._lock:
-            ssrc_user_map = dict(self._ssrc_to_user)
-            ssrc_list = list(self._buffers.keys())
-
-            for ssrc in ssrc_list:
-                last_time = self._last_packet_time.get(ssrc, now)
-                silence_duration = now - last_time
-                buf = self._buffers[ssrc]
-                # 48kHz, 16-bit, stereo = 192000 bytes/sec
-                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
-
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
-                    user_id = ssrc_user_map.get(ssrc, 0)
-                    if not user_id:
-                        # SSRC not mapped (SPEAKING event missing after bot rejoin).
-                        # Infer from allowed users in the voice channel.
-                        user_id = self._infer_user_for_ssrc(ssrc)
-                    if user_id:
-                        completed.append((user_id, bytes(buf)))
-                    self._buffers[ssrc] = bytearray()
-                    self._last_packet_time.pop(ssrc, None)
-                elif silence_duration >= self.SILENCE_THRESHOLD * 2:
-                    # Stale buffer with no valid user — discard
-                    self._buffers.pop(ssrc, None)
-                    self._last_packet_time.pop(ssrc, None)
-
-        return completed
 
     def flush_pending(self) -> list:
         """Return buffered utterances that have not yet reached silence."""
@@ -4287,107 +4255,6 @@ class DiscordAdapter(BasePlatformAdapter):
     def _voice_timeout_limit(self) -> int:
         return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
 
-    def _playback_timeout_limit(self) -> int:
-        return int(getattr(self, "_playback_timeout_seconds", self.PLAYBACK_TIMEOUT))
-
-    def _probe_audio_duration_seconds(self, audio_path: str) -> Optional[float]:
-        """Best-effort audio duration probe used to size playback timeouts."""
-        try:
-            import importlib
-            mutagen = importlib.import_module("mutagen")
-            audio = mutagen.File(audio_path)
-            length = getattr(getattr(audio, "info", None), "length", None)
-            if length:
-                return float(length)
-        except Exception:
-            pass
-
-        try:
-            proc = subprocess.run(
-                [
-                    "ffprobe",
-                    "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    audio_path,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                stdin=subprocess.DEVNULL,
-            )
-            if proc.returncode == 0:
-                raw = (proc.stdout or "").strip()
-                if raw:
-                    return float(raw)
-        except Exception:
-            pass
-        return None
-
-    async def _playback_timeout_for_audio(self, audio_path: str) -> float:
-        """Return timeout for this clip: configured floor or duration+padding."""
-        floor = float(self._playback_timeout_limit())
-        duration = await asyncio.to_thread(self._probe_audio_duration_seconds, audio_path)
-        if not duration or duration <= 0:
-            return floor
-        return max(floor, duration + float(self.PLAYBACK_TIMEOUT_PADDING))
-
-    def _get_ambient_pcm(self) -> Optional[bytes]:
-        """Return decoded 48k/stereo/s16le PCM for the ambient idle bed.
-
-        Uses a custom file when ``ambient_path`` is set and decodable, else a
-        synthesised pad.  Cached after first build.
-        """
-        if self._ambient_pcm_cache is not None:
-            return self._ambient_pcm_cache
-        if not self._voice_fx_cfg.get("ambient_enabled"):
-            return None
-        try:
-            from voice_mixer import decode_to_pcm, synth_ambient_pcm
-        except ImportError:
-            from .voice_mixer import decode_to_pcm, synth_ambient_pcm
-
-        pcm: Optional[bytes] = None
-        path = (self._voice_fx_cfg.get("ambient_path") or "").strip()
-        if path and os.path.isfile(path):
-            pcm = decode_to_pcm(path)
-            if not pcm:
-                logger.warning("Ambient file %s failed to decode; using synth bed", path)
-        if not pcm:
-            pcm = synth_ambient_pcm()
-        self._ambient_pcm_cache = pcm
-        return pcm
-
-    async def _install_voice_mixer(self, guild_id: int, vc) -> None:
-        """Create a VoiceMixer, start the ambient bed, and play it on the VC.
-
-        The mixer runs continuously for the life of the connection: one
-        ``vc.play(mixer)`` call, never stopped until leave.
-        """
-        try:
-            from voice_mixer import VoiceMixer
-        except ImportError:
-            from .voice_mixer import VoiceMixer
-
-        mixer = VoiceMixer(
-            ambient_gain=float(self._voice_fx_cfg.get("ambient_gain", 0.18)),
-            duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.06)),
-            speech_gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
-        )
-        ambient = await asyncio.to_thread(self._get_ambient_pcm)
-        if ambient:
-            mixer.set_ambient(ambient)
-
-        def _after(error):
-            if error:
-                logger.error("Voice mixer stream error (guild=%d): %s", guild_id, error)
-
-        if vc.is_playing():
-            vc.stop()
-        vc.play(mixer, after=_after)
-        self._voice_mixers[guild_id] = mixer
-        logger.info("Voice mixer installed (guild=%d, ambient=%s)", guild_id, bool(ambient))
 
     def _lead_silence_bytes(self) -> bytes:
         """PCM silence prepended to speech clips on the mixer path.
@@ -4509,102 +4376,6 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
-    async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
-        """Play an audio file in the connected voice channel.
-
-        When the continuous mixer is installed for this guild, the clip is
-        decoded to PCM and layered over the ambient bed (ducking it) so the
-        reply can overlap the idle "thinking" loop seamlessly.  Otherwise we
-        fall back to the legacy one-shot FFmpegPCMAudio path.
-        """
-        vc = self._voice_clients.get(guild_id)
-        if not vc or not vc.is_connected():
-            return False
-
-        # Playback is activity. Do not let the inactivity timer disconnect the
-        # bot while duration probing, decoding, or speaking; re-arm it when this
-        # attempt finishes, even if decoding/playback raises.
-        self._cancel_voice_timeout(guild_id)
-        try:
-            playback_timeout = await self._playback_timeout_for_audio(audio_path)
-
-            # ── Mixer path (overlap + ducking) ──────────────────────────────
-            mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
-            if mixer is not None:
-                try:
-                    from voice_mixer import decode_to_pcm
-                except ImportError:
-                    from .voice_mixer import decode_to_pcm
-                pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
-                if pcm:
-                    speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                    mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
-                    # Block until the speech child drains so callers serialise
-                    # replies (mirrors legacy semantics) but the ambient keeps
-                    # playing underneath the whole time.
-                    wait_start = time.monotonic()
-                    while mixer.speech_active:
-                        if time.monotonic() - wait_start > playback_timeout:
-                            logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
-                            mixer.stop_speech()
-                            break
-                        await asyncio.sleep(0.05)
-                    return True
-                logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
-
-            # ── Legacy one-shot path (no mixer) ─────────────────────────
-            # Pause voice receiver while playing (echo prevention)
-            receiver = self._voice_receivers.get(guild_id)
-            if receiver:
-                receiver.pause()
-
-            try:
-                # Wait for current playback to finish (with timeout)
-                wait_start = time.monotonic()
-                while vc.is_playing():
-                    if time.monotonic() - wait_start > playback_timeout:
-                        logger.warning("Timed out waiting for previous playback to finish")
-                        vc.stop()
-                        break
-                    await asyncio.sleep(0.1)
-
-                done = asyncio.Event()
-                loop = asyncio.get_running_loop()
-
-                def _after(error):
-                    if error:
-                        logger.error("Voice playback error: %s", error)
-                    loop.call_soon_threadsafe(done.set)
-
-                # Prepend a short lead of silence so the voice socket's warm-up
-                # doesn't clip the first word (mirrors the mixer path above).
-                ffmpeg_opts: Dict[str, Any] = {}
-                _fx_cfg = getattr(self, "_voice_fx_cfg", None) or {}
-                try:
-                    lead_ms = int(_fx_cfg.get("lead_silence_ms", 0) or 0)
-                except (TypeError, ValueError):
-                    lead_ms = 0
-                if lead_ms > 0:
-                    ffmpeg_opts["options"] = f"-af adelay={lead_ms}:all=1"
-                source = discord.FFmpegPCMAudio(
-                    audio_path,
-                    executable=resolve_ffmpeg_executable(),
-                    **ffmpeg_opts,
-                )
-                source = discord.PCMVolumeTransformer(source, volume=1.0)
-                vc.play(source, after=_after)
-                try:
-                    await asyncio.wait_for(done.wait(), timeout=playback_timeout)
-                except asyncio.TimeoutError:
-                    logger.warning("Voice playback timed out after %.1fs", playback_timeout)
-                    vc.stop()
-                return True
-            finally:
-                if receiver:
-                    receiver.resume()
-        finally:
-            self._reset_voice_timeout(guild_id)
-
 
     def _cancel_voice_timeout(self, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
@@ -4661,10 +4432,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
 
-    def is_in_voice_channel(self, guild_id: int) -> bool:
-        """Check if the bot is connected to a voice channel in this guild."""
-        vc = self._voice_clients.get(guild_id)
-        return vc is not None and vc.is_connected()
 
     def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
         """Return voice channel awareness info for the given guild.
@@ -4742,50 +4509,6 @@ class DiscordAdapter(BasePlatformAdapter):
     # the UDP route after ~60s of silence.
     _KEEPALIVE_INTERVAL = 15
 
-    async def _voice_listen_loop(self, guild_id: int):
-        """Periodically check for completed utterances and process them."""
-        receiver = self._voice_receivers.get(guild_id)
-        if not receiver:
-            return
-        last_keepalive = time.monotonic()
-        try:
-            while receiver._running:
-                await asyncio.sleep(0.2)
-
-                # Send periodic UDP keepalive to prevent Discord from
-                # dropping the UDP session after ~60s of silence.
-                now = time.monotonic()
-                if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
-                    last_keepalive = now
-                    try:
-                        vc = self._voice_clients.get(guild_id)
-                        if vc and vc.is_connected():
-                            vc._connection.send_packet(b'\xf8\xff\xfe')
-                    except Exception:
-                        pass
-
-                completed = receiver.check_silence()
-                # Voice inputs always originate from a specific guild
-                # (guild_id is in scope). Pass it so role checks are
-                # guild-scoped and not cross-guild.
-                _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
-                for user_id, pcm_data in completed:
-                    if not self._is_allowed_user(
-                        str(user_id),
-                        guild=_vc_guild,
-                        is_dm=False,
-                    ):
-                        continue
-                    # A user speaking to the bot is activity too — not just the
-                    # bot's own playback. Reset the inactivity timer so an active
-                    # listener isn't disconnected mid-conversation (this also
-                    # covers voice-on text-only sessions that never play audio).
-                    self._reset_voice_timeout(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error("Voice listen loop error: %s", e, exc_info=True)
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""

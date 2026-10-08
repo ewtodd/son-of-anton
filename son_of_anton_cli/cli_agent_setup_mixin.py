@@ -188,40 +188,6 @@ class CLIAgentSetupMixin:
 
         return True
 
-    def _runtime_credentials_ready(self) -> bool:
-        """Silently probe whether any inference provider can be resolved.
-
-        Unlike ``_ensure_runtime_credentials`` this never prints and never
-        mutates CLI state — it exists so the interactive first-run path can
-        detect a completely unconfigured install *before* the user types a
-        message into a chat that cannot work (#62935-adjacent UX class:
-        keyless first run must route into onboarding, not a broken chat).
-        """
-        from son_of_anton_cli.runtime_provider import resolve_runtime_provider
-
-        try:
-            runtime = resolve_runtime_provider(
-                requested=self.requested_provider,
-                explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url,
-            )
-        except Exception:
-            return False
-        if not isinstance(runtime, dict):
-            return False
-        api_key = runtime.get("api_key")
-        base_url = runtime.get("base_url")
-        if callable(api_key) and not isinstance(api_key, str):
-            return bool(base_url)
-        if isinstance(api_key, str) and api_key:
-            return bool(base_url)
-        # Keyless custom/local endpoints (ollama, llama.cpp, vLLM…) are fine.
-        return bool(
-            isinstance(base_url, str)
-            and base_url
-            and not base_url_host_matches(base_url, "openrouter.ai")
-        )
-
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.

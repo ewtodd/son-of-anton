@@ -130,12 +130,6 @@ class HeartbeatState:
         anchor = self.last_fired_at or self.created_at
         return (now - anchor) >= self.interval_seconds
 
-    def render_prompt(self) -> str:
-        return HEARTBEAT_PROMPT_TEMPLATE.format(
-            interval=format_interval(self.interval_seconds),
-            prompt=self.prompt,
-        )
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Persistence (SessionDB state_meta) — same pattern as goals.py
@@ -216,8 +210,6 @@ class HeartbeatManager:
     def state(self) -> Optional[HeartbeatState]:
         return self._state
 
-    def has_heartbeat(self) -> bool:
-        return self._state is not None and self._state.status in {"active", "paused"}
 
     def is_active(self) -> bool:
         return self._state is not None and self._state.status == "active"
@@ -280,22 +272,6 @@ class HeartbeatManager:
         return True
 
     # --- driver entry point --------------------------------------------
-
-    def due_prompt(self, now: Optional[float] = None) -> Optional[str]:
-        """Return the injection prompt if the heartbeat is due, else None.
-
-        Records the fire immediately (before the turn runs) so overlapping
-        polls or a long turn can never double-fire the same tick. Missed
-        ticks coalesce into one — the anchor resets to NOW, not to the
-        theoretical schedule.
-        """
-        s = self._state
-        if s is None or not s.is_due(now):
-            return None
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
-        save_heartbeat(self.session_id, s)
-        return s.render_prompt()
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:

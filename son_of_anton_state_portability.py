@@ -43,21 +43,6 @@ class SessionPortabilityMixin:
         return cls._session_compact_cols_sql
 
 
-    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
-        """Fetch a single session with the same enriched columns as
-        ``list_sessions_rich`` (preview + last_active). Returns None if the
-        session doesn't exist.
-
-        Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
-        ``list_sessions_rich`` for details).
-
-        Thin wrapper over ``_get_session_rich_rows_batch`` so the enriched
-        SELECT lives in exactly one place.
-        """
-        return self._get_session_rich_rows_batch(
-            [session_id], compact_rows=compact_rows
-        ).get(session_id)
-
     def _get_session_rich_rows_batch(
         self, session_ids, compact_rows: bool = False
     ) -> Dict[str, Dict[str, Any]]:

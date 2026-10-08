@@ -3690,13 +3690,6 @@ class BasePlatformAdapter(ABC):
         text = str(text or "")
         return text[:budget] + suffix if len(text) > budget else text
 
-    def _ea_escape(self, text: str) -> str:
-        """Escape hook applied to the command preview and reason text.
-
-        Default is pass-through; HTML-mode platforms override.
-        """
-        return text
-
 
     @staticmethod
     def _format_choice_page(

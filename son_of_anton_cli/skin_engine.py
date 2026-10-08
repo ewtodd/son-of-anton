@@ -1072,24 +1072,6 @@ def init_skin_from_config(config: dict) -> None:
 # =============================================================================
 
 
-def get_active_prompt_symbol(fallback: str = "❯") -> str:
-    """Return the interactive prompt symbol with a single trailing space.
-
-    Skins store ``prompt_symbol`` as a bare token (no spaces). The trailing
-    space is appended here so callers can drop it straight into a rendered
-    prompt without hand-rolling whitespace.
-    """
-    try:
-        raw = get_active_skin().get_branding("prompt_symbol", fallback)
-    except Exception:
-        raw = fallback
-
-    cleaned = (raw or fallback).strip()
-
-    return f"{cleaned or fallback.strip()} "
-
-
-
 def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
     """Get the /help header from the active skin."""
     try:
@@ -1098,14 +1080,12 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
         return fallback
 
 
-
 def get_active_goodbye(fallback: str = "Goodbye! ⚛") -> str:
     """Get the goodbye line from the active skin."""
     try:
         return get_active_skin().get_branding("goodbye", fallback)
     except Exception:
         return fallback
-
 
 
 def get_prompt_toolkit_style_overrides() -> Dict[str, str]:

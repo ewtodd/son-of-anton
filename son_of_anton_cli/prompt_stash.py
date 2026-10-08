@@ -59,15 +59,6 @@ class StashEntry:
     stashed_at: float = 0.0
     preview: str = ""
 
-    def as_dict(self) -> dict:
-        """Render in the shape ``SonOfAntonCLI._render_stash_panel`` consumes."""
-        return {
-            "text": self.text,
-            "images": list(self.images),
-            "stashed_at": self.stashed_at,
-            "preview": self.preview,
-        }
-
 
 class PromptStash:
     """Session-scoped stack of parked composer drafts.
@@ -155,10 +146,6 @@ class PromptStash:
             return 0
         return max(0, min(int(value), len(self._items) - 1))
 
-
-    def close_panel(self) -> None:
-        self.panel_open = False
-        self.panel_cursor = 0
 
     def move_cursor(self, delta: int) -> int:
         """Move the panel cursor, clamped to the list bounds."""

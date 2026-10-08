@@ -824,46 +824,6 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     )
 
 
-def _effective_model_candidate(value: Any) -> str:
-    """Extract a model-name candidate from a str / dict / attr-object."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, dict):
-        return str(value.get("model") or "").strip()
-    model_attr = getattr(value, "model", None)
-    if model_attr is not None:
-        return str(model_attr or "").strip()
-    return ""
-
-
-def resolve_effective_model(
-    session_overrides: Any = None,
-    channel_config: Any = None,
-    global_config: Any = "",
-) -> str:
-    """Resolve the effective model: session override > channel > global.
-
-    The single owner of the precedence rule that gateway/run.py
-    (``_resolve_model_for_channel`` / ``_apply_session_model_override``)
-    each encoded independently — the divergence commit 7dd00bb47d had to
-    close.  A user-issued ``/model`` (session override) always wins over
-    per-channel/session-persisted configuration, which wins over the global
-    default.
-
-    Each argument may be a plain model string, a dict with a ``"model"``
-    key (a gateway ``_session_model_overrides`` entry), or an object with a
-    ``.model`` attribute (a ``ChannelOverride``).  Empty/None entries fall
-    through to the next tier.
-    """
-    for tier in (session_overrides, channel_config, global_config):
-        candidate = _effective_model_candidate(tier)
-        if candidate:
-            return candidate
-    return ""
-
-
 # ---------------------------------------------------------------------------
 # Alias resolution
 # ---------------------------------------------------------------------------

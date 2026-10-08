@@ -46,11 +46,9 @@ CODE_LENGTH = 8
 # Timing constants
 CODE_TTL_SECONDS = 3600             # Codes expire after 1 hour
 RATE_LIMIT_SECONDS = 600            # 1 request per user per 10 minutes
-LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
 
 # Limits
 MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
-MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
 PAIRING_DIR = get_son_of_anton_dir("platforms/pairing", "pairing")
 
@@ -134,35 +132,6 @@ def _read_allowlist_env(env_var: str) -> str:
         return (get_secret(env_var) or "").strip()
     except Exception:
         return (os.getenv(env_var) or "").strip()
-
-
-def _sync_allowlist_add(platform: str, user_id: str) -> None:
-    """Add ``user_id`` to the platform allowlist env var IF one is configured.
-
-    Option (i): only materialize the grant into the allowlist when the operator
-    already runs an allowlist for this platform. On an open gateway (no
-    allowlist) we do nothing — the pairing store remains the grant record and
-    the authz union honors it, so we never silently convert an open gateway into
-    a locked one on first pairing.
-    """
-    env_var = _allowlist_env_for_platform(platform)
-    if not env_var:
-        return
-    current = _read_allowlist_env(env_var)
-    if not current:
-        return  # No allowlist configured — leave the gateway open (option i).
-    ids = _split_allowlist(current)
-    if "*" in ids or str(user_id) in ids:
-        return  # Already covered.
-    ids.append(str(user_id))
-    try:
-        from son_of_anton_cli.config import save_env_value
-
-        save_env_value(env_var, ",".join(ids))
-    except Exception:
-        # Best-effort: the pairing store grant still authorizes via the union,
-        # so a failure here degrades to "grant recorded but not mirrored".
-        pass
 
 
 def _iter_live_gateway_adapters():
@@ -481,29 +450,6 @@ class PairingStore:
         return False
 
 
-    def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
-        """Add a user to the approved list. Must be called under self._lock."""
-        approved = self._load_json(self._approved_path(platform))
-        normalized_user_id = self._normalize_user_id(platform, user_id)
-        duplicate_ids = [
-            approved_user_id
-            for approved_user_id in approved
-            if self._user_ids_match(platform, approved_user_id, normalized_user_id)
-        ]
-        for approved_user_id in duplicate_ids:
-            del approved[approved_user_id]
-
-        approved[normalized_user_id] = {
-            "user_name": user_name,
-            "approved_at": time.time(),
-        }
-        self._save_json(self._approved_path(platform), approved)
-
-        # Mirror the grant into the operator's allowlist when one is configured
-        # (option i), so the pairing store and the allowlist stay a single
-        # visible source of truth. No-op on open gateways.
-        _sync_allowlist_add(platform, normalized_user_id)
-
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
         path = self._approved_path(platform)
@@ -532,29 +478,6 @@ class PairingStore:
         """Hash a pairing code with the given salt using SHA-256."""
         return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
 
-    def _finish_approval(
-        self, platform: str, pending: dict, matched_key: str, matched_entry: dict
-    ) -> dict:
-        """Remove a pending request and approve its user. Must hold self._lock."""
-        del pending[matched_key]
-        self._save_json(self._pending_path(platform), pending)
-
-        # A successful approval proves the requester is legitimate, so the
-        # brute-force failure streak must not carry over. Without this,
-        # isolated mistyped codes accumulate across the gateway's lifetime
-        # (the counter is persisted in _rate_limits.json and only ever
-        # reset when a lockout fires) and eventually trip a spurious
-        # lockout on a single fresh typo — rejecting even a valid code.
-        self._reset_failed_attempts(platform)
-
-        self._approve_user(
-            platform, matched_entry["user_id"], matched_entry.get("user_name", "")
-        )
-
-        return {
-            "user_id": matched_entry["user_id"],
-            "user_name": matched_entry.get("user_name", ""),
-        }
 
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
@@ -688,32 +611,6 @@ class PairingStore:
         lockout_until = limits.get(lockout_key, 0)
         return time.time() < lockout_until
 
-    def _record_failed_attempt(self, platform: str) -> None:
-        """Record a failed approval attempt. Triggers lockout after MAX_FAILED_ATTEMPTS."""
-        limits = self._load_json(self._rate_limit_path())
-        fail_key = f"_failures:{platform}"
-        fails = limits.get(fail_key, 0) + 1
-        limits[fail_key] = fails
-        if fails >= MAX_FAILED_ATTEMPTS:
-            lockout_key = f"_lockout:{platform}"
-            limits[lockout_key] = time.time() + LOCKOUT_SECONDS
-            limits[fail_key] = 0  # Reset counter
-            print(f"[pairing] Platform {platform} locked out for {LOCKOUT_SECONDS}s "
-                  f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
-        self._save_json(self._rate_limit_path(), limits)
-
-    def _reset_failed_attempts(self, platform: str) -> None:
-        """Clear the accumulated failed-approval counter after a success.
-
-        Called from the ``approve_code`` success path so that a legitimate
-        approval resets the brute-force streak (standard lockout semantics:
-        the counter tracks *consecutive* failures, not lifetime ones).
-        """
-        limits = self._load_json(self._rate_limit_path())
-        fail_key = f"_failures:{platform}"
-        if limits.get(fail_key):
-            limits[fail_key] = 0
-            self._save_json(self._rate_limit_path(), limits)
 
     # ----- Cleanup -----
 

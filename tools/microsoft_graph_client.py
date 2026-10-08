@@ -83,31 +83,6 @@ class MicrosoftGraphClient:
             return {"deleted": True, "status_code": response.status_code}
         return self._decode_json(response)
 
-    async def iterate_pages(
-        self,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        next_url: str | None = self._resolve_url(path)
-        next_params = dict(params or {})
-        while next_url:
-            response = await self._request(
-                "GET",
-                next_url,
-                params=next_params or None,
-                headers=headers,
-            )
-            payload = self._decode_json(response)
-            if not isinstance(payload, dict):
-                raise MicrosoftGraphClientError(
-                    f"Expected paginated Graph response dict, got {type(payload).__name__}."
-                )
-            yield payload
-            next_url = payload.get("@odata.nextLink")
-            next_params = {}
-
 
     async def _request(
         self,

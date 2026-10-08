@@ -379,30 +379,6 @@ class SharedMetricsStore:
             return None
         return parsed.astimezone(timezone.utc)
 
-    def _pending_period_count(self) -> int:
-        with self._connection() as connection:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS period_count
-                FROM (
-                    SELECT
-                        period_start,
-                        son_of_anton_version,
-                        os_family,
-                        architecture,
-                        install_method
-                    FROM counter_aggregates
-                    WHERE value > packaged_value
-                    GROUP BY
-                        period_start,
-                        son_of_anton_version,
-                        os_family,
-                        architecture,
-                        install_method
-                )
-                """
-            ).fetchone()
-        return int(row["period_count"]) if row is not None else 0
 
     def _create_pending_packages_if_due(self) -> None:
         now = _utc_now()
@@ -424,11 +400,6 @@ class SharedMetricsStore:
                 while self._create_package_in_transaction(connection, now) is not None:
                     pass
 
-    def _create_package(self) -> dict[str, Any] | None:
-        now = _utc_now()
-        with self._connection() as connection:
-            with write_txn(connection):
-                return self._create_package_in_transaction(connection, now)
 
     def _create_package_in_transaction(
         self,

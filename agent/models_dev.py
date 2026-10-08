@@ -75,8 +75,6 @@ class ModelInfo:
     status: str = ""
     interleaved: Any = False
 
-    def has_cost_data(self) -> bool:
-        return self.cost_input > 0 or self.cost_output > 0
 
     def supports_vision(self) -> bool:
         return self.attachment or "image" in self.input_modalities

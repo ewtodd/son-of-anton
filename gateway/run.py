@@ -19053,69 +19053,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
 
-    def _start_heartbeat_poller(self) -> None:
-        """Start the single gateway-wide heartbeat poll task (idempotent)."""
-        existing = getattr(self, "_heartbeat_poll_task", None)
-        if existing is not None and not existing.done():
-            return
-
-        from son_of_anton_cli.heartbeat import POLL_SECONDS
-
-        async def _poll_loop():
-            while True:
-                await asyncio.sleep(POLL_SECONDS)
-                watch = getattr(self, "_heartbeat_watch", None)
-                if not watch:
-                    continue
-                # Warm the cache off-loop once per poll. A watch can only
-                # be registered through the warmed /heartbeat command, so
-                # this covers only the degraded path where that warm-up
-                # failed.
-                await self._warm_goals_session_db("heartbeat poll")
-                for quick_key, (source, session_id) in list(watch.items()):
-                    try:
-                        # Busy sessions coalesce their tick to the next idle poll.
-                        if quick_key in self._running_agents:
-                            continue
-                        from son_of_anton_cli.heartbeat import HeartbeatManager
-
-                        mgr = HeartbeatManager(session_id=session_id)
-                        if not mgr.has_heartbeat():
-                            watch.pop(quick_key, None)
-                            continue
-                        prompt = mgr.due_prompt()
-                        if not prompt:
-                            continue
-                        adapter = self._adapter_for_source(source)
-                        if adapter is None:
-                            continue
-                        hb_event = MessageEvent(
-                            text=prompt,
-                            message_type=MessageType.TEXT,
-                            source=source,
-                            message_id=None,
-                            channel_prompt=None,
-                        )
-                        self._enqueue_fifo(quick_key, hb_event, adapter)
-                    except Exception as exc:
-                        logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
-
-        try:
-            task = asyncio.create_task(_poll_loop())
-            self._heartbeat_poll_task = task
-            # PERMANENT once started (an infinite while-True loop, no exit
-            # condition) — same as a _spawn_supervised watcher. Tag it so
-            # _scale_to_zero_has_live_background_work() doesn't treat a
-            # gateway with an active heartbeat watch as busy forever.
-            task._son_of_anton_supervised_watcher = True  # type: ignore[attr-defined]
-            _bg = getattr(self, "_background_tasks", None)
-            if _bg is not None:
-                _bg.add(task)
-                task.add_done_callback(_bg.discard)
-        except Exception:
-            logger.debug("Failed to start heartbeat poller", exc_info=True)
-
-
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
         adapter = self._adapter_for_source(source)

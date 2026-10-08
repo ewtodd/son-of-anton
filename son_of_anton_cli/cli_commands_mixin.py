@@ -2304,17 +2304,3 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
 
-    def _persist_wake_word_enabled(self, enabled: bool):
-        """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
-        from cli import _cprint, _DIM, _RST, save_config_value
-
-        try:
-            from tools.wake_word import load_wake_word_config
-
-            if bool(load_wake_word_config().get("enabled")) == enabled:
-                return  # already persisted — don't rewrite config or re-announce
-        except Exception:
-            pass
-        if save_config_value("wake_word.enabled", enabled):
-            _cprint(f"{_DIM}Wake word {'enabled' if enabled else 'disabled'} in config "
-                    f"(wake_word.enabled: {str(enabled).lower()}).{_RST}")

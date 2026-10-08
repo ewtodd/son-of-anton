@@ -8955,41 +8955,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     REACTIONS_METADATA_KEY = "reactions"
 
 
-    def latest_message_row_id(
-        self, session_id: str, *, role: str = "user", offset: int = 0, require_text: bool = True
-    ) -> Optional[int]:
-        """Row id of the most recent active message with *role*, or ``None``.
-
-        Two callers, same need — "the message I mean, without an id": the agent
-        defaulting to the turn that triggered it, and the desktop reacting to a
-        live message that hasn't round-tripped through a resume yet.
-        ``offset`` steps to earlier turns (1 = the one before the latest) so a
-        reaction can land retroactively — "two messages ago" is how the caller
-        thinks about it.
-
-        ``require_text`` (default) skips rows with no plain-text content —
-        tool-call-only assistant turns and attachment stubs don't render as
-        bubbles, so "the latest message" as a HUMAN means it must never
-        resolve to one (a reaction landing on an invisible row looks dropped,
-        and its annotation quotes an empty string).
-        """
-        if not session_id or role not in {"user", "assistant"} or offset < 0:
-            return None
-
-        text_filter = (
-            "AND content IS NOT NULL AND TRIM(content) != '' " if require_text else ""
-        )
-
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT id FROM messages WHERE session_id = ? AND role = ? "
-                f"AND active = 1 {text_filter}ORDER BY id DESC LIMIT 1 OFFSET ?",
-                (session_id, role, int(offset)),
-            ).fetchone()
-
-        return row[0] if row else None
-
-
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 
@@ -10020,19 +9985,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
         return isinstance(config, dict) and bool(config.get("_branched_from"))
 
-    def get_conversation_root(self, session_id: str) -> str:
-        """Return the ROOT id of *session_id*'s lineage chain.
-
-        The root is the stable "conversation id": context compaction
-        rotates ``session_id`` to a new segment linked via
-        ``parent_session_id``, and delegate subagents hang off their
-        parent the same way. Walking to the root gives every segment of
-        one user-facing conversation (and its delegation tree) a single
-        identifier — used for Nous Portal ``conversation=`` usage tagging.
-        Returns *session_id* unchanged when it has no recorded parent.
-        """
-        chain = self._session_lineage_root_to_tip(session_id)
-        return (chain[0] if chain and chain[0] else session_id)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:

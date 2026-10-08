@@ -171,8 +171,6 @@ def realign_markdown_tables(*args, **kwargs):
     return _realign_markdown_tables(*args, **kwargs)
 from son_of_anton_cli.banner import _format_context_length, format_banner_version_label
 
-_COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
 
 # Load .env from ~/.son-of-anton/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -10101,31 +10099,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if _persist:
                 _persist(new_session_id, True)
 
-    def _is_session_yolo_active(self) -> bool:
-        """Whether YOLO bypass is currently enabled for this CLI session.
-
-        Reads from ``tools.approval._session_yolo`` (the same set that
-        ``enable_session_yolo`` / ``disable_session_yolo`` write to) so the
-        status bar reflects the actual bypass state instead of a stale env
-        var. Also honors the process-start ``--yolo`` flag, which freezes
-        ``SON_OF_ANTON_YOLO_MODE`` into ``_YOLO_MODE_FROZEN`` before tool imports
-        happen.
-        """
-        try:
-            from tools.approval import (
-                _YOLO_MODE_FROZEN,
-                is_session_yolo_enabled,
-            )
-        except Exception:
-            return False
-        if _YOLO_MODE_FROZEN:
-            return True
-        # Use ``getattr`` so test fixtures that build a CLI via ``__new__``
-        # (skipping ``__init__``) don't trip an AttributeError here; the
-        # status-bar builders swallow exceptions silently but lose every
-        # field after the failure.
-        session_key = getattr(self, "session_id", None) or "default"
-        return is_session_yolo_enabled(session_key)
 
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts.
