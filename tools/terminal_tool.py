@@ -61,8 +61,6 @@ from tools.shell_heredoc import strip_inert_heredoc_bodies
 # display_son_of_anton_home imported lazily at call site (stale-module safety during son-of-anton update)
 
 
-
-
 # =============================================================================
 # Scratch directory helper (used for orphaned sandbox cleanup)
 # =============================================================================
@@ -267,14 +265,6 @@ def _set_cached_sudo_password(password: str) -> None:
         else:
             _sudo_password_cache.pop(scope, None)
 
-
-def _reset_cached_sudo_passwords() -> None:
-    """Clear all cached sudo passwords.
-
-    Internal helper for tests and process teardown paths.
-    """
-    with _sudo_password_cache_lock:
-        _sudo_password_cache.clear()
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -1049,57 +1039,6 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
-def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
-    """
-    Register environment overrides for a specific task/rollout.
-
-    Called by Atropos environments before the agent loop to configure
-    per-task sandbox settings (e.g., a backend ``env_type`` selection).
-
-    Supported override keys:
-        - cwd: str -- Working directory inside the sandbox
-        - env_type: str -- Terminal backend type for this task
-
-    Args:
-        task_id: The rollout's unique task identifier
-        overrides: Dict of config keys to override
-    """
-    _task_env_overrides[task_id] = overrides
-
-    # If a live environment already exists for this task, a freshly registered
-    # ``cwd`` override (e.g. the ACP client switching the editor's project root
-    # mid-session via ``session/load`` / ``session/resume``) must take effect
-    # immediately. The session record is what commands resolve against;
-    # the live env's cwd is also updated so env-side seeding stays consistent.
-    new_cwd = overrides.get("cwd")
-    if isinstance(new_cwd, str) and new_cwd.strip():
-        # A registered workspace cwd IS the session's working directory until
-        # a `cd` changes it.
-        record_session_cwd(task_id, new_cwd)
-        # The live env is cached under the raw task_id for per-session surfaces
-        # (ACP/gateway/dashboard) and under the collapsed container id for
-        # isolation-keyed rollouts. Try the raw id first, then the container id,
-        # so a CWD-only override (which collapses to "default") still finds and
-        # updates the originating session's env.
-        container_id = _resolve_container_task_id(task_id)
-        with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
-        if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
-
-
-def clear_task_env_overrides(task_id: str):
-    """
-    Clear environment overrides for a task after rollout completes.
-
-    Called during cleanup to avoid stale entries accumulating.
-    """
-    _task_env_overrides.pop(task_id, None)
-    clear_session_cwd(task_id)
-    with _container_alias_lock:
-        _container_aliases.pop(task_id, None)
-
-
 # Subagent → parent sandbox aliasing.  delegate_task children get their own
 # task_id (file-state tracking, TUI events) but must share the PARENT
 # session's environment — one bash, one /workspace, one set of installed
@@ -1120,17 +1059,6 @@ def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) 
         return
     with _container_alias_lock:
         _container_aliases[child_task_id] = str(parent_task_id or "default")
-
-
-def _resolve_container_alias(task_id: str) -> str:
-    """Follow the child→parent alias chain (cycle-safe) for *task_id*."""
-    seen = set()
-    key = task_id
-    with _container_alias_lock:
-        while key in _container_aliases and key not in seen:
-            seen.add(key)
-            key = _container_aliases[key]
-    return key
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -1582,8 +1510,6 @@ def is_persistent_env(task_id: str) -> bool:
     if getattr(env, "_session_scoped", False):
         return True
     return bool(getattr(env, "_persistent", False))
-
-
 
 
 def cleanup_all_environments():

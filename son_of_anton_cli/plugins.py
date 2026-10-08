@@ -5568,39 +5568,6 @@ def _plugin_home_key() -> Path:
         return get_son_of_anton_home().expanduser()
 
 
-def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
-    """Purge ``sys.modules`` entries for directory-loaded plugins.
-
-    ``PluginManager._load_directory_module`` imports each plugin as
-    ``son_of_anton_plugins.<slug>`` and registers that top-level module in
-    ``sys.modules``. Anything the plugin's ``__init__.py`` imports with a
-    *relative* import (``from . import foo``, ``from .sub import bar``)
-    ends up cached in ``sys.modules`` too, under
-    ``son_of_anton_plugins.<slug>.<submodule>``. When we swap in a fresh manager
-    for a new home, replacing only the parent module leaves those
-    submodules behind: if a same-named plugin in the new profile does a
-    relative import, Python resolves it from ``sys.modules`` first and
-    silently reuses the *previous* profile's already-imported submodule
-    (and any module-level state it captured), instead of re-executing the
-    new profile's code. We must evict the package itself and every module
-    whose name is prefixed with ``"<module_name>."`` before (or when)
-    discarding a manager, not just drop our reference to it.
-    """
-    if manager is None:
-        return
-    for loaded in getattr(manager, "_plugins", {}).values():
-        module = getattr(loaded, "module", None)
-        module_name = getattr(module, "__name__", None)
-        if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
-            continue
-        prefix = f"{module_name}."
-        for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-            del sys.modules[name]
-        with _MODULE_NAMESPACE_LOCK:
-            if _BARE_MODULE_SCOPE.get(module_name) == manager.scope_key:
-                _BARE_MODULE_SCOPE.pop(module_name, None)
-
-
 def get_plugin_manager() -> PluginManager:
     """Return the plugin manager for the active Son of Anton profile/home.
 
@@ -5633,28 +5600,6 @@ def get_plugin_manager() -> PluginManager:
 
         _plugin_manager = manager
         return manager
-
-
-def _reset_plugin_managers_for_tests() -> None:
-    """Test-only helper: drop every cached manager and its submodules.
-
-    Not used by production code paths — tests that want a fully clean
-    slate (rather than adopting/injecting a specific manager) can call
-    this instead of reaching into the module's private dict directly.
-    """
-    global _plugin_manager
-    with _plugin_managers_lock:
-        managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
-        if _plugin_manager is not None and _plugin_manager not in managers:
-            managers.append(_plugin_manager)
-        for manager in managers:
-            _clear_plugin_submodules(manager)
-            try:
-                manager.unload()
-            except Exception:
-                logger.debug("test plugin-manager unload failed", exc_info=True)
-        _plugin_managers_by_home.clear()
-        _plugin_manager = None
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
@@ -5807,18 +5752,6 @@ def get_portable_mcp_server_names_nowait() -> "set[str]":
                 return set(names)
     discover_plugins()
     return set(manager.get_portable_mcp_servers())
-
-
-def unload_plugins(
-    plugin: Union[str, PluginManifest, LoadedPlugin, None] = None,
-) -> bool:
-    """Unload one plugin or all plugins from the process-global manager.
-
-    Wait for background discovery first so teardown cannot race an in-flight
-    registration sweep introduced by the warm-start discovery path.
-    """
-    _join_background_discovery()
-    return get_plugin_manager().unload(plugin)
 
 
 def _delivery_manager() -> PluginManager:
@@ -6062,91 +5995,6 @@ def _get_pre_tool_call_directive_details(
         )
 
     return _PreToolCallDirective(modified_args=modified_args)
-
-
-def get_pre_tool_call_directive(
-    tool_name: str,
-    args: Optional[Dict[str, Any]],
-    task_id: str = "",
-    session_id: str = "",
-    tool_call_id: str = "",
-    turn_id: str = "",
-    api_request_id: str = "",
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[Optional[str], Optional[str]]:
-    """Check ``pre_tool_call`` hooks for a blocking or approval directive.
-
-    Backward-compatible public helper: returns ``(directive, message)`` where
-    ``directive`` is ``"block"``, ``"approve"``, or ``None``. Internal callers
-    that need approve-specific metadata use
-    :func:`_get_pre_tool_call_directive_details`.
-    """
-    details = _get_pre_tool_call_directive_details(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
-    return (details.action, details.message)
-
-
-def get_pre_tool_call_block_message(
-    tool_name: str,
-    args: Optional[Dict[str, Any]],
-    task_id: str = "",
-    session_id: str = "",
-    tool_call_id: str = "",
-    turn_id: str = "",
-    api_request_id: str = "",
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Back-compat shim: return only a ``block`` message (or ``None``).
-
-    Deprecated in favor of :func:`get_pre_tool_call_directive`, which also
-    surfaces the ``approve`` escalation directive. Kept so any external caller
-    importing the old name keeps working; ``approve`` directives are invisible
-    to this shim (it only reports blocks).
-    """
-    directive, message = get_pre_tool_call_directive(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
-    return message if directive == "block" else None
-
-
-def resolve_pre_tool_block(
-    tool_name: str,
-    args: Optional[Dict[str, Any]],
-    task_id: str = "",
-    session_id: str = "",
-    tool_call_id: str = "",
-    turn_id: str = "",
-    api_request_id: str = "",
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[str]:
-    """Resolve the pre_tool_call directive to a final block message (or None).
-
-    Single entry point for every tool-dispatch site: fetches the plugin
-    directive and, for an ``approve`` escalation, invokes the human-approval
-    gate (:func:`tools.approval.request_tool_approval`). Returns the message
-    the tool result should carry when the call is blocked, or ``None`` when
-    the call may proceed.
-
-    Centralizing this keeps the security-critical fail-closed logic in ONE
-    place instead of copy-pasted across the concurrent/sequential/helper
-    dispatch paths: an ``approve`` directive whose gate errors, denies, or
-    times out is fail-closed to a block; ``block`` blocks with its message;
-    anything else proceeds.
-    """
-    details = _get_pre_tool_call_directive_details(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
-    return _resolve_block_from_details(
-        details, tool_name,
-        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
-    )
 
 
 def _resolve_block_from_details(
@@ -6500,22 +6348,6 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     """
     manager = _ensure_plugins_discovered()
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
-
-
-def get_plugin_subscriptions() -> Dict[str, List[Callable]]:
-    """Return the inter-plugin event bus subscription registry.
-
-    Returns a snapshot mapping each fully-qualified event name
-    (``<plugin_key>:<event>`` or ``son-of-anton:<event>``) to subscriber callbacks in
-    registration order. Owner ledger metadata stays private to the manager.
-    Triggers idempotent plugin discovery before reading the snapshot.
-    """
-    manager = _ensure_plugins_discovered()
-    with manager._event_lock:
-        return {
-            event: [entry.callback for entry in entries]
-            for event, entries in manager._subscriptions.items()
-        }
 
 
 def get_plugin_toolsets() -> List[tuple]:

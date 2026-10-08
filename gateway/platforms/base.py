@@ -12,7 +12,6 @@ import logging
 import os
 import random
 import re
-import socket as _socket
 import subprocess
 import sys
 import threading
@@ -193,41 +192,6 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
         else:
             hi = mid - 1
     return lo
-
-
-def is_network_accessible(host: str) -> bool:
-    """Return True if *host* would expose the server beyond loopback.
-
-    Loopback addresses (127.0.0.1, ::1, IPv4-mapped ::ffff:127.0.0.1)
-    are local-only.  Unspecified addresses (0.0.0.0, ::) bind all
-    interfaces.  Hostnames are resolved; DNS failure fails closed.
-    """
-    try:
-        addr = ipaddress.ip_address(host)
-        if addr.is_loopback:
-            return False
-        # ::ffff:127.0.0.1 — Python reports is_loopback=False for mapped
-        # addresses, so check the underlying IPv4 explicitly.
-        if getattr(addr, "ipv4_mapped", None) and addr.ipv4_mapped.is_loopback:
-            return False
-        return True
-    except ValueError:
-        # when host variable is a hostname, we should try to resolve below
-        pass
-
-    try:
-        resolved = _socket.getaddrinfo(
-            host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM,
-        )
-        # if the hostname resolves into at least one non-loopback address,
-        # then we consider it to be network accessible
-        for _family, _type, _proto, _canonname, sockaddr in resolved:
-            addr = ipaddress.ip_address(sockaddr[0])
-            if not addr.is_loopback:
-                return True
-        return False
-    except (_socket.gaierror, OSError):
-        return True
 
 
 def _detect_macos_system_proxy() -> str | None:
@@ -1109,13 +1073,6 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
 # Canonical cache subdirectories that hold deliverable artifacts. Used both
 # for the top-level safe roots above and to enumerate per-profile cache roots
 # at check time (see _media_delivery_allowed_roots).
-_MEDIA_DELIVERY_CACHE_SUBDIRS = (
-    "images",
-    "audio",
-    "videos",
-    "documents",
-    "screenshots",
-)
 
 
 def _media_delivery_allowed_roots() -> List[Path]:
@@ -1870,17 +1827,6 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     return not suffix or suffix not in MEDIA_DELIVERY_EXTS
 
 
-def _resolve_extensionless_candidate(path: str) -> Optional[str]:
-    """Validate a bare extensionless-branch path (no forward extension).
-
-    Thin wrapper kept for call sites that only have the normalized path
-    (no scan-text context for spaced-path recovery).
-    """
-    if not path:
-        return None
-    return validate_media_delivery_path(path)
-
-
 def _strip_media_tag_directives(text: str) -> str:
     """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers.
 
@@ -2314,17 +2260,6 @@ class SendResult:
 #   rate_limited  the platform throttled the send (flood control).
 #   transient     a connection-level failure that is safe to retry.
 #   unknown       classification did not match any known shape.
-SEND_ERROR_KINDS = frozenset(
-    {
-        "too_long",
-        "bad_format",
-        "forbidden",
-        "not_found",
-        "rate_limited",
-        "transient",
-        "unknown",
-    }
-)
 
 # ``not_found`` substrings split by blast radius.  A *chat-level* not_found means
 # the chat/user/group itself is gone, so the whole target is dead.  A

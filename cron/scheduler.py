@@ -821,26 +821,6 @@ def _job_interval_minutes(job: dict) -> Optional[float]:
     return None
 
 
-def get_inflight_guard_stats() -> dict:
-    """Probe-visible snapshot of the in-flight guard.
-
-    ``forced_releases`` is a monotonic counter of stale claims this process
-    has force-released; any non-zero value means a cron job wedged and was
-    recovered without a gateway restart.
-    """
-    now = time.time()
-    with _running_lock:
-        return {
-            "running": sorted(_running_job_ids),
-            "running_ages_seconds": {
-                jid: round(now - started, 1)
-                for jid, started in _running_since.items()
-            },
-            "forced_releases": _forced_release_count,
-            "recent_forced_releases": list(_forced_releases),
-        }
-
-
 def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance_seconds: float) -> None:
     """Persist a countable signal for one forced release (best-effort)."""
     entry = {
@@ -2187,48 +2167,6 @@ def _relay_fronted_delivery_platforms(connected: set) -> set:
     except Exception:
         logger.debug("relay fronted-platform lookup failed", exc_info=True)
         return set()
-
-
-def cron_delivery_targets() -> list[dict]:
-    """Return the platforms a cron job can auto-deliver to.
-
-    Single source of truth for any UI (dashboard dropdown, etc.) that lets a
-    user pick a cron delivery target. A platform is included when it is a valid
-    cron delivery platform AND its gateway is configured (enabled + credentials
-    present). Each entry reports whether the platform's home target (the
-    room/channel cron posts to) is set — a platform can be configured for
-    interactive use but still lack the home target an unattended cron job needs.
-
-    Returns a list of dicts: ``{"id", "name", "home_target_set", "home_env_var"}``
-    ordered by the gateway's canonical platform order. Callers should always
-    prepend the implicit ``local`` option themselves — it needs no config.
-    """
-    targets: list[dict] = []
-    try:
-        from gateway.config import load_gateway_config
-
-        gateway_config = load_gateway_config()
-        connected = {p.value for p in gateway_config.get_connected_platforms()}
-        connected |= _relay_fronted_delivery_platforms(connected)
-    except Exception:
-        logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
-        connected = set()
-
-    for name in _iter_home_target_platforms():
-        if name not in connected:
-            continue
-        if not _is_known_delivery_platform(name):
-            continue
-        env_var = _resolve_home_env_var(name)
-        targets.append(
-            {
-                "id": name,
-                "name": name.replace("_", " ").title(),
-                "home_target_set": bool(_get_home_target_chat_id(name)),
-                "home_env_var": env_var or None,
-            }
-        )
-    return targets
 
 
 def _origin_thread_is_stale(origin: dict) -> bool:
@@ -4137,7 +4075,6 @@ BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
 # deliver again" (the drift_alerted bit on the job record, #73506 shape).
 DRIFT_SKIP_MARKER = "[drift_skip]"
 DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
-
 
 
 def _is_transient_provider_resolve_error(exc: BaseException) -> bool:

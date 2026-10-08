@@ -43,7 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
-from gateway.platforms.media_cache import DEFAULT_EXT_TO_MIME, mime_for_ext
+from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
@@ -71,7 +71,6 @@ SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
 # the thing this fallback exists for — are orders of magnitude smaller.
 SIGNAL_MAX_INLINE_ATTACHMENT_SIZE = 16 * 1024 * 1024  # 16 MB
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
-TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
@@ -150,7 +149,6 @@ def _is_audio_ext(ext: str) -> bool:
 # gateway.platforms.media_cache.DEFAULT_EXT_TO_MIME (byte-identical);
 # kept as a module alias for backwards compatibility with any callers
 # that referenced the private name.
-_EXT_TO_MIME = DEFAULT_EXT_TO_MIME
 
 
 def _ext_to_mime(ext: str) -> str:

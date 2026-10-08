@@ -484,25 +484,6 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     return "unknown"
 
 
-def stamp_install_method(method: str, project_root: Optional[Path] = None) -> None:
-    """Write the install method next to the running code (code-scoped stamp).
-
-    The stamp lives in the install tree (``<install tree>/.install_method``),
-    not in ``$SON_OF_ANTON_HOME``, so that two installs sharing one data directory
-    do not overwrite each other's marker. See ``detect_install_method`` for
-    the full rationale.
-
-    Best-effort: if the install tree is read-only the write silently no-ops
-    and detection falls back to its other signals.
-    """
-    root = _install_method_project_root(project_root)
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        (root / ".install_method").write_text(method + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
 def is_nix_install_method(method: str) -> bool:
     """Return True for every install method that Nix owns.
 
@@ -1829,14 +1810,6 @@ _EXTRA_KNOWN_ROOT_KEYS = {
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
 # Valid fields inside a custom_providers list entry
-_VALID_CUSTOM_PROVIDER_FIELDS = {
-    "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay", "extra_body",
-    "ssl_ca_cert", "ssl_verify",
-    # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
-    # — include it here so the set accurately describes the supported schema.
-    "key_env",
-}
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
@@ -2988,17 +2961,6 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
 from son_of_anton_cli.personality import NEUTRAL_PERSONALITY_NAMES as _NEUTRAL_PERSONALITY_NAMES  # noqa: F401
 
 
-def _prompt_text(value: Any) -> str:
-    """Normalize config prompt values from TOML before handing them to AIAgent.
-
-    Delegates to :mod:`son_of_anton_cli.personality` — the single owner of
-    personality/overlay semantics. Kept as a re-export for existing importers.
-    """
-    from son_of_anton_cli.personality import prompt_text
-
-    return prompt_text(value)
-
-
 def render_personality_prompt(value: Any) -> str:
     """Render a string or structured personality definition to a prompt."""
     from son_of_anton_cli.personality import render_personality_prompt as _render
@@ -3240,34 +3202,6 @@ def load_config_readonly() -> Dict[str, Any]:
     safety guarantee is purely documented, not enforced — be careful.
     """
     return _load_config_impl(want_deepcopy=False)
-
-
-def write_platform_config_field(
-    platform_key: str,
-    field_key: str,
-    value: Any,
-    *,
-    raw: bool = False,
-) -> None:
-    """Persist one scalar field under ``platforms.<platform_key>``.
-
-    ``raw=True`` preserves CLI setup flows that intentionally edit only the
-    user's raw config file. Dashboard routes use the default loaded-config path
-    so they retain their existing profile-scoped ``load_config`` behavior.
-    """
-    config = read_raw_config() if raw else load_config()
-    platforms = config.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        platforms = {}
-        config["platforms"] = platforms
-
-    platform_config = platforms.setdefault(platform_key, {})
-    if not isinstance(platform_config, dict):
-        platform_config = {}
-        platforms[platform_key] = platform_config
-
-    platform_config[field_key] = value
-    save_config(config)
 
 
 TERMINAL_CONFIG_ENV_MAP = {
@@ -3561,35 +3495,6 @@ _SECURITY_COMMENT = """
 """
 
 _FALLBACK_COMMENT = """
-# ── Fallback Model ────────────────────────────────────────────────────
-# Automatic provider failover when primary is unavailable.
-# Uncomment and configure to enable. Triggers on rate limits (429),
-# overload (529), service errors (503), or connection failures.
-#
-# Supported providers:
-#   nous         (OAuth — son-of-anton auth) — Nous Portal
-#   zai          (ZAI_API_KEY)         — Z.AI / GLM
-#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
-#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
-#   minimax      (MINIMAX_API_KEY)     — MiniMax
-#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
-#
-# For custom OpenAI-compatible endpoints, add base_url and key_env.
-#
-# fallback_model:
-#   provider: openrouter
-#   model: anthropic/claude-sonnet-4
-"""
-
-
-_COMMENTED_SECTIONS = """
-# ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is ON by default. Set to false to pass tool output,
-# logs, and chat responses through unmodified (e.g. for redactor dev).
-#
-# security:
-#   redact_secrets: true
-
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
@@ -4154,27 +4059,6 @@ def remove_env_value(key: str) -> bool:
     return found
 
 
-def save_anthropic_oauth_token(value: str, save_fn=None):
-    """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
-    writer = save_fn or save_env_value
-    writer("ANTHROPIC_TOKEN", value)
-    writer("ANTHROPIC_API_KEY", "")
-
-
-def use_anthropic_claude_code_credentials(save_fn=None):
-    """Use Claude Code's own credential files instead of persisting env tokens."""
-    writer = save_fn or save_env_value
-    writer("ANTHROPIC_TOKEN", "")
-    writer("ANTHROPIC_API_KEY", "")
-
-
-def save_anthropic_api_key(value: str, save_fn=None):
-    """Persist an Anthropic API key and clear the OAuth/setup-token slot."""
-    writer = save_fn or save_env_value
-    writer("ANTHROPIC_API_KEY", value)
-    writer("ANTHROPIC_TOKEN", "")
-
-
 def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
     # Route through the unified credential lifecycle so a rotation via the
     # secret-capture path also refreshes any config.toml mirror of the old
@@ -4187,7 +4071,6 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
         "stored_as": key,
         "validated": False,
     }
-
 
 
 def reload_env() -> int:
