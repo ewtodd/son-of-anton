@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import secrets
 import threading
 import time
 from contextlib import contextmanager

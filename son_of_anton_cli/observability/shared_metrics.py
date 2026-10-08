@@ -19,7 +19,6 @@ from utils import atomic_json_write
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     COUNTER_METRICS,
-    MODEL_ROUTE_METRIC,
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )

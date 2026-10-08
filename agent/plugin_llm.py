@@ -68,12 +68,10 @@ supports.
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 

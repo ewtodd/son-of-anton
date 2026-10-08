@@ -43,10 +43,8 @@ the mixer's output cannot echo back into transcription.
 """
 
 import logging
-import threading
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Optional
 
-import discord
 
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
@@ -54,7 +52,7 @@ except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
 if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
-    import numpy as np
+    pass
 
 logger = logging.getLogger(__name__)
 

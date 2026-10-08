@@ -10,7 +10,6 @@ module-level constants live in son_of_anton_state_common.
 
 import logging
 import json
-import time
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE

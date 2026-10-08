@@ -169,7 +169,7 @@ def realign_markdown_tables(*args, **kwargs):
     from agent.markdown_tables import realign_markdown_tables as _realign_markdown_tables
 
     return _realign_markdown_tables(*args, **kwargs)
-from son_of_anton_cli.banner import _format_context_length, format_banner_version_label
+from son_of_anton_cli.banner import format_banner_version_label
 
 
 # Load .env from ~/.son-of-anton/.env first, then project root as dev fallback.
@@ -2808,7 +2808,6 @@ def _hex_to_ansi(color: str, *, bold: bool = False) -> str:
 # prompt_toolkit chrome (status bar, menus, prompt) follows the terminal
 # theme: its style strings are snapped onto the ANSI-16 palette by the skin
 # engine, the shared home for theme logic (see skin_engine.py).
-from son_of_anton_cli.skin_engine import snap_pt_style_to_theme as _snap_pt_style_to_theme
 
 
 # ────────────────────────────────────────────────────────────────────────
