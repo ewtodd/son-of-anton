@@ -7,7 +7,6 @@ before processing them.
 
 from __future__ import annotations
 
-import json
 import types
 from pathlib import Path
 

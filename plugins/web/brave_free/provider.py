@@ -20,7 +20,6 @@ Auth env var::
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider

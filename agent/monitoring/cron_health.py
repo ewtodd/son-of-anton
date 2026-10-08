@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from agent.monitoring.events import CronExecutionEvent
-from agent.monitoring.gateway_health import GatewayHealthSnapshot, GatewayMetric
+from agent.monitoring.gateway_health import GatewayMetric
 from cron.jobs import (
     _compute_grace_seconds,
     get_catch_up_occurrence_count,

@@ -15,7 +15,6 @@ import importlib.util
 import logging
 import os
 import re
-import shutil
 import sys
 import copy
 from pathlib import Path

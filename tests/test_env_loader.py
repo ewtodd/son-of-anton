@@ -95,7 +95,6 @@ def test_cross_user_home_guard_fails_clearly(tmp_path, monkeypatch) -> None:
     0700 home makes every path PermissionError. The CLI must stop with a
     one-line diagnosis instead of a raw traceback from an arbitrary site.
     """
-    import sys
 
     from son_of_anton_cli import main as main_mod
 

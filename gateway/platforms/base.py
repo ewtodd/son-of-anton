@@ -15,7 +15,6 @@ import re
 import socket as _socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -494,7 +493,6 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return False
 
 
-import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path

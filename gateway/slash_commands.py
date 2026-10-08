@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import hashlib
 import inspect
 import logging
 import os
@@ -29,7 +28,6 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from agent.i18n import t
-from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (

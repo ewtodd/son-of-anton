@@ -33,7 +33,6 @@ import concurrent.futures
 import base64
 import atexit
 import errno
-import tempfile
 import time
 import uuid
 import textwrap
@@ -2451,7 +2450,6 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
        preserved for unpushed work is not re-diff-hashed on every subsequent
        startup.
     """
-    import re
     import subprocess
     import time
 

@@ -12,7 +12,6 @@ the `platform_toolsets` key.
 import json as _json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +23,7 @@ from son_of_anton_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from son_of_anton_cli.colors import Colors, color
-from utils import base_url_hostname, is_truthy_value
+from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +378,6 @@ def _pip_install(
 
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
-    from son_of_anton_constants import find_node_executable
 
     if post_setup_key == "ddgs":
         try:
@@ -565,7 +563,6 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     }
     try:
         from son_of_anton_cli.plugins import (
-            get_plugin_manager,
             get_portable_mcp_server_names_nowait,
         )
 

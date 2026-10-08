@@ -27,7 +27,6 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from son_of_anton_constants import display_son_of_anton_home
-from agent.turn_context import extract_api_content_sidecar
 
 
 class CLICommandsMixin:

@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from son_of_anton_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from son_of_anton_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -46,7 +46,7 @@ from agent.message_sanitization import (
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from utils import base_url_host_matches, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}

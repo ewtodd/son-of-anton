@@ -54,7 +54,6 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
-    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_video_from_bytes,
 )

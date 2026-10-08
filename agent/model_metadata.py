@@ -4,8 +4,6 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompactor
 and run_agent.py for pre-flight context checks.
 """
 
-import base64
-import hashlib
 import ipaddress
 import json
 import logging

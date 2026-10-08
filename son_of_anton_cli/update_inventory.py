@@ -32,7 +32,6 @@ Supervisors (how a runtime is restarted after code changes):
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional

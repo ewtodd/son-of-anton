@@ -147,7 +147,7 @@ from gateway.platforms.helpers import (
     ThreadParticipationTracker,
     convert_table_to_bullets,
 )
-from utils import atomic_json_write, env_float, env_int
+from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,

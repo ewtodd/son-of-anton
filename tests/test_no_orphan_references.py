@@ -18,7 +18,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {".git", "__pycache__", ".venv", "result", "node_modules", ".mypy_cache"}

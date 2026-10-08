@@ -23,7 +23,6 @@ from __future__ import annotations
 import http.client
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
@@ -2325,7 +2324,6 @@ def _collect_authed_provider_slugs(
     :param excluded: Provider slugs to exclude (from ``model_catalog.excluded_providers``).
     :returns: List of normalized provider slugs that have credentials.
     """
-    import os
     from agent.models_dev import PROVIDER_TO_MODELS_DEV
     from son_of_anton_cli.auth import PROVIDER_REGISTRY, _load_auth_store
     from son_of_anton_cli.providers import SON_OF_ANTON_OVERLAYS, ALIASES as _PROVIDER_ALIAS_TABLE

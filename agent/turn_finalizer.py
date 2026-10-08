@@ -22,8 +22,6 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
-import logging
-import os
 
 from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.message_content import flatten_message_text

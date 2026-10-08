@@ -213,7 +213,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, strip_decorative_glyphs
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, strip_decorative_glyphs
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill

@@ -14,7 +14,6 @@ import time
 
 
 from agent.redact import redact_sensitive_text
-from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -774,7 +773,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     media_files = media_files or []
 
-    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+    from gateway.platforms.base import BasePlatformAdapter
 
     media_files = media_files or []
 

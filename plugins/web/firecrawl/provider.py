@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any, Dict, List, Optional, NoReturn, TYPE_CHECKING
 
 import httpx
@@ -181,7 +180,6 @@ def _use_keyless_ring() -> bool:
         return False
     if (get_env_value("FIRECRAWL_API_URL") or "").strip():
         return False
-    import tools.web_tools as _wt
     try:
         if _is_explicit_firecrawl_selection():
             return False
@@ -247,7 +245,6 @@ def _firecrawl_backend_help_suffix() -> str:
 
 def _raise_web_backend_configuration_error() -> "NoReturn":
     """Raise a clear error for unsupported web backend configuration."""
-    import tools.web_tools as _wt
 
     message = (
         "Web tools are not configured. "

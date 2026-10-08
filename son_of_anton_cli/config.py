@@ -550,7 +550,7 @@ def managed_error(action: str = "modify configuration"):
 # =============================================================================
 
 # Re-export from son_of_anton_constants — canonical definition lives there.
-from son_of_anton_constants import get_son_of_anton_home, get_process_son_of_anton_home  # noqa: F811,E402
+from son_of_anton_constants import get_son_of_anton_home  # noqa: F811,E402
 from utils import atomic_replace, dump_toml, fast_toml_load
 
 def get_config_path() -> Path:
