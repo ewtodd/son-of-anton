@@ -2843,8 +2843,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _discord_recovery_db_path(self) -> _Path:
-        return self._discord_recovery_store.path()
 
     def _with_discord_recovery_db(self, fn, default=None):
         return self._discord_recovery_store.call(fn, default)
@@ -4101,23 +4099,6 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         pass
 
-    async def play_tts(
-        self,
-        chat_id: str,
-        audio_path: str,
-        **kwargs,
-    ) -> SendResult:
-        """Play auto-TTS audio.
-
-        When the bot is in a voice channel for this chat's guild, play
-        directly in the VC instead of sending as a file attachment.
-        """
-        for gid, text_ch_id in self._voice_text_channels.items():
-            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
-                success = await self.play_in_voice_channel(gid, audio_path)
-                return SendResult(success=success)
-        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
     async def send_voice(
         self,
@@ -4491,62 +4472,6 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
-    async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
-        """Join a Discord voice channel. Returns True on success.
-
-        When ``text_channel_id`` is provided, the binding is stored so
-        voice transcriptions are routed to the correct text channel
-        (``_voice_text_channels``) without requiring `/voice join`.
-        This supports automatic/programmatic voice joins where the
-        command flow that normally establishes the binding is absent.
-        """
-        if not self._client or not DISCORD_AVAILABLE:
-            return False
-        guild_id = channel.guild.id
-
-        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            # Already connected in this guild?
-            existing = self._voice_clients.get(guild_id)
-            if existing and existing.is_connected():
-                if existing.channel.id == channel.id:
-                    self._reset_voice_timeout(guild_id)
-                    return True
-                await existing.move_to(channel)
-                self._reset_voice_timeout(guild_id)
-                return True
-
-            vc = await channel.connect()
-            self._voice_clients[guild_id] = vc
-            self._reset_voice_timeout(guild_id)
-
-            # Store text-channel binding for automatic/programmatic joins
-            # so voice transcriptions can be routed without /voice join.
-            if text_channel_id is not None:
-                self._voice_text_channels[guild_id] = text_channel_id
-            if source is not None:
-                self._voice_sources[guild_id] = source
-
-            # Start voice receiver (Phase 2: listen to users)
-            try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-                receiver.start()
-                self._voice_receivers[guild_id] = receiver
-                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                    self._voice_listen_loop(guild_id)
-                )
-            except Exception as e:
-                logger.warning("Voice receiver failed to start: %s", e)
-
-            # Phase 3: install the continuous mixer (ambient bed + ducked
-            # speech).  Best-effort — if it fails we fall back to the legacy
-            # one-shot FFmpegPCMAudio playback path in play_in_voice_channel.
-            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
-                try:
-                    await self._install_voice_mixer(guild_id, vc)
-                except Exception as e:
-                    logger.warning("Voice mixer failed to start: %s", e)
-
-            return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
@@ -4680,17 +4605,6 @@ class DiscordAdapter(BasePlatformAdapter):
         finally:
             self._reset_voice_timeout(guild_id)
 
-    async def get_user_voice_channel(self, guild_id: int, user_id: str):
-        """Return the voice channel the user is currently in, or None."""
-        if not self._client:
-            return None
-        guild = self._client.get_guild(guild_id)
-        if not guild:
-            return None
-        member = guild.get_member(int(user_id))
-        if not member or not member.voice:
-            return None
-        return member.voice.channel
 
     def _cancel_voice_timeout(self, guild_id: int) -> None:
         task = self._voice_timeout_tasks.pop(guild_id, None)
@@ -6493,20 +6407,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
-    def _discord_allow_any_attachment(self) -> bool:
-        """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
-
-        When True, any uploaded file is cached to disk and surfaced to the
-        agent as a local path so it can be inspected via terminal / read_file
-        / ffprobe / etc. Default False preserves the historical behaviour of
-        dropping unsupported types with a warning log.
-        """
-        configured = self.config.extra.get("allow_any_attachment")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off", ""}
-            return bool(configured)
-        return os.getenv("DISCORD_ALLOW_ANY_ATTACHMENT", "false").lower() in {"true", "1", "yes", "on"}
 
     def _discord_max_attachment_bytes(self) -> int:
         """Return the per-attachment byte cap. 0 means unlimited.

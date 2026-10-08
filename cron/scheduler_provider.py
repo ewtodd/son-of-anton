@@ -230,12 +230,6 @@ class CronScheduler(ABC):
         )
         return True
 
-    def reconcile(self) -> None:
-        """Converge the external registry toward jobs.json (the desired state):
-        arm missing one-shots, cancel orphaned ones, re-arm changed times.
-        Built-in: no-op."""
-        return None
-
 
 def provider_supports_force_fire(provider: Any) -> bool:
     """Return whether a provider can safely receive ``fire_due(force=...)``."""

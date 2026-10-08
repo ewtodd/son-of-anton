@@ -1006,26 +1006,6 @@ class AIAgent:
         """
         self._last_ctx_overflow_warn = None
 
-    def _emit_notice(self, notice) -> None:
-        """Fire a structured ``AgentNotice`` to the active driver (TUI / CLI).
-
-        Driver-agnostic: the bound ``notice_callback`` renders it however that
-        driver does (TUI status-bar override, CLI console line). Swallows all
-        callback errors — a notice must NEVER break the agent loop (D-D fail-open).
-        """
-        if self.notice_callback:
-            try:
-                self.notice_callback(notice)
-            except Exception:
-                logger.debug("notice_callback error in _emit_notice", exc_info=True)
-
-    def _emit_notice_clear(self, key: str) -> None:
-        """Clear a previously-fired sticky notice by ``key`` (e.g. on recovery)."""
-        if self.notice_clear_callback:
-            try:
-                self.notice_clear_callback(key)
-            except Exception:
-                logger.debug("notice_clear_callback error in _emit_notice_clear", exc_info=True)
 
     def _emit_wait_notice(self, text: str) -> None:
         """Surface a live wait-state explanation on every driver.
@@ -1244,10 +1224,6 @@ class AIAgent:
             "auth_mode": getattr(self, "auth_mode", "") or "",
         }
 
-    def _check_compaction_model_feasibility(self) -> None:
-        """Forwarder — see ``agent.conversation_compaction.check_compaction_model_feasibility``."""
-        from agent.conversation_compaction import check_compaction_model_feasibility
-        check_compaction_model_feasibility(self)
 
     def _replay_compaction_warning(self) -> None:
         """Forwarder — see ``agent.conversation_compaction.replay_compaction_warning``."""
@@ -1844,10 +1820,6 @@ class AIAgent:
         ):
             messages.pop()
 
-    def _repair_message_sequence(self, messages: List[Dict]) -> int:
-        """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""
-        from agent.agent_runtime_helpers import repair_message_sequence
-        return repair_message_sequence(self, messages)
 
     def _flush_messages_to_session_db(
         self,
@@ -4298,11 +4270,6 @@ class AIAgent:
         return self._interrupt_requested
 
 
-    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
-        """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
-        from agent.system_prompt import build_system_prompt_parts
-        return build_system_prompt_parts(self, system_message=system_message)
-
     def _build_system_prompt(self, system_message: str = None) -> str:
         """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
         from agent.system_prompt import build_system_prompt
@@ -5267,12 +5234,6 @@ class AIAgent:
         from agent.agent_runtime_helpers import recover_with_credential_pool
         return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context, billing_unverified=billing_unverified)
 
-    def _credential_pool_may_recover_rate_limit(self) -> bool:
-        """Whether a rate-limit retry should wait for same-provider credentials."""
-        pool = self._credential_pool
-        if pool is None:
-            return False
-        return pool.has_available()
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
@@ -6846,34 +6807,6 @@ class AIAgent:
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
 
-    def _conversation_root_id(self) -> Optional[str]:
-        """Resolve the stable conversation id for Portal usage attribution.
-
-        Returns the session-lineage ROOT id rather than the current segment
-        id, so one user-facing conversation keeps a single ``conversation=``
-        tag across context-compaction rotation (`/new` starts a genuinely
-        new lineage). Delegate subagents resolve through their
-        ``_parent_session_id`` so an entire delegation tree tags as the
-        parent conversation.
-
-        Best-effort: falls back to the raw session id when the session DB
-        is unavailable or the lineage walk fails.
-        """
-        sid = getattr(self, "session_id", None)
-        if not sid:
-            return None
-        # Subagents may not have a DB row yet on their first turn; walking
-        # from the parent id still lands on the right root.
-        start = getattr(self, "_parent_session_id", None) or sid
-        db = getattr(self, "_session_db", None)
-        if db is not None:
-            try:
-                root = db.get_conversation_root(start)
-                if root:
-                    return root
-            except Exception:
-                logger.debug("Conversation root lineage walk failed", exc_info=True)
-        return start
 
     def run_conversation(
         self,

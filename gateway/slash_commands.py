@@ -2242,7 +2242,6 @@ class GatewaySlashCommandsMixin:
         return await _finish_switch()
 
 
-
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
@@ -2534,32 +2533,6 @@ class GatewaySlashCommandsMixin:
             f"Reviewing this conversation in the background{tail} — "
             f"any memory/skill updates will be reported when done."
         )
-
-
-    async def _get_loop_manager_for_event(self, event: "MessageEvent"):
-        """Return a LoopManager bound to the session for this gateway event.
-
-        Returns ``(manager, session_entry)`` or ``(None, None)`` when the
-        loops module or session can't be loaded. Mirrors
-        ``_get_goal_manager_for_event``.
-        """
-        try:
-            from son_of_anton_cli.loops import LoopManager
-        except Exception as exc:
-            logger.debug("loop manager unavailable: %s", exc)
-            return None, None
-        # Warm the SessionDB cache off-loop. A cold cache drops the first
-        # /loop write while the reply claims the loop was set (same class
-        # as the /goal false-ack fix).
-        await self._warm_goals_session_db("loop manager")
-        try:
-            session_entry = await self.async_session_store.get_or_create_session(event.source)
-        except Exception:
-            return None, None
-        sid = getattr(session_entry, "session_id", None) or ""
-        if not sid:
-            return None, None
-        return LoopManager(session_id=sid), session_entry
 
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:

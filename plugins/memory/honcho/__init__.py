@@ -1110,24 +1110,6 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         self._dialectic_empty_streak += 1
 
-    def liveness_snapshot(self) -> dict:
-        """In-process snapshot of dialectic liveness state for diagnostics.
-
-        Returns current turn, last successful dialectic turn, pending-result
-        fire turn, empty streak, effective cadence, and thread status.
-        """
-        thread_age = None
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            thread_age = time.monotonic() - self._prefetch_thread_started_at
-        return {
-            "turn_count": self._turn_count,
-            "last_dialectic_turn": self._last_dialectic_turn,
-            "pending_result_fired_at": self._prefetch_result_fired_at,
-            "empty_streak": self._dialectic_empty_streak,
-            "effective_cadence": self._effective_cadence(),
-            "thread_alive": thread_age is not None,
-            "thread_age_seconds": thread_age,
-        }
 
     def _apply_reasoning_heuristic(self, base: str, query: str) -> str:
         """Scale `base` up by query length, clamped at reasoning_level_cap.

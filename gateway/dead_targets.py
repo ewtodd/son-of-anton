@@ -137,7 +137,3 @@ class DeadTargetRegistry:
                 return True
         return False
 
-    def all_dead(self) -> Dict[str, Dict[str, object]]:
-        """Snapshot of the current dead set (for diagnostics / `son-of-anton` CLI)."""
-        with self._lock:
-            return {k: dict(v) for k, v in self._dead.items()}

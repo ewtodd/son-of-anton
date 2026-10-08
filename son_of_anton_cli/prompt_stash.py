@@ -97,29 +97,6 @@ class PromptStash:
         """Newest-first list of entries (a copy — mutate via the API)."""
         return list(self._items)
 
-    def panel_rows(self) -> List[dict]:
-        """Entries as plain dicts for the panel renderer."""
-        return [e.as_dict() for e in self._items]
-
-    def indicator(self) -> str:
-        """Status-bar indicator, or ``""`` when the stash is empty.
-
-        ``📌 2`` when idle, ``📌 2 ▲`` while the browse panel is open, so the
-        user can always tell a parked draft exists without opening anything.
-        """
-        n = len(self._items)
-        if not n:
-            return ""
-        return f"📌 {n} ▲" if self.panel_open else f"📌 {n}"
-
-    def placeholder_hint(self) -> str:
-        """Composer placeholder text advertising the stashed draft."""
-        n = len(self._items)
-        if not n:
-            return ""
-        if n == 1:
-            return f"Ctrl+S to restore: {self._items[0].preview}"
-        return f"Ctrl+S to browse {n} stashed drafts"
 
     # --------------------------------------------------------------- mutators
 
@@ -178,13 +155,6 @@ class PromptStash:
             return 0
         return max(0, min(int(value), len(self._items) - 1))
 
-    def open_panel(self) -> bool:
-        """Open the browse panel. False when there is nothing to browse."""
-        if not self._items:
-            return False
-        self.panel_open = True
-        self.panel_cursor = 0
-        return True
 
     def close_panel(self) -> None:
         self.panel_open = False
@@ -194,27 +164,6 @@ class PromptStash:
         """Move the panel cursor, clamped to the list bounds."""
         self.panel_cursor = self._clamp_cursor(self.panel_cursor + int(delta))
         return self.panel_cursor
-
-    def delete_at_cursor(self) -> bool:
-        """Delete the highlighted entry. False when there was nothing to drop."""
-        if not self._items:
-            return False
-        idx = self._clamp_cursor(self.panel_cursor)
-        self._items.pop(idx)
-        if not self._items:
-            self.panel_open = False
-            self.panel_cursor = 0
-        else:
-            self.panel_cursor = self._clamp_cursor(idx)
-        return True
-
-    def restore_at_cursor(self) -> Optional[Tuple[str, List[Any]]]:
-        """Pop the highlighted entry and close the panel."""
-        if not self._items:
-            return None
-        result = self.pop(self._clamp_cursor(self.panel_cursor))
-        self.close_panel()
-        return result
 
 
 # --------------------------------------------------------------------- gesture

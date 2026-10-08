@@ -3025,29 +3025,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._inflight_writers.setdefault(sid, set()).add(thread)
         thread.start()
 
-    def _drain_finalizers(self, timeout: float) -> bool:
-        """Join every in-flight async session finalizer within a timeout.
-
-        The switch-path commit runs on a daemon finalizer thread so it never
-        blocks the caller's command thread; this lets shutdown and tests wait
-        for those commits deterministically. Returns True if all drained.
-        """
-        deadline = time.monotonic() + timeout
-        while True:
-            with self._deferred_commit_lock:
-                workers = [t for t in self._deferred_commit_threads if t.is_alive()]
-            if not workers:
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            for t in workers:
-                slice_left = deadline - time.monotonic()
-                if slice_left <= 0:
-                    break
-                # Floor the per-join wait so a thread whose join() returns
-                # instantly while still reporting alive can't hot-spin this loop.
-                t.join(timeout=min(slice_left, 0.05))
 
     def _drain_writers(self, sid: str, timeout: float) -> bool:
         """Join every in-flight writer for sid within a shared timeout budget.

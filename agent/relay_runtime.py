@@ -1335,10 +1335,6 @@ class RelaySessionCoordinator:
         with self._initializer_lock:
             self._session_initializers[name] = callback
 
-    def unregister_session_initializer(self, name: str) -> None:
-        """Remove a previously registered session initializer."""
-        with self._initializer_lock:
-            self._session_initializers.pop(name, None)
 
     def _prepare_session(
         self,

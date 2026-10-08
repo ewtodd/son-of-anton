@@ -1490,16 +1490,6 @@ class GoalManager:
         save_goal(self.session_id, state)
         return state
 
-    def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
-        """Attach or replace the completion contract on the active goal.
-
-        Returns the updated state, or None when there is no goal to attach to.
-        """
-        if self._state is None:
-            return None
-        self._state.contract = contract or GoalContract()
-        save_goal(self.session_id, self._state)
-        return self._state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
@@ -1548,50 +1538,6 @@ class GoalManager:
 
     # --- /subgoal user controls ---------------------------------------
 
-    def add_subgoal(self, text: str) -> str:
-        """Append a user-added criterion to the active goal. Requires
-        ``has_goal()``; raises ``RuntimeError`` otherwise.
-
-        Returns the cleaned text so the caller can show it back to the user.
-        """
-        if self._state is None or not self.has_goal():
-            raise RuntimeError("no active goal")
-        text = (text or "").strip()
-        if not text:
-            raise ValueError("subgoal text is empty")
-        self._state.subgoals.append(text)
-        save_goal(self.session_id, self._state)
-        return text
-
-    def remove_subgoal(self, index_1based: int) -> str:
-        """Remove a subgoal by 1-based index. Returns the removed text."""
-        if self._state is None or not self.has_goal():
-            raise RuntimeError("no active goal")
-        idx = int(index_1based) - 1
-        if idx < 0 or idx >= len(self._state.subgoals):
-            raise IndexError(
-                f"index out of range (1..{len(self._state.subgoals)})"
-            )
-        removed = self._state.subgoals.pop(idx)
-        save_goal(self.session_id, self._state)
-        return removed
-
-    def clear_subgoals(self) -> int:
-        """Wipe all subgoals. Returns the previous count."""
-        if self._state is None or not self.has_goal():
-            raise RuntimeError("no active goal")
-        prev = len(self._state.subgoals)
-        self._state.subgoals = []
-        save_goal(self.session_id, self._state)
-        return prev
-
-    def render_subgoals(self) -> str:
-        """Public helper for the /subgoal slash command."""
-        if self._state is None:
-            return "(no active goal)"
-        if not self._state.subgoals:
-            return "(no subgoals — use /subgoal <text> to add criteria)"
-        return self._state.render_subgoals_block()
 
     # --- /goal gate quality gates ---------------------------------------
 

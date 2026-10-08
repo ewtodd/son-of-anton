@@ -128,12 +128,6 @@ class BoundedResult:
     timeout_s: Optional[float]
     label: str
 
-    def raise_if_timed_out(self) -> Any:
-        """Return ``value``, raising :class:`DeadlineExpired` on timeout."""
-        if self.timed_out:
-            raise DeadlineExpired(self.label, float(self.timeout_s or 0.0))
-        return self.value
-
 
 def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
     """Normalize a timeout value for platform wait primitives.

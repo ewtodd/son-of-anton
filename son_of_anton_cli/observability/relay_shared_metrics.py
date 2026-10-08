@@ -574,16 +574,6 @@ class _Runtime:
                 model_call_key,
             )
 
-    def end_pending_model_calls(self, event: dict[str, Any]) -> None:
-        session = self._task_session(event, allow_task_id_fallback=True)
-        if session is None:
-            session = self._session(event)
-        if session is None:
-            return
-        with session.lock:
-            if session.closing:
-                return
-            self._end_pending_model_calls(session, event)
 
     def finish_task(self, event: dict[str, Any]) -> None:
         """Close one task scope exactly once with bounded terminal fields."""

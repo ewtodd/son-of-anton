@@ -87,14 +87,6 @@ class ModelInfo:
     def supports_audio_input(self) -> bool:
         return "audio" in self.input_modalities
 
-    def format_cost(self) -> str:
-        """Human-readable cost string, e.g. '$3.00/M in, $15.00/M out'."""
-        if not self.has_cost_data():
-            return "unknown"
-        parts = [f"${self.cost_input:.2f}/M in", f"${self.cost_output:.2f}/M out"]
-        if self.cost_cache_read is not None:
-            parts.append(f"cache read ${self.cost_cache_read:.2f}/M")
-        return ", ".join(parts)
 
     def format_capabilities(self) -> str:
         """Human-readable capabilities, e.g. 'reasoning, tools, vision'."""

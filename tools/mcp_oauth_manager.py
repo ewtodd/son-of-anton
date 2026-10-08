@@ -731,28 +731,6 @@ class MCPOAuthManager:
         )
         return entry
 
-    def restore_entry(
-        self,
-        server_name: str,
-        entry: _ProviderEntry | None,
-        *,
-        son_of_anton_home: str | Path | None = None,
-    ) -> None:
-        """Restore a provider entry removed for a failed reauthorization."""
-        if entry is None:
-            return
-        with self._entries_lock:
-            self._entries.setdefault(self._key(server_name, son_of_anton_home), entry)
-
-    def evict(
-        self,
-        server_name: str,
-        *,
-        son_of_anton_home: str | Path | None = None,
-    ) -> None:
-        """Drop only the in-process provider, preserving persisted OAuth state."""
-        with self._entries_lock:
-            self._entries.pop(self._key(server_name, son_of_anton_home), None)
 
     # -- Disk watch ----------------------------------------------------------
 

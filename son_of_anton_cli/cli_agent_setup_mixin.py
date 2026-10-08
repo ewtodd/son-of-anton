@@ -222,68 +222,6 @@ class CLIAgentSetupMixin:
             and not base_url_host_matches(base_url, "openrouter.ai")
         )
 
-    def _offer_first_run_setup(self) -> bool:
-        """Offer the provider picker when no provider is configured at all.
-
-        Called from the interactive startup path when
-        ``_runtime_credentials_ready()`` is False and stdin is a TTY. Runs the
-        exact same flow as ``son-of-anton model`` (which fronts Quick Setup / Nous
-        Portal OAuth as the first, recommended option) so there is a single
-        source of truth for provider onboarding. Returns True when a provider
-        was configured.
-        """
-        from cli import _cprint, logger
-
-        _cprint("")
-        _cprint("⚛ No inference provider is configured yet — let's fix that.")
-        _cprint("  You'll pick a provider — a local llama-swap/vLLM endpoint or the DeepSeek API — and a model.")
-        try:
-            answer = input("  Set up a provider now? [Y/n]: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            answer = "n"
-        if answer in {"n", "no"}:
-            _cprint("  Skipped. Run 'son-of-anton model' or 'son-of-anton setup' any time.")
-            return False
-
-        try:
-            from son_of_anton_cli.main import select_provider_and_model
-            select_provider_and_model()
-        except (KeyboardInterrupt, EOFError, SystemExit):
-            print()
-            _cprint("  Setup cancelled. Run 'son-of-anton model' any time.")
-            return False
-        except Exception as exc:
-            logger.debug("first-run provider setup failed: %s", exc)
-            _cprint(f"  ⚠️  Provider setup failed: {exc}")
-            _cprint("  Run 'son-of-anton model' to try again.")
-            return False
-
-        # Re-sync CLI state from what the picker persisted so the very next
-        # turn uses the new provider without a restart.
-        try:
-            from son_of_anton_cli.config import load_config
-            _model_cfg = (load_config().get("model") or {})
-            if isinstance(_model_cfg, dict):
-                _new_provider = (_model_cfg.get("provider") or "").strip()
-                if _new_provider:
-                    self.requested_provider = _new_provider
-                _new_model = (
-                    _model_cfg.get("default") or _model_cfg.get("model") or ""
-                ).strip()
-                if _new_model:
-                    self.model = _new_model
-        except Exception as exc:
-            logger.debug("first-run config re-sync failed: %s", exc)
-        # Force credential re-resolution + agent rebuild on next use.
-        self.agent = None
-        self._active_agent_route_signature = None
-
-        if self._runtime_credentials_ready():
-            _cprint("  ✓ Provider configured — you're ready to chat.")
-            return True
-        _cprint("  Provider setup didn't complete. Run 'son-of-anton model' to retry.")
-        return False
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.

@@ -51,37 +51,6 @@ class DashboardOAuthFlow:
             self.status = "authorization_required"
             self._authorization_ready.set()
 
-    async def wait_for_authorization_url(self, timeout: float = 30.0) -> str:
-        ready = await asyncio.to_thread(self._authorization_ready.wait, timeout)
-        if not ready:
-            raise TimeoutError("Timed out waiting for MCP authorization URL")
-        if not self.authorization_url:
-            raise RuntimeError(self.error or "MCP OAuth flow ended before authorization")
-        return self.authorization_url
-
-    def deliver_callback(
-        self,
-        *,
-        code: str | None,
-        state: str | None,
-        error: str | None,
-    ) -> None:
-        with self._lock:
-            if self._callback_ready.is_set():
-                raise ValueError("OAuth callback already received")
-            if (
-                self.expected_state is None
-                or state is None
-                or not secrets.compare_digest(self.expected_state, state)
-            ):
-                raise ValueError("OAuth callback state mismatch")
-            if error:
-                self._callback_error = error
-            elif code:
-                self._callback = (code, state)
-            else:
-                self._callback_error = "OAuth callback did not include code or error"
-            self._callback_ready.set()
 
     async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
         ready = await asyncio.to_thread(self._callback_ready.wait, timeout)
@@ -93,21 +62,6 @@ class DashboardOAuthFlow:
             raise RuntimeError("OAuth callback did not include an authorization code")
         return self._callback
 
-    def mark_approved(self) -> None:
-        with self._lock:
-            if self.status == "error":
-                raise RuntimeError("OAuth flow already ended")
-            self.status = "approved"
-            self.error = None
-
-    def mark_error(self, error: str) -> None:
-        with self._lock:
-            if self.status == "approved":
-                return
-            self.status = "error"
-            self.error = error
-            self._authorization_ready.set()
-            self._callback_ready.set()
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -119,8 +73,6 @@ class DashboardOAuthFlow:
                 "error": self.error,
             }
 
-    def mark_worker_done(self) -> None:
-        self._worker_done.set()
 
     @property
     def worker_done(self) -> bool:

@@ -1143,14 +1143,6 @@ class ToolRegistry:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}
 
-    def is_toolset_available(self, toolset: str) -> bool:
-        """Check if a toolset has at least one exposable tool.
-
-        Returns False (rather than crashing) when a per-tool check raises
-        an unexpected exception (e.g. network error, missing import, bad config).
-        """
-        entries, _ = self._snapshot_state()
-        return self._toolset_has_exposable_tools(toolset, entries)
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""

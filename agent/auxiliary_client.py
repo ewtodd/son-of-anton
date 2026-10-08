@@ -379,16 +379,6 @@ class _AuxiliaryCancellationDecision:
                 return True
             return False
 
-    def begin_timeout_cleanup(self) -> bool:
-        """Return whether timeout won and destructive cleanup is permitted."""
-        with self._lock:
-            if self._outcome == "active":
-                if _captured_aux_cancel_requested(self._source_cancel_check):
-                    self._outcome = "cancelled"
-                else:
-                    self._outcome = "timed_out"
-            return self._outcome == "timed_out"
-
 
 # ── Forward-progress hook for streamed auxiliary calls ───────────────────
 # Long auxiliary calls (context compaction is the prime case) are watched by

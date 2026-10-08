@@ -879,11 +879,6 @@ class TextualBackend(SonOfAntonCLI):
     def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
         return False
 
-    def _check_termios_drift(self) -> None:
-        return None
-
-    def _recover_terminal_input_modes(self, reason: str = "") -> None:
-        return None
 
     # ------------------------------------------------------------------
     # Prompts that fell back to stdin: make them queue-based

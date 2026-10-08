@@ -131,20 +131,6 @@ class MicrosoftGraphTokenProvider:
     def clear_cache(self) -> None:
         self._cached_token = None
 
-    def inspect_token_health(self) -> dict[str, Any]:
-        cached = self._cached_token
-        return {
-            "configured": True,
-            "tenant_id": self.credentials.tenant_id,
-            "client_id": self.credentials.client_id,
-            "scope": self.credentials.scope,
-            "authority_url": self.credentials.authority_url,
-            "token_url": self.credentials.token_url,
-            "cached": bool(cached),
-            "expires_in_seconds": cached.expires_in_seconds if cached else None,
-            "is_expired": cached.is_expired(skew_seconds=0) if cached else None,
-            "refresh_skew_seconds": self.skew_seconds,
-        }
 
     async def get_access_token(self, *, force_refresh: bool = False) -> str:
         cached = self._cached_token

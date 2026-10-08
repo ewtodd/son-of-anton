@@ -480,15 +480,6 @@ class PairingStore:
                 return True
         return False
 
-    def list_approved(self, platform: str = None) -> list:
-        """List approved users, optionally filtered by platform."""
-        results = []
-        platforms = [platform] if platform else self._all_platforms("approved")
-        for p in platforms:
-            approved = self._load_json(self._approved_path(p))
-            for uid, info in approved.items():
-                results.append({"platform": p, "user_id": uid, **info})
-        return results
 
     def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
         """Add a user to the approved list. Must be called under self._lock."""
@@ -621,63 +612,6 @@ class PairingStore:
 
             return code
 
-    def approve_code(self, platform: str, code: str) -> Optional[dict]:
-        """
-        Approve a pairing code. Adds the user to the approved list.
-
-        Returns ``{user_id, user_name}`` on success, ``None`` if the code is
-        invalid/expired OR the platform is currently locked out after
-        ``MAX_FAILED_ATTEMPTS`` failed approvals (#10195). Callers can
-        disambiguate with ``_is_locked_out(platform)``.
-
-        Verification: the user-provided code is hashed with each stored
-        entry's salt and compared to the stored hash using constant-time
-        comparison. Pre-hash entries (legacy plaintext-key format from
-        pre-upgrade pending.json files) are silently ignored — they get
-        pruned at TTL by ``_cleanup_expired``.
-        """
-        with self._lock:
-            self._cleanup_expired(platform)
-            code = code.upper().strip()
-
-            # Lockout check — must run before the pending lookup so a
-            # valid code (e.g. one already sitting in pending) cannot be
-            # accepted once the lockout fires. Without this, the lockout
-            # only blocks `generate_code`, not `approve_code` — nullifying
-            # the brute-force protection for any code already issued.
-            if self._is_locked_out(platform):
-                return None
-
-            pending = self._load_json(self._pending_path(platform))
-
-            # Find the entry whose hash matches the provided code.
-            # Tolerate legacy plaintext-key entries (no salt/hash) and
-            # malformed entries — skip them rather than KeyError, so an
-            # in-place upgrade across an existing pending.json doesn't
-            # crash on the first approve call. Legacy entries get pruned
-            # at their TTL by _cleanup_expired.
-            matched_key = None
-            matched_entry = None
-            for entry_id, entry in pending.items():
-                if not isinstance(entry, dict):
-                    continue
-                if "salt" not in entry or "hash" not in entry:
-                    continue
-                try:
-                    salt = bytes.fromhex(entry["salt"])
-                except ValueError:
-                    continue
-                candidate_hash = self._hash_code(code, salt)
-                if secrets.compare_digest(candidate_hash, entry["hash"]):
-                    matched_key = entry_id
-                    matched_entry = entry
-                    break
-
-            if matched_key is None:
-                self._record_failed_attempt(platform)
-                return None
-
-            return self._finish_approval(platform, pending, matched_key, matched_entry)
 
     @staticmethod
     def looks_like_request_id(value: str) -> bool:
@@ -691,40 +625,6 @@ class PairingStore:
         value = str(value or "").strip()
         return len(value) == 16 and all(c in "0123456789abcdefABCDEF" for c in value)
 
-    def approve_request(self, platform: str, request_id: str) -> Optional[dict]:
-        """
-        Approve a pending pairing request by its server-side request id.
-
-        This is the grant path for authenticated admin surfaces (``son-of-anton
-        pairing list``, the dashboard/desktop approve buttons), which show
-        pending requests but must never reveal the one-time code DM'd to the
-        user. Returns ``{user_id, user_name}`` on success, ``None`` for an
-        unknown/expired request id.
-
-        Unlike :meth:`approve_code` this does NOT count a miss toward the
-        brute-force lockout, and is not itself gated by one. The lockout
-        protects the 8-char code space against guessing over a messaging
-        channel; a request id is only ever obtained by an admin already
-        authenticated to this store, so a stale id means "the row you clicked
-        expired", not an attack. Counting it here let a few GUI clicks on a
-        stale list lock the operator out of the CLI's code path too.
-        """
-        with self._lock:
-            self._cleanup_expired(platform)
-            request_id = str(request_id or "").strip().lower()
-            if not request_id:
-                return None
-
-            pending = self._load_json(self._pending_path(platform))
-            for entry_id, entry in pending.items():
-                if not isinstance(entry, dict):
-                    continue
-                if "salt" not in entry or "hash" not in entry:
-                    continue
-                if secrets.compare_digest(str(entry_id).lower(), request_id):
-                    return self._finish_approval(platform, pending, entry_id, entry)
-
-            return None
 
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
@@ -759,16 +659,6 @@ class PairingStore:
                     })
         return results
 
-    def clear_pending(self, platform: str = None) -> int:
-        """Clear all pending requests. Returns count removed."""
-        with self._lock:
-            count = 0
-            platforms = [platform] if platform else self._all_platforms("pending")
-            for p in platforms:
-                pending = self._load_json(self._pending_path(p))
-                count += len(pending)
-                self._save_json(self._pending_path(p), {})
-        return count
 
     # ----- Rate limiting and lockout -----
 

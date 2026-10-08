@@ -4688,60 +4688,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pass
 
 
-    def _schedule_status_bar_unsuppress(self, app, delay: float = 0.35) -> None:
-        """Clear the post-resize status-bar suppression after the reflow settles.
-
-        Debounced: a fresh resize cancels the pending unsuppress and restarts
-        the timer, so a resize storm only repaints the bar once it stops.
-        """
-        try:
-            old_timer = getattr(self, "_status_bar_unsuppress_timer", None)
-            if old_timer is not None:
-                try:
-                    old_timer.cancel()
-                except Exception:
-                    pass
-
-            def _clear():
-                self._status_bar_suppressed_after_resize = False
-                try:
-                    app.invalidate()
-                except Exception:
-                    pass
-
-            def _fire():
-                try:
-                    loop = getattr(app, "loop", None)
-                except Exception:
-                    loop = None
-                if loop is not None:
-                    try:
-                        loop.call_soon_threadsafe(_clear)
-                        return
-                    except Exception:
-                        pass
-                _clear()
-
-            timer = threading.Timer(delay, _fire)
-            timer.daemon = True
-            self._status_bar_unsuppress_timer = timer
-            timer.start()
-        except Exception:
-            # Fail open: never leave the bar stuck hidden.
-            self._status_bar_suppressed_after_resize = False
-
-
-    def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
-        if percent_used is None:
-            return "class:status-bar-dim"
-        if percent_used >= 95:
-            return "class:status-bar-critical"
-        if percent_used > 80:
-            return "class:status-bar-bad"
-        if percent_used >= 50:
-            return "class:status-bar-warn"
-        return "class:status-bar-good"
-
     @staticmethod
     def _battery_status_style(category: str) -> str:
         """Map a battery colour category to a status-bar style class."""
@@ -4762,10 +4708,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
-    def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
-        safe_percent = max(0, min(100, percent_used or 0))
-        filled = round((safe_percent / 100) * width)
-        return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
@@ -5284,95 +5226,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return f"⊙ goal {used}/{max_turns}"
         return "⊙ goal"
 
-    def _build_status_bar_text(self, width: Optional[int] = None) -> str:
-        """Return a compact one-line session status string for the TUI footer."""
-        try:
-            snapshot = self._get_status_bar_snapshot()
-            if width is None:
-                width = self._get_tui_terminal_width()
-            percent = snapshot["context_percent"]
-            percent_label = f"{percent}%" if percent is not None else "--"
-            duration_label = snapshot["duration"]
-            battery_label = snapshot.get("battery_label") or ""
-            battery_prefix = f"{battery_label} │ " if battery_label else ""
-            focus_label = snapshot.get("focus_label") or ""
-            session_title = snapshot.get("session_title") or ""
-
-            yolo_active = self._is_session_yolo_active()
-            goal_segment = self._status_bar_goal_segment(snapshot)
-            if width < 52:
-                text = f"{battery_prefix}⚛ {snapshot['model_short']} · {duration_label}"
-                if goal_segment:
-                    text += f" · {goal_segment}"
-                if focus_label:
-                    text += f" · {focus_label}"
-                if yolo_active:
-                    text += " · YOLO"
-                return self._right_align_status_title(text, session_title, width)
-            if width < 76:
-                parts = [f"⚛ {snapshot['model_short']}", percent_label]
-                if battery_label:
-                    parts.insert(0, battery_label)
-                compactions = snapshot.get("compactions", 0)
-                if compactions:
-                    parts.append(f"{compactions} compacted")
-                bg_count = snapshot.get("active_background_tasks", 0)
-                if bg_count:
-                    parts.append(f"bg {bg_count}")
-                bg_proc_count = snapshot.get("active_background_processes", 0)
-                if bg_proc_count:
-                    parts.append(f"proc {bg_proc_count}")
-                bg_subagent_count = snapshot.get("active_background_subagents", 0)
-                if bg_subagent_count:
-                    parts.append(f"sub {bg_subagent_count}")
-                if goal_segment:
-                    parts.append(goal_segment)
-                parts.append(duration_label)
-                if focus_label:
-                    parts.append(focus_label)
-                if yolo_active:
-                    parts.append("YOLO")
-                return self._right_align_status_title(" · ".join(parts), session_title, width)
-
-            if snapshot["context_length"]:
-                ctx_total = _format_context_length(snapshot["context_length"])
-                ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                context_label = f"{ctx_used}/{ctx_total}"
-            else:
-                context_label = "ctx --"
-
-            compactions = snapshot.get("compactions", 0)
-            parts = [f"⚛ {snapshot['model_short']}", context_label, percent_label]
-            if battery_label:
-                parts.insert(0, battery_label)
-            if compactions:
-                parts.append(f"{compactions} compacted")
-            bg_count = snapshot.get("active_background_tasks", 0)
-            if bg_count:
-                parts.append(f"bg {bg_count}")
-            bg_proc_count = snapshot.get("active_background_processes", 0)
-            if bg_proc_count:
-                parts.append(f"proc {bg_proc_count}")
-            bg_subagent_count = snapshot.get("active_background_subagents", 0)
-            if bg_subagent_count:
-                parts.append(f"sub {bg_subagent_count}")
-            if goal_segment:
-                parts.append(goal_segment)
-            parts.append(duration_label)
-            prompt_elapsed = snapshot.get("prompt_elapsed")
-            if prompt_elapsed:
-                parts.append(prompt_elapsed)
-            idle_since = snapshot.get("idle_since")
-            if idle_since:
-                parts.append(idle_since)
-            if focus_label:
-                parts.append(focus_label)
-            if yolo_active:
-                parts.append("YOLO")
-            return self._right_align_status_title(" │ ".join(parts), session_title, width)
-        except Exception:
-            return f"⚛ {self.model if getattr(self, 'model', None) else 'Son of Anton'}"
-
 
     @staticmethod
     def _fmt_stash_age(stashed_at: float) -> str:
@@ -5388,70 +5241,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return f"{mins} min ago"
         return f"{mins // 60}h ago"
 
-    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
-        """Return prompt_toolkit formatted_text fragments for the stash panel box.
-
-        Every horizontal measurement goes through ``_status_bar_display_width``
-        (prompt_toolkit's ``get_cwidth``) rather than ``len()``.  The header
-        contains 📌, which is one Python codepoint but two terminal cells; the
-        original PR chased that off-by-one through three successive
-        "subtract 1 from len()" commits.  Measuring in display cells fixes it
-        for real and keeps CJK previews from bleeding past the right border.
-        """
-        cw = self._status_bar_display_width
-        W = max(12, min(width - 4, 80))
-
-        n = len(stash_list)
-        hdr_prefix_str = f"╭─ Stash ({n} item{'s' if n != 1 else ''}) "
-        HDR_SUFFIX = " Ctrl+S ─╮"
-        FTR_PREFIX = "╰"
-        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
-
-        # On narrow terminals the full hint text is wider than the box itself.
-        # Drop to compact affordances rather than letting the frame bleed past
-        # the right edge (which is what made the panel look broken).
-        if cw(hdr_prefix_str) + cw(HDR_SUFFIX) > W:
-            hdr_prefix_str = f"╭─ {n} "
-            HDR_SUFFIX = "─╮"
-        if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
-            FTR_SUFFIX = " ↑↓ Enter D Esc ─╯"
-        if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
-            FTR_SUFFIX = "─╯"
-
-        hdr_dashes = max(0, W - cw(hdr_prefix_str) - cw(HDR_SUFFIX))
-        ftr_dashes = max(0, W - cw(FTR_PREFIX) - cw(FTR_SUFFIX))
-
-        # Row inner width: W minus the two '│' border cells.
-        INNER = W - 2
-
-        frags: list = []
-
-        def line(text: str, style: str = "") -> None:
-            # Final guard: never emit a line wider than the box, whatever the
-            # label lengths worked out to.
-            frags.append((style, self._trim_status_bar_text(text, W) + "\n"))
-
-        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
-
-        for i, item in enumerate(stash_list):
-            age = self._fmt_stash_age(item["stashed_at"])
-            # Row: " ► [N] {age:<10} {preview} "
-            prefix = f" {'►' if i == cursor else ' '} [{i + 1}] {age:<10} "
-            if cw(prefix) > INNER - 2:
-                prefix = f" {'►' if i == cursor else ' '} [{i + 1}] "
-            avail = max(0, INNER - cw(prefix) - 1)
-            preview = self._trim_status_bar_text(item.get("preview") or "", avail)
-            preview = preview + " " * max(0, avail - cw(preview))
-            row = self._trim_status_bar_text(f"│{prefix}{preview} │", W)
-            if i == cursor:
-                frags.append(("class:subagent-selected", row + "\n"))
-            else:
-                frags.append(("class:subagent-border", "│"))
-                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
-                frags.append(("class:subagent-border", "│\n"))
-
-        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
-        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -6100,10 +5889,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "Reloading skills..."
         return "Processing command..."
 
-    def _command_spinner_frame(self) -> str:
-        """Return the current spinner frame for slow slash commands."""
-        frame_idx = int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
-        return _COMMAND_SPINNER_FRAMES[frame_idx]
 
     @contextmanager
     def _busy_command(self, status: str, *, blocks_input: bool = True):
@@ -6127,38 +5912,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._command_blocks_input = previous_blocks_input
             self._command_status = ""
             self._invalidate(min_interval=0.0)
-
-
-    def _inline_pastes(self, buffer) -> None:
-        """Replace collapsed-paste placeholders in ``buffer`` with real content.
-
-        A big paste shows as a compact ``[Pasted text #N -> file]`` placeholder,
-        but history recall and the external editor need the actual text — a bare
-        reference is useless once the file is gone or on another machine. Inlining
-        before ``reset(append_to_history=True)`` also lets prompt_toolkit persist
-        the content through its normal path. Sets ``_skip_paste_collapse`` so the
-        ensuing text-change doesn't re-collapse it.
-        """
-        try:
-            existing = getattr(buffer, "text", "")
-            expanded = self._expand_paste_references(existing)
-            if expanded != existing and hasattr(buffer, "text"):
-                self._skip_paste_collapse = True
-                buffer.text = expanded
-                if hasattr(buffer, "cursor_position"):
-                    buffer.cursor_position = len(expanded)
-        except Exception:
-            logger.debug("Failed to inline paste placeholders", exc_info=True)
-
-    def _reset_input_buffer(self, buffer) -> None:
-        """Clear an input buffer after a programmatic submit (best-effort)."""
-        try:
-            buffer.reset(append_to_history=True)
-        except Exception:
-            try:
-                buffer.text = ""
-            except Exception:
-                pass
 
 
     def _install_tool_callbacks(self) -> None:
@@ -8371,56 +8124,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         }
         self._invalidate(min_interval=0.0)
 
-    def _close_command_palette(self) -> None:
-        self._command_palette_state = None
-        self._restore_modal_input_snapshot()
-        self._invalidate(min_interval=0.0)
-
-    def _command_palette_visible_entries(self) -> list:
-        """Return (command, category, desc) rows matching the active filter.
-
-        Ranked, command-name-focused matching (a bare subsequence over the
-        whole "cmd category desc" string is uselessly permissive — "steer"
-        would match 130+ rows via description text). Priority:
-          0 exact command match
-          1 command startswith query
-          2 query substring in command
-          3 query subsequence in command
-          4 query substring in description
-        Rows that match nowhere are dropped. Ties keep registry order.
-        """
-        state = self._command_palette_state or {}
-        entries = state.get("entries") or []
-        q = (state.get("filter", "") or "").strip().lower()
-        if not q:
-            return list(entries)
-
-        def _subseq(needle: str, hay: str) -> bool:
-            it = iter(hay)
-            return all(ch in it for ch in needle)
-
-        ranked = []
-        for order, row in enumerate(entries):
-            cmd, _cat, desc = row
-            name = cmd.lower().lstrip("/")
-            qn = q.lstrip("/")
-            desc_l = (desc or "").lower()
-            if name == qn:
-                rank = 0
-            elif name.startswith(qn):
-                rank = 1
-            elif qn in name:
-                rank = 2
-            elif _subseq(qn, name):
-                rank = 3
-            elif q in desc_l:
-                rank = 4
-            else:
-                continue
-            ranked.append((rank, order, row))
-        ranked.sort(key=lambda t: (t[0], t[1]))
-        return [row for (_r, _o, row) in ranked]
-
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
@@ -9963,30 +9666,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr
-        return mgr
-
-    def _get_heartbeat_manager(self):
-        """Return the HeartbeatManager bound to the current session_id.
-
-        Cached on ``self._heartbeat_manager`` and rebound lazily when
-        ``session_id`` changes (mirrors ``_get_goal_manager``).
-        """
-        try:
-            from son_of_anton_cli.heartbeat import HeartbeatManager
-        except Exception as exc:
-            logging.debug("heartbeat manager unavailable: %s", exc)
-            return None
-
-        sid = getattr(self, "session_id", None) or ""
-        if not sid:
-            return None
-
-        existing = getattr(self, "_heartbeat_manager", None)
-        if existing is not None and getattr(existing, "session_id", None) == sid:
-            return existing
-
-        mgr = HeartbeatManager(session_id=sid)
-        self._heartbeat_manager = mgr
         return mgr
 
 
@@ -12944,105 +12623,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 goodbye = "Goodbye! ⚛"
             print(goodbye)
 
-    def _get_tui_prompt_symbols(self) -> tuple[str, str]:
-        """Return ``(normal_prompt, state_suffix)`` for the active skin.
-
-        ``normal_prompt`` is the full ``branding.prompt_symbol``.
-        ``state_suffix`` is what special states (sudo/secret/approval/agent)
-        should render after their leading icon.
-
-        When a profile is active (not "default"), the profile name is
-        prepended to the prompt symbol: ``coder ❯`` instead of ``❯``.
-        """
-        try:
-            from son_of_anton_cli.skin_engine import get_active_prompt_symbol
-            symbol = get_active_prompt_symbol("❯ ")
-        except Exception:
-            symbol = "❯ "
-
-        symbol = (symbol or "❯ ").rstrip() + " "
-
-        stripped = symbol.rstrip()
-        if not stripped:
-            return "❯ ", "❯ "
-
-        parts = stripped.split()
-        candidate = parts[-1] if parts else ""
-        arrow_chars = ("❯", ">", "$", "#", "›", "»", "→")
-        if any(ch in candidate for ch in arrow_chars):
-            return symbol, candidate.rstrip() + " "
-
-        # Icon-only custom prompts should still remain visible in special states.
-        return symbol, symbol
-
-
-    def _build_tui_style_dict(self) -> dict[str, str]:
-        """Layer the active skin's prompt_toolkit colors over the base TUI style.
-
-        Also rewrites any hex-color tokens in the resulting style strings
-        to their light-mode equivalents (via _LIGHT_MODE_REMAP) when the
-        terminal is detected as light.  This makes the chrome readable
-        on cream Terminal.app backgrounds without per-skin overrides.
-        """
-        style_dict = dict(getattr(self, "_tui_style_base", {}) or {})
-        try:
-            from son_of_anton_cli.skin_engine import get_prompt_toolkit_style_overrides
-            style_dict.update(get_prompt_toolkit_style_overrides())
-        except Exception:
-            pass
-        # Light-mode remap on the style strings.  Each value is a pt
-        # style string like "bg:#1a1a2e #C0C0C0 bold" — split on space,
-        # rewrite any "#XXX" tokens (including "bg:#XXX") through the
-        # light-mode remap, rejoin.
-        #
-        # CRITICAL: skip the remap entirely when a style string already
-        # specifies its own bg (e.g. status-bar / completion-menu styles
-        # with `bg:#1a1a2e ...`).  Those colors were tuned for that
-        # specific dark bg and remapping the FG to a dark equivalent
-        # would produce dark-on-dark (invisible).  The terminal's BG
-        # mode is irrelevant — what matters is the bg the style itself
-        # paints.
-        try:
-            if _detect_light_mode():
-                def _remap_value(v: str) -> str:
-                    if not v:
-                        return v
-                    tokens = v.split()
-                    has_explicit_bg = any(t.startswith("bg:") for t in tokens)
-                    if has_explicit_bg:
-                        # The style paints its own bg — leave its fg alone.
-                        return v
-                    return " ".join(
-                        _maybe_remap_for_light_mode(t) if t.startswith("#") else t
-                        for t in tokens
-                    )
-                style_dict = {k: _remap_value(v or "") for k, v in style_dict.items()}
-        except Exception:
-            pass
-        # Snap every color token onto the terminal's ANSI palette so the
-        # status bar, menus, and prompt chrome follow the terminal theme
-        # like the rest of the CLI. Without this, prompt_toolkit's "yellow"
-        # names and hex tokens render as fixed true color, ignoring the
-        # user's kitty/terminal palette.
-        try:
-            style_dict = {
-                k: _snap_pt_style_to_theme(v or "") for k, v in style_dict.items()
-            }
-        except Exception:
-            pass
-        return style_dict
-
 
     # --- Protected TUI extension hooks for wrapper CLIs ---
-
-    def _get_extra_tui_widgets(self) -> list:
-        """Return extra prompt_toolkit widgets to insert into the TUI layout.
-
-        Wrapper CLIs can override this to inject widgets (e.g. a mini-player,
-        overlay menu) into the layout without overriding ``run()``.  Widgets
-        are inserted between the spacer and the status bar.
-        """
-        return []
 
 
 # ============================================================================

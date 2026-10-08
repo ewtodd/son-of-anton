@@ -84,28 +84,6 @@ class UpdateReceipt:
             {"name": name, "reason": reason, "at": _utc_now_iso()}
         )
 
-    def gateway_restart_result(
-        self,
-        *,
-        restarted_services: list | None = None,
-        relaunched_profiles: list | None = None,
-        externally_supervised_profiles: list | None = None,
-        killed_pids: list | None = None,
-        failed_units: list | None = None,
-        incomplete: bool = False,
-        phase_error: str = "",
-    ) -> None:
-        self.data["gateway_restart"] = {
-            "restarted_services": list(restarted_services or []),
-            "relaunched_profiles": list(relaunched_profiles or []),
-            "externally_supervised_profiles": list(
-                externally_supervised_profiles or []
-            ),
-            "killed_pids": [int(p) for p in (killed_pids or [])],
-            "failed_units": [str(u) for u in (failed_units or [])],
-            "incomplete": bool(incomplete),
-            "phase_error": phase_error,
-        }
 
     def finalize(self, outcome: str) -> None:
         self.data["outcome"] = outcome

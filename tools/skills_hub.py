@@ -946,20 +946,6 @@ class GitHubSource(SkillSource):
         return last_resp
 
 
-    def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
-        """Recursively download all text files from a GitHub directory.
-
-        Uses the Git Trees API first (single call for the entire tree) to
-        avoid per-directory rate limiting that causes silent subdirectory
-        loss.  Falls back to the recursive Contents API when the tree
-        endpoint is unavailable or the response is truncated.
-        """
-        files = self._download_directory_via_tree(repo, path)
-        if files is not None:
-            return files
-        logger.debug("Tree API unavailable for %s/%s, falling back to Contents API", repo, path)
-        return self._download_directory_recursive(repo, path)
-
     def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
         """Download an entire directory using the Git Trees API (single request).
 

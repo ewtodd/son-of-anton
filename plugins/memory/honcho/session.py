@@ -100,14 +100,6 @@ class HonchoSession:
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
-        """Get message history for LLM context."""
-        recent = (
-            self.messages[-max_messages:]
-            if len(self.messages) > max_messages
-            else self.messages
-        )
-        return [{"role": m["role"], "content": m["content"]} for m in recent]
 
     def clear(self) -> None:
         """Clear all messages in the session."""
@@ -1048,47 +1040,6 @@ class HonchoSessionManager:
 
         return result
 
-    def migrate_local_history(self, session_key: str, messages: list[dict[str, Any]]) -> bool:
-        """
-        Upload local session history to Honcho as a file.
-
-        Used when Honcho activates mid-conversation to preserve prior context.
-
-        Args:
-            session_key: The session key (e.g., "discord:123456").
-            messages: Local messages (dicts with role, content, timestamp).
-
-        Returns:
-            True if upload succeeded, False otherwise.
-        """
-        session = self._cache.get(session_key)
-        if not session:
-            logger.warning("No local session cached for '%s', skipping migration", session_key)
-            return False
-
-        if session.honcho_session_id not in self._sessions_cache:
-            logger.warning("No Honcho session cached for '%s', skipping migration", session_key)
-            return False
-
-        content_bytes = self._format_migration_transcript(session_key, messages)
-        first_ts = messages[0].get("timestamp") if messages else None
-
-        try:
-            def _upload() -> None:
-                user_peer = self._get_or_create_peer(session.user_peer_id)
-                self._sdk_session(session.honcho_session_id).upload_file(
-                    file=("prior_history.txt", content_bytes, "text/plain"),
-                    peer=user_peer,
-                    metadata={"source": "local_jsonl", "count": len(messages)},
-                    created_at=first_ts,
-                )
-
-            self._authed_call("history migration upload", _upload)
-            logger.info("Migrated %d local messages to Honcho for %s", len(messages), session_key)
-            return True
-        except Exception as e:
-            logger.error("Failed to upload local history to Honcho for %s: %s", session_key, e)
-            return False
 
     @staticmethod
     def _format_migration_transcript(session_key: str, messages: list[dict[str, Any]]) -> bytes:

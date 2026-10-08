@@ -2870,20 +2870,6 @@ class SessionStore:
             self._ensure_loaded_locked()
             return dict(self._entries)
 
-    def suspend_session(self, session_key: str) -> bool:
-        """Mark a session as suspended so it auto-resets on next access.
-
-        Used by ``/stop`` to prevent stuck sessions from being resumed
-        after a gateway restart (#7536).  Returns True if the session
-        existed and was marked.
-        """
-        with self._lock:
-            self._ensure_loaded_locked()
-            if session_key in self._entries:
-                self._entries[session_key].suspended = True
-                self._save()
-                return True
-        return False
 
     def mark_turn_active(self, session_key: str) -> Optional[str]:
         """Persist exact ownership of the agent turn running for *session_key*.

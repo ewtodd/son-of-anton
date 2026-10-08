@@ -163,8 +163,6 @@ class VoiceMixer(discord.AudioSource):
     """
 
     # discord.AudioSource subclasses set is_opus()==False to receive PCM.
-    def is_opus(self) -> bool:  # pragma: no cover - trivial
-        return False
 
     def __init__(
         self,

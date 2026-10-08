@@ -60,13 +60,6 @@ class SharedMetricsStore:
         self._ensure_private_file(self.database_path)
         self._ensure_schema()
 
-    def record_model_call(
-        self,
-        dimensions: dict[str, str],
-        resource: dict[str, str],
-    ) -> None:
-        """Increment the terminal model-call counter for the current UTC day."""
-        self.record_counter(MODEL_ROUTE_METRIC, dimensions, resource)
 
     def record_client_active(self, resource: dict[str, str]) -> bool:
         """Record this install at most once in any rolling 24-hour window."""
@@ -196,13 +189,6 @@ class SharedMetricsStore:
             ),
         )
 
-    def create_and_export_package(self) -> list[Path]:
-        """Commit one pending delta package, then atomically export the outbox."""
-        pending_periods = self._pending_period_count()
-        for _ in range(pending_periods):
-            if self._create_package() is None:
-                break
-        return self._export_and_prune()
 
     def create_and_export_package_if_due(self) -> list[Path]:
         """Create pending packages at most once per UTC day, then export them."""
@@ -220,48 +206,6 @@ class SharedMetricsStore:
             )
         return exported
 
-    def counter_snapshot(self) -> list[dict[str, Any]]:
-        """Return cumulative counters for focused tests and local inspection."""
-        with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT
-                    period_start,
-                    metric_name,
-                    son_of_anton_version,
-                    os_family,
-                    architecture,
-                    install_method,
-                    dimensions_json,
-                    value,
-                    packaged_value
-                FROM counter_aggregates
-                ORDER BY
-                    period_start,
-                    son_of_anton_version,
-                    os_family,
-                    architecture,
-                    install_method,
-                    metric_name,
-                    dimensions_json
-                """
-            ).fetchall()
-        return [
-            {
-                "period_start": row["period_start"],
-                "metric_name": row["metric_name"],
-                "resource": {
-                    "son_of_anton_version": row["son_of_anton_version"],
-                    "os_family": row["os_family"],
-                    "architecture": row["architecture"],
-                    "install_method": row["install_method"],
-                },
-                "dimensions": json.loads(row["dimensions_json"]),
-                "value": row["value"],
-                "packaged_value": row["packaged_value"],
-            }
-            for row in rows
-        ]
 
     @contextmanager
     def _connection(

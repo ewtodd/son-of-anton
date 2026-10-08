@@ -88,18 +88,3 @@ class DebugSession:
         except Exception as e:
             logger.error("Error saving %s debug log: %s", self.tool_name, e)
 
-    def get_session_info(self) -> Dict[str, Any]:
-        """Return a summary dict suitable for returning from get_debug_session_info()."""
-        if not self.enabled:
-            return {
-                "enabled": False,
-                "session_id": None,
-                "log_path": None,
-                "total_calls": 0,
-            }
-        return {
-            "enabled": True,
-            "session_id": self.session_id,
-            "log_path": str(self.log_dir / f"{self.tool_name}_debug_{self.session_id}.json"),
-            "total_calls": len(self._calls),
-        }

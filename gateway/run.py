@@ -6956,14 +6956,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     # -- Setup skill availability ----------------------------------------
 
-    def _has_setup_skill(self) -> bool:
-        """Check if the son-of-anton-setup skill is installed."""
-        try:
-            from tools.skill_manager_tool import _find_skill
-            return _find_skill("son-of-anton-setup") is not None
-        except Exception:
-            return False
-
 
     async def _await_adapter_cleanup_with_timeout(
         self, awaitable: Awaitable[Any], timeout: float
@@ -7758,13 +7750,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """
         return 0
 
-    def _interrupt_stateless_runs(self, reason: str) -> int:
-        """Interrupt API-server agents that are not in ``_running_agents``.
-
-        The former API-server platform is removed; this is a no-op that
-        returns 0.  Kept so the shutdown-drain path stays unchanged.
-        """
-        return 0
 
     # ── scale-to-zero idle detection / dormant-quiesce (Phase 0) ──────────────
     # The gateway-side BEHAVIOUR that consumes the relay scale-to-zero primitives
@@ -8496,42 +8481,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         cfg = _load_gateway_runtime_config()
         return resolve_ephemeral_system_prompt_from_config(cfg)
 
-    def _resolve_model_for_channel(
-        self,
-        platform: Platform,
-        chat_id: str,
-        *,
-        user_config: Optional[dict] = None,
-        thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
-    ) -> str:
-        """Resolve model for this channel: channel_overrides else global default.
-
-        Delegates the precedence rule to
-        :func:`son_of_anton_cli.model_switch.resolve_effective_model` (session
-        override > channel override > global default) — the single owner
-        shared with the API server, so the two surfaces cannot diverge
-        again (see 7dd00bb47d).  This call site has no session tier: session
-        /model overrides are applied later by
-        ``_apply_session_model_override`` on the resolved runtime.
-        """
-        from son_of_anton_cli.model_switch import resolve_effective_model
-
-        override = None
-        config = getattr(self, "config", None)
-        if config:
-            override = _get_channel_override(
-                config,
-                platform,
-                chat_id,
-                thread_id=thread_id,
-                parent_id=parent_id,
-            )
-        return resolve_effective_model(
-            None,  # session tier applied downstream (_apply_session_model_override)
-            override,
-            _resolve_gateway_model(user_config),
-        )
 
     def _get_system_prompt_for_channel(
         self,
@@ -8677,26 +8626,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return _t_state.conversation.service_tier_override
         return self._load_service_tier()
 
-    def _set_session_service_tier_override(
-        self,
-        session_key: str,
-        service_tier,
-        clear: bool = False,
-    ) -> None:
-        """Set or clear the session-scoped /fast override.
-
-        ``service_tier`` is "priority" or None (explicit normal). Pass
-        ``clear=True`` to remove the override entirely (fall back to config).
-        """
-        if not session_key:
-            return
-        # Presence-sensitive: "priority" or None (explicit normal) both count
-        # as an override; the sentinel means "no override".  Old code
-        # wholesale-replaced the dict on lazy init (cross-session race) —
-        # per-session field writes eliminate that class of bug.
-        self._session_state(session_key).conversation.service_tier_override = (
-            _SERVICE_TIER_UNSET if clear else service_tier
-        )
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -19123,54 +19052,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
-    async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
-        """Return a HeartbeatManager bound to the session for this event.
-
-        Returns ``(manager, session_entry)`` or ``(None, None)``.
-        """
-        try:
-            from son_of_anton_cli.heartbeat import HeartbeatManager
-        except Exception as exc:
-            logger.debug("heartbeat manager unavailable: %s", exc)
-            return None, None
-        # Warm the SessionDB cache off-loop. A cold cache can drop the
-        # first /heartbeat write while the reply claims it was set.
-        await self._warm_goals_session_db("heartbeat manager")
-        try:
-            # Same reset-policy contract as _get_goal_manager_for_event:
-            # internal events look up the session without touching activity.
-            session_entry = await self.async_session_store.get_or_create_session(
-                event.source,
-                touch_activity=not bool(getattr(event, "internal", False)),
-            )
-        except Exception as exc:
-            logger.debug("heartbeat manager: session lookup failed: %s", exc)
-            return None, None
-        sid = getattr(session_entry, "session_id", None) or ""
-        if not sid:
-            return None, None
-        return HeartbeatManager(session_id=sid), session_entry
-
-    def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
-        """Track a session with an active heartbeat and start the poller.
-
-        The registry maps ``quick_key`` → ``(source, session_id)`` so the
-        poller can rebuild a MessageEvent and enqueue via the adapter FIFO.
-        In-memory by design: heartbeat STATE survives restarts in SessionDB,
-        but firing resumes when the user touches /heartbeat again in the new
-        gateway process (documented; durable schedules belong to cron).
-        """
-        watch = getattr(self, "_heartbeat_watch", None)
-        if watch is None:
-            watch = {}
-            self._heartbeat_watch = watch
-        watch[quick_key] = (source, session_id)
-        self._start_heartbeat_poller()
-
-    def _unregister_heartbeat_watch(self, quick_key: str) -> None:
-        watch = getattr(self, "_heartbeat_watch", None)
-        if watch:
-            watch.pop(quick_key, None)
 
     def _start_heartbeat_poller(self) -> None:
         """Start the single gateway-wide heartbeat poll task (idempotent)."""

@@ -299,8 +299,6 @@ class CLICommandsMixin:
         print(text)
 
 
-
-
     def _handle_stop_command(self):
         """Handle /stop — kill all running background processes and
         background (async) delegations.
@@ -950,7 +948,6 @@ class CLICommandsMixin:
         print("  Usage: /worktree [new [name] | list]")
 
 
-
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         from cli import get_job
@@ -1196,7 +1193,6 @@ class CLICommandsMixin:
 
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
-
 
 
     def _handle_curator_command(self, cmd: str):
@@ -1791,7 +1787,6 @@ class CLICommandsMixin:
             pass
 
 
-
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         from cli import _ACCENT, _THINKING, save_config_value
@@ -2308,64 +2303,6 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
-
-
-
-
-    def _handle_voice_command(self, command: str):
-        """Handle /voice [on|off|tts|status] command."""
-        from cli import _cprint
-        parts = command.strip().split(maxsplit=1)
-        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
-
-        if subcommand == "on":
-            self._enable_voice_mode()
-        elif subcommand == "off":
-            self._disable_voice_mode()
-        elif subcommand == "tts":
-            self._toggle_voice_tts()
-        elif subcommand == "status":
-            self._show_voice_status()
-        elif subcommand == "":
-            # Toggle
-            if self._voice_mode:
-                self._disable_voice_mode()
-            else:
-                self._enable_voice_mode()
-        else:
-            _cprint(f"Unknown voice subcommand: {subcommand}")
-            _cprint("Usage: /voice [on|off|tts|status]")
-
-    def _handle_wake_command(self, command: str):
-        """Handle /wake [on|off|status] — the 'Hey Son of Anton' hotword listener.
-
-        The toggle IS the config: an explicit on/off (or bare toggle) also
-        writes ``wake_word.enabled`` to config.toml so the choice persists
-        across sessions. Startup auto-arm (_maybe_start_wake_word) only reads.
-        """
-        from cli import _cprint
-        parts = command.strip().split(maxsplit=1)
-        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
-
-        if subcommand == "on":
-            if self._start_wake_word_listener(announce=True):
-                self._persist_wake_word_enabled(True)
-        elif subcommand == "off":
-            self._stop_wake_word_listener(announce=True)
-            self._persist_wake_word_enabled(False)
-        elif subcommand in ("", "status"):
-            if subcommand == "":
-                # Bare /wake toggles.
-                if getattr(self, "_wake_word_active", False):
-                    self._stop_wake_word_listener(announce=True)
-                    self._persist_wake_word_enabled(False)
-                elif self._start_wake_word_listener(announce=True):
-                    self._persist_wake_word_enabled(True)
-            else:
-                self._show_wake_word_status()
-        else:
-            _cprint(f"Unknown wake subcommand: {subcommand}")
-            _cprint("Usage: /wake [on|off|status]")
 
     def _persist_wake_word_enabled(self, enabled: bool):
         """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""

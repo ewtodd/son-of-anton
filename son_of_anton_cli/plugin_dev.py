@@ -157,26 +157,6 @@ class DoctorReport:
     def warning(self, message: str) -> None:
         self.findings.append(DoctorFinding("warning", message))
 
-    def format_text(self) -> str:
-        lines = [f"Plugin Doctor: {self.path}"]
-        if self.manifest is not None:
-            lines.append(
-                f"  manifest: {self.manifest.name} "
-                f"{self.manifest.version or '(no version)'} ({self.manifest.kind})"
-            )
-        for finding in self.findings:
-            marker = "ERROR" if finding.level == "error" else "WARN"
-            lines.append(f"  {marker}: {finding.message}")
-        if self.ok:
-            lines.append(
-                "  OK: runtime discovery, manifest parsing, import, and registration passed"
-            )
-        lines.append(
-            f"  registrations: {len(self.registered_tools)} tool(s), "
-            f"{len(self.registered_hooks)} hook(s)"
-        )
-        return "\n".join(lines)
-
 
 def resolve_plugin_path(target: str | os.PathLike[str] | None = None) -> Path:
     """Resolve an explicit path or an installed/bundled plugin id."""

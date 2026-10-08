@@ -2286,58 +2286,6 @@ class SessionSearchMixin:
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def search_sessions_by_id(
-        self,
-        query: str,
-        limit: int = 20,
-        include_archived: bool = True,
-        source: str = None,
-        sources: List[str] = None,
-        exclude_sources: List[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Search surfaced sessions by exact/prefix/substring session id.
-
-        Desktop search uses this alongside FTS message search so users can paste
-        a session id from logs, CLI output, or another Son of Anton surface and jump
-        straight to that conversation.  Matching also checks ``_lineage_root_id``
-        for projected compaction-chain tips, so an old root id still resolves to
-        the live continuation row.
-        """
-        needle = (query or "").strip().lower()
-        if not needle or limit <= 0:
-            return []
-
-        # SQL-bounded: list_sessions_rich pushes the id LIKE filter into the
-        # query (matching the row's own id AND any id in its forward
-        # compaction chain), so we only materialize matching rows instead of
-        # scanning every session. Fetch a small multiple of `limit` so the
-        # in-Python exact/prefix/substring ranking below has enough candidates
-        # to order, then truncate.
-        candidates = self.list_sessions_rich(
-            source=source,
-            sources=sources,
-            exclude_sources=exclude_sources,
-            limit=max(limit * 4, limit),
-            offset=0,
-            include_archived=include_archived,
-            order_by_last_active=True,
-            id_query=needle,
-        )
-
-        def score(row: Dict[str, Any]) -> int:
-            ids = [str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")]
-            normalized = [value.lower() for value in ids if value]
-            if any(value == needle for value in normalized):
-                return 0
-            if any(value.startswith(needle) for value in normalized):
-                return 1
-            return 2
-
-        ranked = sorted(
-            enumerate(candidates),
-            key=lambda item: (score(item[1]), item[0]),
-        )
-        return [row for _, row in ranked[:limit]]
 
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable in this DB."""

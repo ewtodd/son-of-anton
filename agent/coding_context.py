@@ -552,14 +552,6 @@ class RuntimeMode:
             trailing.append(f"Operator instructions (from config):\n{self.instructions}")
         return prefix, workspace_parts, trailing
 
-    def system_blocks(self) -> list[str]:
-        """Return posture blocks in their historical display order.
-
-        ``system_prompt_parts`` is the cache-aware API. This compatibility
-        helper retains the public flat list for callers outside prompt assembly.
-        """
-        prefix, workspace, trailing = self.system_prompt_parts()
-        return [*prefix, *workspace, *trailing]
 
     def compact_skill_categories(self) -> frozenset[str]:
         """Skill categories to demote to names-only in the prompt's skill index.

@@ -525,18 +525,6 @@ class ToolCallGuardrailController:
             return False
         return tool_name in self.config.idempotent_tools
 
-    def observe_identical_call(
-        self,
-        tool_name: str,
-        args: Mapping[str, Any] | None,
-        result: str | None,
-    ) -> str | None:
-        """Track consecutive identical calls; return a loop-breaker notice or None.
-
-        Back-compat wrapper around :meth:`observe_call` for callers that only
-        care about the loop-breaker notice.
-        """
-        return self.observe_call(tool_name, args, result).notice
 
     def observe_call(
         self,

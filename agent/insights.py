@@ -43,8 +43,6 @@ def _fmt_est_cost(est_cost: float) -> str:
     return format_cost_label(Decimal(str(est_cost)))
 
 
-
-
 def _estimate_cost(
     session_or_model: Dict[str, Any] | str,
     input_tokens: int = 0,
@@ -82,8 +80,6 @@ def _estimate_cost(
         base_url=base_url,
     )
     return float(result.amount_usd or 0.0), result.status
-
-
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
@@ -208,20 +204,6 @@ class InsightsEngine:
             "top_sessions": top_sessions,
         }
 
-    def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
-        """Return the analytics-usage payload without running a full generate().
-
-        Uses the instr()-prefiltered _get_skill_usage query so only messages
-        that reference skill_view or skill_manage are loaded from SQLite, while
-        still preserving the per-tool breakdown used by the dashboard route.
-        """
-        cutoff = time.time() - (days * 86400)
-        tool_usage = self._get_tool_usage(cutoff, source)
-        skill_usage = self._get_skill_usage(cutoff, source)
-        return {
-            "tools": self._compute_tool_breakdown(tool_usage),
-            "skills": self._compute_skill_breakdown(skill_usage),
-        }
 
     # =========================================================================
     # Data gathering (SQL queries)
