@@ -124,6 +124,27 @@ def _entry_models_discovered(entry: Any) -> bool:
     )
 
 
+def _entry_catalog_pinned(entry: Any) -> bool:
+    """True when a custom-provider entry declares its own model subset.
+
+    A user-authored ``models:`` value (mapping, list, or string) is a
+    deliberate catalog narrow — e.g. a Nix-managed ``custom_providers`` entry
+    that whitelists three models behind one Bifrost endpoint. Catalogs Son of
+    Anton wrote itself are never pins: probe results carry
+    ``models_discovered: true``, and the save-a-model wizard sets
+    ``discover_models: true`` so metadata-only writes do not narrow the
+    picker. An explicit ``discover_models: true`` also opts back into live
+    discovery.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if _entry_models_discovered(entry):
+        return False
+    if entry.get("discover_models") is True:
+        return False
+    return bool(_declared_model_ids(entry.get("models")))
+
+
 def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
     """Return True when ``models:`` is an intentional ID allowlist.
 
@@ -134,8 +155,11 @@ def _models_config_is_allowlist(value: Any, discovered: bool = False) -> bool:
     while ``son-of-anton model`` still live-probed the full ``/v1/models`` list.
     Refresh could not help because the same gate skipped probing.
 
-    List/string shapes remain allowlists for no-key endpoints. To pin a
-    dict-shaped catalog, set ``discover_models: false``.
+    List/string shapes remain allowlists for no-key endpoints. Mapping-shaped
+    catalogs pin the picker too, but that decision lives in
+    :func:`_entry_catalog_pinned` (it also consults ``models_discovered`` and
+    ``discover_models``); this helper keeps the legacy shape classification
+    used for the keyless-probe gate and ``has_explicit_models``.
 
     ``discovered`` is the entry-level ``models_discovered`` flag (see
     ``_entry_models_discovered``): a catalog Son of Anton itself persisted after a
@@ -584,6 +608,7 @@ class ModelFlagParseResult:
     force_refresh: bool = False
     is_session: bool = False
     is_once: bool = False
+    show_all: bool = False
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------
@@ -616,11 +641,12 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     force_refresh = False
     is_session = False
     is_once = False
+    show_all = False
 
     # Normalize Unicode dashes (some clients auto-convert -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once|all)', r'--\1', raw_args)
 
     # Keep this hand-rolled because model IDs may contain colons/slashes and
     # the historical parser did not require shell quoting.
@@ -640,6 +666,9 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
         elif parts[i] == "--once":
             is_once = True
             i += 1
+        elif parts[i] in ("--all", "--all-models"):
+            show_all = True
+            i += 1
         elif parts[i] == "--provider" and i + 1 < len(parts):
             explicit_provider = parts[i + 1]
             i += 2
@@ -655,6 +684,7 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
         force_refresh=force_refresh,
         is_session=is_session,
         is_once=is_once,
+        show_all=show_all,
     )
 
 
@@ -750,6 +780,7 @@ class ModelSwitchRequest:
     is_session: bool = False
     is_once: bool = False
     force_refresh: bool = False
+    show_all: bool = False
     scope: str = "default"
     errors: tuple = ()
 
@@ -819,6 +850,7 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         is_session=parsed.is_session,
         is_once=parsed.is_once,
         force_refresh=parsed.force_refresh,
+        show_all=parsed.show_all,
         scope=scope,
         errors=tuple(errors),
     )
@@ -2277,6 +2309,7 @@ def list_authenticated_providers(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    show_all_models: bool = False,
     for_picker: bool = False,
     excluded_providers: list | None = None,
 ) -> List[dict]:
@@ -2306,6 +2339,11 @@ def list_authenticated_providers(
     custom OpenAI-compatible endpoints. Keep the default true for CLI parity;
     GUI picker opens can pass false to show configured models immediately
     without waiting on offline local endpoints.
+
+    ``show_all_models`` widens a pinned custom-provider row back to the full
+    live endpoint catalog for one picker open (the ``/model --all`` control).
+    Without it, an entry that declares its own ``models`` list/mapping is
+    shown exactly as declared.
 
     ``probe_current_custom_provider`` is the middle ground for GUI picker
     opens: probe only the currently-selected custom endpoint so its model list
@@ -2680,6 +2718,7 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "models": [],
                     "has_explicit_models": False,
+                    "pinned": _entry_catalog_pinned(ep_cfg),
                     "ep_cfg": ep_cfg,  # used below for discover_models / api_key
                     # Part of group_key, so it is constant across the group.
                     # The render loop below needs it to key the model cache:
@@ -2704,6 +2743,10 @@ def list_authenticated_providers(
                 ep_cfg.get("models"), _entry_models_discovered(ep_cfg)
             ):
                 ep_groups[group_key]["has_explicit_models"] = True
+            # A group is pinned only when every sibling entry declares its
+            # catalog; one undeclared sibling means discovery is wanted.
+            if not _entry_catalog_pinned(ep_cfg):
+                ep_groups[group_key]["pinned"] = False
             ep_groups[group_key]["raw_names"].append(display_name)
             ep_groups[group_key]["aliases"].update(
                 custom_provider_aliases(display_name, str(ep_name))
@@ -2773,9 +2816,14 @@ def list_authenticated_providers(
             # catalog an earlier probe already paid for costs nothing, and
             # applying the probe gate to it re-pins the endpoint — see
             # ``_discovery_allowed`` in section 4 for the full rationale.
+            # A user-declared catalog pins the row: show exactly the declared
+            # subset unless the caller asked for the full endpoint list
+            # (/model --all).
+            _catalog_pinned = bool(grp.get("pinned")) and not show_all_models
             _discovery_allowed = bool(api_url) and discover
             _probe_live = (
                 _discovery_allowed
+                and not _catalog_pinned
                 and (bool(api_key) or not has_explicit_models)
                 and _can_probe_custom_provider(row_is_current=_ep_is_current)
             )
@@ -2807,7 +2855,7 @@ def list_authenticated_providers(
                         models_list = live_models
                 except Exception:
                     pass
-            elif _discovery_allowed:
+            elif _discovery_allowed and not _catalog_pinned:
                 try:
                     from son_of_anton_cli.models import cached_fetch_api_models
 
@@ -2833,6 +2881,7 @@ def list_authenticated_providers(
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
+                "models_pinned": bool(grp.get("pinned")),
                 "native_catalog_empty": native_catalog_empty,
             })
             seen_slugs.add(ep_name.lower())
@@ -3012,6 +3061,7 @@ def list_authenticated_providers(
                     "api_key": api_key,
                     "models": [],
                     "has_explicit_models": False,
+                    "pinned": _entry_catalog_pinned(entry),
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
                     # Part of group_key, so constant across the group. Needed
@@ -3030,6 +3080,10 @@ def list_authenticated_providers(
                 # honour that for the whole grouped row.
                 if not discover:
                     groups[group_key]["discover_models"] = False
+                # A group is pinned only when every sibling entry declares its
+                # catalog; one undeclared sibling means discovery is wanted.
+                if not _entry_catalog_pinned(entry):
+                    groups[group_key]["pinned"] = False
             groups[group_key]["aliases"].update(
                 custom_provider_aliases(
                     raw_name,
@@ -3161,9 +3215,14 @@ def list_authenticated_providers(
             # self-pins on its first probe and can never widen again. f66319097
             # already carved the dict shape out of that trap for the same
             # reason; the list shape is the other door into it.
+            # A user-declared catalog pins the row: show exactly the declared
+            # subset unless the caller asked for the full endpoint list
+            # (/model --all).
+            _catalog_pinned = bool(grp.get("pinned")) and not show_all_models
             _discovery_allowed = bool(api_url) and grp.get("discover_models", True)
             _probe_live = (
                 _discovery_allowed
+                and not _catalog_pinned
                 and (bool(api_key) or not grp.get("has_explicit_models"))
                 and _can_probe_custom_provider(row_is_current=_grp_is_current)
             )
@@ -3202,7 +3261,7 @@ def list_authenticated_providers(
                         )
                 except Exception:
                     pass
-            elif _discovery_allowed:
+            elif _discovery_allowed and not _catalog_pinned:
                 try:
                     from son_of_anton_cli.models import cached_fetch_api_models
 
@@ -3228,6 +3287,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "models_pinned": bool(grp.get("pinned")),
                 "native_catalog_empty": native_catalog_empty,
             })
             seen_slugs.add(slug.lower())
@@ -3287,6 +3347,7 @@ def list_picker_providers(
     max_models: int | None = None,
     current_model: str = "",
     excluded_providers: list | None = None,
+    show_all_models: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -3308,6 +3369,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        show_all_models=show_all_models,
         for_picker=True,
         excluded_providers=excluded_providers,
     )

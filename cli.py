@@ -8566,6 +8566,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
           /model <name> --global              — switch and persist to config.toml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model --all                        — picker: show the full endpoint catalog
+                                                 (a custom_providers entry that declares
+                                                 ``models`` is otherwise pinned to that subset)
           /model auto                         — clear the session pin, back to the configured default
 
         Persistence defaults to off (``model.persist_switch_by_default`` in
@@ -8603,6 +8606,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         explicit_provider = request.explicit_provider
         is_global_flag = request.is_global
         force_refresh = request.force_refresh
+        show_all_models = request.show_all
         is_session = request.is_session
         one_turn = request.is_once
         if request.errors:
@@ -8661,6 +8665,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     ctx,
                     probe_custom_providers=force_refresh,
                     probe_current_custom_provider=not force_refresh,
+                    show_all_models=show_all_models,
                 )["providers"]
             except Exception:
                 providers = []
@@ -8673,6 +8678,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint("  /model <name> --session              switch for this session only")
                 _cprint("  /model --provider <slug>             switch provider")
                 _cprint("  /model --refresh                     re-fetch live model lists")
+                _cprint("  /model --all                         show the full endpoint catalog")
                 return
 
             self._open_model_picker(

@@ -124,6 +124,7 @@ def build_models_payload(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    show_all_models: bool = False,
     for_picker: bool = False,
     max_models: int | None = None,
 ) -> dict:
@@ -190,6 +191,7 @@ def build_models_payload(
         refresh=refresh,
         probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider,
+        show_all_models=show_all_models,
         for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
     )

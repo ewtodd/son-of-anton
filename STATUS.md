@@ -27,6 +27,11 @@ All of the following is merged to `main` and deployed on e-desktop:
   known wire hosts (Kimi, TokenHub), else the widest OpenAI-compatible
   vocabulary. `/reasoning status` prints the old state summary and direct
   `/reasoning <level> [--global]` still works for scripting.
+- **Custom-provider catalogs pin the picker.** A `custom_providers` (or the
+  keyed `providers:`) entry that declares `models` shows exactly that subset
+  in `/model`; `/model --all` widens the row to the endpoint's live catalog
+  for one open. Catalogs Son of Anton wrote itself never pin: probe results
+  carry `models_discovered`, and wizard saves set `discover_models: true`.
 - **Memory scopes.** `MEMORY.md`/`USER.md` are shared; `*.cli.md` and
   `*.gateway.md` are per-surface. The active scope follows the surface
   (`memory.scope` pins it), and the `memory` tool takes a `scope`.

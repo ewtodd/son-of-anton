@@ -2691,6 +2691,12 @@ def _save_custom_provider(
                 models_cfg[model] = {"context_length": context_length}
                 entry["models"] = models_cfg
                 changed = True
+            # Wizard-saved metadata is not a catalog pin: keep the picker
+            # probing the endpoint's full /v1/models list (see
+            # ``_entry_catalog_pinned``).
+            if entry.get("discover_models") is not True:
+                entry["discover_models"] = True
+                changed = True
             if api_mode:
                 if entry.get("api_mode") != api_mode:
                     entry["api_mode"] = api_mode
@@ -2711,7 +2717,7 @@ def _save_custom_provider(
     if not name:
         name = _auto_provider_name(base_url)
 
-    entry = {"name": name, "base_url": base_url}
+    entry = {"name": name, "base_url": base_url, "discover_models": True}
     if key_env:
         entry["key_env"] = key_env
     elif api_key:
