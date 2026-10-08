@@ -34,7 +34,6 @@ from son_of_anton_cli.providers import (
     custom_provider_slug,
     determine_api_mode,
     get_label,
-    host_mandated_api_mode,
     is_aggregator,
     resolve_provider_full,
 )
@@ -1193,11 +1192,10 @@ def resolve_display_context_length(
     """Resolve the context length to show in /model output.
 
     models.dev reports per-vendor context (e.g. gpt-5.5 = 1.05M on openai)
-    but provider-enforced limits can be lower (e.g. Codex OAuth caps the
-    same slug at 272k). The authoritative source is
+    but provider-enforced limits can be lower (e.g. Copilot caps a slug below
+    its vendor window). The authoritative source is
     ``agent.model_metadata.get_model_context_length`` which already knows
-    about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
-    rest.
+    about Copilot and Nous, and falls back to models.dev for the rest.
 
     When ``custom_providers`` is provided, per-model ``context_length``
     overrides from ``custom_providers[].models.<id>.context_length`` are
@@ -1304,8 +1302,8 @@ def _configured_provider_matches(
     that actually declares it in user/custom provider config, instead of
     leaving it on the current provider.  Without this, a model declared under
     ``providers.<slug>`` / ``custom_providers`` but typed while the current
-    provider is ``openai-codex`` stays on Codex and is soft-accepted as an
-    unknown hidden Codex model (#45006).
+    provider is something else is soft-accepted as an unknown hidden model
+    (#45006).
 
     Matching is exact (case-insensitive); the configured spelling is returned
     so the downstream validation/override path sees the canonical id.  Only the
@@ -1439,7 +1437,6 @@ def switch_model(
         ModelSwitchResult with all information the caller needs.
     """
     from son_of_anton_cli.models import (
-        copilot_model_api_mode,
         detect_provider_for_model,
         validate_requested_model,
         opencode_model_api_mode,
@@ -1690,7 +1687,7 @@ def switch_model(
         # If the typed model is declared in user/custom provider config, route
         # to that provider BEFORE detect_provider_for_model() guesses from
         # static catalogs and BEFORE the common-path validation can let a
-        # soft-accepting current provider (e.g. openai-codex) swallow the name
+        # soft-accepting current provider swallow the name
         # as an unknown hidden model.  Configured matches beat static-catalog
         # detection.  Unlike step e this is deliberately NOT gated on
         # ``not is_custom`` — switching from a local/custom provider A to a
@@ -1953,18 +1950,7 @@ def switch_model(
                 api_key = "no-key-required"
 
     # --- Resolve api_mode from the final (provider, base_url) before validation ---
-    # Two cases this closes, both surfaced when the switched model's reasoning
-    # is actually applied (post the reasoning-unification refactor):
-    #   1. api_mode empty (e.g. alias cleared it above) → fill from the endpoint.
-    #   2. api_mode carried a STALE value from the previous session state
-    #      (e.g. a same-provider /model switch to gpt-5.x on api.openai.com that
-    #      kept the prior openrouter/chat_completions mode). A host that mandates
-    #      one wire protocol must override the stale value — otherwise the request
-    #      goes out on chat_completions and OpenAI 400s on tools+reasoning_effort.
-    _mandated_mode = host_mandated_api_mode(base_url)
-    if _mandated_mode is not None:
-        api_mode = _mandated_mode
-    elif not api_mode:
+    if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
 
     # --- Normalize model name for target provider ---
@@ -2060,10 +2046,6 @@ def switch_model(
     if validation.get("corrected_model"):
         new_model = validation["corrected_model"]
 
-    # --- Copilot api_mode override ---
-    if target_provider in {"copilot", "github-copilot"}:
-        api_mode = copilot_model_api_mode(new_model, api_key=api_key)
-
     # --- OpenCode api_mode override ---
     if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
@@ -2082,7 +2064,7 @@ def switch_model(
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
     # symmetrically (strip /v1 for anthropic_messages, re-append it for
-    # chat_completions / codex_responses).  Mirrors the same logic in
+    # chat_completions).  Mirrors the same logic in
     # son_of_anton_cli.runtime_provider.resolve_runtime_provider; without the strip,
     # /model switches into an anthropic_messages-routed OpenCode model
     # (e.g. `/model minimax-m2.7` on opencode-go, `/model claude-sonnet-4-6`
@@ -2752,7 +2734,7 @@ def list_authenticated_providers(
         seen_slugs.add(slug.lower())
         _record_builtin_endpoint(slug)
 
-    # --- 2. Check Son of Anton-only providers (nous, openai-codex, copilot, opencode-go) ---
+    # --- 2. Check Son of Anton-only providers (nous, copilot, opencode-go) ---
     from son_of_anton_cli.providers import SON_OF_ANTON_OVERLAYS
     from son_of_anton_cli.auth import PROVIDER_REGISTRY as _auth_registry
 
@@ -2835,14 +2817,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if son_of_anton_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        if son_of_anton_slug in {"copilot", "copilot-acp"}:
             # Use live OAuth-backed discovery so the gateway /model picker
-            # matches what the user's authenticated Codex/Copilot backend
-            # actually serves — including ChatGPT-Pro-only Codex slugs
-            # (e.g. gpt-5.3-codex-spark) that aren't in the static curated
-            # catalog. ``cached_provider_model_ids()`` falls back to the
-            # curated list when the live endpoint is unreachable, so this
-            # is safe for unauthenticated and offline cases too.
+            # matches what the user's authenticated Copilot backend
+            # actually serves — including account-only slugs that aren't in
+            # the static curated catalog. ``cached_provider_model_ids()``
+            # falls back to the curated list when the live endpoint is
+            # unreachable, so this is safe for unauthenticated and offline
+            # cases too.
             model_ids = cached_provider_model_ids(son_of_anton_slug)
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the

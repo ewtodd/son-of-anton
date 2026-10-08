@@ -943,8 +943,6 @@ def resolve_billing_route(
             provider_name = inferred_provider
             model = bare_model
 
-    if provider_name == "openai-codex":
-        return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
     if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
@@ -1126,25 +1124,6 @@ def normalize_usage(
         cache_write_tokens = _usage_count(
             _usage_get(response_usage, "cache_creation_input_tokens", 0)
         )
-    elif mode == "codex_responses":
-        input_total = _usage_count(_usage_get(response_usage, "input_tokens", 0))
-        output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
-        details = _usage_get(response_usage, "input_tokens_details", None)
-        cache_read_tokens = _usage_count(
-            _usage_get(details, "cached_tokens", 0) if details else 0
-        )
-        # OpenAI's documented field for GPT-5.6+ explicit cache writes is
-        # `cache_write_tokens` (billed at 1.25x); `cache_creation_tokens` is
-        # kept as a fallback for older/alternate Responses-compatible
-        # endpoints (#70543).
-        cache_write_tokens = _usage_count(
-            _usage_get(details, "cache_write_tokens", 0) if details else 0
-        )
-        if not cache_write_tokens:
-            cache_write_tokens = _usage_count(
-                _usage_get(details, "cache_creation_tokens", 0) if details else 0
-            )
-        input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
         # OpenAI-style names first; fall back to Anthropic-style
         # (input_tokens/output_tokens). Local OpenAI-compatible servers like

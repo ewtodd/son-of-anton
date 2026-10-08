@@ -615,8 +615,6 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and msg.get("role") == "assistant"
             and isinstance(collapsed[-1], dict)
             and collapsed[-1].get("role") == "assistant"
-            and not _is_codex_interim(msg)
-            and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
             # Verification candidate collapsing: when the earlier assistant
@@ -1837,7 +1835,7 @@ def dump_api_request_debug(
             "reason": reason,
             "request": {
                 "method": "POST",
-                "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
+                "url": f"{agent.base_url.rstrip('/')}/chat/completions",
                 "headers": {
                     "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
                     "Content-Type": "application/json",
@@ -2351,8 +2349,8 @@ def anthropic_prompt_cache_policy(
     # agent/anthropic_adapter.py (#69512).
     #
     # Gated on chat_completions explicitly rather than `not
-    # is_anthropic_wire`: codex_responses / bedrock_converse are separate
-    # transports with their own marker handling and must not be swept in.
+    # is_anthropic_wire`: other wires are separate transports with their
+    # own marker handling and must not be swept in.
     if _litellm_openai_wire:
         return True, False
 
@@ -2550,9 +2548,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # If the rebuild raises (bad API key, network error, build_anthropic_client
     # failure, etc.) we restore these atomically so the agent isn't left with a
     # new model/provider name paired with the OLD client — that mismatch causes
-    # HTTP 400s like "claude-sonnet-4-6 is not supported on openai-codex" on the
-    # next turn.  Callers in cli.py / gateway/run.py / tui_gateway/server.py
-    # catch the re-raised exception and show the user a warning; without this
+    # HTTP 400s like a model/provider mismatch on the next turn.  Callers catch
+    # the re-raised exception and show the user a warning; without this
     # rollback the warning is misleading because the swap partially succeeded.
     # Use a sentinel so we can distinguish "attribute was unset" from
     # "attribute was None" and skip the restore for genuinely-missing
@@ -2670,15 +2667,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
             # The MoA virtual provider speaks only chat.completions via the
             # MoAClient facade — the aggregator's real transport
-            # (codex_responses / anthropic_messages) is resolved and applied
+            # (anthropic_messages) is resolved and applied
             # *inside* the reference/aggregator fan-out, never on the outer
             # primary call. determine_api_mode("moa", ...) above may have left
             # api_mode set to the aggregator's transport; if the conversation
-            # loop sees that, it dispatches client.responses.create (which the
-            # facade has no .responses for) and the call falls through to the
-            # moa://local placeholder → HTTP 404 → fallback to a reference
-            # model. Pin chat_completions here so the primary call always goes
-            # through MoAClient.chat.completions, matching agent_init.py.
+            # loop sees that, it dispatches the wrong client method and the
+            # call falls through to the moa://local placeholder → HTTP 404 →
+            # fallback to a reference model. Pin chat_completions here so the
+            # primary call always goes through MoAClient.chat.completions,
+            # matching agent_init.py.
             agent.api_mode = "chat_completions"
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
@@ -3364,18 +3361,6 @@ def _msg_has_payload(msg: Dict[str, Any]) -> bool:
         return True
     if msg.get("reasoning") or msg.get("reasoning_details"):
         return True
-    # Codex Responses item carriers: a commentary-phase assistant turn
-    # persists with content:"" by DESIGN — its text lives in
-    # ``codex_message_items`` (delivered via the interim callback) and the
-    # structured items are replayed for prefix-cache hits.  Same for
-    # ``codex_reasoning_items``.  These turns are never wire-empty on any
-    # api_mode: the codex transport replays the items, and the
-    # chat-completions transport strips the carriers only after this repair
-    # pass has already run.  Treat them as payload so the repair never
-    # rewrites a designed-empty codex turn (July 2026: a write-time pad that
-    # ignored this broke codex commentary replay in CI).
-    if msg.get("codex_message_items") or msg.get("codex_reasoning_items"):
-        return True
     return False
 
 
@@ -3769,8 +3754,7 @@ def intent_ack_continuation_mode(agent) -> str:
 
     ``True``/"true"/"always"/"yes"/"on" → all; ``False``/"false"/"never"/"no"/
     "off" → off; ``list`` → all when a substring matches the active model name,
-    else off.  Anything else (including the legacy ``"auto"`` default, which
-    used to mean "codex_responses only") → off.
+    else off.  Anything else (including the ``"auto"`` default) → off.
     """
     mode = getattr(agent, "_intent_ack_continuation", "auto")
 

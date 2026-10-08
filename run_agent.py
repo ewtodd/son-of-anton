@@ -1308,7 +1308,7 @@ class AIAgent:
           1. ``providers.<id>.models.<model>.stale_timeout_seconds``
           2. ``providers.<id>.stale_timeout_seconds``
           3. ``SON_OF_ANTON_API_CALL_STALE_TIMEOUT`` env var
-          4. 90.0s default (time-to-first-byte for non-streaming / Codex
+          4. 90.0s default (time-to-first-byte for non-streaming /
              internal-streaming requests; lowered from 300s in May 2026 so
              fallback providers kick in faster when upstream providers
              stall).  The detector still scales up for large contexts in
@@ -3078,8 +3078,6 @@ class AIAgent:
                 _admit_hard_cancel()
             self._pending_redirect = None
 
-        # Codex app-server owns its model/tool loop and watches a private
-        # interrupt event rather than Son of Anton' per-thread flag.
         # A cron turn performs its API request on the conversation thread to
         # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
         # path, its client is registered here so this cross-thread interrupt can
@@ -4659,8 +4657,8 @@ class AIAgent:
         #70773 / #67142 / #29507: ``client.close()`` releases the pool's raw
         FDs from the *calling* thread. The shared primary client has no single
         owning thread — worker threads from stale-killed attempts may still be
-        unwinding their SSL BIOs, and the codex-direct paths stream on
-        the shared client itself. If we release an FD while another thread's
+        unwinding their SSL BIOs, and in-flight requests stream on the shared
+        client itself. If we release an FD while another thread's
         SSL layer still caches the raw integer fd, the kernel can recycle it
         into an unrelated ``open()`` (e.g. ``state.db``) and the unwinding
         TLS flush then writes an application-data record into that file — the
@@ -4721,8 +4719,8 @@ class AIAgent:
         # #70773: never hard-close the replaced shared client from here — the
         # caller may not be the thread whose request is still unwinding on the
         # old pool (credential rotation and dead-connection cleanup run on the
-        # turn thread while stale-killed workers unwind; the codex-direct path
-        # streams on the shared client itself). Retire it instead: sockets are
+        # turn thread while stale-killed workers unwind and in-flight requests
+        # still stream on the shared client). Retire it instead: sockets are
         # shut down (FD-safe), FD release deferred to GC.
         self._retire_shared_openai_client(old_client, reason=f"replace:{reason}")
         return True
@@ -5408,22 +5406,6 @@ class AIAgent:
                 self._delivered_interim_texts = delivered
             delivered.add(normalized)
 
-    def _fire_streamed_codex_commentary(self, text: str) -> None:
-        """Deliver a completed live Codex commentary message immediately."""
-        cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(text, str):
-            return
-        visible = self._strip_think_blocks(text).strip()
-        if visible:
-            visible = redact_sensitive_text(visible)
-        if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
-            return
-        try:
-            cb(visible, already_streamed=False)
-            self._record_delivered_interim_text(visible)
-        except Exception:
-            logger.debug("interim_assistant_callback error", exc_info=True)
-
     def _emit_interim_assistant_message(
         self, assistant_msg: Dict[str, Any]
     ) -> None:
@@ -5439,24 +5421,7 @@ class AIAgent:
         """
         if not isinstance(assistant_msg, dict):
             return
-        commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
-        undelivered_parts: List[str] = []
-        pending_keys: set[str] = set()
-        for part in commentary_parts:
-            key = self._normalize_interim_visible_text(part)
-            if (
-                not key
-                or key in pending_keys
-                or self._interim_text_was_delivered(part)
-            ):
-                continue
-            pending_keys.add(key)
-            undelivered_parts.append(part)
-        visible = (
-            "\n\n".join(undelivered_parts).strip()
-            if commentary_parts
-            else self._interim_assistant_visible_text(assistant_msg)
-        )
+        visible = self._interim_assistant_visible_text(assistant_msg)
         if (
             not visible
             or visible == "(empty)"
@@ -5485,11 +5450,7 @@ class AIAgent:
             return
         try:
             cb(visible, already_streamed=already_streamed)
-            if undelivered_parts:
-                for part in undelivered_parts:
-                    self._record_delivered_interim_text(part)
-            else:
-                self._record_delivered_interim_text(visible)
+            self._record_delivered_interim_text(visible)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
@@ -5873,7 +5834,7 @@ class AIAgent:
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
         """Strip native image parts when the active model lacks vision.
 
-        Runs on the chat.completions / codex_responses paths. Vision-capable
+        Runs on the chat.completions path. Vision-capable
         models pass through unchanged (provider and any downstream translator
         handle the image parts natively). Non-vision models get each image
         replaced by a cached vision_analyze text description so the turn
@@ -6415,13 +6376,13 @@ class AIAgent:
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
-        """Strip Codex Responses API fields from tool_calls for strict providers.
+        """Strip legacy Responses API fields from tool_calls for strict providers.
 
         Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
         validate the Chat Completions schema and reject unknown fields (call_id,
-        response_item_id) with 400 or 422 errors. These fields are preserved in
-        the internal message history — this method only modifies the outgoing
-        API copy.
+        response_item_id) with 400 or 422 errors. These fields can survive in
+        pre-existing session rows; this method only modifies the outgoing API
+        copy.
 
         ``extra_content`` (Gemini thought_signature) is also stripped — strict
         providers reject it with "Extra inputs are not permitted" — UNLESS the
@@ -6430,9 +6391,7 @@ class AIAgent:
         stripping when no model is supplied.
 
         Creates new tool_call dicts rather than mutating in-place, so the
-        original messages list retains call_id/response_item_id for Codex
-        Responses API compatibility (e.g. if the session falls back to a
-        Codex provider later).
+        internal message list is left untouched.
 
         Fields stripped: call_id, response_item_id, extra_content (model-gated)
         """
@@ -6463,19 +6422,6 @@ class AIAgent:
         return sanitize_tool_call_arguments(
             messages, logger=logger, session_id=session_id, cursor=cursor
         )
-
-    def _should_sanitize_tool_calls(self) -> bool:
-        """Determine if tool_calls need sanitization for strict APIs.
-
-        Codex Responses API uses fields like call_id and response_item_id
-        that are not part of the standard Chat Completions schema. These
-        fields must be stripped when calling any other API to avoid
-        validation errors (400 Bad Request).
-
-        Returns:
-            bool: True if sanitization is needed (non-Codex API), False otherwise.
-        """
-        return self.api_mode != "codex_responses"
 
     def _compact_context(
         self,

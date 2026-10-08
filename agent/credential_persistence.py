@@ -21,7 +21,6 @@ _PERSISTABLE_PROVIDER_SOURCES = frozenset({
     ("anthropic", "son_of_anton_pkce"),
     ("minimax-oauth", "oauth"),
     ("nous", "device_code"),
-    ("openai-codex", "device_code"),
     ("xai-oauth", "device_code"),
 })
 

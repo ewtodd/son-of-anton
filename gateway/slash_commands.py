@@ -2141,8 +2141,8 @@ class GatewaySlashCommandsMixin:
             lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
             lines.append(t("gateway.model.provider_label", provider=provider_label))
 
-            # Context: always resolve via the provider-aware chain so Codex OAuth,
-            # Copilot, and Nous-enforced caps win over the raw models.dev entry.
+            # Context: always resolve via the provider-aware chain so Copilot
+            # and Nous-enforced caps win over the raw catalog entry.
             mi = result.model_info
             from son_of_anton_cli.model_switch import resolve_display_context_length_async
             _sw2_config_ctx = None
@@ -4146,13 +4146,8 @@ class GatewaySlashCommandsMixin:
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        # `/usage reset [--force]` — redeem one banked Codex rate-limit reset
-        # credit. Parsed before the display path so it never mixes with the
-        # stats rendering below.
         raw_args = event.get_command_args().strip()
-        args = [a.lower() for a in raw_args.split()] if raw_args else []
-        wants_reset = bool(args) and args[0] == "reset"
-        if args and not wants_reset:
+        if raw_args:
             return t("gateway.usage.unknown_subcommand", args=raw_args)
 
         # Try running agent first (mid-turn), then cached agent (between turns)

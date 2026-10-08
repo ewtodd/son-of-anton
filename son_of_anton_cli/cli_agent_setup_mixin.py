@@ -162,8 +162,7 @@ class CLIAgentSetupMixin:
             if should_use_runtime_model:
                 self.model = runtime_model
 
-        # If model is still empty (e.g. user ran `son-of-anton auth add openai-codex`
-        # without `son-of-anton model`), fall back to the provider's first catalog
+        # If model is still empty, fall back to the provider's first catalog
         # model so the API call doesn't fail with "model must be non-empty".
         if not self.model and resolved_provider:
             try:
@@ -178,8 +177,7 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
 
-        # Normalize model for the resolved provider (e.g. swap non-Codex
-        # models when provider is openai-codex).  Fixes #651.
+        # Normalize model for the resolved provider.  Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,

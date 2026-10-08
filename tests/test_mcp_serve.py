@@ -145,8 +145,7 @@ def _create_test_db(db_path, session_id, messages):
             token_count INTEGER DEFAULT 0,
             finish_reason TEXT,
             reasoning TEXT,
-            reasoning_details TEXT,
-            codex_reasoning_items TEXT
+            reasoning_details TEXT
         )
     """)
     conn.execute(

@@ -168,10 +168,10 @@ DEFAULT_CONFIG = {
         # call, intercept the turn-end, inject a "continue now, execute the
         # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
         # per turn). This is the corrective sibling of tool_use_enforcement (the
-        # preventive prompt-side guard). Values: "auto" (default — fires only on
-        # the codex_responses api_mode, the historical behavior), true (all
-        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
-        # false (never), or a list of model-name substrings to match.
+        # preventive prompt-side guard). Values: "auto" (default — resolves to
+        # off), true (all api_modes — fixes the Gemini/Claude "stops after
+        # stating intent" case), false (never), or a list of model-name
+        # substrings to match.
         "intent_ack_continuation": "auto",
         # Runtime anti-stall guards. When True (default), two conservative
         # guards run: (1) an identical-call loop breaker that appends a short
@@ -921,39 +921,6 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
-                                      # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
-                                      # ChatGPT Codex OAuth route raise their compaction
-                                      # trigger to 85% (vs the global `threshold` above).
-                                      # Codex hard-caps these families at a 272K window, so
-                                      # the default 50% would compact at ~136K and waste half
-                                      # the usable context. Set to False to opt back down to
-                                      # the global threshold (e.g. 0.50) for those Codex
-                                      # sessions. Only this exact route is affected —
-                                      # gpt-5.4 / 5.5 / 5.6 on OpenAI's direct API,
-                                      # OpenAI-compatible providers keep the global threshold
-                                      # regardless.
-        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5/5.6
-                                      # autoraise banner. Set False to keep the
-                                      # 85% threshold autoraise but suppress the
-                                      # user-facing notice in CLI/gateway output.
-                                      # compaction mode. The codex agent owns the real
-                                      # thread context, so Son of Anton' summarizer cannot
-                                      # shrink it (#36801). native = codex decides when
-                                      # to compact its own thread (default); son-of-anton =
-                                      # Son of Anton' compaction threshold triggers
-                                      # thread/compact/start; off = never auto-trigger
-                                      # (codex may still compact natively).
-        "codex_responses_native": False,  # Opt in to OpenAI's server-side compaction
-                                      # on the Responses API. Engages ONLY for
-                                      # gpt-5.6-family models on api.openai.com or
-                                      # the ChatGPT Codex backend; every other
-                                      # route/model is unaffected. Son of Anton' local
-                                      # compaction stays armed as the fallback.
-        "codex_responses_compact_threshold": 200000,  # Server-side compaction trigger
-                                      # (input tokens). Clamped below the local
-                                      # compaction threshold at request time so
-                                      # the server compacts before Son of Anton does.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -1372,12 +1339,6 @@ DEFAULT_CONFIG = {
             "last_lines": 2,
         },
         "interim_assistant_messages": True,  # Gateway: send natural mid-turn assistant status messages. Desktop: keep mid-turn narration between tool calls instead of collapsing to the final message.
-        # Codex Responses models narrate progress in a dedicated commentary
-        # channel. When true (default), completed commentary messages are
-        # delivered as visible mid-turn updates via the interim message path.
-        # When false, commentary falls back to the reasoning channel and is
-        # only visible when show_reasoning is enabled.
-        "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         # NOTE: display.tool_progress_overrides is deprecated and no longer
         # seeded here — use display.platforms. A user-set value is still
@@ -1558,8 +1519,8 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "deepseek" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
-                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
+        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions"
+                           # or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
         # When delegate_task narrows child toolsets explicitly, preserve any

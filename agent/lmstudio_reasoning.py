@@ -25,7 +25,7 @@ _LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
 # alone they miss _LM_VALID_EFFORTS, keep the initialized "medium" default and
 # are thereby conflated with unparseable input, so asking for more reasoning
 # yields less than "xhigh". Mirrors the ceiling clamp every other provider
-# applies (see agent/transports/codex.py).
+# applies.
 #
 # Deliberately separate from _LM_EFFORT_ALIASES: that mapping is also applied
 # to the model's published allowed_options, which must not be rewritten.

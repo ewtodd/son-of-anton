@@ -22,11 +22,9 @@ from agent.secret_scope import get_secret as _get_secret
 from son_of_anton_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
-    DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
     format_auth_error,
     resolve_provider,
-    resolve_codex_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -39,7 +37,6 @@ from son_of_anton_cli.config import (
     normalize_extra_headers,
 )
 from son_of_anton_cli.providers import custom_provider_aliases, custom_provider_slug
-from son_of_anton_cli.providers import is_official_openai_host
 from utils import base_url_host_matches, base_url_hostname, env_int
 
 
@@ -98,52 +95,23 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
-    - Direct api.openai.com endpoints need the Responses API for GPT-5.x
-      tool calls with reasoning (chat/completions returns 400).
-    - Direct api.anthropic.com endpoints must use the native Messages
-      API (``/v1/messages``).  Anthropic also exposes an OpenAI-compat
-      ``/chat/completions`` shim on the same host, but Pro/Max OAuth
-      subscriptions are only billed against the native Messages route;
-      hitting the shim accounts against a separate "extra usage" pool
-      that is empty by default and surfaces as HTTP 400 "You're out of
-      extra usage."  See issue #32243.
+    No endpoint mandates a wire protocol other than the default: every
+    provider speaks standard OpenAI chat completions.  (Anthropic's
+    native Messages route is selected by the provider overlay /
+    ``_base_url_looks_like_anthropic_messages``, not host sniffing here.)
     """
-    normalized = (base_url or "").strip().lower().rstrip("/")
-    hostname = base_url_hostname(base_url)
-    if hostname == "api.x.ai":
-        return "codex_responses"
-    # Official OpenAI host family: canonical api.openai.com plus the
-    # data-residency regional hosts (us./eu.api.openai.com). Same API
-    # surface, same Responses-API mandate. Shared predicate — see
-    # providers.is_official_openai_host for the spoof-rejection contract.
-    if is_official_openai_host(base_url):
-        return "codex_responses"
-    # Meta Model API: prompt caching only on Responses API (0% on
-    # chat/completions vs 93-99% on /responses with retention). Exact
-    # hostname per #32243.
-    if hostname == "api.meta.ai":
-        return "codex_responses"
-    if hostname == "api.actual.inc":
-        return "codex_responses"
     return None
 
 
 def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     """Resolve api_mode when no explicit/persisted mode applies.
 
-    Precedence: URL detection (host-mandated wire shapes) first, then the
-    transport the provider overlay itself declares via
-    ``providers.determine_api_mode`` — which already handles host mandates,
-    dual-wire providers, and the registry transport map — and only then the
-    ``chat_completions`` default for genuinely unknown providers/endpoints.
-
-    Before this helper the runtime paths consulted URL detection ONLY and
-    silently landed reasoning providers on ``chat_completions`` whenever the
-    hostname wasn't literally recognized. That is how ``openai-api`` pointed
-    at OpenAI's data-residency hosts (``us.api.openai.com``) 400'd on every
-    tool-calling turn: the provider declares ``codex_responses`` but the
-    declaration was never consulted. Same latent class covered the other
-    non-chat overlays (MiniMax family, copilot-acp).
+    Resolution: URL detection first, then the transport the provider
+    overlay itself declares via ``providers.determine_api_mode``, and only
+    then the ``chat_completions`` default for genuinely unknown
+    providers/endpoints. The provider declaration is consulted so a
+    non-default transport can never be silently dropped when its hostname
+    isn't recognized.
     """
     detected = _detect_api_mode_for_url(base_url)
     if detected:
@@ -156,23 +124,11 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
     """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
 
-    Custom endpoints should stay conservative by default. Only direct OpenAI/xAI
-    URLs imply Responses API automatically; named custom providers can opt in via
-    their own ``api_mode`` field. This also prevents a stale persisted
-    ``model.api_mode: codex_responses`` from forcing generic relays onto the
-    Responses path after upgrades or /reset.
+    Custom endpoints stay on chat completions unless the endpoint itself is
+    host-detected (e.g. an Anthropic-suffixed route).
     """
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    # Note: api.meta.ai is handled by _detect_api_mode_for_url (returns codex_responses), so the suppression guard below does not fire for Meta.
     detected_mode = _detect_api_mode_for_url(base_url)
-
-    if configured_mode == "codex_responses" and detected_mode != "codex_responses":
-        logger.info(
-            "Ignoring persisted custom api_mode=codex_responses for non-OpenAI endpoint %s",
-            base_url or "(unknown)",
-        )
-        configured_mode = None
-
     return configured_mode or detected_mode or "chat_completions"
 
 
@@ -307,12 +263,6 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
 
 _VALID_API_MODES = {
     "chat_completions",
-    "codex_responses",
-    # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
-    # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
-    # instead of Son of Anton' tool dispatch. Gated behind config key
-    # `model.openai_runtime == "codex_app_server"` AND provider in
-    # {"openai", "openai-codex"}. Default is unchanged.
 }
 
 
@@ -352,44 +302,38 @@ def _resolve_runtime_from_pool_entry(
     effective_model = (target_model or model_cfg.get("default") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    api_mode = "chat_completions"
-    if provider == "openai-codex":
-        api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_CODEX_BASE_URL
+    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    # Honour model.base_url from config.toml when the configured provider
+    # matches this provider — same pattern as the Anthropic branch above.
+    # Only override when the pool entry has no explicit base_url (i.e. it
+    # fell back to the hardcoded default).  Env var overrides win (#6039).
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
+    if configured_provider == provider and pool_url_is_default:
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        if cfg_base_url:
+            base_url = cfg_base_url
+    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    from son_of_anton_cli.models import opencode_provider_family
+    if opencode_provider_family(provider) is not None:
+        # Re-derive api_mode from the effective model rather than the
+        # persisted api_mode: the opencode providers serve both
+        # anthropic_messages and chat_completions models, so the previous
+        # session's mode must not leak across /model switches.
+        # Refs #16878.
+        from son_of_anton_cli.models import opencode_model_api_mode
+        api_mode = opencode_model_api_mode(provider, effective_model)
+    elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+        api_mode = configured_mode
     else:
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        # Honour model.base_url from config.toml when the configured provider
-        # matches this provider — same pattern as the Anthropic branch above.
-        # Only override when the pool entry has no explicit base_url (i.e. it
-        # fell back to the hardcoded default).  Env var overrides win (#6039).
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-        if configured_provider == provider and pool_url_is_default:
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
-        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        from son_of_anton_cli.models import opencode_provider_family
-        if opencode_provider_family(provider) is not None:
-            # Re-derive api_mode from the effective model rather than the
-            # persisted api_mode: the opencode providers serve both
-            # anthropic_messages and chat_completions models, so the previous
-            # session's mode must not leak across /model switches.
-            # Refs #16878.
-            from son_of_anton_cli.models import opencode_model_api_mode
-            api_mode = opencode_model_api_mode(provider, effective_model)
-        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        else:
-            # URL detection first (Anthropic /anthropic suffix, Kimi /coding,
-            # official OpenAI hosts → codex_responses, api.x.ai →
-            # codex_responses), then the provider's own declared transport.
-            api_mode = _fallback_api_mode(provider, base_url, effective_model)
+        # URL detection (Anthropic /anthropic suffix, Kimi /coding), then the
+        # provider's own declared transport.
+        api_mode = _fallback_api_mode(provider, base_url, effective_model)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
     # symmetrically: strip /v1 for anthropic_messages, re-append it for
-    # chat_completions / codex_responses (heals a stripped URL persisted to
+    # chat_completions (heals a stripped URL persisted to
     # model.base_url by an earlier switch into an anthropic-routed model).
     from son_of_anton_cli.models import opencode_provider_family
     if opencode_provider_family(provider) is not None:
@@ -510,9 +454,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # custom" trust path. BUT a user may literally name a ``providers:`` (or
     # legacy ``custom_providers:``) entry "custom" (e.g. ``providers.custom``
     # pointing at cliproxy). We used to return None here *before* scanning
-    # config, so such an entry was never matched and resolution fell through to
-    # the global default (Codex) — the cause of cron jobs with
-    # ``provider: "custom"`` failing with ``auth_unavailable: providers=codex``.
+    # config, so such an entry was never matched and resolution fell through
+    # to a global default the user never configured — the cause of cron jobs
+    # with ``provider: "custom"`` failing with ``auth_unavailable``.
     # Fall through to the config scan instead; if no entry is literally named
     # "custom" it still returns None at the end, preserving the trust path.
 
@@ -593,8 +537,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # use the legacy ``api_mode`` spelling.  Accept both —
                     # the runtime normaliser ``_normalize_custom_provider_entry``
                     # already does, so without this lift every migrated config
-                    # silently downgrades codex_responses / anthropic_messages
-                    # providers to chat_completions in the resolved runtime.
+                    # silently downgrades an anthropic_messages provider to
+                    # chat_completions in the resolved runtime.
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
@@ -1185,26 +1129,6 @@ def _resolve_explicit_runtime(
     if not explicit_api_key and not explicit_base_url:
         return None
 
-    if provider == "openai-codex":
-        base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
-        api_key = explicit_api_key
-        last_refresh = None
-        if not api_key:
-            creds = resolve_codex_runtime_credentials()
-            api_key = creds.get("api_key", "")
-            last_refresh = creds.get("last_refresh")
-            if not explicit_base_url:
-                base_url = creds.get("base_url", "").rstrip("/") or base_url
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": base_url,
-            "api_key": api_key,
-            "source": "explicit",
-            "last_refresh": last_refresh,
-            "requested_provider": requested_provider,
-        }
-
     # Azure Foundry: user-configured endpoint with selectable API mode
 
     pconfig = PROVIDER_REGISTRY.get(provider)
@@ -1234,19 +1158,15 @@ def _resolve_explicit_runtime(
                     base_url = normalize_actual_base_url(base_url)
 
         api_mode = "chat_completions"
-        if provider == "actual":
-            api_mode = "codex_responses"
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+            api_mode = configured_mode
         else:
-            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-                api_mode = configured_mode
-            else:
-                # URL detection first, then the provider's declared transport
-                # (fixes regional OpenAI hosts and other non-chat overlays).
-                api_mode = _fallback_api_mode(
-                    provider, base_url, target_model or model_cfg.get("default", "")
-                )
+            # URL detection first, then the provider's declared transport.
+            api_mode = _fallback_api_mode(
+                provider, base_url, target_model or model_cfg.get("default", "")
+            )
 
         if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
             api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
@@ -1434,26 +1354,6 @@ def resolve_runtime_provider(
                 target_model=target_model,
             )
 
-    if provider == "openai-codex":
-        try:
-            creds = resolve_codex_runtime_credentials()
-            return {
-                "provider": "openai-codex",
-                "api_mode": "codex_responses",
-                "base_url": creds.get("base_url", "").rstrip("/"),
-                "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "son-of-anton-auth-store"),
-                "last_refresh": creds.get("last_refresh"),
-                "requested_provider": requested_provider,
-            }
-        except AuthError:
-            if requested_provider != "auto":
-                raise
-            # Auto-detected Codex but credentials are stale/revoked —
-            # fall through to env-var providers (e.g. OpenRouter).
-            logger.info("Auto-detected Codex provider but credentials failed; "
-                        "falling through to next provider.")
-
     if provider == "minimax-oauth":
         pconfig = PROVIDER_REGISTRY.get(provider)
     # Anthropic (native Messages API)
@@ -1503,34 +1403,30 @@ def resolve_runtime_provider(
         if provider == "actual":
             base_url = normalize_actual_base_url(base_url)
         api_mode = "chat_completions"
-        if provider == "actual":
-            api_mode = "codex_responses"
+        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        # Only honor persisted api_mode when it belongs to the same provider family.
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        from son_of_anton_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
+            # opencode-zen/go must always re-derive api_mode from the
+            # target model (not the stale persisted api_mode), because
+            # the same provider serves both anthropic_messages
+            # (e.g. minimax-m2.7) and chat_completions (e.g.
+            # deepseek-v4-flash) and switching models via /model would
+            # otherwise carry the previous mode forward, stripping /v1
+            # from base_url for chat_completions models and 404'ing.
+            # Refs #16878.
+            from son_of_anton_cli.models import opencode_model_api_mode
+            _effective = target_model or model_cfg.get("default", "")
+            api_mode = opencode_model_api_mode(provider, _effective)
+        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+            api_mode = configured_mode
         else:
-            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-            # Only honor persisted api_mode when it belongs to the same provider family.
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            from son_of_anton_cli.models import opencode_provider_family
-            if opencode_provider_family(provider) is not None:
-                # opencode-zen/go must always re-derive api_mode from the
-                # target model (not the stale persisted api_mode), because
-                # the same provider serves both anthropic_messages
-                # (e.g. minimax-m2.7) and chat_completions (e.g.
-                # deepseek-v4-flash) and switching models via /model would
-                # otherwise carry the previous mode forward, stripping /v1
-                # from base_url for chat_completions models and 404'ing.
-                # Refs #16878.
-                from son_of_anton_cli.models import opencode_model_api_mode
-                _effective = target_model or model_cfg.get("default", "")
-                api_mode = opencode_model_api_mode(provider, _effective)
-            elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-                api_mode = configured_mode
-            else:
-                # URL detection first (e.g. https://api.minimax.io/anthropic,
-                # official OpenAI hosts → codex_responses, api.x.ai →
-                # codex_responses), then the provider's declared transport.
-                api_mode = _fallback_api_mode(
-                    provider, base_url, target_model or model_cfg.get("default", "")
-                )
+            # URL detection first (e.g. https://api.minimax.io/anthropic),
+            # then the provider's declared transport.
+            api_mode = _fallback_api_mode(
+                provider, base_url, target_model or model_cfg.get("default", "")
+            )
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         from son_of_anton_cli.models import opencode_provider_family
         if opencode_provider_family(provider) is not None:

@@ -4248,7 +4248,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+            provider: Inference provider ("auto" by default; e.g. "openai",
+                      "custom", or a provider from config.toml)
             reasoning: Reasoning effort override for this run (none|minimal|low|medium|high|xhigh|max|ultra). Wins over config.
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
@@ -5706,7 +5707,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if resolved_provider == "copilot":
             try:
-                from son_of_anton_cli.models import copilot_model_api_mode, normalize_copilot_model_id
+                from son_of_anton_cli.models import normalize_copilot_model_id
 
                 canonical = normalize_copilot_model_id(current_model, api_key=self.api_key)
                 if canonical and canonical != current_model:
@@ -5718,10 +5719,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     current_model = canonical
                     changed = True
 
-                resolved_mode = copilot_model_api_mode(current_model, api_key=self.api_key)
-                if resolved_mode != self.api_mode:
-                    self.api_mode = resolved_mode
-                    changed = True
             except Exception:
                 pass
             return changed
@@ -8908,9 +8905,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"  Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Codex OAuth,
-        # Copilot, and Nous-enforced caps win over the raw models.dev entry
-        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
+        # Context: always resolve via the provider-aware chain so Copilot
+        # and Nous-enforced caps win over the raw catalog entry.
         mi = result.model_info
         try:
             from son_of_anton_cli.model_switch import resolve_display_context_length
@@ -9367,9 +9363,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"  Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Codex OAuth,
-        # Copilot, and Nous-enforced caps win over the raw models.dev entry
-        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
+        # Context: always resolve via the provider-aware chain so Copilot
+        # and Nous-enforced caps win over the raw catalog entry.
         mi = result.model_info
         from son_of_anton_cli.model_switch import resolve_display_context_length
         ctx = resolve_display_context_length(
@@ -13341,7 +13336,8 @@ def main(
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
+        provider: Inference provider ("auto" by default; e.g. "openai",
+                  "custom", or a provider from config.toml)
         reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
         api_key: API key for authentication
         base_url: Base URL for the API

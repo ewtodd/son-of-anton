@@ -136,7 +136,7 @@ class ProviderProfile:
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Provider-specific message preprocessing.
 
-        Called AFTER codex field sanitization, BEFORE developer role swap.
+        Called AFTER legacy Responses field sanitization, BEFORE developer role swap.
         Default: pass-through.
         """
         return messages

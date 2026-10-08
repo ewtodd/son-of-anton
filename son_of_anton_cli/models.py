@@ -885,8 +885,7 @@ def get_default_model_for_provider(provider: str) -> str:
     """Return a cost-safe default model for a provider, or "" if unknown.
 
     Used as a NON-INTERACTIVE fallback when a provider is configured but no
-    model was ever selected (e.g. ``son-of-anton auth add openai-codex`` without
-    ``son-of-anton model``, or a profile that sets ``provider`` with no ``model``).
+    model was ever selected (a profile that sets ``provider`` with no ``model``).
 
     For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
     same model the ``son-of-anton model`` picker offers first. For metered aggregators
@@ -2601,7 +2600,7 @@ def provider_label(provider: Optional[str]) -> str:
 # ignored by non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies
 # strip the field), so false positives are harmless. Codex-series models
 # (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they don't expose the
-# service_tier parameter through the Codex Responses API.
+# service_tier parameter.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
     "gpt-",
     "o1",
@@ -2616,8 +2615,7 @@ def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     base = raw.split(":")[0]
     if not base:
         return False
-    # Exclude Codex-series — they route through the Codex Responses API
-    # which doesn't accept service_tier.
+    # Exclude Codex-series — the endpoint does not accept service_tier.
     if "codex" in base:
         return False
     return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
@@ -2748,7 +2746,7 @@ def _resolve_copilot_catalog_api_key() -> str:
 #     truth for the subscription tier.
 # Also excluded: providers that already have dedicated live-endpoint
 # branches below (copilot, anthropic, ai-gateway, ollama-cloud, custom,
-# stepfun, openai-codex) — those paths handle freshness themselves.
+# stepfun) — those paths handle freshness themselves.
 def _model_dedup_key(model_id: str) -> str:
     """Case-insensitive dedup key that also folds picker-search aliases.
 
@@ -2795,7 +2793,7 @@ def _openai_discovery_base_url(provider: str) -> str:
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
-    Tries live API endpoints for providers that support them (Codex, Nous),
+    Tries live API endpoints for providers that support them (Nous),
     falling back to static lists.
     """
     requested = str(provider or "").strip().lower()
@@ -3134,7 +3132,7 @@ def _credential_fingerprint(provider: str) -> str:
     Rotating any of the relevant env vars invalidates the cached entry
     for that provider. We hash AT LEAST the api-key + base-url env vars
     declared in ``PROVIDER_REGISTRY``. For OAuth-backed providers
-    (codex, copilot, anthropic-via-claude-code, nous portal), the
+    (copilot, anthropic-via-claude-code, nous portal), the
     relevant tokens live in ``$SON_OF_ANTON_HOME/auth.json`` and external
     credential files. Rather than parse every shape, we additionally
     fold the mtime of those files into the fingerprint so refreshes
@@ -4021,56 +4019,6 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     return []
 
 
-def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """Decide whether a Copilot model should use the Responses API.
-
-    Replicates opencode's ``shouldUseCopilotResponsesApi`` logic:
-    GPT-5+ models use Responses API, except ``gpt-5-mini`` which uses
-    Chat Completions.  All non-GPT models (Claude, Gemini, etc.) use
-    Chat Completions.
-    """
-    import re
-
-    match = re.match(r"^gpt-(\d+)", model_id)
-    if not match:
-        return False
-    major = int(match.group(1))
-    return major >= 5 and not model_id.startswith("gpt-5-mini")
-
-
-def copilot_model_api_mode(
-    model_id: Optional[str],
-    *,
-    catalog: Optional[list[dict[str, Any]]] = None,
-    api_key: Optional[str] = None,
-) -> str:
-    """Determine the API mode for a Copilot model.
-
-    Uses the model ID pattern (matching opencode's approach) as the
-    primary signal.  Falls back to the catalog's ``supported_endpoints``
-    only for models not covered by the pattern check.
-    """
-    # Fetch the catalog once so normalize + endpoint check share it
-    # (avoids two redundant network calls for non-GPT-5 models).
-    if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
-
-    normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
-    if not normalized:
-        return "chat_completions"
-
-    # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
-    if _should_use_copilot_responses_api(normalized):
-        return "codex_responses"
-
-    # Copilot's Claude models are exposed through its OpenAI-compatible chat
-    # endpoint, not through Son of Anton' native Anthropic adapter. The live catalog may
-    # advertise /v1/messages, but the Copilot token/header scheme is handled by
-    # the OpenAI client path; selecting anthropic_messages would send the wrong
-    # auth/wire shape. Keep non-GPT Copilot slots on chat_completions.
-    return "chat_completions"
-
-
 
 
 def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
@@ -4214,9 +4162,6 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     OpenCode routes different models behind different API surfaces:
 
-    - GPT-5 / Codex / Grok models on Zen use ``/v1/responses``
-    - GPT / Grok models on Go (gpt-5.6-luna, grok-4.5) use ``/v1/responses``
-    - Muse Spark on Go and Zen uses ``/v1/responses`` (chat/completions 503s)
     - Claude models on Zen use ``/v1/messages``
     - MiniMax and Qwen models on Go use ``/v1/messages``
     - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
@@ -4237,16 +4182,9 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if family == "opencode-go":
-        if normalized.startswith("gpt-") or normalized.startswith("grok-"):
-            # GPT and Grok models on Go (gpt-5.6-luna, grok-4.5) are served
-            # via /v1/responses per the published Go endpoint table, same as
-            # GPT/Grok on Zen: https://opencode.ai/docs/go/#endpoints
-            return "codex_responses"
-        if normalized.startswith("muse-spark"):
-            # Muse Spark (standard + contributor) is Responses-only on Go.
-            # /v1/chat/completions returns HTTP 503 with an empty assistant
-            # message; /v1/responses completes. See opencode.ai/docs/go.
-            return "codex_responses"
+        # GPT/Grok/muse-spark slugs are Responses-API-only upstream; with the
+        # Responses transport removed they simply fall through to
+        # chat_completions like every other Go model.
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
         if normalized.startswith("qwen"):
@@ -4258,15 +4196,8 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     if family == "opencode-zen":
         if normalized.startswith("claude-"):
             return "anthropic_messages"
-        if normalized.startswith("gpt-") or normalized.startswith("grok-"):
-            # GPT-5/Codex and all Grok models on Zen (grok-4.6, grok-4.5,
-            # grok-build-0.1) are served via /v1/responses per the Zen
-            # endpoint table.
-            return "codex_responses"
-        if normalized.startswith("muse-spark"):
-            # Standard Muse Spark on Zen is served via /v1/responses:
-            # https://opencode.ai/docs/zen/#endpoints
-            return "codex_responses"
+        # GPT/Grok/muse-spark slugs are Responses-API-only upstream; with the
+        # Responses transport removed they fall through to chat_completions.
         if normalized.startswith("qwen"):
             # Qwen models on Zen moved to /v1/messages per the published
             # Zen endpoint table.
@@ -4308,7 +4239,7 @@ def normalize_opencode_base_url(
     if api_mode == "anthropic_messages":
         return _re.sub(r"/v1$", "", url)
 
-    # chat_completions / codex_responses: ensure the /v1 suffix is present on
+    # chat_completions: ensure the /v1 suffix is present on
     # official opencode.ai hosts (heals a persisted anthropic-stripped URL).
     if url.endswith("/v1"):
         return url
@@ -5209,7 +5140,7 @@ def validate_requested_model(
             }
 
     # MiniMax providers don't expose a /models endpoint — validate against
-    # the static catalog instead, similar to openai-codex.
+    # the static catalog instead.
     if normalized in {"minimax", "minimax-cn"}:
         try:
             catalog_models = provider_model_ids(normalized)
@@ -5426,7 +5357,7 @@ def validate_requested_model(
 
     # Static-catalog fallback: when the /models probe was unreachable,
     # validate against the curated list from provider_model_ids() — same
-    # pattern as the openai-codex and minimax branches above.  This keeps
+    # pattern as the minimax branch above.  This keeps
     # /model switches working in the gateway for providers whose /models
     # endpoint is temporarily unreachable or returns a non-JSON payload.
     # Without this block, validate_requested_model would reject every model

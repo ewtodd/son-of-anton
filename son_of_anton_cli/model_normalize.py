@@ -73,7 +73,6 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
-    "openai-codex",
 })
 
 # Providers whose native naming is authoritative -- pass through unchanged.
@@ -442,12 +441,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             # if the Copilot-specific path is unavailable for any reason.
             pass
 
-    # --- Copilot / Copilot ACP / openai-codex fallback:
+    # --- Copilot / Copilot ACP fallback:
     #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith("openai/"):
-            # openai-codex maps openai/gpt-5.4 -> gpt-5.4
+            # copilot maps openai/gpt-5.4 -> gpt-5.4
             return name.split("/", 1)[1]
         return stripped
 

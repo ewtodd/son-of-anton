@@ -2146,7 +2146,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     try:
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
-        _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
         for msg in messages:
             api_msg = msg.copy()
@@ -2174,18 +2173,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
-            if _needs_sanitize:
-                # In MoA mode, agent.model is the virtual preset name,
-                # not the actual aggregator model.  Resolve the real
-                # aggregator model so Gemini preserves thought_signature.
-                _sanitize_model = agent.model
-                if agent.provider == "moa":
-                    _moa_client = getattr(agent, "client", None)
-                    if _moa_client is not None:
-                        _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
-                        if _agg_slot and _agg_slot.get("model"):
-                            _sanitize_model = _agg_slot["model"]
-                agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
+            # Strip Responses-API fields left in tool_calls by pre-existing
+            # session-DB rows (strict gateways reject unknown keys).
+            # In MoA mode, agent.model is the virtual preset name,
+            # not the actual aggregator model.  Resolve the real
+            # aggregator model so Gemini preserves thought_signature.
+            _sanitize_model = agent.model
+            if agent.provider == "moa":
+                _moa_client = getattr(agent, "client", None)
+                if _moa_client is not None:
+                    _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
+                    if _agg_slot and _agg_slot.get("model"):
+                        _sanitize_model = _agg_slot["model"]
+            agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
@@ -2503,10 +2503,9 @@ def _build_partial_stream_stub(
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
-    Handles all three api_modes:
+    Handles both api_modes:
     - chat_completions: stream=True on OpenAI-compatible endpoints
     - anthropic_messages: client.messages.stream() via Anthropic SDK
-    - codex_responses: delegates to _run_codex_stream (already streaming)
 
     Fires stream_delta_callback and _stream_callback for each text token.
     Tool-call turns suppress the callback — only text-only final responses

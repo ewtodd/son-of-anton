@@ -21,13 +21,6 @@ Resolution order for vision/multimodal tasks (auto mode):
   3. Native Anthropic
   4. None
 
-Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
-fallback chain: OpenAI gates this endpoint behind an undocumented,
-shifting model allow-list, so "just try Codex with a hardcoded model"
-rots on its own.  Codex is used only when the user's main provider *is*
-openai-codex (Step 1 above) or when a caller explicitly requests it with
-a model (auxiliary.<task>.provider + auxiliary.<task>.model).
-
 Per-task overrides are configured in config.toml under the ``auxiliary:`` section
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compaction.model``).
 Default "auto" follows the chains above.
@@ -1949,13 +1942,6 @@ def _get_provider_chain() -> List[tuple]:
     Built at call time (not module level) so that test patches
     on the ``_try_*`` functions are picked up correctly.
 
-    NOTE: ``openai-codex`` is deliberately NOT in this chain.  The
-    ChatGPT-account Codex endpoint only accepts a shifting, undocumented
-    allow-list of model IDs, so falling back to it with a guessed model
-    fails more often than not.  Codex is used only when the user's main
-    provider *is* openai-codex (see Step 1 of ``_resolve_auto``) or when
-    a caller explicitly requests it with a model.
-
     NOTE: the removed OpenRouter and Nous Portal providers are NOT in this
     chain — they were pruned with the provider catalog, so probing them on
     every aux call only paid doomed lookups and logged noise.
@@ -2427,11 +2413,11 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
     Distinct from :func:`_is_model_not_found_error` (the model does not exist
     anywhere): here the model name is valid but the *current provider/account*
     is structurally unable to run it. The canonical case is a configured
-    fallback that cannot run the main model — e.g. an ``openai-codex`` /
-    ChatGPT-account fallback asked to compact a ``glm-5.2`` conversation::
+    fallback endpoint that only serves its own model family and is asked to
+    compact a different vendor's conversation::
 
         Error code: 400 - {'detail': "The 'glm-5.2' model is not supported
-        when using Codex with a ChatGPT account."}
+        on this account."}
 
     The candidate authenticates fine and builds a client, so the auth and
     payment predicates don't fire and the call would otherwise raise and
@@ -2516,8 +2502,7 @@ def _evict_cached_client_instance(target: Any) -> bool:
     transport after a timeout, broken streaming session, etc.) so the next
     auxiliary call rebuilds rather than reusing the dead instance.
 
-    Walks both sync and async wrappers (``CodexAuxiliaryClient``,
-    ``AnthropicAuxiliaryClient``, ``AsyncCodexAuxiliaryClient``, etc.) via
+    Walks both sync and async wrappers (e.g. the Anthropic-wire adapters) via
     their ``_real_client`` attribute so a timeout that closes the underlying
     ``OpenAI`` (or native provider) client evicts every cached shim that
     exposed it. Async wrappers must mirror their sync sibling's
@@ -4117,9 +4102,9 @@ def resolve_provider_client(
     #   2. Provider's catalog default — cheap/fast model the provider
     #      registered via ``ProviderProfile.default_aux_model`` or the
     #      legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK`` dict.  Empty
-    #      string for OAuth-gated providers (openai-codex, xai-oauth)
-    #      whose accepted-model lists drift on the backend, so we don't
-    #      pin a default that can silently rot.
+    #      string for OAuth-gated providers whose accepted-model lists
+    #      drift on the backend, so we don't pin a default that can
+    #      silently rot.
     #   3. User's main model from ``model.model`` in config.toml.  This is
     #      the load-bearing step for OAuth providers: an xai-oauth user
     #      with grok-4.3 configured gets grok-4.3 for title generation
@@ -4335,16 +4320,7 @@ def resolve_provider_client(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
                 client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
-                # codex_responses or inherited auto-detect (via _wrap_if_needed).
-                # _wrap_if_needed reads the closed-over `api_mode` (the task-level
-                # override). Named-provider entry api_mode=codex_responses also
-                # flows through here.
-                if entry_api_mode == "codex_responses" and not isinstance(
-                    client, CodexAuxiliaryClient
-                ):
-                    client = CodexAuxiliaryClient(client, final_model)
-                else:
-                    client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
+                client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
             logger.warning(
@@ -4450,25 +4426,7 @@ def resolve_provider_client(
         client = _create_openai_client(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
-        # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
-        # API — they are not accessible via /chat/completions.  Wrap the
-        # plain client in CodexAuxiliaryClient so call_llm() transparently
-        # routes through responses.stream().
-        if provider == "copilot" and final_model and not raw_codex:
-            try:
-                from son_of_anton_cli.models import _should_use_copilot_responses_api
-                if _should_use_copilot_responses_api(final_model):
-                    logger.debug(
-                        "resolve_provider_client: copilot model %s needs "
-                        "Responses API — wrapping with CodexAuxiliaryClient",
-                        final_model)
-                    client = CodexAuxiliaryClient(client, final_model)
-            except ImportError:
-                pass
-
-        # Honor api_mode for any API-key provider (e.g. direct OpenAI with
-        # codex-family models).  The copilot-specific wrapping above handles
-        # copilot; this covers the general case (#6800).  Also rewraps
+        # Honor api_mode for any API-key provider (#6800).  Also rewraps
         # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
         # /anthropic-suffixed gateways) so named providers like kimi-coding
         # land on the right transport without needing per-provider branches.
@@ -4496,8 +4454,6 @@ def resolve_provider_client(
 
     elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
-        if provider == "openai-codex":
-            return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported
@@ -4612,11 +4568,6 @@ def _resolve_strict_vision_backend(
     provider = _normalize_vision_provider(provider)
     if provider == "copilot":
         return resolve_provider_client("copilot", model, is_vision=True)
-    if provider == "openai-codex":
-        # Route through resolve_provider_client so the caller's explicit
-        # model is used.  There is no safe default Codex model (shifting
-        # allow-list); callers must specify via auxiliary.<task>.model.
-        return resolve_provider_client("openai-codex", model, is_vision=True)
     if provider == "deepinfra":
         # DeepInfra exposes vision-capable models (Llama-4 Scout/Maverick,
         # Qwen3-VL, Gemma 3, Gemini) on the same OpenAI-compatible endpoint
@@ -5347,9 +5298,9 @@ def _get_cached_client(
 # write the obvious name and have it resolve to a working ``custom`` endpoint
 # without needing to know our internal provider IDs.
 #
-# Why these specifically: PROVIDER_REGISTRY has ``openai-codex`` (OAuth) and
-# ``custom`` (manual base_url + OPENAI_API_KEY) but no plain ``openai`` for
-# direct API-key access. Users predictably type ``provider: openai`` and
+# Why these specifically: ``custom`` is manual base_url + OPENAI_API_KEY but
+# there is no plain ``openai`` alias for direct API-key access. Users
+# predictably type ``provider: openai`` and
 # expect it to use OPENAI_API_KEY against api.openai.com. Previously this
 # silently fell back to the user's main provider, sending OpenAI model names
 # to e.g. DeepSeek and producing cryptic ``unknown variant 'image_url'``
@@ -5377,7 +5328,7 @@ def _resolve_task_provider_model(
     be None (use provider default). A bare base_url is treated as custom, but
     a first-class provider plus base_url keeps the provider identity so its
     auth, transport, and request-shaping behavior still apply. api_mode is one
-    of "chat_completions", "codex_responses", or None (auto-detect).
+    of "chat_completions", "anthropic_messages", or None (auto-detect).
     """
     cfg_provider = None
     cfg_model = None
@@ -5488,7 +5439,6 @@ def _resolve_task_provider_model(
                 "copilot",
                 "copilot-acp",
                 "minimax-oauth",
-                "openai-codex",
                 "qwen-oauth",
                 "xai-oauth",
             }
@@ -6126,8 +6076,8 @@ def _validate_llm_response(
         )
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
-    # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
-    # AnthropicAuxiliaryClient) — they have .choices[0].message.
+    # Allow SimpleNamespace responses from wire adapters — they have
+    # .choices[0].message.
     try:
         choices = response.choices
         if not choices or not hasattr(choices[0], "message"):
@@ -6282,14 +6232,6 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
                _AUX_STREAM_CEILING_MULTIPLIER * timeout)
 
 
-def _client_streams_internally(client: Any) -> bool:
-    """Wire adapters that consume a stream inside .create() already tick the
-    progress hook themselves (Codex per SSE event, Anthropic per stream
-    event); Bedrock's Converse shim cannot stream at all. None of them
-    accept chat-completions ``stream=True`` semantics from us."""
-    return isinstance(client, CodexAuxiliaryClient)
-
-
 def _is_streaming_rejected_error(exc: Exception) -> bool:
     """Provider explicitly refused a streamed chat.completions request."""
     err = str(exc).lower()
@@ -6363,7 +6305,7 @@ def _create_with_progress(
     original error is surfaced to the normal recovery chains instead.
     """
     _notify_aux_progress()  # request dispatched counts as progress
-    if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
+    if not _aux_progress_active() and not force_stream:
         return client.chat.completions.create(**kwargs)
 
     total_ceiling = _aux_stream_total_ceiling(kwargs.get("timeout"))
@@ -6750,8 +6692,8 @@ def _call_llm_impl(
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.
-        api_mode: Explicit API mode override (e.g. "codex_responses",
-              "anthropic_messages"). Takes precedence over task config.
+        api_mode: Explicit API mode override (e.g. "anthropic_messages").
+              Takes precedence over task config.
         messages: Chat messages list.
         temperature: Sampling temperature (None = provider default).
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
@@ -6834,7 +6776,7 @@ def _call_llm_impl(
             # credentials were found, honor the task fallback_chain before
             # raising.  Missing raw env keys are recoverable for auxiliary
             # tasks because fallback entries may use OAuth / credential-pool
-            # auth (for example openai-codex).
+            # auth.
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
@@ -6916,16 +6858,6 @@ def _call_llm_impl(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
-        if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
-            # CodexAuxiliaryClient (openai-codex, xai-oauth, and any other
-            # Responses-shim provider) consumes the provider stream internally
-            # and returns a completed response object. Routing that nested
-            # MoA stream through Relay's generic managed stream makes the
-            # manager iterate the completed SimpleNamespace itself (#55933).
-            # Return the provider call directly; the MoA facade converts a
-            # completed response into a one-chunk delta iterator at its
-            # boundary.
-            return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(
             client,
             kwargs,

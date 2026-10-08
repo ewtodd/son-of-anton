@@ -2567,19 +2567,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
         format_runtime_provider_error,
         _get_model_config,
     )
-    from son_of_anton_cli.auth import AuthError, is_rate_limited_auth_error
+    from son_of_anton_cli.auth import AuthError
 
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
-        # Distinguish a transient rate-limit/quota cap (credentials are fine,
-        # re-auth cannot help) from a genuine auth failure (expired/revoked
-        # token). Both fall through to the fallback chain, but the log message
-        # must not mislabel a quota exhaustion as an auth failure (#32790).
-        if is_rate_limited_auth_error(auth_exc):
-            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
-        else:
-            logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
+        logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
             return fb_config
@@ -3527,8 +3520,8 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     nothing changes.
 
     Without this, temporary AIAgent instances (e.g. /compact) fall
-    back to the hardcoded default which fails when the active provider is
-    openai-codex.
+    back to the hardcoded default which fails when the active provider
+    has no built-in default.
     """
     cfg = config if config is not None else _load_gateway_config()
 
@@ -6388,9 +6381,8 @@ class TurnRunner:
             "response_previewed": result.get("response_previewed", False),
             "response_transformed": result.get("response_transformed", False),
             # Pass through the agent_persisted flag so the persistence block
-            # above can correctly determine whether the codex app-server path
-            # self-persisted (it didn't — see codex_runtime.py).  Default
-            # True preserves the skip-db behaviour for the standard runtime.
+            # above knows whether the turn persisted its own messages.
+            # Default True preserves the skip-db behaviour.
             "agent_persisted": (ctx.result_holder[0].get("agent_persisted", True) if ctx.result_holder[0] else True),
         }
 
@@ -7343,7 +7335,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
 
         # When the config has no model.default but a provider was resolved
-        # (e.g. user ran `son-of-anton auth add openai-codex` without `son-of-anton model`),
+        # (e.g. a credential was added without running `son-of-anton model`),
         # fall back to the provider's first catalog model so the API call
         # doesn't fail with "model must be a non-empty string".
         if not model and runtime_kwargs.get("provider"):
@@ -14521,8 +14513,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # the generic catch-all text in _dispatch_busy_slash_command.
     _BUSY_REJECT_TEXT: Dict[str, str] = {
         "model": "Agent is running — wait or /stop first, then switch models.",
-        "codex-runtime": ("Agent is running — wait or /stop first, then "
-                          "change runtime."),
     }
 
     async def _dispatch_busy_slash_command(
@@ -18635,10 +18625,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # The agent already persisted these messages to SQLite via
             # _flush_messages_to_session_db(), so skip the DB write here
             # to prevent the duplicate-write bug (#860 / #42039). This holds
-            # for the codex app-server runtime too: although it early-returns
-            # and bypasses conversation_loop's per-step flushes, it flushes its
-            # own projected assistant/tool messages before returning and
-            # reports agent_persisted=True (see agent/codex_runtime.py). Reading
+            # Reading
             # the flag (default = self._session_db is not None) keeps the
             # persistence contract explicit and lets any future non-persisting
             # runtime opt into a gateway-side write by returning False.
@@ -23012,7 +22999,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ("compaction", "threshold"),
         ("compaction", "model_thresholds"),
         ("compaction", "threshold_tokens"),
-        ("compaction", "codex_gpt55_autoraise"),
         ("compaction", "target_ratio"),
         ("compaction", "protect_last_n"),
         ("compaction", "proactive_prune_tokens"),

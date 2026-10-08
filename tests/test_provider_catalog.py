@@ -119,7 +119,7 @@ def test_no_dead_provider_auth_types_registered() -> None:
 
 def test_api_mode_for_fork_providers() -> None:
     assert determine_api_mode("deepseek") == "chat_completions"
-    assert determine_api_mode("openai-api") == "codex_responses"
+    assert determine_api_mode("openai-api") == "chat_completions"
     assert determine_api_mode("custom") == "chat_completions"
 
 
@@ -158,17 +158,10 @@ def test_the_anthropic_wire_cannot_be_selected() -> None:
     from son_of_anton_cli.providers import (
         TRANSPORT_TO_API_MODE,
         determine_api_mode,
-        host_mandated_api_mode,
     )
 
-    assert "anthropic_messages" not in TRANSPORT_TO_API_MODE.values()
+    assert set(TRANSPORT_TO_API_MODE.values()) == {"chat_completions"}
     assert determine_api_mode("anthropic") == "chat_completions"
-    for url in (
-        "https://api.anthropic.com",
-        "https://example.test/anthropic",
-        "https://api.kimi.com/coding",
-    ):
-        assert host_mandated_api_mode(url) != "anthropic_messages"
 
 
 def test_custom_profile_identifies_son_of_anton_by_user_agent() -> None:

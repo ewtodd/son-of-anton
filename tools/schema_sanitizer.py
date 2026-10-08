@@ -609,7 +609,6 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
                 continue
         
         # Responses-format: {"name": "...", "parameters": {...}}
-        # (used by codex_responses API mode — xAI, OpenAI Codex, etc.)
         params = tool.get("parameters")
         if isinstance(params, dict):
             _walk(params)

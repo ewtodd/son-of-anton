@@ -22,10 +22,8 @@ from agent.credential_persistence import (
 )
 import son_of_anton_cli.auth as auth_mod
 from son_of_anton_cli.auth import (
-    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     PROVIDER_REGISTRY,
     _auth_store_lock,
-    _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _global_auth_file_path,
     _load_auth_store,
@@ -70,15 +68,14 @@ STATUS_EXHAUSTED = "exhausted"
 # upstream-permanent OAuth states like ``token_invalidated`` / ``token_revoked``
 # where retrying after a TTL cooldown is guaranteed to fail.  ``DEAD`` entries
 # are excluded from rotation unconditionally and only clear when an explicit
-# write-side sync (e.g. ``_save_codex_tokens`` after a fresh device-code
-# login) rewrites the tokens.
+# write-side re-auth sync rewrites the tokens.
 STATUS_DEAD = "dead"
 
 # OAuth error reasons that indicate the credential is permanently invalid
 # server-side and cannot be recovered by retry/refresh.  Sourced from
-# OpenAI Codex Responses API, Anthropic, xAI, and Google OAuth spec.
+# Anthropic, xAI, and Google OAuth spec.
 _TERMINAL_AUTH_REASONS = frozenset({
-    "token_invalidated",   # OpenAI Codex: "Your authentication token has been invalidated."
+    "token_invalidated",   # server-side: "Your authentication token has been invalidated."
     "token_revoked",        # OAuth 2.0 RFC 7009: token explicitly revoked
     "invalid_token",        # RFC 6750: bearer token is malformed/expired/revoked
     "invalid_grant",        # RFC 6749: refresh_token rejected during refresh
@@ -96,7 +93,7 @@ _TERMINAL_AUTH_REASONS = frozenset({
 # are NOT pruned because ``_seed_from_singletons`` would just re-create them
 # on the next ``load_pool()`` with the same stale singleton tokens, defeating
 # the cleanup.  They remain in the pool marked DEAD until an explicit re-auth
-# write-side sync (``_save_codex_tokens`` etc.) clears the status.
+# write-side re-auth sync clears the status.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
 AUTH_TYPE_OAUTH = "oauth"
@@ -577,7 +574,7 @@ def _write_through_provider_state_to_global_root(
     """Persist a rotated OAuth ``state`` into the global-root auth.json.
 
     Best-effort write-through for the multi-profile rotation hazard
-    (#48415 / #43589): nous, openai-codex, and xai-oauth rotate the
+    (#48415 / #43589): nous and xai-oauth rotate the
     refresh_token on refresh, so when a profile pool refresh rotates a grant
     it resolved from the root fallback, the rotated chain must land back in
     root. Otherwise root keeps a now-revoked refresh token and every other
@@ -802,7 +799,7 @@ class CredentialPool:
         # rotation, failing immediately every hour until the user manually
         # removes it (issue #32849).  DEAD entries are excluded from rotation
         # unconditionally and only clear via an explicit re-auth write-side
-        # sync (``_save_codex_tokens`` after a fresh device-code login).
+        # sync (a fresh device-code login).
         if self._is_terminal_auth_failure(status_code, normalized_error):
             terminal_status = STATUS_DEAD
         else:
@@ -830,94 +827,6 @@ class CredentialPool:
         if persist:
             self._persist()
         return updated
-
-    def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
-
-        When a Codex OAuth access token expires (or the ChatGPT account hits
-        its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
-        with a ``last_error_reset_at`` that can be many hours in the future.
-        Meanwhile the user may run ``son-of-anton model`` / ``son-of-anton auth`` which
-        performs a fresh device-code login and writes new tokens to
-        ``auth.json`` under ``_auth_store_lock``.  Without this sync the pool
-        entry stays frozen until ``last_error_reset_at`` elapses — even
-        though fresh credentials are sitting on disk — and every request
-        fails with "no available entries (all exhausted or empty)".
-
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
-        """
-        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
-            return entry
-        try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "openai-codex")
-            if not isinstance(state, dict):
-                return entry
-            tokens = state.get("tokens")
-            if not isinstance(tokens, dict):
-                return entry
-            store_access = tokens.get("access_token", "")
-            store_refresh = tokens.get("refresh_token", "")
-            # Adopt auth.json tokens when either side differs.  Codex refresh
-            # tokens are single-use too, so a fresh refresh_token from
-            # another process means our entry's pair is consumed/stale.
-            #
-            # Also adopt when the store has a refresh_token but no
-            # access_token — another process may have rotated the pair
-            # and the store entry's access_token was already consumed;
-            # the important signal is the refresh_token difference.
-            entry_access = entry.access_token or ""
-            entry_refresh = entry.refresh_token or ""
-            should_adopt = False
-            if store_access and (
-                store_access != entry_access
-                or (store_refresh and store_refresh != entry_refresh)
-            ):
-                should_adopt = True
-            elif (
-                store_refresh
-                and store_refresh != entry_refresh
-                and not store_access
-            ):
-                # Store has only a refresh_token (no access_token) —
-                # another process rotated the pair.  Adopt the
-                # refresh_token so we don't replay the consumed one.
-                logger.info(
-                    "Pool entry %s: auth.json has newer refresh_token "
-                    "but no access_token; adopting refresh_token to "
-                    "avoid replaying consumed token",
-                    entry.id,
-                )
-                should_adopt = True
-
-            if should_adopt:
-                logger.debug(
-                    "Pool entry %s: syncing Codex tokens from auth.json "
-                    "(refreshed by another process)",
-                    entry.id,
-                )
-                field_updates: Dict[str, Any] = {
-                    "access_token": store_access or entry.access_token,
-                    "refresh_token": store_refresh or entry.refresh_token,
-                    "last_status": None,
-                    "last_status_at": None,
-                    "last_error_code": None,
-                    "last_error_reason": None,
-                    "last_error_message": None,
-                    "last_error_reset_at": None,
-                }
-                if state.get("last_refresh"):
-                    field_updates["last_refresh"] = state["last_refresh"]
-                updated = replace(entry, **field_updates)
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
-        except Exception as exc:
-            logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
-        return entry
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync an xAI OAuth pool entry from auth.json if tokens differ.
@@ -1026,12 +935,12 @@ class CredentialPool:
         re-seeding a consumed single-use refresh token.
 
         Applies to any OAuth provider whose singleton lives in auth.json
-        (currently Nous, OpenAI Codex, and xAI Grok OAuth).
+        (currently Nous and xAI Grok OAuth).
 
         ``set_active=False`` on every write: a pool sync-back is a
         token-rotation side effect, not the user choosing a provider.
         Using ``_save_provider_state`` (which sets ``active_provider``)
-        here would mean every Nous/Codex/xAI refresh in a multi-provider
+        here would mean every Nous/xAI refresh in a multi-provider
         setup silently flips the ``active_provider`` flag — the next
         ``son-of-anton`` invocation that defaults to the active provider
         (e.g. setup wizard, ``son-of-anton auth status``) would land on
@@ -1041,17 +950,15 @@ class CredentialPool:
         # Only sync entries that were seeded *from* a singleton.  Manually
         # added pool entries (source="manual:*") are independent credentials
         # and must not write back to the singleton.  All singleton-seeded
-        # device-code sources (nous, openai-codex, xAI) use ``device_code``.
+        # device-code sources (nous, xAI) use ``device_code``.
         if entry.source != "device_code":
             return
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
-                _wt_provider_id = {
-                    "nous": "nous",
-                    "openai-codex": "openai-codex",
-                    "xai-oauth": "xai-oauth",
-                }.get(self.provider)
+                _wt_provider_id = {"nous": "nous", "xai-oauth": "xai-oauth"}.get(
+                    self.provider
+                )
                 # Resolve state and track which store it came from — the
                 # source path tells us whether this profile genuinely owns
                 # its provider block or is reading from the global root.
@@ -1070,19 +977,12 @@ class CredentialPool:
                 # profile does not accrue a shadowing ``providers.<id>``
                 # key that blocks both the root fallback and the write-through
                 # on subsequent calls.
-                if self.provider == "openai-codex":
-                    state, source_path = _load_provider_state_with_source(
-                        auth_store, "openai-codex"
-                    )
-                    if not isinstance(state, dict):
-                        return
-                elif self.provider == "xai-oauth":
-                    state, source_path = _load_provider_state_with_source(
-                        auth_store, "xai-oauth"
-                    )
-                    if not isinstance(state, dict):
-                        return
-                else:
+                if self.provider != "xai-oauth":
+                    return
+                state, source_path = _load_provider_state_with_source(
+                    auth_store, "xai-oauth"
+                )
+                if not isinstance(state, dict):
                     return
 
                 global_root = _global_auth_file_path()
@@ -1092,17 +992,7 @@ class CredentialPool:
                     and _same_path(source_path, global_root)
                 )
 
-                if self.provider == "openai-codex":
-                    tokens = state.get("tokens")
-                    if not isinstance(tokens, dict):
-                        return
-                    tokens["access_token"] = entry.access_token
-                    if entry.refresh_token:
-                        tokens["refresh_token"] = entry.refresh_token
-                    if entry.last_refresh:
-                        state["last_refresh"] = entry.last_refresh
-
-                elif self.provider == "xai-oauth":
+                if self.provider == "xai-oauth":
                     tokens = state.get("tokens")
                     if not isinstance(tokens, dict):
                         return
@@ -1140,31 +1030,19 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
-        # Codex and xAI OAuth refresh tokens are single-use.  The
+        # xAI OAuth refresh tokens are single-use.  The
         # sync→POST→write-back sequence below must run atomically across Son of Anton
         # processes: otherwise two processes can both adopt the same on-disk
         # token, both POST it, and the loser gets ``refresh_token_reused``.
         # Serialize the whole sequence through the shared cross-process
-        # auth-store flock (the same lock and extended-timeout pattern used by
-        # resolve_codex_runtime_credentials()).  When a waiter finally acquires
-        # the lock, the in-lock re-sync below picks up the rotated token the
+        # auth-store flock with the extended refresh timeout.  When a waiter
+        # finally acquires the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth"):
-            sync_entry = (
-                self._sync_codex_entry_from_auth_store
-                if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
-            )
+        if self.provider == "xai-oauth":
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
             ):
-                synced = sync_entry(entry)
-                if self.provider == "openai-codex":
-                    if synced is not entry:
-                        entry = synced
-                        if not force and not self._entry_needs_refresh(entry):
-                            return entry
-                    return self._refresh_entry_impl(entry, force=force)
+                synced = self._sync_xai_oauth_entry_from_pool_store(entry)
                 if (
                     synced.access_token != entry.access_token
                     or synced.refresh_token != entry.refresh_token
@@ -1181,12 +1059,9 @@ class CredentialPool:
         resolves.  Reads the provider's ``SON_OF_ANTON_*_REFRESH_TIMEOUT_SECONDS``
         override.
         """
-        env_var = (
-            "SON_OF_ANTON_CODEX_REFRESH_TIMEOUT_SECONDS"
-            if self.provider == "openai-codex"
-            else "SON_OF_ANTON_XAI_REFRESH_TIMEOUT_SECONDS"
+        refresh_timeout_seconds = auth_mod.env_float(
+            "SON_OF_ANTON_XAI_REFRESH_TIMEOUT_SECONDS", 20
         )
-        refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         return max(
             float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
             float(refresh_timeout_seconds) + 5.0,
@@ -1196,25 +1071,7 @@ class CredentialPool:
         self, entry: PooledCredential, *, force: bool
     ) -> Optional[PooledCredential]:
         try:
-            if self.provider == "openai-codex":
-                # Adopt fresher tokens from auth.json before spending the
-                # refresh_token — single-use tokens consumed by another Son of Anton
-                # process sharing the same auth.json singleton would otherwise
-                # trigger ``refresh_token_reused`` on the next POST.
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                refreshed = auth_mod.refresh_codex_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
-                )
-                updated = replace(
-                    entry,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed["refresh_token"],
-                    last_refresh=refreshed.get("last_refresh"),
-                )
-            elif self.provider == "xai-oauth":
+            if self.provider == "xai-oauth":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another
                 # process (or another profile sharing the singleton) would
@@ -1317,81 +1174,6 @@ class CredentialPool:
                             self._current_id = None
                         self._persist(removed_ids=removed_ids)
                     return None
-            # For openai-codex: same race as xAI/nous — another Son of Anton process
-            # may have consumed the refresh token between our proactive sync
-            # and the HTTP call.  Re-check auth.json and adopt the fresh tokens
-            # if they have rotated since.
-            if self.provider == "openai-codex":
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug(
-                        "Codex OAuth refresh failed but auth.json has newer tokens — adopting"
-                    )
-                    updated = replace(
-                        synced,
-                        last_status=STATUS_OK,
-                        last_status_at=None,
-                        last_error_code=None,
-                        last_error_reason=None,
-                        last_error_message=None,
-                        last_error_reset_at=None,
-                    )
-                    self._replace_entry(synced, updated)
-                    self._persist()
-                    return updated
-                # Terminal error: auth.json has no newer tokens — the stored
-                # refresh_token is dead.  Clear it from auth.json so the next
-                # session does not re-seed the same revoked credentials, and
-                # remove all singleton-seeded (device_code) entries from the
-                # in-memory pool.  Mirrors the xAI and Nous quarantine paths.
-                if auth_mod._is_terminal_codex_oauth_refresh_error(exc):
-                    logger.debug(
-                        "Codex OAuth refresh token is terminally invalid; clearing local token state"
-                    )
-                    try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "openai-codex") or {}
-                            if isinstance(state, dict):
-                                tokens = state.get("tokens") or {}
-                                if isinstance(tokens, dict):
-                                    store_refresh = str(tokens.get("refresh_token") or "").strip()
-                                    entry_refresh = str(entry.refresh_token or "").strip()
-                                    if not store_refresh or store_refresh == entry_refresh:
-                                        tokens.pop("access_token", None)
-                                        tokens.pop("refresh_token", None)
-                                        state["tokens"] = tokens
-                                        state["last_auth_error"] = {
-                                            "provider": "openai-codex",
-                                            "code": getattr(exc, "code", "unknown"),
-                                            "message": str(exc),
-                                            "reason": "credential_pool_refresh_failure",
-                                            "relogin_required": True,
-                                            "at": datetime.now(timezone.utc).isoformat(),
-                                        }
-                                        _save_provider_state(auth_store, "openai-codex", state)
-                                        _save_auth_store(auth_store)
-                    except Exception as clear_exc:
-                        logger.debug(
-                            "Failed to clear terminal Codex OAuth state: %s", clear_exc
-                        )
-                    # Read-modify-write of self._entries: must be atomic.
-                    # This runs on the DEFERRED refresh path (outside the
-                    # pool lock), so take it here. self._lock is an RLock,
-                    # so the still-locked callers re-enter safely.
-                    with self._lock:
-                        removed_ids = [
-                            item.id for item in self._entries
-                            if item.source == "device_code"
-                        ]
-                        self._entries = [
-                            item for item in self._entries
-                            if item.source != "device_code"
-                        ]
-                        if self._current_id == entry.id:
-                            self._current_id = None
-                        self._persist(removed_ids=removed_ids)
-                    return None
             self._mark_exhausted(entry, None)
             return None
 
@@ -1412,51 +1194,9 @@ class CredentialPool:
         self._sync_device_code_entry_to_auth_store(updated)
         return updated
 
-    def _codex_quota_restored_upstream(self, entry: PooledCredential) -> bool:
-        """Live-check whether an exhausted Codex entry's quota reset early.
-
-        A Codex 429 persists a ``last_error_reset_at`` that can be days in
-        the future (weekly windows), but the upstream window can reopen
-        before then — the user redeems a banked rate-limit reset via the
-        Codex CLI / ChatGPT UI, upgrades their plan, or OpenAI resets the
-        window.  Without this check the pool keeps the credential frozen
-        until the stale timestamp elapses even though the account is
-        usable (issue #43747).
-
-        Only fires for openai-codex entries frozen by a 429/quota-shaped
-        error.  The underlying probe is throttled per token (5 min) so this
-        is safe on the hot selection path.
-        """
-        if self.provider != "openai-codex" or entry.last_status != STATUS_EXHAUSTED:
-            return False
-        if not auth_mod._is_codex_rate_limit_shaped(
-            entry.last_error_code,
-            entry.last_error_reason,
-            entry.last_error_message,
-        ):
-            return False
-        token = entry.access_token or ""
-        if not token:
-            return False
-        try:
-            return bool(
-                auth_mod._probe_codex_quota_restored(
-                    token,
-                    base_url=entry.base_url,
-                )
-            )
-        except Exception:
-            logger.debug("Codex quota-restored probe failed", exc_info=True)
-            return False
-
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
-        if self.provider == "openai-codex":
-            return _codex_access_token_is_expiring(
-                entry.access_token,
-                CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-            )
         if self.provider == "xai-oauth":
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token,
@@ -1509,7 +1249,7 @@ class CredentialPool:
         reset to STATUS_OK and persisted.  When *refresh* is True, entries
         that need a token refresh are refreshed (skipped on failure).
 
-        Single-use-token refreshes (openai-codex, xai-oauth) are returned as
+        Single-use-token refreshes (xai-oauth) are returned as
         *pending_refresh* tuples so the caller can execute them outside the
         lock, avoiding stalling all pool consumers during cross-process flock
         acquisition + OAuth network I/O.
@@ -1519,7 +1259,7 @@ class CredentialPool:
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
         # Entries that need an OAuth refresh via a single-use token provider
-        # (openai-codex, xai-oauth).  These require a cross-process file lock
+        # (xai-oauth).  These require a cross-process file lock
         # that can block for 20+ seconds.  We collect them under self._lock
         # and refresh outside the lock to avoid stalling all pool consumers.
         pending_refresh: List[tuple] = []  # (entry, sync_entry_fn)
@@ -1538,20 +1278,8 @@ class CredentialPool:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Son of Anton profiles).
-            # For openai-codex entries, same pattern: the user may have
-            # re-authed via `son-of-anton model` / `son-of-anton auth` after a 429/401,
-            # leaving fresh tokens on disk while the pool entry is still
-            # frozen behind last_error_reset_at (can be hours in the
-            # future for ChatGPT weekly windows).
-            if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
-            # For xai-oauth singleton-seeded entries, identical pattern:
-            # an entry frozen as exhausted may simply be holding stale
+            # For xai-oauth singleton-seeded entries: an entry frozen as
+            # exhausted may simply be holding stale
             # tokens that another process (or a fresh `son-of-anton model` ->
             # xAI Grok OAuth login) has since rotated in auth.json.
             if (self.provider == "xai-oauth"
@@ -1587,25 +1315,14 @@ class CredentialPool:
                         cleared_any = True
                 # Permanently failed credentials never re-enter rotation via
                 # TTL.  They only clear when a write-side re-auth sync rewrites
-                # the tokens (e.g. ``_save_codex_tokens`` after a fresh
-                # device-code login).  The auth.json-sync paths below handle
+                # the tokens (e.g. a fresh device-code re-auth login).
+                # The auth.json-sync paths above handle
                 # the re-auth case for OAuth singletons.
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 if exhausted_until is not None and now < exhausted_until:
-                    # Codex quota windows can reopen EARLY: the user redeems a
-                    # banked rate-limit reset (Codex CLI / ChatGPT UI), upgrades
-                    # their plan, or OpenAI resets the window.  The persisted
-                    # ``last_error_reset_at`` can then be days in the future
-                    # while the account is already usable again — a throttled
-                    # live probe of the Codex usage endpoint detects that and
-                    # lifts the stale cooldown (issue #43747).
-                    if not (
-                        clear_expired
-                        and self._codex_quota_restored_upstream(entry)
-                    ):
-                        continue
+                    continue
                 if clear_expired:
                     cleared = replace(
                         entry,
@@ -1620,15 +1337,12 @@ class CredentialPool:
                     entry = cleared
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
-                if self.provider in ("openai-codex", "xai-oauth"):
+                if self.provider == "xai-oauth":
                     # Defer single-use-token refresh to avoid holding the
                     # threading lock during cross-process flock + network I/O.
-                    sync_fn = (
-                        self._sync_codex_entry_from_auth_store
-                        if self.provider == "openai-codex"
-                        else self._sync_xai_oauth_entry_from_pool_store
+                    pending_refresh.append(
+                        (entry, self._sync_xai_oauth_entry_from_pool_store)
                     )
-                    pending_refresh.append((entry, sync_fn))
                     continue
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:
@@ -2217,40 +1931,6 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         except Exception as exc:
             logger.debug("MiniMax OAuth token seed failed: %s", exc)
 
-    elif provider == "openai-codex":
-        # Respect user suppression — `son-of-anton auth remove openai-codex` marks
-        # the device_code source as suppressed so it won't be re-seeded from
-        # the Son of Anton auth store.  Without this gate the removal is instantly
-        # undone on the next load_pool() call.
-        if _is_suppressed(provider, "device_code"):
-            return changed, active_sources
-
-        state = _load_provider_state(auth_store, "openai-codex")
-        tokens = state.get("tokens") if isinstance(state, dict) else None
-        # Son of Anton owns its own Codex auth state — we do NOT auto-import from
-        # ~/.codex/auth.json at pool-load time.  OAuth refresh tokens are
-        # single-use, so sharing them with Codex CLI / VS Code causes
-        # refresh_token_reused race failures.  Users who want to adopt
-        # existing Codex CLI credentials get a one-time, explicit prompt
-        # via `son-of-anton auth openai-codex`.
-        if isinstance(tokens, dict) and tokens.get("access_token"):
-            active_sources.add("device_code")
-            custom_label = str(state.get("label") or "").strip()
-            changed |= _upsert_entry(
-                entries,
-                provider,
-                "device_code",
-                {
-                    "source": "device_code",
-                    "auth_type": AUTH_TYPE_OAUTH,
-                    "access_token": tokens.get("access_token", ""),
-                    "refresh_token": tokens.get("refresh_token"),
-                    "base_url": "https://chatgpt.com/backend-api/codex",
-                    "last_refresh": state.get("last_refresh"),
-                    "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
-                },
-            )
-
     elif provider == "xai-oauth":
         # When the user logs in via ``son-of-anton model`` -> xAI Grok OAuth,
         # tokens are written to the auth.json singleton
@@ -2261,7 +1941,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         tokens = state.get("tokens") if isinstance(state, dict) else None
         if isinstance(tokens, dict) and tokens.get("access_token"):
             # Device code is the only supported xAI OAuth flow; the singleton is
-            # always surfaced as ``device_code`` (consistent with nous/codex).
+            # always surfaced as ``device_code`` (consistent with nous).
             source = "device_code"
             if _is_suppressed(provider, source):
                 return changed, active_sources
@@ -2289,7 +1969,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
 # Prefer ~/.son-of-anton/.env over os.environ — the user's config file is the
 # authoritative source for Son of Anton credentials. Stale env vars from parent
-# processes (Codex CLI, test scripts, etc.) should not override deliberate
+# processes (other harnesses, test scripts, etc.) should not override deliberate
 # changes to the .env file. load_env() memoizes on the .env mtime, so
 # per-call reads (pool seeding, per-turn credential refresh) cost a stat()
 # when the file is unchanged.

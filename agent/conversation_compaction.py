@@ -2355,14 +2355,6 @@ def compact_context(
     except Exception:
         pass
 
-    # Codex app-server sessions: the codex agent owns the real thread context;
-    # Son of Anton' summarizer would only rewrite a local mirror without shrinking
-    # the actual thread (#36801). Route compaction to the app server's own
-    # thread/compact mechanism. Behavior is controlled by
-    # ``compaction.codex_app_server_auto`` (native|son-of-anton|off).
-    # The memory-provider context handoff below is intentionally Son of Anton-only:
-    # the app server does not expose its native summary prompt, so there is no
-    # truthful injection point for ``on_pre_compact()`` return text here.
     # Every automatic entrypoint must honor compactor-owned cooldown and
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
     # persisted fallback streak is loaded by bind_session_state() before this.

@@ -1212,8 +1212,7 @@ def _run_review_in_thread(
             # _resolve_review_runtime() returns the parent's live runtime by
             # default (routed=False; main model, warm cache), or — when the user
             # set auxiliary.background_review.{provider,model} to a different
-            # model — that model's runtime (routed=True). The codex_app_server
-            # -> codex_responses downgrade is applied inside the resolver.
+            # model — that model's runtime (routed=True).
             _rt = _resolve_review_runtime(agent, task_cfg)
             _routed = bool(_rt.get("routed"))
             # skip_memory=True keeps the review fork from
@@ -1245,10 +1244,8 @@ def _run_review_in_thread(
             # Anthropic's cache key is namespaced by ``thinking`` presence.
             # Same-model path only: when routed to a different aux model the
             # cache is cold regardless (parity buys nothing) and the parent's
-            # effort vocabulary may not be valid for the routed model/provider
-            # (e.g. OpenRouter ``extra_body.reasoning.effort`` is forwarded
-            # unclamped; codex_responses passes ``max``/``ultra`` through
-            # unmapped except on gpt-5.6/xAI). Let the routed fork use
+            # effort vocabulary may not be valid for the routed model/provider.
+            # Let the routed fork use
             # provider defaults — matching the ``not _routed`` gate on
             # _cached_system_prompt below.
             if not _routed:

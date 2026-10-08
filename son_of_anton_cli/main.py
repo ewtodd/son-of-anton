@@ -2608,11 +2608,6 @@ def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "")
             "Use /chat/completions for standard OpenAI-compatible servers.",
         ),
         (
-            "codex_responses",
-            "Responses / Codex",
-            "Use /responses for Codex-compatible tool-calling backends.",
-        ),
-        (
             "Anthropic Messages",
             "Use /v1/messages for Anthropic-compatible endpoints.",
         ),
@@ -2645,9 +2640,6 @@ def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "")
         return None
     if raw in {"2", "chat", "chat_completions", "completions"}:
         return "chat_completions"
-    if raw in {"3", "responses", "codex", "codex_responses"}:
-        return "codex_responses"
-
     print(f"Invalid API mode choice: {raw}. Falling back to auto-detect.")
     return None
 

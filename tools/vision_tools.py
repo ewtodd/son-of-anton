@@ -958,9 +958,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 # image and returning text, we load the image, base64-encode it, and return a
 # multimodal tool-result envelope. The agent loop unwraps the envelope into an
 # OpenAI-style content list on the `tool` role; provider adapters (anthropic,
-# codex_responses, chat_completions) translate that into Anthropic
-# tool_result image blocks / Responses input_image / OpenAI image_url tool
-# content. The main model then "sees" the pixels directly on its next turn.
+# chat_completions) translate that into Anthropic tool_result image
+# blocks / OpenAI image_url tool content. The main model then "sees" the pixels directly on its next turn.
 # ---------------------------------------------------------------------------
 
 
@@ -975,8 +974,6 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         ``tool_result`` blocks accept ``image`` content blocks.
       * OpenAI Chat Completions: tool messages accept array content with
         ``image_url`` parts.
-      * OpenAI Responses (``openai-codex``): ``function_call_output.output``
-        accepts an array of ``input_text``/``input_image`` items.
       * Gemini 3 (and proxied via aggregators): supports multimodal tool
         results. Older Gemini does NOT.
 
@@ -1004,8 +1001,8 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in {"anthropic", "claude", "anthropic-direct"}:
         return True
 
-    # OpenAI Chat Completions and Responses
-    if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
+    # OpenAI Chat Completions
+    if p in {"openai", "openai-chat", "azure-openai"}:
         return True
 
     # Gemini — gate on model name; older Gemini variants did not support

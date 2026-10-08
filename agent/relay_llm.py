@@ -34,10 +34,6 @@ _RELAY_PROTOCOL_BY_API_MODE = {
         operation="openai.chat_completions",
         codec_class="OpenAIChatCodec",
     ),
-    "codex_responses": _RelayProtocol(
-        operation="openai.responses",
-        codec_class="OpenAIResponsesCodec",
-    ),
     "anthropic_messages": _RelayProtocol(
         operation="anthropic.messages",
         codec_class="AnthropicMessagesCodec",
@@ -1137,31 +1133,7 @@ def _relay_request_body(
     # protocol. Preserve it for the original callback request, but never pass
     # it to Relay intercepts or routed transports.
     body.pop("timeout", None)
-    # The Responses SDK accepts ``tools=None`` as "no tools", while Relay's
-    # typed Responses codec correctly expects either an array or an absent
-    # field. Normalize only the codec-facing copy; the original provider
-    # request is restored when no interceptor changes it.
-    if str((metadata or {}).get("api_mode") or "") == "codex_responses":
-        body = dict(body)
-        if body.get("tools") is None:
-            body.pop("tools", None)
-        elif isinstance(body.get("tools"), list):
-            body["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        key: value
-                        for key, value in tool.items()
-                        if key != "type"
-                    },
-                }
-                if isinstance(tool, dict)
-                and tool.get("type") == "function"
-                and "function" not in tool
-                else tool
-                for tool in body["tools"]
-            ]
-    elif str((metadata or {}).get("api_mode") or "") == "chat_completions":
+    if str((metadata or {}).get("api_mode") or "") == "chat_completions":
         tools = body.get("tools")
         if isinstance(tools, list):
             body = dict(body)
@@ -1265,24 +1237,7 @@ def _codec_round_trip_request_body(
 def _provider_request_body(
     content: dict[str, Any], metadata: dict[str, Any] | None
 ) -> dict[str, Any]:
-    body = dict(content)
-    if str((metadata or {}).get("api_mode") or "") != "codex_responses":
-        return body
-    tools = body.get("tools")
-    if not isinstance(tools, list):
-        return body
-    body["tools"] = [
-        {
-            "type": "function",
-            **dict(tool["function"]),
-        }
-        if isinstance(tool, dict)
-        and tool.get("type") == "function"
-        and isinstance(tool.get("function"), dict)
-        else tool
-        for tool in tools
-    ]
-    return body
+    return dict(content)
 
 
 def _codec(relay: Any, metadata: dict[str, Any] | None) -> Any:

@@ -7519,7 +7519,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
         # Per-model usage attribution.  ``update_token_counts`` is the single
         # chokepoint every per-API-call delta flows through (CLI, gateway, cron,
-        # delegated runs — see conversation_loop / codex_runtime), and each call
+        # delegated runs — see conversation_loop), and each call
         # carries the model/provider *active at the time of that call*.  The
         # ``sessions`` row only keeps one (model, billing_provider) pair, so a
         # mid-session ``/model`` switch otherwise attributes every token to the
@@ -9363,7 +9363,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``messages`` is a list of dicts in the same shape
         :meth:`_insert_message_rows` already consumes for replace/compact/
         import (role, content, tool_name, tool_calls, tool_call_id,
-        finish_reason, reasoning*, codex_*, timestamp, api_content,
+        finish_reason, reasoning*, timestamp, api_content,
         display_kind, display_metadata, ...). Reusing that helper keeps ONE
         row-serialization path for every multi-row writer.
 
@@ -10544,18 +10544,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize reasoning_details, falling back to None")
                         msg["reasoning_details"] = None
-                if row["codex_reasoning_items"]:
-                    try:
-                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
-                        msg["codex_reasoning_items"] = None
-                if row["codex_message_items"]:
-                    try:
-                        msg["codex_message_items"] = json.loads(row["codex_message_items"])
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize codex_message_items, falling back to None")
-                        msg["codex_message_items"] = None
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)

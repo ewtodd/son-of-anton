@@ -1299,19 +1299,6 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
-    # Commentary visibility (display.show_commentary, default true).
-    # When true, completed mid-turn commentary messages are delivered as
-    # visible updates through the interim message path.  When false,
-    # commentary falls back to the reasoning channel (visible only with
-    # show_reasoning enabled).
-    agent.show_commentary = True
-    try:
-        _display_section = _agent_cfg.get("display", {})
-        if isinstance(_display_section, dict):
-            agent.show_commentary = bool(_display_section.get("show_commentary", True))
-    except Exception:
-        agent.show_commentary = True
-
     # LM Studio can either be explicitly preloaded through LM Studio's
     # management API (the historical Son of Anton behavior) or left to LM Studio's
     # just-in-time / Auto-Evict chat-completions path.  Keep the default

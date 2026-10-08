@@ -62,14 +62,14 @@ class _SummaryAgent:
     def _safe_print(self, *_args, **_kwargs):
         pass
 
-    def _should_sanitize_tool_calls(self):
-        return False
-
     def _copy_reasoning_content_for_api(self, source, target):
         pass
 
     def _sanitize_api_messages(self, messages):
         return messages
+
+    def _sanitize_tool_calls_for_strict_api(self, api_msg, model=None):
+        return api_msg
 
     def _drop_thinking_only_and_merge_users(self, messages):
         return messages

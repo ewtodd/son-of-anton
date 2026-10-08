@@ -310,9 +310,10 @@ class ChatCompletionsTransport(ProviderTransport):
         that strict chat-completions providers reject with HTTP 400/422
         (or, in the case of some OpenAI-compatible gateways, 5xx):
 
-        - Codex Responses API fields: ``codex_reasoning_items`` /
-          ``codex_message_items`` on the message, ``call_id`` /
-          ``response_item_id`` on ``tool_calls`` entries.
+        - Legacy Codex Responses API fields left behind by pre-existing
+          session rows: ``codex_reasoning_items`` / ``codex_message_items``
+          on the message, ``call_id`` / ``response_item_id`` on
+          ``tool_calls`` entries.
         - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
           stripped unless the outgoing ``model`` is itself Gemini-family.
           Gemini 3 thinking models attach it for replay, but strict providers

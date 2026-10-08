@@ -3,9 +3,8 @@
 Two modes:
 
   native  — attach images as OpenAI-style ``image_url`` content parts on the
-            user turn. Provider adapters (Anthropic, Gemini, Bedrock, Codex,
-            OpenAI chat.completions) already translate these into their
-            vendor-specific multimodal formats.
+            user turn. The chat-completions transport already translates
+            these into the vendor-specific multimodal formats.
 
   text    — run ``vision_analyze`` on each image up-front and prepend the
             description to the user's text. The model never sees the pixels;

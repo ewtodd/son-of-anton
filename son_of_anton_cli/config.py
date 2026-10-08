@@ -1059,16 +1059,12 @@ _API_MODE_ALIASES = {
     # existed, an unrecognized api_mode was silently ignored and the
     # transport fell through to hostname-based guessing, so a config that
     # said ``api_mode: openai`` (valid on older releases) could flip to
-    # ``codex_responses`` after an update and break the provider (#66543
-    # discussion; observed live against api.actual.inc).
+    # a dead mode after an update and break the provider (#66543 discussion).
     "openai": "chat_completions",
     "openai_chat": "chat_completions",
     "openai-chat": "chat_completions",
     "chat-completions": "chat_completions",
     "chatcompletions": "chat_completions",
-    "responses": "codex_responses",
-    "openai_responses": "codex_responses",
-    "openai-responses": "codex_responses",
 }
 
 
@@ -3571,15 +3567,12 @@ _FALLBACK_COMMENT = """
 # overload (529), service errors (503), or connection failures.
 #
 # Supported providers:
-#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — son-of-anton auth) — OpenAI Codex
 #   nous         (OAuth — son-of-anton auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
-#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3603,15 +3596,12 @@ _COMMENTED_SECTIONS = """
 # overload (529), service errors (503), or connection failures.
 #
 # Supported providers:
-#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — son-of-anton auth) — OpenAI Codex
 #   nous         (OAuth — son-of-anton auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
-#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #

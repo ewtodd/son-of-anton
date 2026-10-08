@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class SonOfAntonOverlay:
     """Son of Anton-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | codex_responses
+    transport: str = "openai_chat"        # wire transport key (see TRANSPORT_TO_API_MODE)
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
@@ -50,7 +50,6 @@ class SonOfAntonOverlay:
 # overlays here.
 SON_OF_ANTON_OVERLAYS: Dict[str, SonOfAntonOverlay] = {
     "openai-api": SonOfAntonOverlay(
-        transport="codex_responses",
         base_url_override="https://api.openai.com/v1",
         base_url_env_var="OPENAI_BASE_URL",
     ),
@@ -66,7 +65,7 @@ class ProviderDef:
 
     id: str
     name: str
-    transport: str                        # openai_chat | codex_responses
+    transport: str                        # wire transport key (see TRANSPORT_TO_API_MODE)
     api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
@@ -109,7 +108,6 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
-    "codex_responses": "codex_responses",
 }
 
 
@@ -129,7 +127,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """Look up a built-in provider by id or alias.
 
     Resolution order:
-      1. Son of Anton overlays (for providers not in models.dev: nous, openai-codex, etc.)
+      1. Son of Anton overlays (for providers not in models.dev)
       2. models.dev catalog + Son of Anton overlay
 
     User-defined providers from config.toml (``providers:`` / ``custom_providers:``)
@@ -307,59 +305,14 @@ def is_official_openai_host(base_url: str) -> bool:
     return base_url_host_matches(base_url, "api.openai.com")
 
 
-def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
-    """Return the wire protocol a specific endpoint *requires*, or None.
-
-    Some hosts only accept one API mode and reject the others outright:
-      - api.openai.com only accepts the Responses API for its (reasoning)
-        models when tools + reasoning are in play (chat/completions 400s).
-      - api.meta.ai only achieves KV-cache hits on /v1/responses with
-        prompt_cache_retention; /v1/chat/completions returns 0 cached
-        tokens (measured 0% vs 93-99% on /responses with retention).
-
-    These are *mandatory* — a session carrying a stale api_mode (e.g. a
-    /model switch that kept the previous provider's ``chat_completions``)
-    must be overridden to the host's required mode, not merely filled in
-    when empty. Generic / unknown endpoints return None so an explicitly
-    configured api_mode on them is never clobbered.
-    """
-    if not base_url:
-        return None
-    url_lower = base_url.rstrip("/").lower()
-    hostname = base_url_hostname(base_url)
-    # Exact-hostname matching only — never bare substring — so lookalike hosts
-    # (api.openai.com.attacker.test) and path-segment spoofs
-    # (proxy.test/api.openai.com/v1) are NOT treated as the real endpoint. (#32243)
-    # Official OpenAI host family: canonical + data-residency regional hosts
-    # (us./eu.api.openai.com) all mandate the Responses API for reasoning
-    # models with tools. Shared predicate keeps this lane in lockstep with
-    # catalog filtering and listing authority.
-    if is_official_openai_host(base_url):
-        return "codex_responses"
-    # Meta Model API (api.meta.ai) only achieves prompt-cache hits on the
-    # Responses API with prompt_cache_retention; chat/completions stays
-    # cache-cold (0% vs 93-99% measured). Exact-hostname match per #32243.
-    if hostname == "api.meta.ai":
-        return "codex_responses"
-    return None
-
-
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
-    Resolution order:
-      1. Host-mandated mode (special endpoints that only accept one protocol).
-      2. Known provider → transport → TRANSPORT_TO_API_MODE.
-      3. Direct provider checks.
-      4. Default: 'chat_completions'.
+    Resolution: known provider → transport → TRANSPORT_TO_API_MODE, else
+    the 'chat_completions' default. The only wire the fork speaks today.
 
-    *model* is accepted for call-site compatibility; the dual-wire Nous
-    carve-out that once used it was removed with the provider prune.
+    *model* and *base_url* are accepted for call-site compatibility.
     """
-    mandated = host_mandated_api_mode(base_url)
-    if mandated is not None:
-        return mandated
-
     pdef = get_provider(provider)
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")

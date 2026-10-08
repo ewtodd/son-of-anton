@@ -640,12 +640,9 @@ class SessionPortabilityMixin:
                 sanitized_messages: List[Dict[str, Any]] = []
                 for msg in messages:
                     clean = dict(msg)
-                    for key in (
-                        "reasoning_details",
-                        "codex_reasoning_items",
-                        "codex_message_items",
-                    ):
-                        clean[key] = self._reasoning_json_value(clean.get(key))
+                    clean["reasoning_details"] = self._reasoning_json_value(
+                        clean.get("reasoning_details")
+                    )
                     sanitized_messages.append(clean)
 
                 total_messages, total_tool_calls = self._insert_message_rows(
