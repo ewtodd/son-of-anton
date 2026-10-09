@@ -450,6 +450,93 @@ def test_colon_q_quits_immediately_even_mid_turn(backend) -> None:
     asyncio.run(run())
 
 
+def test_dirty_blocks_keep_painting_their_last_frame() -> None:
+    """A block mutated between flushes must not blank out.
+
+    render_line used to return a blank strip for any dirty block, so the
+    streamed answer flashed text/blank every time anything repainted between
+    the 0.12s flush ticks. Dirty blocks now paint their last rendered lines.
+    """
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause(0.2)
+            feed = app.query_one("#feed")
+            block = feed.open_markdown()
+            block.append("hello world")
+            feed.changed(block)
+            # render_line takes viewport rows, so subtract the scroll offset.
+            y = feed._starts[block.idx] - int(feed.scroll_offset.y)
+
+            def plain(strip) -> str:
+                return "".join(seg.text for seg in strip if not seg.control)
+
+            before = plain(feed.render_line(y))
+            assert "hello world" in before
+
+            block.append(" more")  # dirty until the next flush
+            after = plain(feed.render_line(y))
+            assert after == before, "a dirty block blanked instead of holding its frame"
+
+    asyncio.run(run())
+
+
+def test_user_turns_have_padding_rows_and_a_rail() -> None:
+    """User messages keep the old `padding: 1 0 1 2` block shape.
+
+    The virtualization port rendered them as a single flush line; the rail now
+    runs through a blank row above and below the text.
+    """
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause(0.2)
+            feed = app.query_one("#feed")
+            feed.add_user("commit and push")
+            block = next(b for b in feed._blocks if b.kind == "user")
+            assert block.height == 3, "user turn needs a padding row above and below"
+            rows = [
+                "".join(seg.text for seg in strip if not seg.control)
+                for strip in block.lines
+            ]
+            assert rows[1].strip() == "commit and push"
+            assert rows[0].strip() == "" and rows[2].strip() == ""
+
+    asyncio.run(run())
+
+
+def test_sidebar_hides_background_row_when_nothing_runs(backend) -> None:
+    """"background: idle" read as "the session is idle" while mid-conversation.
+
+    The row is about background work; with none, it hides instead of showing a
+    misleading idle state.
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause(0.3)
+            app._update_context()
+            label = app.query_one("#ctx-bg-label")
+            value = app.query_one("#ctx-bg")
+            assert label.display is False, "empty background row should hide"
+            assert value.display is False
+
+            app._snapshot = lambda: {"active_background_processes": 2, "duration": "6m"}
+            app._update_context()
+            assert label.display is True
+            assert "2 processes" in str(value.content)
+
+    asyncio.run(run())
+
+
 def test_modal_screens_return_their_answers() -> None:
     _textual()
 
@@ -1031,8 +1118,9 @@ def test_transcript_columns_match_opencode() -> None:
             app._add_user_turn("hi")
             await pilot.pause(0.1)
             user = next(b for b in feed._blocks if b.kind == "user")
-            # rail (1 cell) + padding (2 cells) puts user text in column 3
-            assert "".join(s.text for s in user.lines[0])[3:5] == "hi"
+            # padding row, then rail (1 cell) + padding (2 cells) puts the
+            # user text in column 3 of the row below it
+            assert "".join(s.text for s in user.lines[1])[3:5] == "hi"
 
     asyncio.run(run())
 

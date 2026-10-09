@@ -599,6 +599,10 @@ class VirtualFeed(ScrollView):
             start += block.height
         self._total = start
         self.virtual_size = Size(self._width, max(1, start))
+        if self._anchored and not self._anchor_released:
+            # Follow new content now instead of waiting for the next compositor
+            # pass; the anchored flag keeps it pinned from then on.
+            self.scroll_end(immediate=True, animate=False)
 
     def _append_block(self, block: _Block, before: int = 0) -> _Block:
         block.before = before
@@ -700,12 +704,28 @@ class VirtualFeed(ScrollView):
 
     def add_user(self, text: str) -> None:
         self.reset_note()
-        row = Text()
-        row.append(" ", style=f"on {self._styles.primary}" if self._styles.primary else "on yellow")
-        body_style = _combine("bold", f"on {self._styles.panel}" if self._styles.panel else "")
-        row.append("  ")
-        row.append(text, style=body_style)
-        self._append_block(_StaticBlock("user", row, pad=0), before=self._separate("user"))
+        rail_style = f"on {self._styles.primary}" if self._styles.primary else "on yellow"
+        panel_style = f"on {self._styles.panel}" if self._styles.panel else ""
+        body_style = _combine("bold", panel_style)
+
+        def _row(body: str = "", style: str = "") -> Text:
+            line = Text()
+            line.append(" ", style=rail_style)
+            line.append("  ", style=panel_style or None)
+            if body:
+                line.append(body, style=style or body_style or None)
+            return line
+
+        # The widget feed's UserTurn carried `padding: 1 0 1 2` and a rail
+        # through the padding; keep the air inside the block instead of
+        # rendering the message flush against its neighbours.
+        block = Text()
+        block.append_text(_row())
+        block.append("\n")
+        block.append_text(_row(text))
+        block.append("\n")
+        block.append_text(_row())
+        self._append_block(_StaticBlock("user", block, pad=0), before=self._separate("user"))
 
     def add_note(self, line: Text) -> None:
         """Append one ANSI/plain line, merging consecutive lines into a block."""
@@ -764,7 +784,10 @@ class VirtualFeed(ScrollView):
             return Strip.blank(self._width)
         block = self._blocks[idx]
         local = y - self._starts[idx]
-        if 0 <= local < block.height and not block.dirty:
+        # Render the last-painted lines even while a block is dirty: flush()
+        # catches up within a tick, and returning blanks here made the
+        # streamed answer flash text/blank whenever anything repainted.
+        if 0 <= local < block.height:
             strip = block.lines[local]
         else:
             strip = Strip.blank(self._width)

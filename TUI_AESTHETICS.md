@@ -55,7 +55,7 @@ screenshots. What we mirror, and where it comes from:
 | sidebar visible when `sidebarOpen || (auto && width > 120)`; **overlays** the content when narrow rather than disappearing | same threshold; `.overlay` class docks it to the right layer |
 | sidebar: bold title, muted session id, workspace, and the product + version pinned at the bottom | same, with our context/usage detail as a middle block |
 | `TextPart` indents markdown by 3 | feed blocks pad 3 (`_pad` in `son_of_anton_tui/feed.py`) |
-| `UserMessage`: left rail in the agent colour, padding `1 0 1 2` | user block: 1-cell primary rail + 2 spaces, on the panel surface |
+| `UserMessage`: left rail in the agent colour, padding `1 0 1 2` | user block: 1-cell primary rail running through one padding row above and below, 2 spaces, on the panel surface |
 | `InlineTool`: 2-cell icon column then the label; spinner occupies that column while running | tool blocks, icons per tool (`$` shell, `→` read, `✱` search, `◈` web, `←` write) |
 | `Prompt`: left rail, textarea, then a meta row of `agent · model provider` | `#prompt-frame` + `#prompt-meta` |
 | status row under the prompt: working directory when idle / spinner + action when busy, with usage and shortcut hints right-aligned | `#statusline` (`#status-left` / `#status-right`) |
