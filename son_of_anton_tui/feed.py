@@ -753,6 +753,10 @@ class VirtualFeed(ScrollView):
     # ---------------- painting ----------------
 
     def render_line(self, y: int) -> Strip:
+        # The Line API hands us the viewport row; translate it to a content
+        # line with the scroll offset, or the feed paints from line 0 forever
+        # and the scrollbar looks dead (Textual's Log widget does the same).
+        y = int(self.scroll_offset.y) + y
         if not self._blocks or y < 0:
             return Strip.blank(self._width)
         idx = bisect.bisect_right(self._starts, y) - 1

@@ -805,8 +805,8 @@ if _TEXTUAL_AVAILABLE:
             Binding("shift+tab", "cycle_permission_mode", "Permissions", show=False, priority=True),
             Binding("ctrl+g", "edit_in_editor", "Editor", show=False, priority=True),
             Binding("ctrl+p", "command_palette", "Commands", show=False, priority=True),
-            Binding("pageup", "feed_page_up", show=False),
-            Binding("pagedown", "feed_page_down", show=False),
+            Binding("pageup", "feed_page_up", show=False, priority=True),
+            Binding("pagedown", "feed_page_down", show=False, priority=True),
             Binding("escape", "escape", show=False),
         ]
 
@@ -1780,10 +1780,25 @@ if _TEXTUAL_AVAILABLE:
             await self._submit_text(value)
 
         async def _submit_text(self, value: str) -> None:
-            if self.backend is None:
-                if value in (":q", ":quit", "/quit", "/exit"):
-                    self.exit()
+            # Quit always quits, even mid-turn: the command path runs the
+            # quit handler (so /quit --delete still registers), and the app's
+            # on_unmount interrupts the running turn before the loop joins.
+            first_parts = value.split(None, 1)
+            head = first_parts[0].lower() if first_parts else ""
+            if head[:1] in ("/", ":"):
+                from son_of_anton_cli.commands import resolve_command as _resolve_command
+
+                _cmd = _resolve_command(head)
+                if _cmd is not None and _cmd.name in ("quit", "exit"):
+                    if self.backend is None:
+                        self.exit()
+                    else:
+                        self.run_worker(
+                            self._dispatch(value), group="dispatch", exclusive=False
+                        )
                     return
+
+            if self.backend is None:
                 self._add_user_turn(value)
                 self._note("(no agent attached — this frame is running standalone)", muted=True)
                 return

@@ -356,6 +356,100 @@ def test_reasoning_folds_and_a_click_reopens_it() -> None:
     asyncio.run(run())
 
 
+def test_transcript_paints_from_the_scroll_offset() -> None:
+    """A Line API widget gets viewport rows and must add scroll_y itself.
+
+    The virtual feed treated ``render_line``'s y as a content line, so the
+    transcript always painted from line 0: the scrollbar, wheel and anchor all
+    moved ``scroll_y`` but the screen never changed. Scrolling to the top and
+    to the bottom must paint different first lines.
+    """
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(100, 20)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            for i in range(40):
+                post("ansi", text=f"note line {i:02d}")
+            await pilot.pause(0.6)
+            feed = app.query_one("#feed")
+            assert feed.max_scroll_y > 0, "the fixture must overflow the viewport"
+
+            def plain(strip) -> str:
+                return "".join(seg.text for seg in strip if not seg.control)
+
+            assert feed.scroll_y == feed.max_scroll_y, "the feed should start anchored"
+            at_bottom = plain(feed.render_line(0))
+
+            feed.scroll_home(animate=False)
+            await pilot.pause(0.3)
+            assert feed.scroll_y == 0
+            at_top = plain(feed.render_line(0))
+            assert at_top != at_bottom, "painting ignored scroll_y"
+            assert "█" in at_top, f"top of the transcript is not the wordmark: {at_top!r}"
+
+    asyncio.run(run())
+
+
+def test_page_keys_scroll_the_feed_with_the_prompt_focused() -> None:
+    """PageUp/PageDown must reach the transcript, not the prompt's TextArea."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(100, 20)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            for i in range(40):
+                post("ansi", text=f"note line {i:02d}")
+            await pilot.pause(0.6)
+            feed = app.query_one("#feed")
+            assert app.focused is app.query_one("#input")
+            assert feed.max_scroll_y > 0
+            assert feed.scroll_y == feed.max_scroll_y, "the feed should start anchored"
+
+            await pilot.press("pageup")
+            await pilot.pause(0.3)
+            assert feed.scroll_y < feed.max_scroll_y, "pageup did not scroll the feed"
+            assert feed._anchor_released, "pageup must release the follow anchor"
+
+            await pilot.press("pagedown")
+            await pilot.pause(0.3)
+            assert feed.scroll_y > 0, "pagedown did not scroll the feed"
+
+    asyncio.run(run())
+
+
+def test_colon_q_quits_immediately_even_mid_turn(backend) -> None:
+    """Quit must never be queued behind a running turn.
+
+    A message submitted mid-turn is parked for the next turn, but :q (and the
+    other quit spellings) must exit anyway — on_unmount then interrupts the
+    in-flight turn.
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            # Pretend a turn is in flight; the quit path must not queue :q.
+            app._busy = "turn"
+            prompt = app.query_one("#input")
+            prompt.focus()
+            prompt.text = ":q"
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            assert not app.is_running, ":q was queued instead of quitting"
+            assert app._queued_items == [], "quit must never enter the queue"
+
+    asyncio.run(run())
+
+
 def test_modal_screens_return_their_answers() -> None:
     _textual()
 
