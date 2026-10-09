@@ -7066,6 +7066,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
+        last_prompt_tokens: Optional[int] = None,
         absolute: bool = False,
     ) -> None:
         """Update token counters and backfill model if not already set.
@@ -7076,6 +7077,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         When *absolute* is True, values are **set directly** — use this when
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
+
+        *last_prompt_tokens* is the provider-reported prompt size of the API
+        call — i.e. how full the context window was at that moment. Unlike the
+        cumulative counters it is a **reading, not a total**, so it is always
+        set directly (never summed) and ``None`` leaves the stored value
+        untouched. Persisting it is what lets a resumed session restore the
+        context meter instead of starting at 0% until the first call of the
+        new process.
         """
         # Ensure the session row exists so the UPDATE doesn't silently affect
         # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
@@ -7101,7 +7110,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
-                   api_call_count = ?
+                   api_call_count = ?,
+                   last_prompt_tokens = COALESCE(?, last_prompt_tokens)
                    WHERE id = ?"""
         else:
             sql = """UPDATE sessions SET
@@ -7122,7 +7132,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
-                   api_call_count = COALESCE(api_call_count, 0) + ?
+                   api_call_count = COALESCE(api_call_count, 0) + ?,
+                   last_prompt_tokens = COALESCE(?, last_prompt_tokens)
                    WHERE id = ?"""
         has_accounted_usage = bool(
             input_tokens or output_tokens or cache_read_tokens
@@ -7146,6 +7157,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             billing_mode if has_accounted_usage else None,
             model if has_accounted_usage else None,
             api_call_count,
+            last_prompt_tokens,
             session_id,
         )
         # Per-model usage attribution.  ``update_token_counts`` is the single

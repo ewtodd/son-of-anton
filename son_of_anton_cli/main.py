@@ -4968,12 +4968,13 @@ def main():
         "import",
         help="Import a Claude Code, Codex CLI, or opencode session",
         description=(
-            "Pull a conversation started in Claude Code (~/.claude/projects), "
+            "Pull conversations started in Claude Code (~/.claude/projects), "
             "Codex CLI (~/.codex/sessions), or opencode "
             "(~/.local/share/opencode/opencode.db) into the Son of Anton "
-            "session store so it can be resumed with "
+            "session store so they can be resumed with "
             "'son-of-anton --resume <id>'. The foreign stores are only read, "
-            "never modified."
+            "never modified. Pass --all to import every session that is not "
+            "in the store yet."
         ),
     )
     sessions_import.add_argument(
@@ -4981,6 +4982,33 @@ def main():
         dest="from_source",
         choices=["claude", "codex", "opencode"],
         help="Which tool to import from (default: pick across all)",
+    )
+    sessions_import.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Import every session from the chosen source(s) that is not "
+            "already in the store (idempotent — re-running imports only what "
+            "is new)"
+        ),
+    )
+    sessions_import.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="With --all: import at most N sessions, newest first",
+    )
+    sessions_import.add_argument(
+        "--force",
+        action="store_true",
+        help="With --all: re-import sessions already in the store",
+    )
+    sessions_import.add_argument(
+        "--root",
+        help=(
+            "With --all: override the Claude Code / Codex sessions directory "
+            "(e.g. another account's ~/.claude)"
+        ),
     )
     sessions_import.add_argument(
         "--session",

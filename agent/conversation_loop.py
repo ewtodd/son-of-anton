@@ -3743,6 +3743,12 @@ def run_conversation(
                                 if cost_result.status == "included" else None,
                                 model=agent.model,
                                 api_call_count=1,
+                                # The provider's prompt size for this call ==
+                                # how full the context window is right now.
+                                # Persisted so /resume can restore the context
+                                # meter instead of showing 0% until this
+                                # process makes its first call.
+                                last_prompt_tokens=prompt_tokens,
                             )
                         except Exception as e:
                             # Log token persistence failures so they're

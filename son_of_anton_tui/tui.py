@@ -920,7 +920,7 @@ if _TEXTUAL_AVAILABLE:
                     yield Static("", id="ctx-tokens", classes="kv muted")
                     yield Static("session usage", classes="label")
                     yield Static("", id="ctx-usage", classes="kv muted")
-                    yield Static("background", classes="label")
+                    yield Static("background", id="ctx-bg-label", classes="label")
                     yield Static("", id="ctx-bg", classes="kv muted")
                     yield Static("", id="ctx-elapsed", classes="kv muted")
                 yield Static(self._product_line(), id="context-footer")
@@ -1473,7 +1473,16 @@ if _TEXTUAL_AVAILABLE:
                 bg.append(f"{snap['active_background_processes']} processes")
             if snap.get("active_background_subagents"):
                 bg.append(f"{snap['active_background_subagents']} subagents")
-            self.query_one("#ctx-bg", Static).update(" · ".join(bg) or "idle")
+            bg_text = " · ".join(bg)
+            bg_label = self.query_one("#ctx-bg-label", Static)
+            bg_value = self.query_one("#ctx-bg", Static)
+            bg_value.update(bg_text)
+            # Nothing running is not "idle" — hide the row rather than imply
+            # the whole session is parked while the user is mid-conversation.
+            want_row = bool(bg_text)
+            if bg_label.display != want_row:
+                bg_label.display = want_row
+                bg_value.display = want_row
             self.query_one("#ctx-elapsed", Static).update(f"session {snap.get('duration', '')}".rstrip())
 
         # ---------------- modal servicing ----------------
@@ -2190,10 +2199,17 @@ if _TEXTUAL_AVAILABLE:
             if not getattr(backend, "_resumed", False) or not history:
                 return
             try:
-                limit = int((backend.config or {}).get("display", {}).get("resume_exchanges", 10)) * 2
+                pairs = int((backend.config or {}).get("display", {}).get("resume_exchanges", 0))
             except Exception:
-                limit = 20
+                pairs = 0
             shown = [m for m in history if m.get("role") in ("user", "assistant") and m.get("display_kind") != "hidden"]
+            # resume_exchanges == 0 (the default) paints the whole lineage:
+            # the virtual feed renders per viewport, so cost stays O(visible
+            # lines) however long the session is.  A positive value keeps the
+            # old recap behaviour.
+            from son_of_anton_cli.cli_agent_setup_mixin import resume_recap_limit
+
+            limit = resume_recap_limit(pairs, len(shown))
             hidden = max(0, len(shown) - limit)
             self._note(f"resumed session {backend.session_id}" + (f" · {hidden} earlier messages not shown" if hidden else ""), muted=True)
             for msg in shown[-limit:]:

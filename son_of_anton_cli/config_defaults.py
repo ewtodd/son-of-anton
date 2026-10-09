@@ -1208,10 +1208,12 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "",
         "resume_display": "full",
-        # Recap tuning for /resume and startup resume. The defaults match the
-        # historical hardcoded values; expose them as config so power users can
-        # widen or tighten the snapshot to taste.
-        "resume_exchanges": 10,            # max user+assistant pairs to show
+        # Recap tuning for /resume and startup resume.
+        # resume_exchanges caps how many user+assistant pairs are painted when
+        # a session is resumed; 0 means "no cap" — paint the whole transcript,
+        # which is the default so a resumed session reads as the conversation
+        # it actually is. Set a positive number to go back to a short recap.
+        "resume_exchanges": 0,
         "resume_max_user_chars": 300,      # truncate user message text
         "resume_max_assistant_chars": 200, # truncate non-last assistant text
         "resume_max_assistant_lines": 3,   # truncate non-last assistant lines

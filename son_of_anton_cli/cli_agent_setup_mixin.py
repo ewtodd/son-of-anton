@@ -21,6 +21,22 @@ from rich.markup import escape as _escape
 from utils import base_url_host_matches
 
 
+def resume_recap_limit(exchanges: int, total: int) -> int:
+    """How many resumed-transcript entries to paint.
+
+    ``exchanges`` is ``display.resume_exchanges``: a positive value caps the
+    painted history at that many user/assistant pairs, while ``0`` (the
+    default) means "no cap" — paint the whole lineage, so a resumed session
+    reads as the conversation it actually is.  The CLI recap and the TUI
+    transcript both go through here so they cannot drift apart.
+    """
+    if total <= 0:
+        return 0
+    if exchanges <= 0:
+        return total
+    return min(total, exchanges * 2)
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``SonOfAntonCLI``."""
 
@@ -474,6 +490,13 @@ class CLIAgentSetupMixin:
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
                     # Keep _pending_title so it can be retried after row creation succeeds
+            # The agent is built fresh, so its usage counters are zero.  A
+            # resumed session restores them from the session row here, before
+            # any UI reads the context meter or the panel totals.
+            try:
+                self._restore_resumed_usage_state()
+            except Exception as exc:
+                logger.debug("Resumed usage restore skipped: %s", exc)
             return True
         except Exception as e:
             console = ChatConsole()
@@ -629,13 +652,115 @@ class CLIAgentSetupMixin:
 
         return True
 
+    def _restore_resumed_usage_state(self) -> None:
+        """Seed a resumed session's usage read-outs from its session row.
+
+        ``_init_agent`` constructs a fresh AIAgent for every process, so every
+        usage counter starts at zero: the panel totals *and* the compactor's
+        ``last_prompt_tokens``, which is what the context meter reads.  A
+        resumed session has both the transcript and the readings the previous
+        process persisted, so restore them here rather than showing a fresh
+        session's zeros until this process makes its first API call.
+
+        Only persisted values are restored.  When the row carries no context
+        reading (sessions created before the column existed, or imports whose
+        source had none) ``_resumed_context_estimate()`` supplies a
+        transcript estimate for display instead.
+        """
+        if not self._resumed or not self._session_db or not self.agent:
+            return
+        try:
+            meta = self._session_db.get_session(self.session_id)
+        except Exception:
+            meta = None
+        if not isinstance(meta, dict):
+            return
+
+        def _count(key: str) -> int:
+            try:
+                return max(0, int(meta.get(key) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        agent = self.agent
+        agent.session_input_tokens = _count("input_tokens")
+        agent.session_output_tokens = _count("output_tokens")
+        agent.session_cache_read_tokens = _count("cache_read_tokens")
+        agent.session_cache_write_tokens = _count("cache_write_tokens")
+        agent.session_reasoning_tokens = _count("reasoning_tokens")
+        agent.session_api_calls = _count("api_call_count")
+        # prompt/completion/total are the provider's raw per-call figures;
+        # reconstruct them from the canonical buckets that were persisted.
+        agent.session_prompt_tokens = (
+            agent.session_input_tokens + agent.session_cache_read_tokens
+        )
+        agent.session_completion_tokens = agent.session_output_tokens
+        agent.session_total_tokens = (
+            agent.session_prompt_tokens + agent.session_completion_tokens
+        )
+        try:
+            agent.session_estimated_cost_usd = float(
+                meta.get("estimated_cost_usd") or 0.0
+            )
+        except (TypeError, ValueError):
+            agent.session_estimated_cost_usd = 0.0
+
+        # Context meter: the provider-reported prompt size of the last call
+        # the previous process made — i.e. how full the window was when the
+        # session was left.  Setting it also means the turn-start compaction
+        # gate compares against a real reading instead of falling back to its
+        # own estimate.
+        prompt_tokens = _count("last_prompt_tokens")
+        compactor = getattr(agent, "context_compactor", None)
+        if compactor is not None and prompt_tokens > 0:
+            try:
+                compactor.last_prompt_tokens = prompt_tokens
+            except Exception:
+                pass  # meter stays at zero on exotic engine shapes
+
+    def _resumed_context_estimate(self) -> int:
+        """Request-size estimate for a restored transcript, for the meter.
+
+        Display-only fallback used when the compactor holds no provider
+        reading — a resumed session whose row predates the reading, or the
+        first turn of a fresh process.  Uses the same estimator the
+        turn-start compaction gate uses for that case (system prompt +
+        messages + tool schemas), so the meter never claims a number the gate
+        would not also act on.  Cached per history shape: the chrome repaints
+        often and the walk is O(messages).
+        """
+        history = getattr(self, "conversation_history", None) or []
+        if not history:
+            return 0
+        cached = getattr(self, "_resumed_context_estimate_cache", None)
+        if cached is not None and cached[0] == len(history):
+            return cached[1]
+        estimate = 0
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            agent = self.agent
+            estimate = int(
+                estimate_request_tokens_rough(
+                    history,
+                    system_prompt=getattr(agent, "_cached_system_prompt", None) or "",
+                    tools=getattr(agent, "tools", None),
+                )
+                or 0
+            )
+        except Exception:
+            estimate = 0
+        self._resumed_context_estimate_cache = (len(history), estimate)
+        return estimate
+
     def _display_resumed_history(self):
         """Render a compact recap of previous conversation messages.
 
         Uses Rich markup with dim/muted styling so the recap is visually
-        distinct from the active conversation.  Caps the display at the
-        last ``MAX_DISPLAY_EXCHANGES`` user/assistant exchanges and shows
-        an indicator for earlier hidden messages.
+        distinct from the active conversation.  ``resume_exchanges`` caps the
+        display at that many user/assistant exchanges and shows an indicator
+        for earlier hidden messages; ``0`` (the default) renders the whole
+        lineage instead of a recap.
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
@@ -649,7 +774,7 @@ class CLIAgentSetupMixin:
 
         # Read limits from config (with hardcoded defaults)
         _disp = CLI_CONFIG.get("display", {})
-        MAX_DISPLAY_EXCHANGES = int(_disp.get("resume_exchanges", 10))
+        MAX_DISPLAY_EXCHANGES = int(_disp.get("resume_exchanges", 0))
         MAX_USER_LEN = int(_disp.get("resume_max_user_chars", 300))
         MAX_ASST_LEN = int(_disp.get("resume_max_assistant_chars", 200))
         MAX_ASST_LINES = int(_disp.get("resume_max_assistant_lines", 3))
@@ -745,10 +870,12 @@ class CLIAgentSetupMixin:
         if not entries:
             return
 
-        # Determine if we need to truncate
+        # Determine if we need to truncate.  ``resume_exchanges <= 0`` means
+        # "no cap" — render the whole lineage rather than a recap.
         skipped = 0
-        if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
-            skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
+        _max_entries = resume_recap_limit(MAX_DISPLAY_EXCHANGES, len(entries))
+        if len(entries) > _max_entries:
+            skipped = len(entries) - _max_entries
             entries = entries[skipped:]
 
         # Replace last assistant entry with full (un-truncated) text

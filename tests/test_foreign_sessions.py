@@ -24,6 +24,7 @@ from son_of_anton_cli.foreign_sessions import (
     parse_claude_session,
     parse_codex_session,
     parse_opencode_session,
+    run_bulk_import,
     run_sessions_import,
 )
 from son_of_anton_state import SessionDB
@@ -623,3 +624,404 @@ def test_run_sessions_import_without_analyze_skips_pass(tmp_path, monkeypatch):
     )
     assert run_sessions_import(args)
     assert calls == []
+
+
+# ── usage carry-over ─────────────────────────────────────────────────────
+#
+# Every source store already knows the prompt size of its last call and the
+# session's totals.  Because the transcript is only text, that knowledge is
+# otherwise lost — and a resumed import then reports an empty context window
+# (0%) over a perfectly good conversation.  These pin the carry-over.
+
+
+def _claude_turn_with_usage(role, text, uuid, parent, usage):
+    obj = _claude_turn(role, text, uuid, parent)
+    obj["message"]["usage"] = usage
+    return obj
+
+
+def test_claude_usage_is_carried_from_the_live_branch(tmp_path):
+    usage_first = {
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "cache_read_input_tokens": 200,
+        "cache_creation_input_tokens": 30,
+    }
+    usage_second = {
+        "input_tokens": 400,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 900,
+        "cache_creation_input_tokens": 0,
+    }
+    path = _write_jsonl(
+        tmp_path / "session.jsonl",
+        [
+            _claude_turn("user", "q1", "u1", None),
+            _claude_turn_with_usage("assistant", "a1", "a1", "u1", usage_first),
+            _claude_turn("user", "q2", "u2", "a1"),
+            _claude_turn_with_usage("assistant", "a2", "a2", "u2", usage_second),
+        ],
+    )
+    carried = parse_claude_session(path)["carried_usage"]
+    # Totals sum across calls; the context reading is the *last* prompt size:
+    # input + cache read + cache write for that call.
+    assert carried["input_tokens"] == 500
+    assert carried["output_tokens"] == 30
+    assert carried["cache_read_tokens"] == 1100
+    assert carried["cache_write_tokens"] == 30
+    assert carried["api_call_count"] == 2
+    assert carried["last_prompt_tokens"] == 400 + 900 + 0
+
+
+def test_codex_usage_is_carried_from_token_count_events(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "rollout.jsonl",
+        [
+            {
+                "type": "session_meta",
+                "payload": {"session_id": "codex-1", "cwd": "/work/proj"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 1000,
+                            "cached_input_tokens": 600,
+                            "cache_write_input_tokens": 50,
+                            "output_tokens": 40,
+                            "reasoning_output_tokens": 7,
+                            "total_tokens": 1097,
+                        },
+                        "last_token_usage": {
+                            "input_tokens": 450,
+                            "cached_input_tokens": 300,
+                            "output_tokens": 12,
+                        },
+                    },
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hi"}],
+                },
+            },
+        ],
+    )
+    parsed = parse_codex_session(path)
+    assert [t["content"] for t in parsed["turns"]] == ["hello", "hi"]
+    carried = parsed["carried_usage"]
+    # Codex's input_tokens *includes* the cached part; the canonical buckets
+    # split them so cache reads are not double-counted.
+    assert carried["input_tokens"] == 400
+    assert carried["cache_read_tokens"] == 600
+    assert carried["cache_write_tokens"] == 50
+    assert carried["reasoning_tokens"] == 7
+    assert carried["api_call_count"] == 1
+    assert carried["last_prompt_tokens"] == 450
+
+
+def _opencode_db_with_usage(db_path: Path) -> Path:
+    """A store shaped like the real one: per-message tokens + session totals."""
+    session_id = "ses_usage1"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT,
+            title TEXT, revert TEXT, time_created INTEGER, time_updated INTEGER,
+            cost REAL, tokens_input INTEGER, tokens_output INTEGER,
+            tokens_reasoning INTEGER, tokens_cache_read INTEGER,
+            tokens_cache_write INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+            time_updated INTEGER, data TEXT
+        );
+        CREATE TABLE part (
+            id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+            time_created INTEGER, time_updated INTEGER, data TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            session_id,
+            "global",
+            None,
+            "/work/proj",
+            "Usage Session",
+            None,
+            1000,
+            2000,
+            0.25,
+            5000,
+            300,
+            40,
+            1200,
+            60,
+        ),
+    )
+    assistant_data = {
+        "role": "assistant",
+        "time": {"created": 1100},
+        "tokens": {
+            "input": 900,
+            "output": 120,
+            "reasoning": 0,
+            "cache": {"read": 4000, "write": 100},
+            "total": 5120,
+        },
+    }
+    conn.executemany(
+        "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+        [
+            ("msg_1", session_id, 1000, 1000, json.dumps({"role": "user"})),
+            ("msg_2", session_id, 1100, 1100, json.dumps(assistant_data)),
+            ("msg_3", session_id, 1200, 1200, json.dumps({"role": "user"})),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "prt_1",
+                "msg_1",
+                session_id,
+                0,
+                0,
+                json.dumps({"type": "text", "text": "hello"}),
+            ),
+            (
+                "prt_2",
+                "msg_2",
+                session_id,
+                0,
+                0,
+                json.dumps({"type": "text", "text": "hi"}),
+            ),
+            (
+                "prt_3",
+                "msg_3",
+                session_id,
+                0,
+                0,
+                json.dumps({"type": "text", "text": "again"}),
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_opencode_usage_is_carried_from_message_and_session_rows(tmp_path):
+    db_path = _opencode_db_with_usage(tmp_path / "opencode.db")
+    carried = parse_opencode_session(db_path, "ses_usage1")["carried_usage"]
+    assert carried["input_tokens"] == 5000
+    assert carried["output_tokens"] == 300
+    assert carried["reasoning_tokens"] == 40
+    assert carried["cache_read_tokens"] == 1200
+    assert carried["cache_write_tokens"] == 60
+    assert carried["estimated_cost_usd"] == pytest.approx(0.25)
+    # Context = input + cache read + cache write of the last assistant call.
+    assert carried["last_prompt_tokens"] == 900 + 4000 + 100
+
+
+def test_opencode_store_without_usage_columns_still_parses(tmp_path):
+    """A store predating the token columns must import, just without tokens."""
+    db_path = _basic_opencode_fixture(tmp_path / "opencode.db")
+    carried = parse_opencode_session(db_path, "ses_test0001")["carried_usage"]
+    # Call count is derived from the transcript, so it survives; the token
+    # totals and the context reading simply are not there.
+    assert carried["api_call_count"] == 2
+    assert carried["input_tokens"] == 0
+    assert carried["last_prompt_tokens"] is None
+
+
+def test_imported_usage_lands_on_the_session_row(tmp_path):
+    db_path = _opencode_db_with_usage(tmp_path / "opencode.db")
+    session_db = SessionDB()
+    try:
+        new_id = import_foreign_session(
+            "opencode", db_path, db=session_db, foreign_id="ses_usage1"
+        )
+        row = session_db._conn.execute(
+            "SELECT input_tokens, output_tokens, cache_read_tokens, "
+            "cache_write_tokens, reasoning_tokens, api_call_count, "
+            "last_prompt_tokens FROM sessions WHERE id = ?",
+            (new_id,),
+        ).fetchone()
+        assert row[0] == 5000
+        assert row[1] == 300
+        assert row[2] == 1200
+        assert row[3] == 60
+        assert row[4] == 40
+        assert row[5] == 1
+        # The reading a resumed import needs to stop showing 0%.
+        assert row[6] == 900 + 4000 + 100
+    finally:
+        session_db.close()
+
+
+# ── bulk import (`sessions import --all`) ────────────────────────────────
+
+
+def _bulk_fixture(db_path: Path) -> Path:
+    """Three importable root sessions plus one with no conversation turns.
+
+    The turn-less session carries the oldest timestamp, so it sorts last in
+    the newest-first order ``--all`` relies on.
+    """
+    specs = [
+        ("ses_newest01", "Newest", 3000, True),
+        ("ses_middle01", "Middle", 2000, True),
+        ("ses_oldest01", "Oldest", 1000, True),
+        ("ses_noturns1", "No Turns", 500, False),
+    ]
+    sessions, messages, parts = [], [], []
+    for sid, title, created, has_turns in specs:
+        sessions.append(
+            (sid, "global", None, "/work/proj", title, None, created, created)
+        )
+        messages.append(_oc_message(f"msg_{sid}_a", sid, "user", created))
+        messages.append(_oc_message(f"msg_{sid}_b", sid, "assistant", created + 1))
+        # A session with no conversational payload at all (no text parts) is
+        # what the import must reject — everything else it takes.
+        parts.append(
+            _oc_part(
+                f"prt_{sid}_a",
+                f"msg_{sid}_a",
+                sid,
+                {"type": "text", "text": f"ask {title}"}
+                if has_turns
+                else {"type": "step-start"},
+            )
+        )
+        parts.append(
+            _oc_part(
+                f"prt_{sid}_b",
+                f"msg_{sid}_b",
+                sid,
+                {"type": "text", "text": f"answer {title}"}
+                if has_turns
+                else {"type": "step-start"},
+            )
+        )
+    return _opencode_db(db_path, sessions, messages, parts)
+
+
+def _bulk_args(db_path, **overrides):
+    base = dict(
+        from_source="opencode",
+        path=None,
+        foreign_session_id=None,
+        opencode_db=str(db_path),
+        root=None,
+        limit=0,
+        force=False,
+        analyze=False,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_list_opencode_sessions_zero_limit_means_no_cap(tmp_path):
+    """--all needs every session; a cap of 0 must not mean LIMIT 0."""
+    db_path = _bulk_fixture(tmp_path / "opencode.db")
+    assert len(list_opencode_sessions(db_path, limit=0)) == 4
+    assert len(list_opencode_sessions(db_path, limit=2)) == 2
+
+
+def test_bulk_import_imports_every_session(tmp_path):
+    db_path = _bulk_fixture(tmp_path / "opencode.db")
+    db = SessionDB()
+    try:
+        imported, skipped, failures = run_bulk_import(_bulk_args(db_path), db=db)
+        assert (imported, skipped) == (3, 0)
+        # The turn-less session is the one that fails, and the batch survives.
+        assert len(failures) == 1
+        assert "ses_noturns1" in failures[0]
+
+        titles = " ".join(
+            (r.get("title") or "") for r in db.list_sessions_rich(limit=10)
+        )
+        assert "Newest" in titles and "Middle" in titles and "Oldest" in titles
+    finally:
+        db.close()
+
+
+def test_bulk_import_is_idempotent(tmp_path):
+    """Re-running --all must not duplicate the store."""
+    db_path = _bulk_fixture(tmp_path / "opencode.db")
+    db = SessionDB()
+    try:
+        run_bulk_import(_bulk_args(db_path), db=db)
+        before = len(db.list_sessions_rich(limit=50))
+
+        imported, skipped, failures = run_bulk_import(_bulk_args(db_path), db=db)
+        assert imported == 0
+        assert skipped == 3
+        # The unparsable session never entered the store, so it is retried
+        # rather than silently forgotten — and still fails.
+        assert len(failures) == 1
+        assert len(db.list_sessions_rich(limit=50)) == before
+    finally:
+        db.close()
+
+
+def test_bulk_import_limit_keeps_the_newest(tmp_path):
+    db_path = _bulk_fixture(tmp_path / "opencode.db")
+    db = SessionDB()
+    try:
+        imported, skipped, failures = run_bulk_import(
+            _bulk_args(db_path, limit=2), db=db
+        )
+        assert (imported, skipped, failures) == (2, 0, [])
+        titles = " ".join(
+            (r.get("title") or "") for r in db.list_sessions_rich(limit=10)
+        )
+        assert "Newest" in titles and "Middle" in titles
+        assert "Oldest" not in titles
+    finally:
+        db.close()
+
+
+def test_bulk_import_force_reimports(tmp_path):
+    db_path = _bulk_fixture(tmp_path / "opencode.db")
+    db = SessionDB()
+    try:
+        run_bulk_import(_bulk_args(db_path), db=db)
+        before = len(db.list_sessions_rich(limit=50))
+
+        imported, skipped, _ = run_bulk_import(
+            _bulk_args(db_path, force=True), db=db
+        )
+        assert (imported, skipped) == (3, 0)
+        assert len(db.list_sessions_rich(limit=50)) == before + 3
+    finally:
+        db.close()
+
+
+def test_bulk_import_reports_when_there_is_nothing_to_import(tmp_path):
+    empty = tmp_path / "empty.db"
+    _opencode_db(empty, sessions=[], messages=[], parts=[])
+    db = SessionDB()
+    try:
+        assert run_bulk_import(_bulk_args(empty), db=db) == (0, 0, [])
+    finally:
+        db.close()
+

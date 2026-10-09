@@ -433,7 +433,8 @@ def load_cli_config() -> Dict[str, Any]:
             "compact": False,
             "resume_display": "full",
             # Recap tuning for /resume — see son_of_anton_cli/config.py DEFAULT_CONFIG.
-            "resume_exchanges": 10,
+            # 0 = no cap (paint the whole resumed transcript).
+            "resume_exchanges": 0,
             "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200,
             "resume_max_assistant_lines": 3,
@@ -4909,6 +4910,21 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             context_tokens = getattr(compactor, "last_prompt_tokens", 0) or 0
             if context_tokens < 0:
                 context_tokens = 0
+            if context_tokens == 0 and not getattr(
+                compactor, "awaiting_real_usage_after_compaction", False
+            ):
+                # No provider reading yet in this process — the first turn of
+                # a resumed (or brand-new) session.  Show the restored
+                # transcript's request estimate, the same number the
+                # turn-start compaction gate uses when last_prompt_tokens is
+                # 0, rather than a misleading "0%".  Skipped right after a
+                # compaction, where the -1 sentinel genuinely means the window
+                # just shrank and the estimate (from pre-compaction history)
+                # would be far too large.
+                try:
+                    context_tokens = int(self._resumed_context_estimate() or 0)
+                except Exception:
+                    context_tokens = 0
             context_length = getattr(compactor, "context_length", 0) or 0
             if context_length < 0:
                 context_length = 0
@@ -10523,6 +10539,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         compactor = agent.context_compactor
         last_prompt = compactor.last_prompt_tokens if compactor.last_prompt_tokens > 0 else 0
+        if last_prompt <= 0 and not getattr(
+            compactor, "awaiting_real_usage_after_compaction", False
+        ):
+            # Same fallback the context meter uses: with no provider reading
+            # in this process, estimate the request we would send rather than
+            # reporting an empty context after a resume.
+            try:
+                last_prompt = int(self._resumed_context_estimate() or 0)
+            except Exception:
+                last_prompt = 0
         ctx_len = compactor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         compactions = compactor.compaction_count

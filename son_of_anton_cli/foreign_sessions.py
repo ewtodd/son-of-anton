@@ -175,6 +175,81 @@ def _merge_turns(raw_turns: List[Tuple[str, str]]) -> List[Dict[str, str]]:
     return merged
 
 
+# ── Token/cost carry-over ────────────────────────────────────────────────
+#
+# Every source store already knows what the session cost.  opencode keeps
+# per-message ``tokens`` JSON plus running totals on its ``session`` row,
+# Claude Code stamps ``message.usage`` on each assistant record, and Codex
+# emits ``token_count`` events carrying ``last_token_usage`` /
+# ``total_token_usage``.  Carrying that across is what lets an imported
+# session show its real context meter on resume instead of starting at 0%.
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    """Best-effort int for a JSON/SQLite numeric field (``None`` if absent)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    """Best-effort float for a JSON/SQLite numeric field (``None`` if absent)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _carried_usage(
+    *,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    cache_read_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
+    reasoning_tokens: Optional[int] = None,
+    estimated_cost_usd: Optional[float] = None,
+    api_call_count: Optional[int] = None,
+    last_prompt_tokens: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Assemble a source store's usage totals for the imported session row.
+
+    ``last_prompt_tokens`` is the context size at the session's final API
+    call (prompt tokens the provider billed) — the value ``/resume`` needs to
+    restore the context meter.  Returns ``None`` when the source carried
+    nothing usable so the caller writes no usage at all rather than a row of
+    zeros.
+    """
+    usage = {
+        "input_tokens": max(0, input_tokens or 0),
+        "output_tokens": max(0, output_tokens or 0),
+        "cache_read_tokens": max(0, cache_read_tokens or 0),
+        "cache_write_tokens": max(0, cache_write_tokens or 0),
+        "reasoning_tokens": max(0, reasoning_tokens or 0),
+        "estimated_cost_usd": estimated_cost_usd,
+        "api_call_count": max(0, api_call_count or 0),
+        "last_prompt_tokens": last_prompt_tokens if (last_prompt_tokens or 0) > 0 else None,
+    }
+    if any(
+        usage[key]
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "api_call_count",
+            "last_prompt_tokens",
+        )
+    ):
+        return usage
+    return None
+
+
 # ── Claude Code ──────────────────────────────────────────────────────────
 
 
@@ -233,6 +308,9 @@ def parse_claude_session(path: Path) -> Dict[str, Any]:
     cwd: Optional[str] = None
     summary: Optional[str] = None
     session_id: Optional[str] = None
+    usage_in = usage_out = usage_cache_read = usage_cache_write = 0
+    usage_calls = 0
+    last_prompt_tokens: Optional[int] = None
     for obj in objects:
         otype = obj.get("type")
         if otype == "summary":
@@ -259,12 +337,38 @@ def parse_claude_session(path: Path) -> Dict[str, Any]:
         text = _flatten_blocks(message.get("content"), source="claude")
         if not text or (role == "user" and _is_wrapper_text(text)):
             continue
+        if role == "assistant":
+            # Claude Code stamps the API call's usage on the assistant
+            # record.  input_tokens excludes the cache buckets, so the
+            # prompt size that call saw is input + cache_read + cache_creation
+            # — that is the context size a resume should restore.
+            usage = message.get("usage")
+            if isinstance(usage, dict):
+                call_in = _coerce_int(usage.get("input_tokens")) or 0
+                call_read = _coerce_int(usage.get("cache_read_input_tokens")) or 0
+                call_write = _coerce_int(usage.get("cache_creation_input_tokens")) or 0
+                context_tokens = call_in + call_read + call_write
+                if context_tokens > 0:
+                    last_prompt_tokens = context_tokens
+                usage_in += call_in
+                usage_out += _coerce_int(usage.get("output_tokens")) or 0
+                usage_cache_read += call_read
+                usage_cache_write += call_write
+                usage_calls += 1
         turns.append((role, text))
     return {
         "turns": _merge_turns(turns),
         "cwd": cwd,
         "title_guess": summary or _first_user_line(turns),
         "session_id": session_id,
+        "carried_usage": _carried_usage(
+            input_tokens=usage_in,
+            output_tokens=usage_out,
+            cache_read_tokens=usage_cache_read,
+            cache_write_tokens=usage_cache_write,
+            api_call_count=usage_calls,
+            last_prompt_tokens=last_prompt_tokens,
+        ),
     }
 
 
@@ -305,6 +409,9 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
     turns: List[Tuple[str, str]] = []
     cwd: Optional[str] = None
     session_id: Optional[str] = None
+    usage_in = usage_out = usage_cache_read = usage_cache_write = usage_reasoning = 0
+    usage_calls = 0
+    last_prompt_tokens: Optional[int] = None
     for obj in _read_json_lines(path):
         otype = obj.get("type")
         payload = obj.get("payload")
@@ -316,6 +423,33 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
             sid = payload.get("session_id") or payload.get("id")
             if isinstance(sid, str):
                 session_id = sid
+            continue
+        if otype == "event_msg":
+            # Codex reports usage out-of-band: each ``token_count`` event
+            # carries the cumulative totals plus ``last_token_usage`` for the
+            # call just made.  ``input_tokens`` there is the whole prompt
+            # (``cached_input_tokens`` is a subset of it), so it is the
+            # context size at that point.
+            if payload.get("type") != "token_count":
+                continue
+            info = payload.get("info")
+            if not isinstance(info, dict):
+                continue
+            total = info.get("total_token_usage")
+            if isinstance(total, dict):
+                total_in = _coerce_int(total.get("input_tokens")) or 0
+                cached_in = _coerce_int(total.get("cached_input_tokens")) or 0
+                usage_in = max(0, total_in - cached_in)
+                usage_cache_read = cached_in
+                usage_cache_write = _coerce_int(total.get("cache_write_input_tokens")) or 0
+                usage_out = _coerce_int(total.get("output_tokens")) or 0
+                usage_reasoning = _coerce_int(total.get("reasoning_output_tokens")) or 0
+            last = info.get("last_token_usage")
+            if isinstance(last, dict):
+                call_context = _coerce_int(last.get("input_tokens")) or 0
+                if call_context > 0:
+                    last_prompt_tokens = call_context
+            usage_calls += 1
             continue
         if otype != "response_item":
             continue
@@ -338,6 +472,15 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
         "cwd": cwd,
         "title_guess": _first_user_line(turns),
         "session_id": session_id,
+        "carried_usage": _carried_usage(
+            input_tokens=usage_in,
+            output_tokens=usage_out,
+            cache_read_tokens=usage_cache_read,
+            cache_write_tokens=usage_cache_write,
+            reasoning_tokens=usage_reasoning,
+            api_call_count=usage_calls,
+            last_prompt_tokens=last_prompt_tokens,
+        ),
     }
 
 
@@ -392,6 +535,59 @@ def _open_opencode_db(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
     return conn
+
+
+def _opencode_session_usage(conn: sqlite3.Connection, session_id: str) -> Dict[str, Any]:
+    """Read a session's cumulative token/cost totals from ``session``.
+
+    opencode keeps these on the session row.  A store whose schema predates
+    the columns (or a hand-made fixture) simply yields ``{}`` — the transcript
+    import must not depend on them.
+    """
+    try:
+        row = conn.execute(
+            "SELECT cost, tokens_input, tokens_output, tokens_reasoning, "
+            "tokens_cache_read, tokens_cache_write FROM session WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return {}
+    if row is None:
+        return {}
+    return {
+        "input_tokens": _coerce_int(row["tokens_input"]),
+        "output_tokens": _coerce_int(row["tokens_output"]),
+        "cache_read_tokens": _coerce_int(row["tokens_cache_read"]),
+        "cache_write_tokens": _coerce_int(row["tokens_cache_write"]),
+        "reasoning_tokens": _coerce_int(row["tokens_reasoning"]),
+        "estimated_cost_usd": _coerce_float(row["cost"]),
+    }
+
+
+def _opencode_context_tokens(tokens: Any) -> Optional[int]:
+    """Context-window fill for one opencode assistant message.
+
+    opencode reports ``{input, output, reasoning, cache:{read, write}}``; the
+    prompt the provider saw is ``input`` plus whatever was served from / written
+    to cache.  ``output`` is deliberately excluded — it is the reply, not the
+    context.
+    """
+    if not isinstance(tokens, dict):
+        return None
+    total = 0
+    seen = False
+    value = _coerce_int(tokens.get("input"))
+    if value:
+        total += value
+        seen = True
+    cache = tokens.get("cache")
+    if isinstance(cache, dict):
+        for key in ("read", "write"):
+            value = _coerce_int(cache.get(key))
+            if value:
+                total += value
+                seen = True
+    return total if seen else None
 
 
 def _opencode_part_text(role: str, parts: List[sqlite3.Row]) -> str:
@@ -475,6 +671,7 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
             "WHERE id = ?",
             (session_id,),
         ).fetchone()
+        session_usage = _opencode_session_usage(conn, session_id)
         if session is None:
             raise ValueError(
                 f"opencode session not found in {db_path}: {session_id}"
@@ -494,6 +691,8 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
         keep_count, part_cut_id = _opencode_revert_bounds(messages, revert)
 
         turns: List[Tuple[str, str]] = []
+        assistant_calls = 0
+        last_prompt_tokens: Optional[int] = None
         for position, row in enumerate(messages[:keep_count]):
             try:
                 data = json.loads(row["data"])
@@ -504,6 +703,16 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
             role = data.get("role")
             if role not in ("user", "assistant"):
                 continue
+            if role == "assistant":
+                # opencode stamps each assistant message with the usage of
+                # the call that produced it: ``{input, output, reasoning,
+                # cache:{read,write}, total}`` where ``input`` excludes the
+                # cache buckets.  input + cache.read + cache.write is the
+                # prompt size, i.e. the context the next resume must restore.
+                assistant_calls += 1
+                context_tokens = _opencode_context_tokens(data.get("tokens"))
+                if context_tokens:
+                    last_prompt_tokens = context_tokens
             parts = conn.execute(
                 "SELECT id, data FROM part WHERE message_id = ? ORDER BY id",
                 (row["id"],),
@@ -521,6 +730,16 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
             "cwd": session["directory"],
             "title_guess": title.strip() or _first_user_line(turns),
             "session_id": session_id,
+            "carried_usage": _carried_usage(
+                input_tokens=session_usage.get("input_tokens"),
+                output_tokens=session_usage.get("output_tokens"),
+                cache_read_tokens=session_usage.get("cache_read_tokens"),
+                cache_write_tokens=session_usage.get("cache_write_tokens"),
+                reasoning_tokens=session_usage.get("reasoning_tokens"),
+                estimated_cost_usd=session_usage.get("estimated_cost_usd"),
+                api_call_count=assistant_calls,
+                last_prompt_tokens=last_prompt_tokens,
+            ),
         }
     finally:
         conn.close()
@@ -529,24 +748,29 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
 def list_opencode_sessions(
     db_path=None, limit: int = 25
 ) -> List[ForeignSession]:
-    """List root opencode sessions (newest first) from the given database."""
+    """List root opencode sessions (newest first) from the given database.
+
+    ``limit <= 0`` means "no cap" — used by ``sessions import --all``.
+    """
     path = Path(db_path).expanduser() if db_path else default_opencode_db()
     results: List[ForeignSession] = []
     if path is None or not Path(path).is_file():
         return results
+    _limit_clause = "LIMIT ?" if limit and limit > 0 else ""
+    _params = (int(limit),) if _limit_clause else ()
     conn = _open_opencode_db(Path(path))
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT s.id, s.directory, s.title, s.time_created, s.time_updated,
                    (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id)
                        AS message_count
             FROM session s
             WHERE s.parent_id IS NULL
             ORDER BY s.time_created DESC
-            LIMIT ?
+            {_limit_clause}
             """,
-            (int(limit),),
+            _params,
         ).fetchall()
     except sqlite3.OperationalError:
         rows = []
@@ -662,6 +886,28 @@ def import_foreign_session(
         )
         for turn in turns:
             db.append_message(session_id, turn["role"], turn["content"])
+        # Carry the source store's usage across.  Written absolutely (the
+        # imported row starts empty) so a resumed import shows the real
+        # context meter and totals instead of a fresh session's zeros.
+        carried = parsed.get("carried_usage")
+        if carried:
+            try:
+                db.update_token_counts(
+                    session_id,
+                    absolute=True,
+                    input_tokens=carried["input_tokens"],
+                    output_tokens=carried["output_tokens"],
+                    cache_read_tokens=carried["cache_read_tokens"],
+                    cache_write_tokens=carried["cache_write_tokens"],
+                    reasoning_tokens=carried["reasoning_tokens"],
+                    estimated_cost_usd=carried["estimated_cost_usd"],
+                    api_call_count=carried["api_call_count"],
+                    last_prompt_tokens=carried["last_prompt_tokens"],
+                )
+            except Exception:
+                # Usage carry-over is best-effort: a source with an unusual
+                # shape must not fail an otherwise good import.
+                pass
         try:
             db.set_session_title(session_id, title)
         except Exception:
@@ -843,3 +1089,159 @@ def run_sessions_import(args, db=None) -> Optional[str]:
 
     print(f"  Continue it with:  son-of-anton --resume {session_id}")
     return session_id
+
+
+# ── Bulk import (`sessions import --all`) ────────────────────────────────
+
+
+def _identity_keys(source: str, path, session_id) -> Tuple[str, ...]:
+    """The ``origin_json`` keys that identify one foreign session.
+
+    A session id identifies a session for every source.  A path does only for
+    the JSONL sources, where one file *is* one session — for opencode the path
+    is a shared database, so treating it as identity would mark every session
+    in the store as already imported as soon as one was.
+    """
+    tool = _SOURCE_DB_NAMES.get(source, source)
+    keys: List[str] = []
+    if session_id:
+        keys.append(str(session_id))
+    if path and tool != _SOURCE_DB_NAMES["opencode"]:
+        keys.append(str(path))
+    return tuple(keys)
+
+
+def _imported_keys(db, tool: str) -> set:
+    """Keys already imported from ``tool``, per :func:`_identity_keys`."""
+    keys: set = set()
+    try:
+        rows = db._conn.execute(
+            "SELECT origin_json FROM sessions WHERE source = ?", (tool,)
+        ).fetchall()
+    except Exception:
+        return keys
+    path_is_identity = tool != _SOURCE_DB_NAMES["opencode"]
+    for row in rows:
+        raw = row[0]
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        imported_from = data.get("imported_from") if isinstance(data, dict) else None
+        if not isinstance(imported_from, dict) or imported_from.get("tool") != tool:
+            continue
+        fields = ("foreign_session_id", "path") if path_is_identity else ("foreign_session_id",)
+        for field in fields:
+            value = imported_from.get(field)
+            if value:
+                keys.add(str(value))
+    return keys
+
+
+def run_bulk_import(args, db=None) -> Tuple[int, int, List[str]]:
+    """``sessions import --all``: import every session not already imported.
+
+    Returns ``(imported, skipped, failures)`` with one description per session
+    that could not be imported.  One unparsable transcript never aborts the
+    batch — the foreign stores are large and heterogeneous, and the sources are
+    only ever read.
+    """
+    source = getattr(args, "from_source", None)
+    root = getattr(args, "root", None)
+    opencode_db = getattr(args, "opencode_db", None)
+    limit = int(getattr(args, "limit", 0) or 0)
+    force = bool(getattr(args, "force", False))
+
+    owns_db = db is None
+    if owns_db:
+        from son_of_anton_state import SessionDB
+
+        db = SessionDB()
+    try:
+        _root = Path(root).expanduser() if root else None
+        sessions = gather_foreign_sessions(
+            source,
+            claude_root=_root,
+            codex_root=_root,
+            opencode_db=Path(opencode_db).expanduser() if opencode_db else None,
+            limit=0,  # everything; the cap applies below, after dedupe
+        )
+        targets = [s for s in sessions if s.session_id or s.path]
+        if not targets:
+            print("No foreign sessions found to import.")
+            return 0, 0, []
+
+        skipped = 0
+        if not force:
+            index: Dict[str, set] = {}
+            fresh = []
+            for fs in targets:
+                tool = _SOURCE_DB_NAMES.get(fs.source, fs.source)
+                if tool not in index:
+                    index[tool] = _imported_keys(db, tool)
+                keys = index[tool]
+                if any(k in keys for k in _identity_keys(fs.source, fs.path, fs.session_id)):
+                    skipped += 1
+                    continue
+                fresh.append(fs)
+            targets = fresh
+
+        # gather_foreign_sessions sorts newest first, so a cap keeps the most
+        # recent sessions rather than an arbitrary slice.
+        if limit > 0:
+            targets = targets[:limit]
+
+        if not targets:
+            print(f"Nothing new to import — {skipped} session(s) already imported.")
+            return 0, skipped, []
+
+        print(
+            f"Importing {len(targets)} session(s)"
+            + (f" ({skipped} already imported)" if skipped else "")
+            + " ..."
+        )
+        imported = 0
+        failures: List[str] = []
+        last_id: Optional[str] = None
+        for i, fs in enumerate(targets, 1):
+            label = _SOURCE_LABELS.get(fs.source, fs.source)
+            title = (fs.title_guess or "").strip().splitlines()[0][:56]
+            try:
+                sid = import_foreign_session(
+                    fs.source, fs.path, db=db, foreign_id=fs.session_id
+                )
+            except ValueError as e:
+                failures.append(f"{label} {fs.session_id or fs.path}: {e}")
+                print(f"  [{i}/{len(targets)}] ✗ {label}: {e}")
+                continue
+            imported += 1
+            last_id = sid
+            print(f"  [{i}/{len(targets)}] ✓ {label} → {sid}" + (f"  {title}" if title else ""))
+            if getattr(args, "analyze", False):
+                from son_of_anton_cli import session_analysis
+
+                status = session_analysis.run_session_analysis(
+                    sid, source_label=label, db=db
+                )
+                if status != 0:
+                    print(
+                        f"      analysis incomplete (retry: "
+                        f"son-of-anton sessions analyze {sid})"
+                    )
+
+        print(f"\n{imported} imported, {skipped} skipped, {len(failures)} failed.")
+        for line in failures[:10]:
+            print(f"  - {line}")
+        if len(failures) > 10:
+            print(f"  ... and {len(failures) - 10} more")
+        if last_id:
+            print(f"Resume the most recent one with:  son-of-anton --resume {last_id}")
+        return imported, skipped, failures
+    finally:
+        if owns_db and db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass

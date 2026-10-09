@@ -300,6 +300,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity_description TEXT,
     last_activity_provenance TEXT,
     api_call_count INTEGER DEFAULT 0,
+    last_prompt_tokens INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,

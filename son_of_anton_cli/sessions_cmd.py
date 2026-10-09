@@ -303,7 +303,19 @@ def cmd_sessions(args, sessions_parser=None):
         return 1
 
     if action == "import":
-        from son_of_anton_cli.foreign_sessions import run_sessions_import
+        from son_of_anton_cli.foreign_sessions import (
+            run_bulk_import,
+            run_sessions_import,
+        )
+
+        if getattr(args, "all", False):
+            if getattr(args, "foreign_session_id", None) or getattr(args, "path", None):
+                print("Error: --all imports every session; drop --session/the path.")
+                return 1
+            imported, skipped, failures = run_bulk_import(args)
+            # A bulk run reports its own per-session detail; the exit code
+            # only signals whether anything actually failed.
+            return 1 if failures else 0
 
         result = run_sessions_import(args)
         # A path was explicitly given but nothing imported → real error (bad
