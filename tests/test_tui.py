@@ -107,7 +107,7 @@ def test_backend_events_render_into_the_feed() -> None:
             assert kinds.count("markdown") == 1
             reasoning = next(b for b in feed._blocks if b.kind == "reasoning")
             assert reasoning.collapsed, "reasoning folds once the answer starts"
-            assert "2 lines" in "".join(s.text for s in reasoning.lines)
+            assert "▶ reasoning · 2 lines" in "".join(s.text for s in reasoning.lines)
             tool = next(b for b in feed._blocks if b.kind == "tool")
             assert tool.done
             notes = [b for b in feed._blocks if b.kind == "note"]
@@ -312,6 +312,46 @@ def test_selecting_in_the_feed_copies_and_keeps_the_prompt_focused() -> None:
             await pilot.click("#feed")
             await pilot.pause(0.2)
             assert app.focused is prompt, "clicking the feed stole focus from the prompt"
+
+    asyncio.run(run())
+
+
+def test_reasoning_folds_and_a_click_reopens_it() -> None:
+    """Reasoning keeps the old Collapsible affordance in the virtual feed.
+
+    The virtualization port rendered reasoning as bare lines, dropping the
+    header/arrow and the click-to-expand interaction. The folded header must
+    read ``▶ reasoning · N lines`` and a click on it must show the body again
+    (``▼ reasoning``), then fold it back.
+    """
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            post("reasoning_start")
+            post("reasoning_delta", text="let me think\nabout this")
+            post("reasoning_end")
+            await pilot.pause(0.3)
+
+            feed = app.query_one("#feed")
+            block = next(b for b in feed._blocks if b.kind == "reasoning")
+            assert block.collapsed, "reasoning folds once it ends"
+            folded = "".join(s.text for s in block.lines)
+            assert "▶ reasoning · 2 lines" in folded, folded
+
+            y = feed._starts[block.idx]
+            await pilot.click(feed, offset=(5, y))
+            await pilot.pause(0.3)
+            assert not block.collapsed, "a click on the folded header must reopen it"
+            expanded = "".join(s.text for s in block.lines)
+            assert "▼ reasoning" in expanded and "let me think" in expanded, expanded
+
+            await pilot.click(feed, offset=(5, y))
+            await pilot.pause(0.3)
+            assert block.collapsed, "a click on the header must fold it again"
 
     asyncio.run(run())
 

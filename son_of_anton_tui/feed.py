@@ -402,7 +402,11 @@ class _ToolBlock(_Block):
 
 
 class _ReasoningBlock(_Block):
-    """Model reasoning: expanded while streaming, folded once the answer starts."""
+    """Model reasoning: expanded while streaming, folded once the answer starts.
+
+    The header row is the click target that folds/unfolds the block — the
+    affordance the old ``Collapsible`` widget gave for free.
+    """
 
     __slots__ = ("buffer", "collapsed", "line_total")
 
@@ -421,13 +425,30 @@ class _ReasoningBlock(_Block):
         self.collapsed = True
         self.dirty = True
 
+    def toggle(self) -> None:
+        """Fold or unfold in place (a click on the header row)."""
+        self.collapsed = not self.collapsed
+        self.dirty = True
+
+    def _line_count(self) -> int:
+        # While streaming, line_total is still 0 (it is set by finish()), so a
+        # block folded mid-stream counts the buffer it is hiding.
+        if self.line_total:
+            return self.line_total
+        return len(self.buffer.strip().splitlines()) if self.buffer.strip() else 0
+
     def render(self, width: int, styles: FeedStyle) -> None:
         if self.collapsed:
-            label = f"reasoning · {self.line_total} line{'s' if self.line_total != 1 else ''}"
-            out = _to_strips(Text(label, style=styles.secondary), width)
-            self.lines = _pad(out, 3)
+            count = self._line_count()
+            label = f"▶ reasoning · {count} line{'s' if count != 1 else ''}"
+            self.lines = _pad(_to_strips(Text(label, style=styles.secondary), width), 3)
         else:
-            self.lines = _pad(_to_strips(Text(self.buffer.strip(), style=styles.secondary), width), 5)
+            lines = _pad(_to_strips(Text("▼ reasoning", style=styles.secondary), width), 3)
+            if self.buffer.strip():
+                lines += _pad(
+                    _to_strips(Text(self.buffer.strip(), style=styles.secondary), width), 5
+                )
+            self.lines = lines
         self.height = len(self.lines)
         self.dirty = False
 
@@ -653,8 +674,12 @@ class VirtualFeed(ScrollView):
     # ---------------- content ----------------
 
     def _separate(self, kind: str) -> int:
-        if not self._blocks or kind in self._SEPARATE_AFTER:
+        if not self._blocks:
             return 0
+        # user / markdown / reasoning each carried a permanent margin-top in
+        # the widget feed; the port dropped it and jammed everything together.
+        if kind in self._SEPARATE_AFTER:
+            return 1
         prev = self._blocks[-1]
         if prev.kind in ("wordmark", "intro"):
             return 0
@@ -823,8 +848,36 @@ class VirtualFeed(ScrollView):
             return
         self._selecting = False
         self.capture_mouse(False)
+        selection = self._selection
         text = self._selected_text()
         self._selection = None
-        self.refresh()
         if text and text.strip():
+            self.refresh()
             self.post_message(self.TextCopied(text))
+            return
+        # A plain click (no drag) on a reasoning header folds/unfolds it — the
+        # interaction the old Collapsible widget provided.
+        if (
+            selection is not None
+            and selection[0] == selection[2]
+            and selection[1] == selection[3]
+        ):
+            if self._toggle_reasoning_at(selection[0]):
+                return
+        self.refresh()
+
+    def _toggle_reasoning_at(self, y: int) -> bool:
+        """Toggle the reasoning block whose header row is at ``y``."""
+        if not self._blocks or y < 0:
+            return False
+        idx = bisect.bisect_right(self._starts, y) - 1
+        if idx < 0:
+            return False
+        block = self._blocks[idx]
+        if not isinstance(block, _ReasoningBlock):
+            return False
+        if y != self._starts[idx]:
+            return False  # body lines select, only the header toggles
+        block.toggle()
+        self.changed(block)
+        return True
