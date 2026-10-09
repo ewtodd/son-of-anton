@@ -33,64 +33,13 @@ PROFILE_BUILD_FLAG = "profile_build_offered"
 # Hint content
 # -------------------------------------------------------------------------
 
-def busy_input_hint_gateway(mode: str) -> str:
-    """Hint shown the first time a user messages while the agent is busy.
-
-    ``mode`` is the effective busy_input_mode that was just applied, so the
-    message matches reality ("I just interrupted…" vs "I just queued…").
-    """
-    if mode == "queue":
-        return (
-            "First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
-        )
-    if mode == "steer":
-        return (
-            "First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
-        )
-    if mode == "redirect":
-        return (
-            "First-time tip — I redirected the current run using your message. "
-            "Completed work stays in context, and `/stop` still cancels the task. "
-            "Send `/busy queue` to wait for a separate turn, or `/busy status` "
-            "to check. This notice won't appear again."
-        )
+def busy_input_hint_gateway() -> str:
+    """Hint shown the first time a user messages while the agent is busy."""
     return (
-        "First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
-    )
-
-
-def busy_input_hint_cli(mode: str) -> str:
-    """CLI version of the busy-input hint (plain text, no markdown)."""
-    if mode == "queue":
-        return (
-            "(tip) Your message was queued for the next turn. "
-            "Use /busy interrupt to make Enter stop the current run instead, "
-            "or /busy steer to inject mid-run. This tip only shows once."
-        )
-    if mode == "steer":
-        return (
-            "(tip) Your message was steered into the current run; it arrives "
-            "after the next tool call. Use /busy interrupt or /busy queue to "
-            "change this. This tip only shows once."
-        )
-    if mode == "redirect":
-        return (
-            "(tip) Your correction redirected the current run without discarding "
-            "completed work. Use /stop to cancel or /busy queue to wait for a "
-            "separate turn. This tip only shows once."
-        )
-    return (
-        "(tip) Your message interrupted the current run. "
-        "Use /busy queue to queue messages for the next turn instead, "
-        "or /busy steer to inject mid-run. This tip only shows once."
+        "First-time tip — I queued your message for the next turn instead of "
+        "stopping what I'm doing. Send `/sendnow` to steer the live turn onto "
+        "the oldest queued message, or `/sendall` to steer them all. "
+        "This notice won't appear again."
     )
 
 
@@ -255,7 +204,6 @@ __all__ = [
     "OPENCLAW_RESIDUE_FLAG",
     "PROFILE_BUILD_FLAG",
     "busy_input_hint_gateway",
-    "busy_input_hint_cli",
     "tool_progress_hint_gateway",
     "tool_progress_hint_cli",
     "openclaw_residue_hint_cli",

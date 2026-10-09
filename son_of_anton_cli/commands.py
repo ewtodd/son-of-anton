@@ -64,8 +64,8 @@ class CommandDef:
     busy_policy: str = "reject"
     # Optional key of a special mid-run handler in the Guard-2 handler table
     # (gateway/run.py) for commands whose busy behavior differs from their
-    # normal handler (e.g. /goal's control-verb whitelist, /queue's FIFO
-    # enqueue, /model's custom busy-reject text).
+    # normal handler (e.g. /goal's control-verb whitelist, /sendnow's steer
+    # of the live turn, /model's custom busy-reject text).
     busy_handler: str | None = None
     # Registry-owned shared execution (thin slice, informational commands).
     # Names a key in ``son_of_anton_cli.slash_exec.EXECUTORS`` — a pure formatter
@@ -127,11 +127,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("bg", "btw"), args_hint="<prompt>", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
-    CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
-               args_hint="<prompt>",
-               busy_policy="dispatch", busy_handler="queue"),
-    CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
-               args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
+    CommandDef("sendnow", "Steer the running turn onto the oldest queued message, or onto the text after it", "Session",
+               args_hint="[text]",
+               busy_policy="dispatch", busy_handler="sendnow"),
+    CommandDef("sendall", "Steer the running turn onto every queued message at once", "Session",
+               busy_policy="dispatch", busy_handler="sendall"),
     CommandDef("goal", "Set a standing goal Son of Anton works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                busy_policy="dispatch", busy_handler="goal"),
@@ -184,9 +184,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
-    CommandDef("busy", "Control what Enter does while Son of Anton is working", "Configuration",
-               cli_only=True, args_hint="[queue|steer|interrupt|status]",
-               subcommands=("queue", "steer", "interrupt", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
@@ -327,7 +324,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
         "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
-        "background", "bg", "btw", "agents", "tasks", "queue", "steer",
+        "background", "bg", "btw", "agents", "tasks", "sendnow", "sendall",
         "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
         "journey", "learning", "memory-graph",
     ),
@@ -513,7 +510,7 @@ GATEWAY_HELP_CORE: frozenset[str] = frozenset({
     # Context
     "status", "context", "compact",
     # Turn control while the agent is busy
-    "queue", "steer",
+    "sendnow", "sendall",
     # Background + automation
     "agents", "goal",
     # Knowledge

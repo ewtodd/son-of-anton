@@ -5484,11 +5484,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
-        @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
-        @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
-        async def slash_steer(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
-
         @tree.command(name="compact", description="Compact conversation context")
         async def slash_compact(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/compact")
@@ -5575,11 +5570,6 @@ class DiscordAdapter(BasePlatformAdapter):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
-
-        @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
-        @discord.app_commands.describe(prompt="The prompt to queue")
-        async def slash_queue(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
 
         @tree.command(name="background", description="Run a prompt in the background")
         @discord.app_commands.describe(prompt="The prompt to run in the background")

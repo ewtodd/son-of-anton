@@ -200,7 +200,7 @@ class GatewaySlashCommandsMixin:
 
         # Conversation boundary: clear ALL conversation-scoped per-session
         # state (model/reasoning overrides, one-turn restores, model notes,
-        # last-resolved cache, /queue overflow) + security state in one
+        # last-resolved cache, busy-follow-up overflow) + security state in one
         # funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="session_reset")
 
@@ -346,7 +346,7 @@ class GatewaySlashCommandsMixin:
         agent = self._running_agents.get(session_key)
         is_running = agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
-        # Count pending /queue follow-ups (slot + overflow).
+        # Count pending busy follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
@@ -3918,7 +3918,7 @@ class GatewaySlashCommandsMixin:
 
         # Conversation boundary: clear ALL conversation-scoped per-session
         # state (model/reasoning overrides #10702, one-turn restores, model
-        # notes, last-resolved cache #58403, /queue overflow) + security
+        # notes, last-resolved cache #58403, busy-follow-up overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in
         # gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")

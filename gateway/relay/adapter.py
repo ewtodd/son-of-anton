@@ -1069,7 +1069,7 @@ class RelayAdapter(BasePlatformAdapter):
         own session (parallel turns). Set
         platforms.relay.extra.slack.dm_top_level_threads_as_sessions: false
         to keep threaded reply PLACEMENT but ONE rolling DM session — the
-        legacy steer/queue posture, decoupled from reply_in_thread.
+        legacy queue posture, decoupled from reply_in_thread.
         """
         try:
             return self._coerce_flag(
@@ -1093,7 +1093,7 @@ class RelayAdapter(BasePlatformAdapter):
         ("Redirected current run", 2026-07-27 report).
 
         Only in thread-per-message mode: flat mode keeps the shared rolling
-        DM session on purpose (steer/queue there is the intended UX). Never
+        DM session on purpose (queueing there is the intended UX). Never
         overwrites a real thread_id (an in-thread reply must keep resolving
         to its thread's session).
         """

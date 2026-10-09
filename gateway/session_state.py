@@ -101,7 +101,7 @@ class ConversationState:
     service_tier_override: Any = _UNSET_TIER
     # Last successfully-resolved non-empty model (#35314 recovery).
     last_resolved_model: str = ""
-    # /queue overflow FIFO (adapter slot holds the head).
+    # Busy-follow-up overflow FIFO (adapter slot holds the head).
     queued_events: List[Any] = field(default_factory=list)
     # Per-turn must-deliver sidecar notes (one-shot).
     sidecar_notes: List[str] = field(default_factory=list)

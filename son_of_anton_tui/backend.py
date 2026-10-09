@@ -593,7 +593,7 @@ class TextualBackend(SonOfAntonCLI):
             pass
 
     def drain_pending_input(self) -> list:
-        """Messages re-queued by an interrupt or a leftover ``/steer``."""
+        """Messages re-queued by an interrupt or a leftover steer."""
         items = []
         q = getattr(self, "_pending_input", None)
         if q is None:

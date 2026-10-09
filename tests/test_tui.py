@@ -629,19 +629,34 @@ def test_ctrl_c_interrupts_a_running_turn_and_quitting_unwinds_it(backend) -> No
     asyncio.run(run())
 
 
-def test_typing_mid_turn_steers_the_running_agent(backend) -> None:
-    """A message typed while a turn runs must reach the agent, not the void.
+def test_typing_mid_turn_queues_above_the_prompt(backend) -> None:
+    """A message typed while a turn runs is queued, not dropped or redirected.
 
-    ``display.busy_input_mode`` picks where it lands: "interrupt" (the default)
-    hands it to chat()'s interrupt monitor so the agent turns on a dime, while
-    "queue" parks it for the next turn. Steering was dead for a while for an
-    unrelated reason — the interrupt fired, then rendering the interrupt notice
-    hit an undeclared ``wcwidth`` (see tests/test_markdown_tables.py).
+    The queue shows above the prompt; ``/sendnow`` redirects the live turn onto
+    the oldest queued message, ``/sendnow <text>`` onto arbitrary text, and
+    ``/sendall`` onto the whole queue as one correction. When the live turn
+    will not take a redirect the message stays queued instead of being lost.
     """
     _textual()
     b, _rec = backend
     b.detach()
     released = threading.Event()
+
+    class _FakeAgent:
+        _supports_active_turn_redirect = True
+
+        def __init__(self) -> None:
+            self.redirected: list = []
+            self.accept = True
+
+        def redirect(self, text):
+            if not self.accept:
+                return False
+            self.redirected.append(text)
+            return True
+
+    agent = _FakeAgent()
+    b.agent = agent
 
     def fake_chat(message, images=None):
         released.wait(10)
@@ -662,25 +677,89 @@ def test_typing_mid_turn_steers_the_running_agent(backend) -> None:
                 await pilot.pause(0.05)
             assert app._busy == "turn", "turn never started"
 
-            b.busy_input_mode = "interrupt"
-            prompt.text = "actually, do it the other way"
+            prompt.text = "first follow-up"
             await pilot.press("enter")
-            await pilot.pause(0.3)
-            assert b._interrupt_queue.get_nowait() == "actually, do it the other way"
-            assert prompt.text == "", "steering must clear the prompt"
+            await pilot.pause(0.2)
+            assert app._queued_items == ["first follow-up"]
+            assert prompt.text == "", "queuing must clear the prompt"
+            strip = app.query_one("#queued-strip")
+            assert strip.display is True
+            assert "first follow-up" in strip.content.plain
+            assert "/sendnow sends this now" in strip.content.plain
 
-            b.busy_input_mode = "queue"
-            prompt.text = "afterwards, run the tests"
+            prompt.text = "second follow-up"
             await pilot.press("enter")
-            await pilot.pause(0.3)
-            assert b._pending_input.get_nowait() == "afterwards, run the tests"
-            assert app._queued == 1
+            await pilot.pause(0.2)
+            assert app._queued_items == ["first follow-up", "second follow-up"]
+            assert "/sendall sends all" in app.query_one("#queued-strip").content.plain
+
+            prompt.text = "/sendnow"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert agent.redirected == ["first follow-up"]
+            assert app._queued_items == ["second follow-up"]
+            # The toast names what was left behind, like the copy confirmation.
+            assert any("still queued" in n.message for n in app._notifications)
+
+            prompt.text = "/sendall"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert agent.redirected == ["first follow-up", "second follow-up"]
+            assert app._queued_items == []
+            assert app.query_one("#queued-strip").display is False
+
+            prompt.text = "/sendnow do it the other way"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert agent.redirected[-1] == "do it the other way"
+            assert app._queued_items == []
+
+            # A live turn that cannot absorb a redirect leaves the queue alone.
+            agent.accept = False
+            prompt.text = "third follow-up"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            prompt.text = "/sendnow"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert app._queued_items == ["third follow-up"], "declined redirect must not drop it"
+            assert agent.redirected[-1] == "do it the other way"
+            assert any("queue unchanged" in n.message for n in app._notifications)
 
             released.set()
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and app._busy is not None:
                 await pilot.pause(0.05)
             assert app._busy is None, "turn did not unwind"
+
+    asyncio.run(run())
+
+
+def test_after_dispatch_runs_queued_follow_ups_before_backend_work(backend) -> None:
+    """User follow-ups queued during a turn preempt backend-scheduled work.
+
+    Goal continuations and notifications land on ``_pending_input`` while the
+    user's own queue lives in the app; the user's messages must go first.
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            dispatched: list = []
+
+            async def fake_dispatch(value, images=None):
+                dispatched.append(value)
+
+            app._dispatch = fake_dispatch
+            app._queued_items = ["later follow-up"]
+            b._pending_input.put("goal continuation")
+            await app._after_dispatch()
+            assert dispatched == ["later follow-up", "goal continuation"]
+            assert app._queued_items == []
 
     asyncio.run(run())
 

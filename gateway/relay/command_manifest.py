@@ -89,10 +89,11 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         {"name": "sethome", "description": "Set this chat as the home channel"},
         {"name": "stop", "description": "Stop the running Son of Anton agent"},
         {
-            "name": "steer",
-            "description": "Inject a message after the next tool call (no interrupt)",
-            "options": [_opt("text", "What to tell the agent")],
+            "name": "sendnow",
+            "description": "Steer the running turn onto the oldest queued message, or the given text",
+            "options": [_opt("text", "What to tell the agent. Leave empty to steer the oldest queued message.")],
         },
+        {"name": "sendall", "description": "Steer the running turn onto every queued message at once"},
         {"name": "compact", "description": "Compact conversation context"},
         {
             "name": "title",
@@ -131,11 +132,6 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
             "name": "thread",
             "description": "Create a new thread and start a Son of Anton session in it",
             "options": [_opt("name", "Thread name")],
-        },
-        {
-            "name": "queue",
-            "description": "Queue a prompt for the next turn (doesn't interrupt)",
-            "options": [_opt("text", "The prompt to queue")],
         },
         {
             "name": "background",

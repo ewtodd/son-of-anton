@@ -443,7 +443,6 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": True,
             "reasoning_full": False,
             "streaming": True,
-            "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
             # Clear terminal scrollback as well as the visible viewport when the
@@ -4079,16 +4078,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
         )
-        # busy_input_mode: "interrupt" (Enter redirects current run),
-        # "queue" (Enter queues for next turn), or "steer" (Enter injects
-        # mid-run via /steer, arriving after the next tool call).
-        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
-        if _bim == "queue":
-            self.busy_input_mode = "queue"
-        elif _bim == "steer":
-            self.busy_input_mode = "steer"
-        else:
-            self.busy_input_mode = "interrupt"
 
         # self.verbose ONLY controls global DEBUG logging (root logger level).
         # display.tool_progress="verbose" controls tool-call rendering (full args,
@@ -9420,51 +9409,27 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
-        elif canonical == "queue":
-            # Extract prompt after "/queue " or "/q "
-            parts = cmd_original.split(None, 1)
-            payload = parts[1].strip() if len(parts) > 1 else ""
-            payload = self._expand_paste_references(payload)
-            if not payload:
-                _cprint("  Usage: /queue <prompt>")
-            else:
-                self._pending_input.put(payload)
-                if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
-                else:
-                    _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
-        elif canonical == "steer":
-            # Inject a message after the next tool call without interrupting.
-            # If the agent is actively running, push the text into the agent's
-            # pending_steer slot — the drain hook in _execute_tool_calls_*
-            # will append it to the next tool result's content. If no agent
-            # is running, fall back to queue semantics (same as /queue).
+        elif canonical == "sendnow":
+            # Mid-run, this is intercepted before dispatch (the running turn
+            # takes the message as a steer). Reaching here means idle: strip
+            # the prefix and send the text as a normal message.
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
             if not payload:
-                _cprint("  Usage: /steer <prompt>")
-            elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
-                try:
-                    accepted = self.agent.steer(payload)
-                except Exception as exc:
-                    _cprint(f"  Steer failed: {exc}")
-                else:
-                    if accepted:
-                        _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}")
-                    else:
-                        _cprint("  Steer rejected (empty payload).")
+                _cprint("  Nothing queued — no turn is running.")
             else:
-                # No active run — treat as a normal next-turn message.
                 self._pending_input.put(payload)
-                _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                _cprint(f"  Sending: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "sendall":
+            # Mid-run this steers every queued message into the live turn;
+            # idle there is nothing to steer.
+            _cprint("  Nothing queued — no turn is running.")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
         elif canonical == "refine":
             self._handle_refine_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
-        elif canonical == "busy":
-            self._handle_busy_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -9876,19 +9841,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
 
-        While the agent is running, user input is routed into
-        ``_interrupt_queue`` (see the architecture comment near
-        ``_route_user_input_when_busy``). The explicit-interrupt path at the
-        top of ``process_loop`` only drains that queue when
-        ``busy_input_mode == "interrupt"`` AND a ``pending_message`` was
-        acknowledged. If the agent's turn finishes naturally (no interrupt),
-        any messages typed during the turn stay stuck in ``_interrupt_queue``
-        forever. Subsequent ``Enter`` presses re-route to the same blocked
-        queue and the CLI appears to hang.
+        The explicit-interrupt path in ``chat()`` only drains that queue when
+        the agent acknowledged an interrupt. If the agent's turn finishes
+        naturally (no interrupt), any message that landed there would stay
+        stuck forever. Subsequent presses would re-route to the same blocked
+        queue and the CLI would appear to hang.
 
-        Called once at the end of every turn from ``process_loop``'s ``finally``
-        block. Catches and swallows ``Exception`` because the drain must never
-        break the main loop. (#20271)
+        Called once at the end of every turn from the front-end post-turn
+        hooks. Catches and swallows ``Exception`` because the drain must never
+        break the caller. (#20271)
         """
         try:
             while not self._interrupt_queue.empty():
@@ -12388,10 +12349,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
             # Re-queue the interrupt message (and any that arrived while we were
-            # processing the first) as the next prompt for process_loop.
-            # Only reached when busy_input_mode == "interrupt" (the default).
-            # In "queue" mode Enter routes directly to _pending_input so this
-            # block is never hit.
+            # processing the first) as the next prompt.
             if pending_message and hasattr(self, '_pending_input'):
                 all_parts = [pending_message]
                 while not self._interrupt_queue.empty():
@@ -12410,12 +12368,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     print(f"\nSending after interrupt: '{preview}'")
                 self._pending_input.put(combined)
 
-            # If a /steer was left over (agent finished before another tool
-            # batch could absorb it), deliver it as the next user turn.
+            # If a mid-turn steer was left over (the agent finished before
+            # another tool batch could absorb it), deliver it as the next turn.
             _leftover_steer = result.get("pending_steer") if result else None
             if _leftover_steer and hasattr(self, '_pending_input'):
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-                print(f"\nDelivering leftover /steer as next turn: '{preview}'")
+                print(f"\nDelivering leftover steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
 
             return response

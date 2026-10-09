@@ -5,7 +5,9 @@ scrollback:
 
   * the transcript + prompt fill the main column on the LEFT;
   * a 42-col context panel sits on the RIGHT on wide terminals (> 120 cols);
-  * a multi-line prompt: Enter submits, Shift+Enter inserts a newline;
+  * a multi-line prompt: Enter submits, Shift+Enter inserts a newline; messages
+    submitted while a turn is running queue above the prompt, and ``/sendnow``
+    redirects the live turn onto the oldest one; ``/sendall`` sends them all;
   * slash commands autocomplete inline and ctrl+p opens a fuzzy palette;
   * the ASCII "SON OF ANTON" wordmark opens the session.
 
@@ -731,6 +733,13 @@ if _TEXTUAL_AVAILABLE:
         }
         #completer > .option-list--option-highlighted { background: transparent; color: $primary; text-style: bold; }
 
+        /* Follow-ups typed while a turn is running sit here until they are
+           sent, directly above the prompt they were typed in. */
+        #queued-strip {
+            height: auto; display: none; margin-bottom: 1; padding: 0 1 0 3;
+            color: $text-muted;
+        }
+
         /* opencode Prompt: a left rail, the textarea, then a meta row, the whole
            block sitting on the element surface. */
         #prompt-frame {
@@ -837,7 +846,10 @@ if _TEXTUAL_AVAILABLE:
             self._serviced: dict[str, Any] = {}  # attr -> the state object already shown
             self._spin = 0
             self._completion_cmds: list[str] = []
-            self._queued = 0
+            # Follow-ups typed while a turn is running, in arrival order. They
+            # are dispatched after the turn unless /sendnow redirects the live
+            # turn onto one of them first.
+            self._queued_items: list[str] = []
             self._last_ctrl_c = 0.0
             self._snap_cache: Optional[tuple] = None
             self._log_handlers: list[tuple[logging.Handler, Any]] = []
@@ -876,6 +888,7 @@ if _TEXTUAL_AVAILABLE:
                     yield VirtualFeed(self._feed_style(), wordmark_art=_wordmark_for_width)
                     with Vertical(id="dock"):
                         yield OptionList(id="completer")
+                        yield Static("", id="queued-strip")
                         with Vertical(id="prompt-frame"):
                             yield PromptArea(
                                 placeholder="Message Son of Anton…",
@@ -928,6 +941,7 @@ if _TEXTUAL_AVAILABLE:
         def on_mount(self) -> None:
             self._feed = self.query_one("#feed", VirtualFeed)
             self._prompt = self.query_one("#input", PromptArea)
+            self._queued_strip = self.query_one("#queued-strip", Static)
             self._prompt.prompt_history = PromptHistory(getattr(self.backend, "_history_file", None))
             self._completer = self.query_one("#completer", OptionList)
             self._status_left = self.query_one("#status-left", Static)
@@ -1312,9 +1326,10 @@ if _TEXTUAL_AVAILABLE:
             else:
                 left = Text(_short_path(os.getenv("TERMINAL_CWD", os.getcwd())))
                 self._status_left.remove_class("busy")
-            if self._queued:
-                left.append(f"  · {self._queued} queued", style="dim")
+            if self._queued_items:
+                left.append(f"  · {len(self._queued_items)} queued", style="dim")
             self._status_left.update(left)
+            self._update_queued_strip()
 
             right = Text()
             if self._busy:
@@ -1362,6 +1377,43 @@ if _TEXTUAL_AVAILABLE:
                 )
             except Exception:
                 pass
+
+        def _update_queued_strip(self) -> None:
+            """Render the follow-ups parked above the prompt, oldest first.
+
+            Only the first three messages are previewed; the hint advertises
+            the commands that redirect the queue into the live turn.
+            """
+            strip = getattr(self, "_queued_strip", None)
+            if strip is None:
+                return
+            items = self._queued_items
+            if not items:
+                strip.update("")
+                strip.display = False
+                return
+            room = max(20, self._feed_width() - 6)
+            body = Text()
+            shown = items[:3]
+            for index, item in enumerate(shown):
+                preview = " ".join(str(item).split())
+                if len(preview) > room:
+                    preview = preview[: room - 1] + "…"
+                if index:
+                    body.append("\n")
+                body.append("↳ ", style="dim")
+                body.append(preview)
+            hidden = len(items) - len(shown)
+            if hidden:
+                body.append("\n")
+                body.append(f"   +{hidden} more", style="dim")
+            body.append("\n")
+            if len(items) > 1:
+                body.append("/sendnow sends the oldest · /sendall sends all", style="dim")
+            else:
+                body.append("/sendnow sends this now", style="dim")
+            strip.update(body)
+            strip.display = True
 
         def _attached(self) -> list:
             return list(getattr(self.backend, "_attached_images", None) or [])
@@ -1735,25 +1787,106 @@ if _TEXTUAL_AVAILABLE:
                 self._add_user_turn(value)
                 self._note("(no agent attached — this frame is running standalone)", muted=True)
                 return
-            if self._busy == "turn":
-                # The agent is mid-turn: hand the message to chat()'s interrupt
-                # monitor (or queue it, per display.busy_input_mode).
-                mode = getattr(self.backend, "busy_input_mode", "interrupt")
-                if mode == "queue":
-                    self.backend._pending_input.put(value)
-                    self._queued += 1
-                    self._note("queued for the next turn", muted=True)
-                else:
-                    self.backend._interrupt_queue.put(value)
-                    self._note("interrupting the current turn…", muted=True)
-                self._update_status()
+
+            # ``/sendnow`` redirects the live turn: with text, onto that text;
+            # bare, onto the oldest queued message. ``/sendall`` sends the whole
+            # queue as one correction. Command names are case-insensitive, like
+            # the slash-command registry.
+            parts = value.split(None, 1)
+            head = parts[0].lower() if parts else ""
+            send_now = False
+            if head == "/sendnow":
+                payload = parts[1].strip() if len(parts) > 1 else ""
+                if not payload:
+                    self._send_queued_now(send_all=False)
+                    return
+                value = payload
+                send_now = True
+            elif head == "/sendall":
+                self._send_queued_now(send_all=True)
                 return
+
             if self._busy:
-                self.backend._pending_input.put(value)
-                self._queued += 1
+                # The agent is mid-turn: park the message above the prompt.
+                # /sendnow redirects the live turn onto it instead.
+                if send_now and self._busy == "turn":
+                    self._send_text_now(value)
+                else:
+                    self._queued_items.append(value)
+                    self._note("queued for the next turn", muted=True)
                 self._update_status()
                 return
             self.run_worker(self._dispatch(value), group="dispatch", exclusive=False)
+
+        def _redirect_into_turn(self, payload: str) -> bool:
+            """Ask the live agent to absorb ``payload`` as a user correction.
+
+            ``agent.redirect()`` cancels only the in-flight model request and
+            retries the same turn with the correction appended; while tools are
+            executing it degrades to ``steer()`` (the text lands on the next
+            tool result). False means there is no live turn to take it.
+            """
+            agent = getattr(self.backend, "agent", None)
+            if agent is None or not getattr(agent, "_supports_active_turn_redirect", False):
+                return False
+            try:
+                return bool(agent.redirect(payload))
+            except Exception:
+                return False
+
+        def _redirect_feedback(self, payload: str) -> None:
+            """Show a successful redirect in the transcript.
+
+            Closing the open assistant/reasoning blocks makes the retried
+            response start a fresh block below the correction instead of
+            appending above it.
+            """
+            self._close_assistant()
+            self._finish_reasoning()
+            self._add_user_turn(payload)
+            self._note("sending now — redirecting the current turn…", muted=True)
+
+        def _steer_warning(self, message: str) -> None:
+            """Transient warning toast, same style as the copy confirmation."""
+            self.notify(message, severity="warning", timeout=4.0)
+
+        def _send_text_now(self, value: str) -> None:
+            """``/sendnow <text>``: redirect the live turn onto ``value``."""
+            if self._redirect_into_turn(value):
+                self._redirect_feedback(value)
+            else:
+                self._queued_items.append(value)
+                self._note("queued for the next turn", muted=True)
+                self._steer_warning("no live turn to steer — queued for the next turn")
+
+        def _send_queued_now(self, *, send_all: bool) -> None:
+            """``/sendnow`` / ``/sendall``: redirect queued messages into the turn."""
+            if not self._queued_items:
+                self._note("nothing queued to send", muted=True)
+                return
+            if self._busy != "turn":
+                self._note("no running turn to redirect — staying queued", muted=True)
+                self._steer_warning("no running turn to steer — the queue stays put")
+                return
+            if send_all:
+                selected = list(self._queued_items)
+                payload = "\n".join(selected)
+            else:
+                selected = [self._queued_items[0]]
+                payload = selected[0]
+            if not self._redirect_into_turn(payload):
+                self._note("the live turn cannot absorb a redirect — staying queued", muted=True)
+                self._steer_warning("the live turn can't take a steer right now — queue unchanged")
+                return
+            del self._queued_items[: len(selected)]
+            self._redirect_feedback(payload)
+            remaining = len(self._queued_items)
+            if remaining:
+                self.notify(
+                    f"steered the oldest queued message · {remaining} still queued",
+                    timeout=3.0,
+                )
+            self._update_status()
 
         async def _dispatch(self, value: str, images: Optional[list] = None) -> None:
             backend = self.backend
@@ -1792,8 +1925,16 @@ if _TEXTUAL_AVAILABLE:
 
         async def _after_dispatch(self) -> None:
             self._schedule_refresh()
-            pending = self.backend.drain_pending_input() if self.backend else []
-            self._queued = 0
+            if self.backend is None:
+                return
+            pending = self.backend.drain_pending_input()
+            # Follow-ups the user queued while the turn ran go first; backend
+            # work (goal continuations, notifications) yields to them.
+            queued: list = [item for item in self._queued_items if isinstance(item, str) and item.strip()]
+            self._queued_items = []
+            self._update_status()
+            for item in queued:
+                await self._dispatch(item.strip(), None)
             for item in pending:
                 images = None
                 if isinstance(item, tuple):

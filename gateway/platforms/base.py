@@ -2786,15 +2786,9 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
-        # Legacy busy_text_mode env var; when unset the runner syncs the
-        # resolved value (driven by busy_input_mode) onto the adapter after
-        # construction (gateway/run.py). Default to "interrupt" so a stray
-        # pre-sync read matches the single-knob default rather than silently
-        # queueing.
-        self._busy_text_mode: str = (
-            os.environ.get("SON_OF_ANTON_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
-            or "interrupt"
-        )
+        # Busy text follow-ups are debounced so a rapid burst becomes one
+        # queued turn. The runner's busy handler usually claims messages
+        # first; this is the adapter-side fallback when no handler is set.
         self._busy_text_debounce_seconds: float = _float_env(
             "SON_OF_ANTON_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35
         )
@@ -5019,10 +5013,9 @@ class BasePlatformAdapter(ABC):
         return store
 
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
+        """Return True for normal text eligible for busy-text debounce."""
         result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
-            and event.message_type == MessageType.TEXT
+            event.message_type == MessageType.TEXT
             and not getattr(event, "internal", False)
             and not event.is_command()
             and bool((event.text or "").strip())
@@ -5591,7 +5584,7 @@ class BasePlatformAdapter(ABC):
             if self._is_queue_text_debounce_candidate(event):
                 logger.debug(
                     "[%s] New text message while session %s is active — "
-                    "debouncing follow-up (busy_text_mode=queue, window=%.2fs)",
+                    "debouncing follow-up (window=%.2fs)",
                     self.name,
                     session_key,
                     self._busy_text_debounce_seconds,

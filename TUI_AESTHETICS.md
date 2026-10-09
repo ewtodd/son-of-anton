@@ -122,8 +122,8 @@ context panel (`ctrl+b`); a multi-line prompt with inline slash completion
 screens for approval, clarify (single / multi / batch / free-text), sudo,
 secret, destructive-command confirm, the two-stage model picker, and generic
 text + list prompts. `ctrl+c` interrupts a running turn (twice to force-quit);
-`ctrl+g` composes in `$EDITOR`; a message typed mid-turn follows the session's
-own interrupt/queue setting; `:q` quits.
+`ctrl+g` composes in `$EDITOR`; a message typed mid-turn queues above the prompt
+(`/sendnow` steers the live turn, `/sendall` steers the whole queue); `:q` quits.
 
 ### Verified
 

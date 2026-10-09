@@ -59,6 +59,23 @@ def test_quit_command_resolves_via_q_and_colon_q() -> None:
     assert queue_cmd is None or queue_cmd is not quit_cmd
 
 
+def test_busy_mode_commands_were_replaced_by_sendnow_and_sendall() -> None:
+    """One busy behavior: messages queue; /sendnow steers the live turn.
+
+    The old mode knob (/busy) and its per-mode override commands (/queue,
+    /steer) are gone from every surface, so the gateway and the TUI cannot
+    drift apart.
+    """
+    names = {cmd.name for cmd in COMMAND_REGISTRY}
+    for removed in ("busy", "queue", "steer"):
+        assert removed not in names, f"/{removed} should have been removed"
+    for added in ("sendnow", "sendall"):
+        assert added in names, f"missing /{added}"
+    assert resolve_command("busy") is None
+    assert resolve_command("queue") is None
+    assert resolve_command("steer") is None
+
+
 def test_fork_commands_exist() -> None:
     names = {cmd.name for cmd in COMMAND_REGISTRY}
     for expected in ("model", "perm", "skin", "cron", "curator", "help"):

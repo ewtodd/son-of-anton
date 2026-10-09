@@ -349,9 +349,9 @@ Read `gateway/platforms/ADDING_A_PLATFORM.md` when adding a platform.
 
 The gateway has TWO message guards — both must bypass approval/control commands. When an
 agent is running, messages pass through (1) the base adapter's `_pending_messages` queue
-and (2) the runner's interception of `/stop`, `/new`, `/queue`, `/status`, `/approve`,
-`/deny`. Any new command that must reach the runner while the agent is blocked MUST bypass
-BOTH guards and be dispatched inline.
+and (2) the runner's interception of `/stop`, `/new`, `/sendnow`, `/sendall`, `/status`,
+`/approve`, `/deny`. Any new command that must reach the runner while the agent is blocked
+MUST bypass BOTH guards and be dispatched inline.
 
 Cron deliveries are **not** mirrored into the target gateway session — they land in their
 own cron session with a header/footer frame so the main conversation's message-role
