@@ -1333,12 +1333,13 @@ def cmd_chat(args):
     # Resolve --continue into --resume with the latest session or by name
     _resolve_continue_arg(args)
 
-    # --resume @claude / --resume @codex: import a foreign session (Claude
-    # Code / Codex CLI) and resume the newly created Son of Anton session.
+    # --resume @claude / @codex / @opencode: import a foreign session and
+    # resume the newly created Son of Anton session.
     _resume_foreign = getattr(args, "resume", None)
     if isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in (
         "@claude",
         "@codex",
+        "@opencode",
     ):
         from son_of_anton_cli.foreign_sessions import (
             import_foreign_session,
@@ -1350,7 +1351,9 @@ def cmd_chat(args):
         if _picked is None:
             sys.exit(1)
         try:
-            _imported_id = import_foreign_session(_picked.source, _picked.path)
+            _imported_id = import_foreign_session(
+                _picked.source, _picked.path, foreign_id=_picked.session_id
+            )
         except ValueError as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -4963,24 +4966,61 @@ def main():
 
     sessions_import = sessions_subparsers.add_parser(
         "import",
-        help="Import a Claude Code or Codex CLI session into Son of Anton",
+        help="Import a Claude Code, Codex CLI, or opencode session",
         description=(
-            "Pull a conversation started in Claude Code (~/.claude/projects) "
-            "or Codex CLI (~/.codex/sessions) into the Son of Anton session store "
-            "so it can be resumed with 'son-of-anton --resume <id>'. The foreign "
-            "files are only read, never modified."
+            "Pull a conversation started in Claude Code (~/.claude/projects), "
+            "Codex CLI (~/.codex/sessions), or opencode "
+            "(~/.local/share/opencode/opencode.db) into the Son of Anton "
+            "session store so it can be resumed with "
+            "'son-of-anton --resume <id>'. The foreign stores are only read, "
+            "never modified."
         ),
     )
     sessions_import.add_argument(
         "--from",
         dest="from_source",
-        choices=["claude", "codex"],
-        help="Which tool to import from (default: pick across both)",
+        choices=["claude", "codex", "opencode"],
+        help="Which tool to import from (default: pick across all)",
+    )
+    sessions_import.add_argument(
+        "--session",
+        dest="foreign_session_id",
+        help="Foreign session id to import directly (opencode: ses_...)",
+    )
+    sessions_import.add_argument(
+        "--db",
+        dest="opencode_db",
+        help="opencode database path (default: auto-detect opencode.db)",
+    )
+    sessions_import.add_argument(
+        "--analyze",
+        action="store_true",
+        help=(
+            "After importing, run an agent pass over the transcript to write "
+            "durable memories and skills (uses the configured model)"
+        ),
     )
     sessions_import.add_argument(
         "path",
         nargs="?",
-        help="Path to a specific session JSONL file (skips the picker)",
+        help=(
+            "Claude/Codex JSONL file, or an opencode session id / database "
+            "path (skips the picker)"
+        ),
+    )
+
+    sessions_analyze = sessions_subparsers.add_parser(
+        "analyze",
+        help="Mine a stored session for durable memories and skills",
+        description=(
+            "Run one agent pass over a session transcript and persist durable "
+            "memories and reusable skills. 'sessions import --analyze' runs "
+            "the same pass during import; this command re-runs it for any "
+            "stored session."
+        ),
+    )
+    sessions_analyze.add_argument(
+        "session_id", help="Session ID or unique prefix to analyze"
     )
 
 

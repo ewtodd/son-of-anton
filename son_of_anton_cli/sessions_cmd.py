@@ -326,6 +326,21 @@ def cmd_sessions(args, sessions_parser=None):
     _source = getattr(args, "source", None)
     _exclude = None if _source else ["tool"]
 
+    if action == "analyze":
+        from son_of_anton_cli import session_analysis
+
+        session_id = db.resolve_session_id(args.session_id)
+        if not session_id:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+        print(f"Analyzing {session_id} for memories and skills ...")
+        status = session_analysis.run_session_analysis(session_id, db=db)
+        if status == 0:
+            print("Analysis complete.")
+            return 0
+        print("Analysis did not complete.")
+        return 1
+
     if action == "list":
         from son_of_anton_state import workspace_key as _ws_key
 
