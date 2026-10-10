@@ -503,8 +503,19 @@ def test_user_turns_have_padding_rows_and_a_rail() -> None:
                 "".join(seg.text for seg in strip if not seg.control)
                 for strip in block.lines
             ]
-            assert rows[1].strip() == "commit and push"
-            assert rows[0].strip() == "" and rows[2].strip() == ""
+            assert rows[1].strip() == "▎  commit and push"
+            assert rows[0].strip() == "▎" and rows[2].strip() == "▎"
+
+            # A long message wraps with the rail and gutter on every line.
+            feed.add_user("alpha " * 40)
+            wrapped = next(b for b in reversed(feed._blocks) if b.kind == "user")
+            assert wrapped.height >= 4, "wrapped message needs >1 body row"
+            for strip in wrapped.lines[1:-1]:
+                plain = "".join(seg.text for seg in strip)
+                assert plain.startswith("▎  "), plain
+                first = next(seg for seg in strip if not seg.control)
+                assert first.style is not None
+                assert first.style.color is not None, "rail lost on a wrapped line"
 
     asyncio.run(run())
 

@@ -307,6 +307,52 @@ class _StaticBlock(_Block):
         self.dirty = False
 
 
+class _UserBlock(_Block):
+    """A user turn: primary rail + 2-cell gutter, wrapped with a hanging indent.
+
+    The widget feed's UserTurn carried ``padding: 1 0 1 2`` and a ``border-left``
+    that ran the full height, so every wrapped or multi-line message kept the
+    rail. Rendering the message as one rich Text only prefixed the first line;
+    this wraps the body at ``width - 3`` and prefixes every rendered strip.
+    """
+
+    __slots__ = ("text",)
+
+    RAIL_WIDTH = 3  # 1 rail cell + 2 gutter cells
+
+    def __init__(self, text: str) -> None:
+        super().__init__("user")
+        self.text = text
+
+    def render(self, width: int, styles: FeedStyle) -> None:
+        # The old UserTurn used Textual's `border-left: wide`, whose glyph is
+        # the thin `▎` in the primary colour — a background-filled cell reads
+        # as a heavy solid bar, especially through the padding rows.
+        rail = Segment("▎", Style(color=styles.primary or "yellow"))
+        panel = Style.parse(f"on {styles.panel}") if styles.panel else None
+        gutter = Strip([rail, Segment("  ", panel)])
+        body = Text(
+            self.text,
+            style=_combine("bold", f"on {styles.panel}" if styles.panel else ""),
+        )
+        body_width = max(1, width - self.RAIL_WIDTH)
+
+        def _row(body_strip: Optional[Strip] = None) -> Strip:
+            row = Strip.join([gutter, body_strip]) if body_strip is not None else gutter
+            if panel is not None:
+                pad = width - row.cell_length
+                if pad > 0:
+                    row = Strip.join([row, Strip([Segment(" " * pad, panel)])])
+            return row
+
+        lines = [_row()]
+        lines.extend(_row(strip) for strip in _to_strips(body, body_width))
+        lines.append(_row())
+        self.lines = lines
+        self.height = len(lines)
+        self.dirty = False
+
+
 class _WordmarkBlock(_Block):
     """The ASCII wordmark, centered, bold primary, never wrapping.
 
@@ -704,28 +750,7 @@ class VirtualFeed(ScrollView):
 
     def add_user(self, text: str) -> None:
         self.reset_note()
-        rail_style = f"on {self._styles.primary}" if self._styles.primary else "on yellow"
-        panel_style = f"on {self._styles.panel}" if self._styles.panel else ""
-        body_style = _combine("bold", panel_style)
-
-        def _row(body: str = "", style: str = "") -> Text:
-            line = Text()
-            line.append(" ", style=rail_style)
-            line.append("  ", style=panel_style or None)
-            if body:
-                line.append(body, style=style or body_style or None)
-            return line
-
-        # The widget feed's UserTurn carried `padding: 1 0 1 2` and a rail
-        # through the padding; keep the air inside the block instead of
-        # rendering the message flush against its neighbours.
-        block = Text()
-        block.append_text(_row())
-        block.append("\n")
-        block.append_text(_row(text))
-        block.append("\n")
-        block.append_text(_row())
-        self._append_block(_StaticBlock("user", block, pad=0), before=self._separate("user"))
+        self._append_block(_UserBlock(text), before=self._separate("user"))
 
     def add_note(self, line: Text) -> None:
         """Append one ANSI/plain line, merging consecutive lines into a block."""
