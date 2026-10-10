@@ -4303,6 +4303,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         git_repo_root: str = None,
         origin_json: str = None,
         display_name: str = None,
+        started_at: Optional[float] = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -4407,7 +4408,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     git_repo_root,
                     origin_json,
                     display_name,
-                    time.time(),
+                    started_at if started_at is not None else time.time(),
                 ),
             )
             if system_prompt_hash is not None:

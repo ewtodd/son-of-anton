@@ -148,28 +148,68 @@ def _is_wrapper_text(text: str) -> bool:
     return bool(_WRAPPER_TAG_RE.match(text.lstrip()))
 
 
-def _merge_turns(raw_turns: List[Tuple[str, str]]) -> List[Dict[str, str]]:
+def _coerce_timestamp(value: Any) -> Optional[float]:
+    """Best-effort epoch seconds from a foreign store's timestamp field.
+
+    Accepts ISO-8601 strings (with or without ``Z``), epoch seconds, and
+    epoch milliseconds (opencode's ``time_created``). Returns None when the
+    value is missing or unparseable so the caller can fall back to import
+    time.
+    """
+    if value is None:
+        return None
+    if hasattr(value, "timestamp"):
+        try:
+            return float(value.timestamp())
+        except Exception:
+            return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 1_000_000_000_000:  # milliseconds
+            seconds /= 1000.0
+        return seconds
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _merge_turns(
+    raw_turns: List[Tuple[str, str, Optional[float]]],
+) -> List[Dict[str, Any]]:
     """Merge consecutive same-role turns; guarantee strict alternation.
 
     A leading assistant turn (session began before the log window) gets a
     minimal user stub so the first message is always ``user``; this is the
-    only place a stub is ever inserted.
+    only place a stub is ever inserted. Each merged turn keeps the latest
+    source timestamp it swallowed, so an import lands in the session list at
+    its real age instead of hogging the top with import time.
     """
-    merged: List[Dict[str, str]] = []
-    for role, text in raw_turns:
+    merged: List[Dict[str, Any]] = []
+    for role, text, timestamp in raw_turns:
         text = text.strip()
         if not text:
             continue
         if merged and merged[-1]["role"] == role:
             merged[-1]["content"] += "\n\n" + text
+            if timestamp is not None:
+                merged[-1]["timestamp"] = timestamp
         else:
-            merged.append({"role": role, "content": text})
+            merged.append({"role": role, "content": text, "timestamp": timestamp})
     if merged and merged[0]["role"] == "assistant":
         merged.insert(
             0,
             {
                 "role": "user",
                 "content": "(imported conversation begins with an assistant reply)",
+                "timestamp": None,
             },
         )
     return merged
@@ -304,7 +344,7 @@ def _claude_live_chain(objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def parse_claude_session(path: Path) -> Dict[str, Any]:
     """Parse one Claude Code session JSONL into normalized turns + meta."""
     objects = list(_read_json_lines(path))
-    turns: List[Tuple[str, str]] = []
+    turns: List[Tuple[str, str, Optional[float]]] = []
     cwd: Optional[str] = None
     summary: Optional[str] = None
     session_id: Optional[str] = None
@@ -355,7 +395,7 @@ def parse_claude_session(path: Path) -> Dict[str, Any]:
                 usage_cache_read += call_read
                 usage_cache_write += call_write
                 usage_calls += 1
-        turns.append((role, text))
+        turns.append((role, text, _coerce_timestamp(obj.get("timestamp"))))
     return {
         "turns": _merge_turns(turns),
         "cwd": cwd,
@@ -406,7 +446,7 @@ def list_claude_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
 
 def parse_codex_session(path: Path) -> Dict[str, Any]:
     """Parse one Codex CLI rollout JSONL into normalized turns + meta."""
-    turns: List[Tuple[str, str]] = []
+    turns: List[Tuple[str, str, Optional[float]]] = []
     cwd: Optional[str] = None
     session_id: Optional[str] = None
     usage_in = usage_out = usage_cache_read = usage_cache_write = usage_reasoning = 0
@@ -461,11 +501,13 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
             text = _flatten_blocks(payload.get("content"), source="codex")
             if not text or (role == "user" and _is_wrapper_text(text)):
                 continue
-            turns.append((role, text))
+            turns.append((role, text, _coerce_timestamp(obj.get("timestamp"))))
         elif ptype in ("custom_tool_call", "function_call", "local_shell_call"):
             name = payload.get("name") or payload.get("tool") or "tool"
             # Attach as assistant activity; merged into neighbors later.
-            turns.append(("assistant", f"[ran tool: {name}]"))
+            turns.append(
+                ("assistant", f"[ran tool: {name}]", _coerce_timestamp(obj.get("timestamp")))
+            )
         # tool outputs / reasoning / web_search etc. are skipped
     return {
         "turns": _merge_turns(turns),
@@ -677,7 +719,7 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
                 f"opencode session not found in {db_path}: {session_id}"
             )
         messages = conn.execute(
-            "SELECT id, data FROM message WHERE session_id = ? "
+            "SELECT id, data, time_created FROM message WHERE session_id = ? "
             "ORDER BY time_created, id",
             (session_id,),
         ).fetchall()
@@ -690,7 +732,7 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
                 revert = None
         keep_count, part_cut_id = _opencode_revert_bounds(messages, revert)
 
-        turns: List[Tuple[str, str]] = []
+        turns: List[Tuple[str, str, Optional[float]]] = []
         assistant_calls = 0
         last_prompt_tokens: Optional[int] = None
         for position, row in enumerate(messages[:keep_count]):
@@ -722,7 +764,7 @@ def parse_opencode_session(db_path, session_id: str) -> Dict[str, Any]:
             text = _opencode_part_text(role, parts)
             if not text or (role == "user" and _is_wrapper_text(text)):
                 continue
-            turns.append((role, text))
+            turns.append((role, text, _coerce_timestamp(row["time_created"])))
 
         title = session["title"] if isinstance(session["title"], str) else ""
         return {
@@ -793,8 +835,9 @@ def list_opencode_sessions(
     return results
 
 
-def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
-    for role, text in turns:
+def _first_user_line(turns: List[Tuple]) -> Optional[str]:
+    for turn in turns:
+        role, text = turn[0], turn[1]
         if role == "user":
             line = text.strip().splitlines()[0].strip()
             if line:
@@ -878,14 +921,26 @@ def import_foreign_session(
                 "foreign_session_id": foreign_id or parsed.get("session_id"),
             }
         }
+        # Carry the source's real times across so the imported conversation
+        # lands in listings at its actual age instead of at import time.
+        first_timestamp = next(
+            (turn.get("timestamp") for turn in turns if turn.get("timestamp") is not None),
+            None,
+        )
         db.create_session(
             session_id,
             source=_SOURCE_DB_NAMES[source],
             cwd=parsed.get("cwd"),
             origin_json=json.dumps(origin),
+            started_at=first_timestamp,
         )
         for turn in turns:
-            db.append_message(session_id, turn["role"], turn["content"])
+            db.append_message(
+                session_id,
+                turn["role"],
+                turn["content"],
+                timestamp=turn.get("timestamp"),
+            )
         # Carry the source store's usage across.  Written absolutely (the
         # imported row starts empty) so a resumed import shows the real
         # context meter and totals instead of a fresh session's zeros.

@@ -944,6 +944,38 @@ def cmd_sessions(args, sessions_parser=None):
         print(f"Exported {exported} session(s) to {output_dir}")
 
     elif action == "delete":
+        sessions_dir = get_son_of_anton_home() / "sessions"
+        if getattr(args, "all_sessions", False):
+            if args.session_id:
+                print("Pass either a session id or --all, not both.")
+                return 1
+            # include_children/archived/pinned: --all means all, including
+            # subagent runs and rows the browsing lists hide.
+            rows = db.list_sessions_rich(
+                limit=1_000_000,
+                include_children=True,
+                include_archived=True,
+                include_pinned=True,
+                compact_rows=True,
+            )
+            session_ids = [row["id"] for row in rows]
+            if not session_ids:
+                print("No sessions to delete.")
+                return
+            if not args.yes and not _confirm_prompt(
+                f"Delete ALL {len(session_ids)} session(s) and their messages? [y/N] "
+            ):
+                print("Cancelled.")
+                return
+            deleted = 0
+            for target_id in session_ids:
+                if db.delete_session(target_id, sessions_dir=sessions_dir):
+                    deleted += 1
+            print(f"Deleted {deleted} session(s).")
+            return
+        if not args.session_id:
+            print("Usage: son-of-anton sessions delete <session_id> | --all")
+            return 1
         resolved_session_id = db.resolve_session_id(args.session_id)
         if not resolved_session_id:
             print(f"Session '{args.session_id}' not found.")
@@ -963,7 +995,6 @@ def cmd_sessions(args, sessions_parser=None):
                 return
         elif _pinned_note:
             print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-        sessions_dir = get_son_of_anton_home() / "sessions"
         if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
             print(f"Deleted session '{resolved_session_id}'.")
         else:

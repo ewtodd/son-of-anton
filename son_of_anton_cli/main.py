@@ -275,6 +275,7 @@ from son_of_anton_cli.subcommands.rag import build_rag_parser
 from son_of_anton_cli.subcommands.mcp import build_mcp_parser
 from son_of_anton_cli.subcommands.problem import build_problem_parser
 from son_of_anton_cli.subcommands.completion import build_completion_parser
+from son_of_anton_cli.subcommands.nuke import build_nuke_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -3683,6 +3684,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "gateway",
         "mcp",
         "model",
+        "nuke",
         "pause",
         "problem",
         "resume",
@@ -3772,7 +3774,7 @@ def cmd_completion(args, parser=None):
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "chat", "completion", "config", "cron", "gateway", "mcp", "model",
-        "pause", "problem", "resume", "sessions", "skills", "status",
+        "nuke", "pause", "problem", "resume", "sessions", "skills", "status",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -4394,6 +4396,11 @@ def main():
     build_pause_parser(subparsers)
 
     # =========================================================================
+    # nuke command  (parser built in son_of_anton_cli/subcommands/nuke.py)
+    # =========================================================================
+    build_nuke_parser(subparsers)
+
+    # =========================================================================
     # cron command  (parser built in son_of_anton_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
@@ -4682,9 +4689,17 @@ def main():
     )
 
     sessions_delete = sessions_subparsers.add_parser(
-        "delete", help="Delete a specific session"
+        "delete", help="Delete a specific session, or every session with --all"
     )
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument(
+        "session_id", nargs="?", help="Session ID to delete"
+    )
+    sessions_delete.add_argument(
+        "--all",
+        dest="all_sessions",
+        action="store_true",
+        help="Delete every session in this home (confirms unless --yes)",
+    )
     sessions_delete.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )

@@ -967,6 +967,48 @@ def test_typing_mid_turn_queues_above_the_prompt(backend) -> None:
     asyncio.run(run())
 
 
+def test_bare_resume_opens_a_filterable_session_picker(backend) -> None:
+    """`/resume` with no argument is a picker, not a printed number list.
+
+    The modal mirrors the model picker: type to filter, arrow keys move,
+    Enter resumes the highlighted session.
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+    b._list_recent_sessions = lambda limit=10: [
+        {
+            "id": "20260101_000000_aaaaaa",
+            "title": "Fix login button",
+            "source": "cli",
+            "last_active": time.time(),
+        }
+    ]
+    resumed: list = []
+    b.run_slash = lambda cmd: resumed.append(cmd) or True
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            prompt = app.query_one("#input")
+            prompt.focus()
+            prompt.text = "/resume"
+            await pilot.press("enter")
+            await pilot.pause(0.4)
+            assert isinstance(app.screen, _tui.ChoiceModal), type(app.screen)
+            title = app.screen.query_one(".dialog-title", _tui.Static).content
+            assert "Resume" in str(title)
+
+            await pilot.press("enter")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not resumed:
+                await pilot.pause(0.05)
+            assert resumed == ["/resume 20260101_000000_aaaaaa"]
+
+    asyncio.run(run())
+
+
 def test_after_dispatch_runs_queued_follow_ups_before_backend_work(backend) -> None:
     """User follow-ups queued during a turn preempt backend-scheduled work.
 

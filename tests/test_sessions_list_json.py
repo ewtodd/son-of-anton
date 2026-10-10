@@ -88,3 +88,39 @@ def test_empty_result_is_an_empty_json_array(capsys, tmp_path, monkeypatch) -> N
     monkeypatch.chdir(tmp_path)
     cmd_sessions(_args(here=True))
     assert json.loads(capsys.readouterr().out) == []
+
+
+# ---------------------------------------------------------------------------
+# sessions delete --all
+# ---------------------------------------------------------------------------
+
+def _delete_args(*, session_id=None, all_sessions=False, yes=True):
+    return argparse.Namespace(
+        sessions_action="delete",
+        session_id=session_id,
+        all_sessions=all_sessions,
+        yes=yes,
+    )
+
+
+def test_sessions_delete_all_removes_every_row(capsys, tmp_path) -> None:
+    _make_session("20261001_000001_aaaaaa", str(tmp_path), title="one")
+    _make_session("20261001_000002_bbbbbb", str(tmp_path), title="two")
+    _make_session("20261001_000003_cccccc", str(tmp_path))
+
+    cmd_sessions(_delete_args(all_sessions=True))
+    assert "Deleted 3 session(s)." in capsys.readouterr().out
+
+    db = SessionDB()
+    try:
+        assert db.list_sessions_rich(
+            limit=10, include_children=True, include_archived=True
+        ) == []
+    finally:
+        db.close()
+
+
+def test_sessions_delete_all_rejects_an_explicit_id(capsys) -> None:
+    rc = cmd_sessions(_delete_args(session_id="20261001_000001_aaaaaa", all_sessions=True))
+    assert rc == 1
+    assert "not both" in capsys.readouterr().out

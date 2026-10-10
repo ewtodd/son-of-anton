@@ -440,6 +440,32 @@ def test_import_opencode_session_end_to_end(tmp_path):
         session_db.close()
 
 
+def test_import_preserves_foreign_timestamps(tmp_path):
+    """An import must land at its real age, not at import time.
+
+    ``started_at`` and every message timestamp come from the source store, so
+    a back-catalogue import sorts where it belongs instead of hogging the top
+    of /resume and `sessions list`.
+    """
+    db_path = _basic_opencode_fixture(tmp_path / "opencode.db")
+    session_db = SessionDB()
+    try:
+        new_id = import_foreign_session(
+            "opencode", db_path, db=session_db, foreign_id="ses_test0001"
+        )
+        started = session_db._conn.execute(
+            "SELECT started_at FROM sessions WHERE id = ?", (new_id,)
+        ).fetchone()[0]
+        assert float(started) == 1000.0
+        first_msg = session_db._conn.execute(
+            "SELECT timestamp FROM messages WHERE session_id = ? ORDER BY id LIMIT 1",
+            (new_id,),
+        ).fetchone()[0]
+        assert float(first_msg) == 1000.0
+    finally:
+        session_db.close()
+
+
 def test_run_sessions_import_opencode_by_id(tmp_path):
     db_path = _basic_opencode_fixture(tmp_path / "opencode.db")
     args = SimpleNamespace(

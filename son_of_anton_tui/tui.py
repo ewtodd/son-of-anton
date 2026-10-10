@@ -1921,6 +1921,12 @@ if _TEXTUAL_AVAILABLE:
             if backend.consume_resume_selection(value):
                 await self._after_dispatch()
                 return
+            # Bare /resume opens the filterable session picker instead of the
+            # classic numbered printout.
+            first_parts = value.strip().split(None, 1)
+            if len(first_parts) == 1 and first_parts[0].lower() in ("/resume", ":resume"):
+                await self._open_resume_picker()
+                return
             if _cli._looks_like_slash_command(value) or value in (":q", ":quit"):
                 self._reset_note_block()
                 self._feed.add_rich(Text(f"⚙ {value}", style="dim"))
@@ -1945,6 +1951,54 @@ if _TEXTUAL_AVAILABLE:
                     return
             self._add_user_turn(value)
             await self._run_in_worker("turn", partial(backend.run_turn, value, images))
+            await self._after_dispatch()
+
+        async def _open_resume_picker(self) -> None:
+            """Bare /resume: a filterable session list like the model picker."""
+            backend = self.backend
+            sessions = backend._list_recent_sessions(limit=500) if backend is not None else []
+            if not sessions:
+                self.notify("no sessions to resume", timeout=3.0)
+                return
+            from son_of_anton_cli.main import _relative_time
+
+            rows = []
+            for session in sessions:
+                session_id = str(session.get("id") or "")
+                if not session_id:
+                    continue
+                title = str(session.get("title") or "").strip() or "untitled"
+                source = str(session.get("source") or "")
+                when = _relative_time(session.get("last_active"))
+                detail = f"{source} · {when}" if source else when
+                rows.append((session_id, title, detail))
+            if not rows:
+                self.notify("no sessions to resume", timeout=3.0)
+                return
+
+            def _picked(result: Any) -> None:
+                if result:
+                    self.run_worker(
+                        self._resume_session(str(result)),
+                        group="dispatch",
+                        exclusive=False,
+                    )
+
+            self._push(ChoiceModal("Resume session", rows, filterable=True), _picked)
+
+        async def _resume_session(self, session_id: str) -> None:
+            backend = self.backend
+            if backend is None:
+                return
+            self._reset_note_block()
+            self._feed.add_rich(Text(f"⚙ /resume {session_id}", style="dim"))
+            self._transcript_scroll()
+            keep_going = await self._run_in_worker(
+                "command", partial(backend.run_slash, f"/resume {session_id}")
+            )
+            if keep_going is False:
+                self.exit()
+                return
             await self._after_dispatch()
 
         async def _after_dispatch(self) -> None:
