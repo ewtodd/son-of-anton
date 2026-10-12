@@ -132,3 +132,58 @@ def test_the_sdk_does_not_retry_underneath_us(monkeypatch) -> None:
     )
     client, _ = llm._resolve_endpoint(_Config())
     assert client.max_retries == 0
+
+
+def _llama_cpp_overflow(n_prompt: int, n_ctx: int):
+    """What llama-server (and llama-swap in front of it) answers on overflow."""
+    body = {
+        "error": {
+            "code": 400,
+            "message": "the request exceeds the available context size, try increasing it",
+            "type": "exceed_context_size_error",
+            "n_prompt_tokens": n_prompt,
+            "n_ctx": n_ctx,
+        }
+    }
+    request = httpx.Request("POST", "http://10.0.0.6:4002/v1/chat/completions")
+    response = httpx.Response(400, request=request, json=body)
+    return openai.BadRequestError(
+        f"Error code: 400 - {body}", response=response, body=body
+    )
+
+
+def test_a_llama_cpp_overflow_is_a_context_error_with_its_sizes() -> None:
+    with pytest.raises(ContextTooLongError) as caught:
+        _raise_if_context_error(_llama_cpp_overflow(40_123, 32_768))
+    assert caught.value.limit == 32_768
+    assert caught.value.input_tokens == 40_123
+
+
+def test_a_llama_cpp_overflow_corrects_the_runs_window(monkeypatch) -> None:
+    from autophysicist.core.config import Config
+
+    calls = []
+
+    def _create(client, model, messages, max_tokens, config, tools=None, **_):
+        calls.append(max_tokens)
+        if len(calls) == 1:
+            _raise_if_context_error(_llama_cpp_overflow(40_000, 32_768))
+        return "ok"
+
+    monkeypatch.setattr(llm, "_create_with_retry", _create)
+    config = Config()
+    config.context_length = 0
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "", "tool_calls": []},
+        {"role": "tool", "content": "x" * 200_000, "tool_call_id": "t"},
+    ]
+    assert llm._request_round(None, "m", messages, 4_096, config, None) == "ok"
+    assert config.context_length == 32_768
+    assert llm.resolve_context_window(config) == 32_768
+
+
+def test_an_unrelated_bad_request_is_not_an_overflow() -> None:
+    exc = _status_error(openai.BadRequestError, 400, "tools[0].function.name is invalid")
+    _raise_if_context_error(exc)  # must not raise

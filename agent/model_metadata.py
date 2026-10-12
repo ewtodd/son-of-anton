@@ -2442,8 +2442,15 @@ def get_model_context_length(
     config_context_length: int | None = None,
     provider: str = "",
     custom_providers: list | None = None,
+    *,
+    unknown: int | None = None,
 ) -> int:
     """Get the context length for a model.
+
+    ``unknown`` replaces the 256K default fallback (step 9 and its custom-
+    endpoint twin) when no source knows the window — pass ``0`` to tell
+    "detection failed" apart from a model whose real window is 256K. The
+    fallback warning is left to such a caller.
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
@@ -2583,6 +2590,8 @@ def get_model_context_length(
     # persisting it under a junk "@<base_url>" cache key. Fall back to the
     # default immediately instead.
     if not str(model or "").strip():
+        if unknown is not None:
+            return unknown
         logger.info(
             "No model id provided for context length resolution — defaulting to %s tokens.",
             f"{DEFAULT_FALLBACK_CONTEXT:,}",
@@ -2743,6 +2752,8 @@ def get_model_context_length(
                     return length
             # Same silent-256K bug class as the step-9 fallback below —
             # warn here too so custom/local endpoints aren't left invisible.
+            if unknown is not None:
+                return unknown
             _warn_context_length_fallback(model, base_url)
             return DEFAULT_FALLBACK_CONTEXT
 
@@ -2892,6 +2903,8 @@ def get_model_context_length(
     # 9. Default fallback — warn (deduped per model+endpoint) so
     #    small-context models don't silently get 256K. See
     #    _warn_context_length_fallback for rationale.
+    if unknown is not None:
+        return unknown
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 

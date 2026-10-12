@@ -304,3 +304,89 @@ def test_repeated_overflows_stop_the_run(monkeypatch, tmp_path) -> None:
 def test_other_failures_still_move_on(monkeypatch, tmp_path) -> None:
     attempted = _run_with(monkeypatch, tmp_path, RuntimeError("flaky"))
     assert attempted == [1, 2, 3, 4, 5, 6]
+
+
+# --- an unknown window is unknown, and budgets assume a small one -------------
+
+
+def _endpoint(base_url: str, model: str):
+    return lambda config: (SimpleNamespace(base_url=base_url, api_key="none"), model)
+
+
+def test_an_undetectable_window_resolves_to_unknown_not_256k(monkeypatch) -> None:
+    from autophysicist import llm
+    from autophysicist.core.config import Config
+
+    llm._CONTEXT_WINDOWS.clear()
+    # A local endpoint that answers nothing, and a model no table knows.
+    monkeypatch.setattr(
+        llm, "_resolve_endpoint", _endpoint("http://127.0.0.1:1/v1", "zz-unlisted-model-q")
+    )
+    config = Config()
+    config.context_length = 0
+    assert llm.resolve_context_window(config) == 0
+
+
+def test_a_known_model_family_still_resolves(monkeypatch) -> None:
+    from autophysicist import llm
+    from autophysicist.core.config import Config
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    llm._CONTEXT_WINDOWS.clear()
+    monkeypatch.setattr(
+        llm, "_resolve_endpoint", _endpoint("http://127.0.0.1:1/v1", "qwen3-coder-30b")
+    )
+    config = Config()
+    config.context_length = 0
+    assert llm.resolve_context_window(config) == DEFAULT_CONTEXT_LENGTHS["qwen3-coder"]
+
+
+def test_an_unknown_window_still_bounds_memory_but_never_stops_the_run(
+    monkeypatch, tmp_path
+) -> None:
+    from autophysicist import llm, runner
+    from autophysicist.core.config import Config
+    from autophysicist.core.metrics import MetricsTracker
+    from autophysicist.memory import Scratchpad
+    from autophysicist.utils.sandbox import SandboxPolicy
+
+    memory = PermanentMemory(tmp_path)
+    _fill(memory, 60, 3_000)  # far more than a small window's memory share
+    config = Config()
+    config.context_length = 0
+    monkeypatch.setattr(runner, "resolve_context_window", lambda c: 0)
+    monkeypatch.setattr(runner, "call_llm", lambda **k: (_ for _ in ()).throw(RuntimeError()))
+    runner._configure_memory_view(memory, config, 0)
+    view = memory.read_for_prompt()
+    assert view != memory.read_full()
+    assert estimate_tokens(view) <= llm.ASSUMED_CONTEXT_WINDOW * runner.MEMORY_CONTEXT_SHARE * 1.05
+
+    # The assumed window is a budget, not a limit: a prompt bigger than it
+    # still goes to the model (only a stated / reported window refuses).
+    sent = []
+
+    def _loop(**kwargs):
+        sent.append(kwargs["user_content"])
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(runner, "run_agent_loop", _loop)
+    monkeypatch.setattr("autophysicist.llm._resolve_endpoint", lambda c: (None, "m"))
+    with pytest.raises(RuntimeError, match="stop here"):
+        runner._run_iteration(
+            system_prompt="s",
+            problem_text="p" * 200_000,
+            answer_template="",
+            config=config,
+            permanent_memory=memory,
+            scratchpad=Scratchpad(tmp_path),
+            workspace_root=tmp_path,
+            iteration=1,
+            max_iterations=1,
+            token_budget=64_000,
+            tool_call_cap=15,
+            max_rounds=3,
+            sandbox_timeout=1,
+            metrics=MetricsTracker(),
+            policy=SandboxPolicy(interpreter="python3"),
+        )
+    assert sent

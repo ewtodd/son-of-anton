@@ -42,6 +42,7 @@ from .core.console import console  # noqa: E402
 from .core.models import resolve_models  # noqa: E402
 from .core.problem_spec import ProblemSpec, write_spec  # noqa: E402
 from .llm import (  # noqa: E402
+    ASSUMED_CONTEXT_WINDOW,
     AgentResult,
     ContextTooLongError,
     MIN_OUTPUT_TOKENS,
@@ -136,12 +137,19 @@ def _memory_condenser(config: Config):
     return condense
 
 
+def _budget_window(window: int) -> int:
+    """The window to size the prompt's views by: the known one, else the
+    conservative ``ASSUMED_CONTEXT_WINDOW`` — never unbounded."""
+    return window if window > 0 else ASSUMED_CONTEXT_WINDOW
+
+
 def _configure_memory_view(
     permanent_memory: PermanentMemory, config: Config, window: int
 ) -> None:
-    """Bound the memory view to its share of *window* (0 = unbounded)."""
+    """Bound the memory view to its share of *window* (0 = unknown, so the
+    assumed window)."""
     permanent_memory.configure_view(
-        int(window * MEMORY_CONTEXT_SHARE) if window else 0,
+        int(_budget_window(window) * MEMORY_CONTEXT_SHARE),
         condense=_memory_condenser(config),
     )
 
@@ -248,7 +256,7 @@ def _run_iteration(
         iteration,
         max_iterations,
         critique,
-        scratchpad_max_tokens=int(window * SCRATCHPAD_CONTEXT_SHARE) if window else 0,
+        scratchpad_max_tokens=int(_budget_window(window) * SCRATCHPAD_CONTEXT_SHARE),
     )
 
     executor = ManagerToolExecutor(
@@ -280,6 +288,8 @@ def _run_iteration(
         )
 
     if window:
+        # Only a KNOWN window (stated, detected, or reported by an overflow)
+        # can stop a run here — never the assumed one.
         # Optimistic (4 chars a token): this only stops what certainly cannot
         # fit. A borderline prompt is left to the provider, whose overflow
         # error run_agent_loop turns into the same PromptTooLargeError.
@@ -618,14 +628,12 @@ def run_autophysicist(
     )
     window = resolve_context_window(config)
     console.print(
-        f"Context:    {window:,} tokens"
-        + (
-            f" (permanent memory bounded to {int(window * MEMORY_CONTEXT_SHARE):,})"
-            if window
-            else ""
-        )
+        f"Context:    {window:,} tokens (permanent memory bounded to "
+        f"{int(window * MEMORY_CONTEXT_SHARE):,})"
         if window
-        else "Context:    unknown — permanent memory is not bounded; set "
+        else f"Context:    unknown — assuming {ASSUMED_CONTEXT_WINDOW:,} tokens "
+        f"(permanent memory bounded to "
+        f"{int(ASSUMED_CONTEXT_WINDOW * MEMORY_CONTEXT_SHARE):,}); set "
         "physics.context_length"
     )
     console.print(f"Runtime:    {policy.interpreter}")

@@ -210,8 +210,12 @@ def resolve_context_window(config) -> int:
     ``config.context_length`` (``physics.context_length``, or a window an
     overflow error reported) wins. Otherwise the main agent's resolver
     answers — custom_providers per-model ``context_length``, the endpoint's
-    ``/models`` metadata, known model families — for the base URL and model
-    the physics calls actually use.
+    ``/models`` metadata, a llama.cpp / vLLM server's own report, known
+    model families — for the base URL and model the physics calls actually
+    use. When none of those knows, the answer is 0, not the main agent's
+    256K placeholder: a run sized to a guess that large overflows a small
+    local window every iteration. Callers bound by
+    ``ASSUMED_CONTEXT_WINDOW`` in that case.
     """
     explicit = int(getattr(config, "context_length", 0) or 0)
     if explicit > 0:
@@ -234,6 +238,7 @@ def resolve_context_window(config) -> int:
                         str(model),
                         base_url=base_url,
                         api_key="" if api_key == "none" else api_key,
+                        unknown=0,
                     )
                     or 0
                 )
@@ -241,6 +246,14 @@ def resolve_context_window(config) -> int:
                 window = 0
         _CONTEXT_WINDOWS[key] = window
     return _CONTEXT_WINDOWS[key]
+
+
+#: The window assumed for budgeting when nothing knows the real one: small
+#: enough for a default llama.cpp / Ollama deployment of a current model, so
+#: the memory and scratchpad views stay bounded. Only a size the provider
+#: or the user states stops a run up front; an overflow error naming the
+#: real window replaces this for the rest of the run.
+ASSUMED_CONTEXT_WINDOW = 32_768
 
 
 def note_context_window(config, limit: int) -> None:
@@ -258,6 +271,17 @@ _CONTEXT_ERROR_MARKERS = (
     "reduce the length",
     "input is too long",
     "prompt is too long",
+    # vLLM ("... exceeds the max_model_len")
+    "max_model_len",
+    # llama.cpp / llama-server / llama-swap: HTTP 400, type
+    # exceed_context_size_error, "the request exceeds the available context
+    # size, try increasing it", with n_prompt_tokens / n_ctx in the body.
+    # The same phrases agent/error_classifier.py keys its llama.cpp
+    # overflow detection on.
+    "exceed_context_size_error",
+    "context size",
+    "slot context",
+    "n_ctx_slot",
 )
 
 
@@ -302,11 +326,17 @@ def _clamp_physics_reasoning_effort(effort: str, model: str, config) -> str:
 #: and trimming the request does not.
 _CONTEXT_ERROR_STATUSES = (400, 413, 422)
 
-_LIMIT_RE = re.compile(r"maximum context length is (\d+)")
+_LIMIT_RE = re.compile(
+    r"maximum context length is (\d+)"
+    # llama.cpp's JSON error body (json.dumps or the SDK's dict repr)
+    r"""|["']n_ctx["']\s*:\s*(\d+)"""
+    r"|n_ctx_slot\s*[=:]\s*(\d+)"
+)
 _REQUESTED_RE = re.compile(
     r"\((\d+) in the messages"
     r"|messages resulted in (\d+) tokens"
     r"|request has (\d+) input tokens"
+    r"""|["']n_prompt_tokens["']\s*:\s*(\d+)"""
 )
 
 
@@ -321,8 +351,10 @@ def _raise_if_context_error(exc: BaseException) -> None:
     Only a request-shaped status counts (400/413/422): a 429 whose body says
     "too many tokens" is a rate limit, and stays transient. When the provider
     names its window ("maximum context length is N" — vLLM and OpenAI both
-    do) and the prompt size, both ride on the error so ``run_agent_loop`` can
-    size its recovery instead of guessing.
+    do; llama.cpp puts ``n_ctx`` / ``n_prompt_tokens`` in the JSON body) and
+    the prompt size, both ride on the error so ``run_agent_loop`` can size
+    its recovery and ``note_context_window`` can correct the window instead
+    of guessing.
     """
     status = getattr(exc, "status_code", None)
     if status is not None and status not in _CONTEXT_ERROR_STATUSES:
@@ -341,7 +373,7 @@ def _raise_if_context_error(exc: BaseException) -> None:
     requested = 0
     match = _LIMIT_RE.search(text)
     if match:
-        limit = int(match.group(1))
+        limit = int(next(g for g in match.groups() if g))
     match = _REQUESTED_RE.search(text)
     if match:
         requested = int(next(g for g in match.groups() if g))
