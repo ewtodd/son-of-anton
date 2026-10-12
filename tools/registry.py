@@ -17,6 +17,7 @@ Import chain (circular-import safe):
 import ast
 import functools
 import importlib
+import hashlib
 import json
 import logging
 import sys
@@ -488,6 +489,45 @@ class ToolRegistry:
         with self._lock:
             target = self._tools if scope is None else self._scoped_tools.get(scope, {})
             return target.get(name)
+
+    def schema_fingerprint(self, scope: Optional[str] = None) -> str:
+        """Return a content hash of the tool surface an agent would freeze.
+
+        Covers every merged entry's (name, toolset, schema) plus the toolset
+        aliases — what ``get_tool_definitions`` resolves from — and nothing
+        else. Unlike ``_generation`` (bumped on every mutation, including a
+        re-registration of an identical entry, e.g. an MCP refresh answering
+        a no-op ``tools/list_changed``), the fingerprint changes only when
+        the effective schema set does, so it is the right key for "must a
+        cached agent be rebuilt?". Memoized per (scope, generation).
+        """
+        active_scope = scope or self.current_scope_key()
+        with self._lock:
+            generation = self._generation
+            memo = getattr(self, "_fingerprint_memo", None)
+            if memo is not None and memo[0] == (active_scope, generation):
+                return memo[1]
+            entries = list(self._merged_tools(active_scope).values())
+            aliases = dict(self._toolset_aliases)
+        payload = {
+            "tools": sorted(
+                ([e.name, e.toolset, e.schema] for e in entries),
+                key=lambda item: item[0],
+            ),
+            "aliases": aliases,
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=lambda o: type(o).__name__,
+            ).encode("utf-8")
+        ).hexdigest()
+        with self._lock:
+            if self._generation == generation:
+                self._fingerprint_memo = ((active_scope, generation), digest)
+        return digest
 
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""

@@ -22392,11 +22392,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         non-dict sections yield None values, which still contribute to the
         signature (so 'absent' vs 'present-and-null' differ).
 
-        The live tool registry generation is included too.  MCP reloads and
-        dynamic MCP tool-list changes mutate the registry without necessarily
-        changing config.toml.  Cached AIAgent instances freeze their tool
-        schemas at construction time, so a registry generation change must
-        rebuild the agent before the next turn.
+        A content fingerprint of the live tool registry is included too.
+        MCP reloads and dynamic MCP tool-list changes mutate the registry
+        without necessarily changing config.toml, and cached AIAgent
+        instances freeze their tool schemas at construction time, so a
+        changed schema set must rebuild the agent before the next turn.
+        The fingerprint (not the raw ``_generation`` counter) is the key: the
+        counter also moves when a refresh re-registers identical tools, and
+        each needless rebuild throws away the conversation's prompt cache.
         """
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
@@ -22413,9 +22416,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         try:
             from tools.registry import registry
 
-            out["tools.registry_generation"] = getattr(registry, "_generation", None)
+            out["tools.registry_fingerprint"] = registry.schema_fingerprint()
         except Exception:
-            out["tools.registry_generation"] = None
+            out["tools.registry_fingerprint"] = None
 
         # Honcho identity-mapping keys live in honcho.json, not user_config.
         # Only read that file when Honcho is the active memory provider.
