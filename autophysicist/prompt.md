@@ -16,7 +16,7 @@ You operate in iterations. Each iteration, you receive:
 
 You have no memory of previous iterations beyond what is written in permanent memory and the visible scratchpad entries. After each iteration, your context is completely erased. Anything you do not write down is permanently lost.
 
-You will be notified when your context budget for the current iteration is running low. At that point, you will no longer be able to dispatch sub-agents. You must finalize your memory writes and end your turn.
+You will be notified when the current iteration has spent its token budget (new input plus output tokens, yours and your sub-agents'). At that point, you will no longer be able to dispatch sub-agents. You must finalize your memory writes and end your turn.
 
 ---
 

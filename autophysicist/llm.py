@@ -62,7 +62,12 @@ def is_transient(exc: BaseException) -> bool:
 
 @dataclass
 class LLMResponse:
-    """Response from an LLM call."""
+    """Response from an LLM call.
+
+    ``new_input_tokens`` is the part of ``input_tokens`` that was new to the
+    conversation (see :func:`new_prompt_tokens`); for a one-shot call that is
+    the whole prompt.
+    """
 
     text: str
     input_tokens: int
@@ -73,11 +78,20 @@ class LLMResponse:
     answer_tokens: int = 0
     reasoning_content: str = ""
     log_path: str = ""
+    new_input_tokens: int = 0
 
 
 @dataclass
 class AgentResult:
-    """Result from a multi-round tool-use agent loop."""
+    """Result from a multi-round tool-use agent loop.
+
+    ``total_input_tokens`` sums every round's ``prompt_tokens`` — each round
+    re-sends the whole conversation, so it grows quadratically with the round
+    count and measures how much prompt the endpoint was handed, not how much
+    work the loop added. ``total_new_input_tokens`` counts each prompt token
+    once (see :func:`new_prompt_tokens`); with ``total_output_tokens`` it is
+    what the token budget charges.
+    """
 
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
@@ -90,6 +104,49 @@ class AgentResult:
     token_alert_fired: bool = False
     total_reasoning_tokens: int = 0
     total_answer_tokens: int = 0
+    total_new_input_tokens: int = 0
+
+
+def _cached_prompt_tokens(usage) -> Optional[int]:
+    """``usage.prompt_tokens_details.cached_tokens``, or None when not reported."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return None
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens")
+    else:
+        cached = getattr(details, "cached_tokens", None)
+    if isinstance(cached, bool) or not isinstance(cached, int):
+        return None
+    return cached
+
+
+def new_prompt_tokens(usage, previous_prompt_tokens: int) -> int:
+    """How many of this request's prompt tokens are new to the conversation.
+
+    A tool loop re-sends its whole history every round, so ``prompt_tokens``
+    counts round 1's prompt again in round 2, 3, ... — summing it charges a
+    30-round iteration roughly 15 times for its system prompt. A spend budget
+    wants each token once:
+
+    * When the provider reports a prefix-cache hit
+      (``prompt_tokens_details.cached_tokens > 0``), the uncached remainder
+      ``prompt_tokens - cached_tokens`` is exactly the new part.
+    * Otherwise — the field is absent, or a proxy fills it with a placeholder
+      0 — it is the growth since the previous request of the same
+      conversation, ``prompt_tokens - previous_prompt_tokens``.
+    * When that growth is negative the conversation was rewritten (trimmed to
+      fit the window, or a fresh conversation); the whole prompt is new again.
+
+    *previous_prompt_tokens* is 0 for a conversation's first request, which
+    makes its whole prompt new.
+    """
+    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+    cached = _cached_prompt_tokens(usage)
+    if cached is not None and 0 < cached <= prompt:
+        return prompt - cached
+    delta = prompt - int(previous_prompt_tokens or 0)
+    return prompt if delta < 0 else delta
 
 
 def _load_agent_config() -> dict:
@@ -371,6 +428,9 @@ def _continue_truncated(
     """
     retries = int(getattr(config, "max_tokens_retries", 0) or 0)
     attempt = 0
+    # The request before each continuation, for new_prompt_tokens: the
+    # continuation re-sends it plus the text so far.
+    last_prompt = result.input_tokens
     while result.stop_reason == "max_tokens" and attempt < retries:
         attempt += 1
         conversation = (
@@ -392,7 +452,9 @@ def _continue_truncated(
             output_tokens=getattr(resp.usage, "completion_tokens", 0) or 0,
             stop_reason="max_tokens" if finish == "length" else finish,
             duration=duration,
+            new_input_tokens=new_prompt_tokens(resp.usage, last_prompt),
         )
+        last_prompt = continuation.input_tokens
         _log_usage(
             config, f"{agent_name}_continue{attempt}", iteration, continuation, duration
         )
@@ -400,6 +462,7 @@ def _continue_truncated(
             break
         result.text += continuation.text
         result.input_tokens += continuation.input_tokens
+        result.new_input_tokens += continuation.new_input_tokens
         result.output_tokens += continuation.output_tokens
         result.duration += continuation.duration
         result.stop_reason = continuation.stop_reason
@@ -436,6 +499,7 @@ def call_llm(
         output_tokens=getattr(resp.usage, "completion_tokens", 0) or 0,
         stop_reason="max_tokens" if finish == "length" else finish,
         duration=duration,
+        new_input_tokens=new_prompt_tokens(resp.usage, 0),
     )
     _log_usage(config, agent_name, iteration, result, duration)
     # messages[1:] — the system turn is prepended by _continue_truncated, and
@@ -499,7 +563,9 @@ def run_agent_loop(
 
     all_tool_calls: list[ToolCall] = []
     total_input = 0
+    total_new_input = 0
     total_output = 0
+    previous_prompt = 0
     start = time.time()
 
     for round_num in range(1, max_rounds + 1):
@@ -519,8 +585,16 @@ def run_agent_loop(
         )
         round_input = getattr(resp.usage, "prompt_tokens", 0) or 0
         round_output = getattr(resp.usage, "completion_tokens", 0) or 0
+        round_new_input = new_prompt_tokens(resp.usage, previous_prompt)
+        previous_prompt = round_input
         total_input += round_input
+        total_new_input += round_new_input
         total_output += round_output
+        # What the token budget charges: each prompt token once, plus output.
+        spent = {
+            "round_new_input": round_new_input,
+            "total_new_input": total_new_input,
+        }
 
         choice = resp.choices[0]
         message = choice.message
@@ -532,6 +606,7 @@ def run_agent_loop(
                 text=message.content or "",
                 tool_calls=all_tool_calls,
                 total_input_tokens=total_input,
+                total_new_input_tokens=total_new_input,
                 total_output_tokens=total_output,
                 rounds=round_num,
                 duration=time.time() - start,
@@ -539,7 +614,7 @@ def run_agent_loop(
                 truncated=truncated,
             )
             if on_round:
-                on_round(round_num, stop_reason, [], total_input, total_output, round_input, round_output)
+                on_round(round_num, stop_reason, [], total_input, total_output, round_input, round_output, **spent)
             return result
 
         round_calls: list[ToolCall] = []
@@ -598,7 +673,7 @@ def run_agent_loop(
 
         stop_reason = "max_tokens" if truncated else "tool_use"
         if on_round:
-            on_round(round_num, stop_reason, round_calls, total_input, total_output, round_input, round_output)
+            on_round(round_num, stop_reason, round_calls, total_input, total_output, round_input, round_output, **spent)
 
         end_round = getattr(tool_executor, "end_round", None)
         if callable(end_round):
@@ -611,6 +686,7 @@ def run_agent_loop(
                 text=message.content or "",
                 tool_calls=all_tool_calls,
                 total_input_tokens=total_input,
+                total_new_input_tokens=total_new_input,
                 total_output_tokens=total_output,
                 rounds=round_num,
                 duration=time.time() - start,
@@ -622,6 +698,7 @@ def run_agent_loop(
         text="",
         tool_calls=all_tool_calls,
         total_input_tokens=total_input,
+        total_new_input_tokens=total_new_input,
         total_output_tokens=total_output,
         rounds=max_rounds,
         duration=time.time() - start,

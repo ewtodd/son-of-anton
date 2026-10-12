@@ -13,7 +13,7 @@ from .subagent import dispatch_subagent
 
 
 class ManagerToolExecutor:
-    """Executes the Manager's tools and enforces the per-iteration budget.
+    """Executes the Manager's tools and enforces the per-iteration token budget.
 
     Conforms to the duck-type interface expected by ``run_agent_loop``:
     ``execute()``, ``active_tools``, ``stop_after_round``,
@@ -21,21 +21,30 @@ class ManagerToolExecutor:
 
     Wind-down contract (enforced in :meth:`end_round`):
 
-    * **Soft trigger** — fires once when either the running token total
+    * **Soft trigger** — fires once when either the iteration's token spend
       reaches ``token_budget`` *or* ``_tool_call_count`` reaches
       ``tool_call_cap``. Flips ``_wind_down`` so :attr:`active_tools`
       returns :attr:`WIND_DOWN_TOOLS` (``dispatch_subagent`` removed) and
       injects a user-visible warning. The Manager is expected to save
       state and call ``end_turn``.
-    * **Hard trigger** — fires when the running total reaches
+    * **Hard trigger** — fires when the spend reaches
       ``HARD_BUDGET_MULTIPLIER × token_budget`` (default 1.5×). Sets
       ``stop_after_round = True`` so ``run_agent_loop`` exits even if the
       Manager has not called ``end_turn``; any unsaved state is lost.
 
-    Token accounting: the Manager's own conversation tokens are supplied
-    by ``run_agent_loop`` via the ``on_round`` callback (see
-    :meth:`update_manager_tokens`). Sub-agent tokens are added here when
+    Token accounting — the budget is a SPEND cap for one iteration (the
+    executor is built fresh each iteration), not a context-window size. It
+    charges every token once: prompt tokens that are new to a conversation
+    (see :func:`autophysicist.llm.new_prompt_tokens` — a re-sent history or a
+    cached prefix is not charged again) plus every output token. The
+    Manager's share arrives from ``run_agent_loop`` through the ``on_round``
+    callback (:meth:`update_manager_tokens`); each sub-agent's is added when
     ``dispatch_subagent`` returns. The wind-down total is the sum of both.
+
+    It used to sum each round's full ``prompt_tokens``. Every round re-sends
+    the whole conversation, so that total grew quadratically with the round
+    count and a 262k budget wound the Manager down after six to eight rounds
+    of a conversation that had spent a fraction of it.
     """
 
     # ---- Tool definitions (OpenAI canonical format) ----
@@ -305,7 +314,7 @@ class ManagerToolExecutor:
         self._tool_call_count = 0
         self._subagent_counter = 0
 
-        # Token tracking — updated by on_round callback from runner
+        # Token spend — updated by the on_round callback from the runner.
         self._total_manager_tokens: int = 0
         self.subagent_input_tokens: int = 0
         self.subagent_output_tokens: int = 0
@@ -325,9 +334,23 @@ class ManagerToolExecutor:
             return self.wind_down_tools()
         return self.all_tools()
 
-    def update_manager_tokens(self, total_input: int, total_output: int) -> None:
-        """Called by on_round callback to track manager conversation tokens."""
-        self._total_manager_tokens = total_input + total_output
+    def update_manager_tokens(self, total_new_input: int, total_output: int) -> None:
+        """Record the Manager's spend so far this iteration.
+
+        *total_new_input* is prompt tokens counted once each
+        (``AgentResult.total_new_input_tokens``), not the sum of every round's
+        re-sent prompt.
+        """
+        self._total_manager_tokens = total_new_input + total_output
+
+    @property
+    def tokens_spent(self) -> int:
+        """This iteration's spend: the Manager's plus every sub-agent's."""
+        return (
+            self._total_manager_tokens
+            + self.subagent_input_tokens
+            + self.subagent_output_tokens
+        )
 
     def end_round(self) -> str | None:
         """Called by run_agent_loop after each round's tool results.
@@ -335,28 +358,25 @@ class ManagerToolExecutor:
         Returns a string to inject as user message, or None.
         Handles budget and tool-call-cap wind-down transitions.
         """
-        total = (
-            self._total_manager_tokens
-            + self.subagent_input_tokens
-            + self.subagent_output_tokens
-        )
+        total = self.tokens_spent
 
         # Hard cap — force immediate termination
         if total >= self.token_budget * self.HARD_BUDGET_MULTIPLIER:
             self.stop_after_round = True
             return (
-                f"HARD BUDGET LIMIT: {total:,} tokens used "
-                f"(hard cap: {int(self.token_budget * self.HARD_BUDGET_MULTIPLIER):,}). "
-                "Iteration is being terminated. Any unsaved results are lost."
+                f"HARD TOKEN BUDGET LIMIT: this iteration has spent {total:,} "
+                "tokens (hard cap: "
+                f"{int(self.token_budget * self.HARD_BUDGET_MULTIPLIER):,}). "
+                "The iteration is being terminated. Any unsaved results are lost."
             )
 
         # Wind-down from token budget
         if not self._wind_down and total >= self.token_budget:
             self._wind_down = True
             return (
-                "CONTEXT BUDGET WARNING: You have used approximately "
-                f"{total:,} tokens this iteration "
-                f"(budget: {self.token_budget:,}). "
+                "TOKEN BUDGET WARNING: this iteration has spent about "
+                f"{total:,} tokens — new input plus output, yours and your "
+                f"sub-agents' — against its budget of {self.token_budget:,}. "
                 "Dispatching sub-agents is no longer available. "
                 "Please write any important results to permanent memory "
                 "or scratchpad, then call end_turn()."
@@ -457,7 +477,11 @@ class ManagerToolExecutor:
             mcp=self.mcp,
         )
 
-        self.subagent_input_tokens += result.total_input_tokens
+        # Spend, not re-sent prompt: a sub-agent's tool loop re-sends its
+        # history every round just as the Manager's does.
+        self.subagent_input_tokens += getattr(
+            result, "new_input_tokens", result.total_input_tokens
+        )
         self.subagent_output_tokens += result.total_output_tokens
 
         return result.format_for_manager(), False

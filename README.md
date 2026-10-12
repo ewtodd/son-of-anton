@@ -403,6 +403,14 @@ would have worked.
 
 Both are settable declaratively as `physics.max_iterations` and
 `physics.script_timeout`.
+
+**`--token-budget` is a spend cap per iteration** (`physics.token_budget`,
+default 64000). It charges new input plus output tokens, the Manager's and its
+sub-agents': a tool loop re-sends its whole conversation every round, and that
+re-sent history — or a prefix the endpoint reports as cached — is counted once,
+not every round. At the budget the Manager loses `dispatch_subagent` and is told
+to save its work and end the iteration; at 1.5× the iteration is cut off. It is
+not the model's context window.
 <!---->
 The same thing is reachable from a chat turn — `/mode physics`, then the path —
 which is what the gateway does with a Signal message.

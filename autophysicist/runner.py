@@ -171,7 +171,10 @@ def _run_iteration(
         round_output,
         **kwargs,
     ):
-        executor.update_manager_tokens(total_input, total_output)
+        # Spend, not the sum of re-sent prompts: see ManagerToolExecutor.
+        executor.update_manager_tokens(
+            kwargs.get("total_new_input", total_input), total_output
+        )
 
     result = run_agent_loop(
         system=system_prompt,
@@ -448,7 +451,8 @@ def run_autophysicist(
     console.print(f"Workspace:  {workspace_root}")
     console.print(
         f"Iterations: up to {max_iterations}, "
-        f"budget {token_budget:,} tokens/iter"
+        f"token budget {token_budget:,} per iteration "
+        "(new input + output, Manager and sub-agents)"
     )
     console.print(f"Runtime:    {policy.interpreter}")
     console.print(
@@ -532,8 +536,10 @@ def run_autophysicist(
         console.print(
             f"  Rounds: {result.rounds}, "
             f"Tool calls: {len(result.tool_calls)}, "
-            f"Tokens: {result.total_input_tokens:,} in "
+            f"Tokens: {result.total_input_tokens:,} prompt "
+            f"({result.total_new_input_tokens:,} new) "
             f"/ {result.total_output_tokens:,} out, "
+            f"spent {executor.tokens_spent:,} of {token_budget:,}, "
             f"Duration: {iter_duration:.1f}s, "
             f"Stop: {result.stop_reason}"
         )
@@ -613,7 +619,15 @@ def main() -> None:
     parser.add_argument("problem", type=Path, help="Path to problem TOML file")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--max-iterations", type=int, default=50)
-    parser.add_argument("--token-budget", type=int, default=64000)
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=64000,
+        help=(
+            "Token spend cap per iteration: new input plus output tokens, "
+            "the Manager's and its sub-agents' (default 64000)."
+        ),
+    )
     parser.add_argument("--scratchpad-window", type=int, default=5)
     parser.add_argument("--workspace-dir", type=str, default=None)
     args = parser.parse_args()

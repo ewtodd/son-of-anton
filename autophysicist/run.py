@@ -60,11 +60,12 @@ def resolve_script_timeout(explicit: int | None) -> int:
 
 
 def resolve_token_budget(explicit: int | None) -> int:
-    """Token budget per iteration.
+    """Token spend cap for each iteration.
 
-    The default of 64000 suits short symbolic problems. On experimental data
-    with multi-GB waveforms the manager needs more room to reason about the
-    full dataset in a single iteration.
+    Charged as new input plus output tokens across the Manager and its
+    sub-agents (a re-sent or cached prompt prefix counts once); see
+    ``ManagerToolExecutor``. It is not a context-window size. The default of
+    64000 suits short symbolic problems; experimental-data runs need more.
     """
     return _resolve_limit(explicit, "token_budget", 64000)
 

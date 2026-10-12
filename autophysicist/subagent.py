@@ -63,6 +63,8 @@ class SubAgentResult:
     execution_status: str  # "success", "failed_after_retries", "no_code"
     total_input_tokens: int
     total_output_tokens: int
+    # Prompt tokens counted once each — what the Manager's budget charges.
+    new_input_tokens: int = 0
 
     def format_for_manager(self) -> str:
         """Format as a string to return to the Manager."""
@@ -74,6 +76,12 @@ class SubAgentResult:
                 f"{self.execution_output}\n</execution_output>"
             )
         return "\n".join(parts)
+
+
+def _spent_input(result, attribute: str, fallback: int) -> int:
+    """The new-prompt-token count *result* reports, else *fallback*."""
+    value = getattr(result, attribute, None)
+    return fallback if value is None else int(value)
 
 
 def _extract_python_code(text: str) -> str:
@@ -157,6 +165,7 @@ def dispatch_subagent(
     is worth the most and costs the least.
     """
     total_in = 0
+    total_new_in = 0
     total_out = 0
 
     if model and execute_code and model != config.model:
@@ -200,7 +209,12 @@ def dispatch_subagent(
                 agent_name=label,
                 iteration=iteration,
             )
-            return response.text, response.input_tokens, response.output_tokens
+            return (
+                response.text,
+                response.input_tokens,
+                _spent_input(response, "new_input_tokens", response.input_tokens),
+                response.output_tokens,
+            )
         result = run_agent_loop(
             system=effective_system,
             user_content=user_content,
@@ -211,10 +225,16 @@ def dispatch_subagent(
             agent_name=label,
             iteration=iteration,
         )
-        return result.text, result.total_input_tokens, result.total_output_tokens
+        return (
+            result.text,
+            result.total_input_tokens,
+            _spent_input(result, "total_new_input_tokens", result.total_input_tokens),
+            result.total_output_tokens,
+        )
 
-    text, used_in, used_out = _ask(user_message, agent_label)
+    text, used_in, used_new_in, used_out = _ask(user_message, agent_label)
     total_in += used_in
+    total_new_in += used_new_in
     total_out += used_out
 
     if not execute_code:
@@ -225,6 +245,7 @@ def dispatch_subagent(
             execution_status="no_code",
             total_input_tokens=total_in,
             total_output_tokens=total_out,
+            new_input_tokens=total_new_in,
         )
 
     # --- Code execution path ---
@@ -249,6 +270,7 @@ def dispatch_subagent(
             execution_status="no_code",
             total_input_tokens=total_in,
             total_output_tokens=total_out,
+            new_input_tokens=total_new_in,
         )
 
     computations_dir = workspace_root / "computations"
@@ -287,6 +309,7 @@ def dispatch_subagent(
                 execution_status="success",
                 total_input_tokens=total_in,
                 total_output_tokens=total_out,
+            new_input_tokens=total_new_in,
             )
 
         # Build error description
@@ -333,10 +356,11 @@ def dispatch_subagent(
                 f"{user_message}\n\n---\n\nYou already tried this:\n\n"
                 f"```python\n{code}\n```\n\n{retry_msg}"
             )
-            text, used_in, used_out = _ask(
+            text, used_in, used_new_in, used_out = _ask(
                 retry_content, f"{agent_label}_retry{attempt}"
             )
             total_in += used_in
+            total_new_in += used_new_in
             total_out += used_out
             reasoning_text = text
             new_code = _extract_python_code(text)
@@ -351,4 +375,5 @@ def dispatch_subagent(
         execution_status="failed_after_retries",
         total_input_tokens=total_in,
         total_output_tokens=total_out,
+        new_input_tokens=total_new_in,
     )

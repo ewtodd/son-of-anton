@@ -455,6 +455,16 @@ DEFAULT_CONFIG = {
         # legitimate work that does not fit in a minute, and the agent reads a
         # timeout as "wrong approach" and retries something smaller.
         "script_timeout": 0,
+        # Token SPEND cap for each Autophysicist iteration. 0 uses the
+        # built-in 64000; `problem run --token-budget` overrides it.
+        #
+        # Charged as new input plus output tokens, the Manager's and its
+        # sub-agents': a conversation's re-sent history (or a prefix the
+        # endpoint reports as cached) is counted once, not every round. At the
+        # budget the Manager loses dispatch_subagent and is told to save its
+        # work and end the iteration; at 1.5x the iteration is cut off. It is
+        # not a context-window size.
+        "token_budget": 0,
         # Interpreter that model-authored computations run under. The agent's
         # own venv deliberately ships no scientific stack, so leaving this
         # empty means numpy/scipy/matplotlib are unavailable to physics runs.

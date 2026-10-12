@@ -86,10 +86,12 @@ def build_problem_parser(subparsers, *, cmd_problem: Callable) -> None:
         default=None,
         dest="token_budget",
         help=(
-            "Token budget per iteration (default 64000). "
-            "Overrides physics.token_budget. Raise it for problems that "
-            "require the manager to reason over large datasets in a "
-            "single iteration."
+            "Token spend cap for each iteration (default 64000): new input "
+            "plus output tokens, the Manager's and its sub-agents', with a "
+            "re-sent or cached prompt prefix counted once. At the cap the "
+            "Manager is told to save its work and end the iteration; at 1.5x "
+            "the iteration is cut off. Not a context-window size. Overrides "
+            "physics.token_budget."
         ),
     )
     run.add_argument(
