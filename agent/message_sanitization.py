@@ -220,7 +220,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     # the most common local-model repair case (#12068).
     try:
         parsed = json.loads(raw_stripped, strict=False)
-        reserialised = json.dumps(parsed, separators=(",", ":"))
+        reserialised = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
         if reserialised != raw_stripped:
             logger.warning(
                 "Repaired unescaped control chars in tool_call arguments for %s",

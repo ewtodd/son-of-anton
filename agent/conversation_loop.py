@@ -1070,20 +1070,18 @@ _CONTENT_POLICY_RECOVERY_HINT = (
 )
 
 
-# Memo for the send-path tool-call argument canonicalization inside
-# run_conversation().  That pass re-canonicalizes the arguments string of
-# EVERY historical tool call on EVERY API-call iteration (quadratic in
-# session tool-call count), and the api_messages copies share the exact
-# argument string objects with the persisted history, so the same strings
-# come through unchanged iteration after iteration.
+# Memo for the send-path tool-call argument validation inside
+# run_conversation().  That pass re-checks the arguments string of EVERY
+# historical tool call on EVERY API-call iteration (quadratic in session
+# tool-call count), and the api_messages copies share the exact argument
+# string objects with the persisted history, so the same strings come
+# through unchanged iteration after iteration.
 #
-# Soundness: canonicalization is a pure, deterministic function of the
-# input string (fixed separators, sort_keys=True), so a value-keyed memo
-# is exact — equal inputs always produce the canonical form computed the
-# first time.  Malformed strings raise out of json.loads BEFORE anything
-# is stored, so the repair fallback below is never memoized and reruns on
-# every occurrence, exactly as before.  Bounded FIFO eviction mirrors the
-# _MSG_TOKENS_CACHE idiom in agent/model_metadata.py.
+# Soundness: the wire form is a pure, deterministic function of the input
+# string, so a value-keyed memo is exact.  Malformed strings raise out of
+# json.loads BEFORE anything is stored, so the repair fallback below is
+# never memoized and reruns on every occurrence.  Bounded FIFO eviction
+# mirrors the _MSG_TOKENS_CACHE idiom in agent/model_metadata.py.
 _CANON_ARGS_CACHE: Dict[str, str] = {}
 _CANON_ARGS_CACHE_MAX = 4096
 # Count bound alone doesn't bound MEMORY: write_file/patch argument strings
@@ -1095,28 +1093,44 @@ _canon_args_cache_bytes = 0
 
 
 def _canonicalize_tool_call_arguments(arg_str: str) -> str:
-    """Return the canonical wire form of a tool-call arguments JSON string.
+    """Return the wire form of a tool-call arguments value.
+
+    Valid JSON strings replay VERBATIM — the exact bytes the model
+    generated. That is what keeps the prompt prefix stable turn to turn
+    (the stored string never changes) AND what keeps it equal to the
+    generation: re-serializing with ``sort_keys=True`` reordered keys
+    and, without ``ensure_ascii=False``, turned μ/±/σ into ``\\uXXXX``,
+    so the replayed tool call no longer matched the tokens a local
+    server (vLLM / llama.cpp) had in its KV cache and every tool call
+    became a prefix-cache miss.
+
+    A non-string value (a dict persisted by some host history) is
+    serialized deterministically, keeping its own key order and
+    non-ASCII text.
 
     Raises whatever ``json.loads`` raises on malformed input; the caller
-    falls back to ``_repair_tool_call_arguments``, exactly as before.
+    falls back to ``_repair_tool_call_arguments``.
     """
     global _canon_args_cache_bytes
+    if not isinstance(arg_str, str):
+        if isinstance(arg_str, (dict, list)):
+            return json.dumps(arg_str, ensure_ascii=False, separators=(",", ":"))
+        raise TypeError(f"tool-call arguments must be a JSON string, got {type(arg_str).__name__}")
     cached = _CANON_ARGS_CACHE.get(arg_str)
     if cached is not None:
         return cached
-    canonical = json.dumps(
-        json.loads(arg_str), separators=(",", ":"), sort_keys=True,
-    )
+    json.loads(arg_str)  # validate only; raises on malformed input
+    canonical = arg_str
     _CANON_ARGS_CACHE[arg_str] = canonical
-    _canon_args_cache_bytes += len(arg_str) + len(canonical)
+    _canon_args_cache_bytes += len(arg_str)
     while len(_CANON_ARGS_CACHE) > _CANON_ARGS_CACHE_MAX or (
         _canon_args_cache_bytes > _CANON_ARGS_CACHE_MAX_BYTES
         and len(_CANON_ARGS_CACHE) > 1
     ):
         try:
             evicted_key = next(iter(_CANON_ARGS_CACHE))
-            evicted_val = _CANON_ARGS_CACHE.pop(evicted_key)
-            _canon_args_cache_bytes -= len(evicted_key) + len(evicted_val)
+            _CANON_ARGS_CACHE.pop(evicted_key)
+            _canon_args_cache_bytes -= len(evicted_key)
         except (StopIteration, KeyError, RuntimeError):
             break
     return canonical
@@ -2254,8 +2268,9 @@ def run_conversation(
         # UI transcript and session persistence.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
-        # Normalize message whitespace and tool-call JSON for consistent
-        # prefix matching.  Ensures bit-perfect prefixes across turns,
+        # Normalize message whitespace, and validate tool-call JSON (valid
+        # arguments replay verbatim, malformed ones are repaired), for
+        # consistent prefix matching.  Ensures bit-perfect prefixes across turns,
         # which enables KV cache reuse on local inference servers
         # (llama.cpp, vLLM, Ollama) and improves cache hit rates for
         # cloud providers.  Operates on api_messages (the API copy) so
