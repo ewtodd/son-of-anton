@@ -42,6 +42,7 @@ class Config:
     api_retry_max: int = DEFAULTS["api_retry_max"]
     api_retry_initial_delay: float = DEFAULTS["api_retry_initial_delay"]
     api_retry_max_delay: float = DEFAULTS["api_retry_max_delay"]
+    api_retry_total_timeout: float = DEFAULTS["api_retry_total_timeout"]
     api_timeout: float = DEFAULTS["api_timeout"]
     parse_retries: int = DEFAULTS["parse_retries"]
     max_tokens_retries: int = DEFAULTS["max_tokens_retries"]
@@ -196,6 +197,7 @@ _CONFIG_FIELDS = frozenset(
         "api_retry_max",
         "api_retry_initial_delay",
         "api_retry_max_delay",
+        "api_retry_total_timeout",
         "api_timeout",
         "parse_retries",
         "max_tokens_retries",

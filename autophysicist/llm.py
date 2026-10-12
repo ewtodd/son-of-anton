@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -35,13 +36,19 @@ from .core.workspace import log_llm_call
 
 
 class ContextTooLongError(Exception):
-    """Raised when a provider rejects the request because it is too long."""
+    """Raised when a provider rejects the request because it is too long.
 
-    def __init__(self, input_tokens: int = 0):
+    *input_tokens* is the prompt size and *limit* the model's window, each 0
+    when the provider's error did not say.
+    """
+
+    def __init__(self, input_tokens: int = 0, limit: int = 0):
         self.input_tokens = input_tokens
-        super().__init__(
-            f"context too long (estimated {input_tokens} input tokens)"
-        )
+        self.limit = limit
+        detail = f"{input_tokens} input tokens" if input_tokens else "size unknown"
+        if limit:
+            detail += f", window {limit}"
+        super().__init__(f"context too long ({detail})")
 
 
 def is_transient(exc: BaseException) -> bool:
@@ -117,10 +124,14 @@ def _resolve_endpoint(config):
             api_key_env = api_key_env or custom.get("api_key_env") or "OPENAI_API_KEY"
 
     api_key = os.getenv(api_key_env, "") or "none"
+    # max_retries=0: retrying is _create_with_retry's job. The SDK's own
+    # default (2 retries) nested inside it multiplied every attempt by three,
+    # each one allowed the full api_timeout.
     client = OpenAI(
         base_url=base_url,
         api_key=api_key,
         timeout=float(config.api_timeout or 120.0),
+        max_retries=0,
     )
     return client, model
 
@@ -173,32 +184,74 @@ def _clamp_physics_reasoning_effort(effort: str, model: str, config) -> str:
         return effort
 
 
+#: Status codes a context overflow can arrive under. A 429 can also say "too
+#: many tokens" — that is a tokens-per-minute RATE limit, which a retry fixes
+#: and trimming the request does not.
+_CONTEXT_ERROR_STATUSES = (400, 413, 422)
+
+_LIMIT_RE = re.compile(r"maximum context length is (\d+)")
+_REQUESTED_RE = re.compile(
+    r"\((\d+) in the messages"
+    r"|messages resulted in (\d+) tokens"
+    r"|request has (\d+) input tokens"
+)
+
+
 def _raise_if_context_error(exc: BaseException) -> None:
     """Reclassify a genuine context overflow, and only that.
 
     This used to treat EVERY 400 as a context error. A malformed request —
     a duplicated system turn, an unsupported parameter, a bad tool schema —
-    surfaced as ``ContextTooLongError: context too long (estimated 0 input
-    tokens)``, which is not merely a wrong message: the loops respond to it by
-    shrinking context and retrying, so the real fault is never seen and the
-    run burns its budget compacting a request that was never too big.
+    surfaced as ``ContextTooLongError: context too long``, and the real fault
+    was never seen.
+
+    Only a request-shaped status counts (400/413/422): a 429 whose body says
+    "too many tokens" is a rate limit, and stays transient. When the provider
+    names its window ("maximum context length is N" — vLLM and OpenAI both
+    do) and the prompt size, both ride on the error so ``run_agent_loop`` can
+    size its recovery instead of guessing.
     """
-    text = str(exc).lower()
-    if isinstance(exc, APIStatusError):
-        body = ""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in _CONTEXT_ERROR_STATUSES:
+        return
+    text = str(exc)
+    response = getattr(exc, "response", None)
+    if response is not None:
         try:
-            body = json.dumps(exc.response.json() if hasattr(exc, "response") else {})
+            text = f"{text} {json.dumps(response.json())}"
         except Exception:
             pass
-        text = f"{text} {body}".lower()
-    if any(marker in text for marker in _CONTEXT_ERROR_MARKERS):
-        raise ContextTooLongError() from exc
+    text = text.lower()
+    if not any(marker in text for marker in _CONTEXT_ERROR_MARKERS):
+        return
+    limit = 0
+    requested = 0
+    match = _LIMIT_RE.search(text)
+    if match:
+        limit = int(match.group(1))
+    match = _REQUESTED_RE.search(text)
+    if match:
+        requested = int(next(g for g in match.groups() if g))
+    raise ContextTooLongError(requested, limit=limit) from exc
 
 
-def _create_with_retry(client, model, messages, max_tokens, config, tools=None):
-    """One chat.completions call with retry on transient errors."""
+def _create_with_retry(
+    client, model, messages, max_tokens, config, tools=None, tool_choice=None
+):
+    """One chat.completions call with retry on transient errors.
+
+    Bounded three ways: ``api_retry_max`` retries; a backoff that never sleeps
+    longer than ``api_retry_max_delay``; and ``api_retry_total_timeout``, the
+    wall clock one call may take across all of its attempts. Each attempt's
+    own timeout is clipped to what is left of that total, so a long
+    ``api_timeout`` (sized for one slow reasoning call) times the retry count
+    cannot turn a dead endpoint into an overnight hang.
+    """
     attempts = int(config.api_retry_max or 3)
     delay = float(config.api_retry_initial_delay or 2.0)
+    max_delay = float(getattr(config, "api_retry_max_delay", 0) or 60.0)
+    total = float(getattr(config, "api_retry_total_timeout", 0) or 0)
+    deadline = time.monotonic() + total if total > 0 else None
     last_exc: Optional[BaseException] = None
     for attempt in range(attempts + 1):
         try:
@@ -224,6 +277,12 @@ def _create_with_retry(client, model, messages, max_tokens, config, tools=None):
                     kwargs["reasoning_effort"] = effort
             if tools:
                 kwargs["tools"] = tools
+                if tool_choice:
+                    kwargs["tool_choice"] = tool_choice
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                per_attempt = float(config.api_timeout or 120.0)
+                kwargs["timeout"] = max(1.0, min(per_attempt, remaining))
             return client.chat.completions.create(**kwargs)
         except ContextTooLongError:
             raise
@@ -232,7 +291,10 @@ def _create_with_retry(client, model, messages, max_tokens, config, tools=None):
             last_exc = exc
             if not is_transient(exc) or attempt == attempts:
                 raise
-            time.sleep(min(delay * (2**attempt), 60.0))
+            sleep_for = min(delay * (2**attempt), max_delay)
+            if deadline is not None and time.monotonic() + sleep_for >= deadline:
+                raise
+            time.sleep(sleep_for)
     raise RuntimeError("unreachable") from last_exc
 
 

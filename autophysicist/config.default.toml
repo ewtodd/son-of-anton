@@ -4,6 +4,11 @@ max_tokens = 8192
 api_retry_max = 10
 api_retry_initial_delay = 10.0
 api_retry_max_delay = 60.0
+# Wall clock one LLM call may take across all of its attempts (seconds).
+# api_timeout bounds one attempt; this bounds the retries, so a dead endpoint
+# costs at most this long per call instead of api_timeout x (api_retry_max+1).
+# 0 = bounded by the attempt count only.
+api_retry_total_timeout = 7200.0
 api_timeout = 2400.0
 parse_retries = 2
 max_tokens_retries = 2
