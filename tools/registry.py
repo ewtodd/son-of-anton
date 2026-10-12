@@ -202,6 +202,11 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
 
 
+def is_mcp_toolset(toolset: object) -> bool:
+    """True for a toolset registered by an MCP server (``mcp-<server>``)."""
+    return isinstance(toolset, str) and toolset.startswith("mcp-")
+
+
 class ToolEntry:
     """Metadata for a single registered tool."""
 
@@ -490,7 +495,9 @@ class ToolRegistry:
             target = self._tools if scope is None else self._scoped_tools.get(scope, {})
             return target.get(name)
 
-    def schema_fingerprint(self, scope: Optional[str] = None) -> str:
+    def schema_fingerprint(
+        self, scope: Optional[str] = None, *, exclude_mcp: bool = False
+    ) -> str:
         """Return a content hash of the tool surface an agent would freeze.
 
         Covers every merged entry's (name, toolset, schema) plus the toolset
@@ -499,16 +506,31 @@ class ToolRegistry:
         re-registration of an identical entry, e.g. an MCP refresh answering
         a no-op ``tools/list_changed``), the fingerprint changes only when
         the effective schema set does, so it is the right key for "must a
-        cached agent be rebuilt?". Memoized per (scope, generation).
+        cached agent be rebuilt?". Memoized per (scope, generation, flag).
+
+        ``exclude_mcp`` leaves out MCP-provided tools (``mcp-*`` toolsets)
+        and aliases that resolve to them. MCP tools come and go as servers
+        park and revive; a live agent's MCP surface is governed by the MCP
+        freeze (``agent.turn_context.run_between_turns_mcp_refresh``) and an
+        explicit ``/reload-mcp`` — not by rebuilding the agent.
         """
         active_scope = scope or self.current_scope_key()
+        memo_key = (active_scope, exclude_mcp)
         with self._lock:
             generation = self._generation
-            memo = getattr(self, "_fingerprint_memo", None)
-            if memo is not None and memo[0] == (active_scope, generation):
-                return memo[1]
+            memo = getattr(self, "_fingerprint_memo", None) or {}
+            hit = memo.get(memo_key)
+            if hit is not None and hit[0] == generation:
+                return hit[1]
             entries = list(self._merged_tools(active_scope).values())
             aliases = dict(self._toolset_aliases)
+        if exclude_mcp:
+            entries = [e for e in entries if not is_mcp_toolset(e.toolset)]
+            aliases = {
+                alias: target
+                for alias, target in aliases.items()
+                if not is_mcp_toolset(target)
+            }
         payload = {
             "tools": sorted(
                 ([e.name, e.toolset, e.schema] for e in entries),
@@ -526,7 +548,9 @@ class ToolRegistry:
         ).hexdigest()
         with self._lock:
             if self._generation == generation:
-                self._fingerprint_memo = ((active_scope, generation), digest)
+                memo = dict(getattr(self, "_fingerprint_memo", None) or {})
+                memo[memo_key] = (generation, digest)
+                self._fingerprint_memo = memo
         return digest
 
     def get_registered_toolset_names(self) -> List[str]:
@@ -896,7 +920,7 @@ class ToolRegistry:
                 return
             if entry is None:
                 return
-            if not entry.toolset.startswith("mcp-"):
+            if not is_mcp_toolset(entry.toolset):
                 owner = self._plugin_owner_of(entry.handler)
                 # Ownership check: bind to the plugin package root
                 # (``son_of_anton_plugins.{name}``), not the exact module string.

@@ -22392,14 +22392,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         non-dict sections yield None values, which still contribute to the
         signature (so 'absent' vs 'present-and-null' differ).
 
-        A content fingerprint of the live tool registry is included too.
-        MCP reloads and dynamic MCP tool-list changes mutate the registry
-        without necessarily changing config.toml, and cached AIAgent
-        instances freeze their tool schemas at construction time, so a
-        changed schema set must rebuild the agent before the next turn.
-        The fingerprint (not the raw ``_generation`` counter) is the key: the
-        counter also moves when a refresh re-registers identical tools, and
-        each needless rebuild throws away the conversation's prompt cache.
+        A content fingerprint of the live tool registry is included too:
+        cached AIAgent instances freeze their tool schemas at construction
+        time, so a changed built-in / plugin schema set must rebuild the
+        agent before the next turn. The fingerprint (not the raw
+        ``_generation`` counter) is the key: the counter also moves when a
+        refresh re-registers identical tools, and each needless rebuild
+        throws away the conversation's prompt cache.
+
+        MCP-provided tools are left out of the fingerprint. A server that
+        parks and revives deregisters and re-registers its tools; folding
+        that into the signature would rebuild every cached agent and undo
+        the MCP freeze (``run_between_turns_mcp_refresh`` adds a late
+        server's tools only in the opening turns, ``/reload-mcp`` refreshes
+        cached agents in place after the user confirms, and a parked tool
+        answers "reconnecting" from the departed-tool map meanwhile).
         """
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
@@ -22416,7 +22423,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         try:
             from tools.registry import registry
 
-            out["tools.registry_fingerprint"] = registry.schema_fingerprint()
+            out["tools.registry_fingerprint"] = registry.schema_fingerprint(
+                exclude_mcp=True
+            )
         except Exception:
             out["tools.registry_fingerprint"] = None
 
