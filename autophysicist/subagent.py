@@ -60,7 +60,10 @@ class SubAgentResult:
     reasoning_text: str
     code: str
     execution_output: str
-    execution_status: str  # "success", "failed_after_retries", "no_code"
+    # "success", "failed_after_retries", "no_code" — or, when the sub-agent
+    # never produced a usable answer, why: "max_rounds", "truncated",
+    # "empty_response" (see _incomplete_answer).
+    execution_status: str
     total_input_tokens: int
     total_output_tokens: int
     # Prompt tokens counted once each — what the Manager's budget charges.
@@ -75,7 +78,55 @@ class SubAgentResult:
                 f'\n\n<execution_output status="{self.execution_status}">\n'
                 f"{self.execution_output}\n</execution_output>"
             )
+        elif self.execution_output:
+            # No code to show, but something to say about why: "No Python
+            # code block found", or that the sub-agent ran out of rounds or
+            # output. This used to be dropped, so every one of those looked
+            # to the Manager like a sub-agent that chose not to write code.
+            parts.append(
+                f'\n\n<subagent_status status="{self.execution_status}">\n'
+                f"{self.execution_output}\n</subagent_status>"
+            )
         return "\n".join(parts)
+
+
+#: Tool rounds a sub-agent with lookups gets before it is asked for its answer.
+SUBAGENT_LOOKUP_ROUNDS = 6
+
+
+def _incomplete_answer(text: str, stop_reason: str) -> tuple[str, str]:
+    """``(status, explanation)`` when a sub-agent's answer is not usable.
+
+    ``("", "")`` for an answer that finished normally. The distinction is for
+    the Manager: "the model wrote no code" is a prompting problem, while a
+    sub-agent that ran out of rounds or output needs a narrower task — and
+    the Manager once spent a whole iteration fixing the wrong one.
+    """
+    if not text.strip():
+        if stop_reason == "max_rounds":
+            return "max_rounds", (
+                f"The sub-agent used all {SUBAGENT_LOOKUP_ROUNDS} of its tool "
+                "rounds on lookups and gave no final answer, even when asked "
+                "for one. Re-dispatch with a narrower task, or name the API "
+                "it needs in the prompt so it does not have to look it up."
+            )
+        return "empty_response", (
+            "The sub-agent returned no answer text"
+            + (
+                " — its output reached the token limit, most likely spent "
+                "entirely on reasoning"
+                if stop_reason == "max_tokens"
+                else ""
+            )
+            + ". Re-dispatch with a smaller, more specific task."
+        )
+    if stop_reason == "max_tokens":
+        return "truncated", (
+            "The sub-agent's answer reached the output token limit and is "
+            "incomplete even after continuation. Re-dispatch with a smaller "
+            "task, or split it."
+        )
+    return "", ""
 
 
 def _spent_input(result, attribute: str, fallback: int) -> int:
@@ -210,10 +261,11 @@ def dispatch_subagent(
                 iteration=iteration,
             )
             return (
-                response.text,
+                response.text or "",
                 response.input_tokens,
                 _spent_input(response, "new_input_tokens", response.input_tokens),
                 response.output_tokens,
+                getattr(response, "stop_reason", "end_turn") or "end_turn",
             )
         result = run_agent_loop(
             system=effective_system,
@@ -221,28 +273,35 @@ def dispatch_subagent(
             config=config,
             tool_executor=LookupExecutor(mcp, "subagent"),
             tools=lookups,
-            max_rounds=6,
+            max_rounds=SUBAGENT_LOOKUP_ROUNDS,
             agent_name=label,
             iteration=iteration,
+            # The answer IS the sub-agent's result: on the round cap, ask for
+            # it instead of returning nothing.
+            final_answer_on_max_rounds=True,
         )
         return (
-            result.text,
+            result.text or "",
             result.total_input_tokens,
             _spent_input(result, "total_new_input_tokens", result.total_input_tokens),
             result.total_output_tokens,
+            getattr(result, "stop_reason", "end_turn") or "end_turn",
         )
 
-    text, used_in, used_new_in, used_out = _ask(user_message, agent_label)
+    text, used_in, used_new_in, used_out, stop_reason = _ask(
+        user_message, agent_label
+    )
     total_in += used_in
     total_new_in += used_new_in
     total_out += used_out
+    incomplete_status, incomplete_note = _incomplete_answer(text, stop_reason)
 
     if not execute_code:
         return SubAgentResult(
             reasoning_text=text,
             code="",
-            execution_output="",
-            execution_status="no_code",
+            execution_output=incomplete_note,
+            execution_status=incomplete_status or "no_code",
             total_input_tokens=total_in,
             total_output_tokens=total_out,
             new_input_tokens=total_new_in,
@@ -266,8 +325,11 @@ def dispatch_subagent(
         return SubAgentResult(
             reasoning_text=reasoning_text,
             code="",
-            execution_output="No Python code block found in sub-agent response.",
-            execution_status="no_code",
+            execution_output=(
+                incomplete_note
+                or "No Python code block found in sub-agent response."
+            ),
+            execution_status=incomplete_status or "no_code",
             total_input_tokens=total_in,
             total_output_tokens=total_out,
             new_input_tokens=total_new_in,
@@ -356,7 +418,7 @@ def dispatch_subagent(
                 f"{user_message}\n\n---\n\nYou already tried this:\n\n"
                 f"```python\n{code}\n```\n\n{retry_msg}"
             )
-            text, used_in, used_new_in, used_out = _ask(
+            text, used_in, used_new_in, used_out, _stop = _ask(
                 retry_content, f"{agent_label}_retry{attempt}"
             )
             total_in += used_in

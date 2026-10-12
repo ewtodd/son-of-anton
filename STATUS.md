@@ -1,6 +1,6 @@
 # Son of Anton — Status
 
-_Last updated 2026-10-08. History lives in git; this file is only current
+_Last updated 2026-10-12. History lives in git; this file is only current
 state, known future work, and the operational facts a fresh session needs._
 
 ## What this is
@@ -140,26 +140,21 @@ Ordered by importance. Each item is independently scoped.
 9. **TUI gaps from the REPL.** _Resolved._ The Textual TUI carries `/image`
    and `/paste` attachments plus `/agents`
    (`son_of_anton_cli/commands.py`, `cli_commands_mixin.py`).
-10. **Physics sub-agents vanish when they exhaust their round cap.** In the
-    YAP alpha/gamma calibration run (`workspace-soa/runs/20261002_153415_*`),
-    7 of 9 dispatches came back empty. Root cause: a sub-agent with lookup
-    tools runs through `run_agent_loop(..., max_rounds=6)`
-    (`autophysicist/subagent.py:210`); when it spends all 6 rounds calling
-    context7 / analysis_utilities lookups and never emits a final plain-text
-    answer, `run_agent_loop` (`llm.py:562`) returns `text=""` on the
-    `max_rounds` fallback (the normal exit path returns `message.content`).
-    `stop_reason="max_rounds"` **is** propagated in the `AgentResult`
-    (`llm.py:566`), but `dispatch_subagent` ignores it and reports
-    `execution_status="no_code"`, so the Manager sees "the model wrote no
-    code" and misdiagnoses it as a prompting problem (it spent iteration 2
-    "confirming" a dispatch rule that was never the cause). Every *substantive*
-    task that needs several doc lookups before writing a script dies this way;
-    only trivial ≤1-lookup tasks survive. Fix: in `run_agent_loop`, track the
-    last non-empty `message.content` and return it on the `max_rounds`
-    fallback; teach `dispatch_subagent` to read `stop_reason` and set a
-    distinct `execution_status="max_rounds"` so the Manager re-dispatches
-    tighter (or with more rounds) instead of "it returned nothing". Optionally
-    raise `max_rounds=6` → 8–10. Secondary run issues noted for follow-up:
+10. **Physics sub-agents vanish when they exhaust their round cap.**
+    _Resolved._ In the YAP alpha/gamma calibration run
+    (`workspace-soa/runs/20261002_153415_*`) 7 of 9 dispatches came back empty:
+    a sub-agent with lookup tools spent all 6 rounds on lookups,
+    `run_agent_loop` returned `text=""` on the round cap, and
+    `dispatch_subagent` reported `no_code`, which the Manager misread as a
+    prompting problem. Now sub-agents run with
+    `final_answer_on_max_rounds=True` — on the cap they get one tools-off
+    request for their answer, falling back to their last non-empty message —
+    and a truncated final answer is continued the way `call_llm` continues one.
+    `dispatch_subagent` reports why an answer is unusable
+    (`execution_status` `max_rounds` / `truncated` / `empty_response`) and
+    `format_for_manager` shows that status (and "No Python code block found",
+    which it used to drop). Tests in `tests/test_physics_truncation.py`. The
+    round cap stays at 6. Secondary run issues from that run, still open:
     0 durable output across 2 iterations (no RESULTS.txt / features / calib),
     critic is ~298s per iteration, `df_cache` capped at 50k events vs
     1.8M–13.4M real, waveform polarity (+1 vs −1) never settled by an

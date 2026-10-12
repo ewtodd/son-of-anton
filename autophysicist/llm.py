@@ -406,6 +406,21 @@ CONTINUATION_PROMPT = (
     "only the remainder."
 )
 
+#: The same situation with nothing visible to continue: a reasoning model
+#: spent the whole output budget thinking and never started its answer.
+EMPTY_ANSWER_PROMPT = (
+    "Your previous response reached the output token limit before you wrote "
+    "any answer. Write your answer now — concisely, without re-deriving what "
+    "you already worked out."
+)
+
+#: Sent once when a tool loop with ``final_answer_on_max_rounds`` uses its
+#: last round without answering.
+ROUND_CAP_PROMPT = (
+    "You have used all {rounds} of your tool rounds. Do not call any more "
+    "tools. Give your final answer now, from what you have gathered so far."
+)
+
 
 def _continue_truncated(
     client,
@@ -417,8 +432,13 @@ def _continue_truncated(
     iteration: int,
     result: LLMResponse,
     max_tokens: int,
+    tools: Optional[list[dict]] = None,
 ) -> LLMResponse:
     """Extend *result* while it is truncated, up to ``max_tokens_retries``.
+
+    *tools*, when the conversation is a tool loop's, are re-sent with
+    ``tool_choice="none"``: the history holds tool calls, and the
+    continuation must be text.
 
     ``config.default.toml`` documents this ("The helper resends the visible-text
     portion of the truncated response as an assistant turn and asks the model to
@@ -438,11 +458,21 @@ def _continue_truncated(
             + list(messages)
             + [
                 {"role": "assistant", "content": result.text},
-                {"role": "user", "content": CONTINUATION_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        CONTINUATION_PROMPT
+                        if result.text.strip()
+                        else EMPTY_ANSWER_PROMPT
+                    ),
+                },
             ]
         )
         start = time.time()
-        resp = _create_with_retry(client, model, conversation, max_tokens, config)
+        tool_kwargs = {"tools": tools, "tool_choice": "none"} if tools else {}
+        resp = _create_with_retry(
+            client, model, conversation, max_tokens, config, **tool_kwargs
+        )
         duration = time.time() - start
         choice = resp.choices[0]
         finish = choice.finish_reason or "end_turn"
@@ -583,11 +613,21 @@ def run_agent_loop(
     agent_name: str = "",
     iteration: int = 0,
     on_round: Optional[Callable] = None,
+    final_answer_on_max_rounds: bool = False,
 ) -> AgentResult:
     """Run a tool-use agent loop until the executor stops it, or max_rounds.
 
     *tools* are in OpenAI canonical format (``type: "function"``), the same
     format the agents already use — no adapter pass needed.
+
+    A final answer cut off at the output cap is continued, as ``call_llm``
+    does, up to ``max_tokens_retries`` times; ``stop_reason`` stays
+    ``"max_tokens"`` only if it is still cut off after that. When the loop
+    reaches *max_rounds*, ``stop_reason`` is ``"max_rounds"`` and the text is
+    the model's last non-empty message — or, with
+    *final_answer_on_max_rounds*, its answer to one more tools-off request
+    asking for it. That is for agents whose answer IS the result (a
+    sub-agent); the Manager's result is what it wrote to memory.
 
     The loop honours the executor duck-type protocol that the executors in
     this package document and depend on:
@@ -620,6 +660,8 @@ def run_agent_loop(
     total_new_input = 0
     total_output = 0
     previous_prompt = 0
+    last_content = ""
+    round_tools = tools
     start = time.time()
 
     for round_num in range(1, max_rounds + 1):
@@ -654,10 +696,44 @@ def run_agent_loop(
         message = choice.message
         truncated = choice.finish_reason == "length"
 
+        if message.content:
+            last_content = message.content
+
         if not getattr(message, "tool_calls", None):
+            text = message.content or ""
+            if truncated:
+                # The final answer hit the output cap. call_llm continued such
+                # a response and this loop returned it half-finished — for a
+                # sub-agent, a script with no end, or nothing at all when a
+                # reasoning model spent the whole budget thinking.
+                extended = _continue_truncated(
+                    client,
+                    model,
+                    system,
+                    messages[1:],
+                    config,
+                    agent_name,
+                    iteration,
+                    LLMResponse(
+                        text=text,
+                        input_tokens=round_input,
+                        output_tokens=round_output,
+                        stop_reason="max_tokens",
+                        duration=0.0,
+                        new_input_tokens=round_new_input,
+                    ),
+                    max_tokens,
+                    tools=round_tools,
+                )
+                text = extended.text
+                total_input += extended.input_tokens - round_input
+                total_new_input += extended.new_input_tokens - round_new_input
+                total_output += extended.output_tokens - round_output
+                spent["total_new_input"] = total_new_input
+                truncated = extended.stop_reason == "max_tokens"
             stop_reason = "max_tokens" if truncated else "end_turn"
             result = AgentResult(
-                text=message.content or "",
+                text=text,
                 tool_calls=all_tool_calls,
                 total_input_tokens=total_input,
                 total_new_input_tokens=total_new_input,
@@ -777,8 +853,74 @@ def run_agent_loop(
                 truncated=truncated,
             )
 
+    # The round cap. A sub-agent that spent every round on lookups used to come
+    # back with text="" here, which its caller reported as "wrote no code".
+    # With final_answer_on_max_rounds it is asked once, tools off, for the
+    # answer it has; failing that, the last thing it did say is returned.
+    text = last_content
+    truncated = False
+    if final_answer_on_max_rounds:
+        cap_prompt = ROUND_CAP_PROMPT.format(rounds=max_rounds)
+        if messages[-1]["role"] == "user":
+            # end_round already injected a user turn; never two in a row.
+            messages[-1] = {
+                "role": "user",
+                "content": f"{messages[-1]['content']}\n\n{cap_prompt}",
+            }
+        else:
+            messages.append({"role": "user", "content": cap_prompt})
+        round_start = time.time()
+        resp = _create_with_retry(
+            client,
+            model,
+            messages,
+            max_tokens,
+            config,
+            tools=round_tools,
+            tool_choice="none" if round_tools else None,
+        )
+        finish = resp.choices[0].finish_reason or "end_turn"
+        _log_round(
+            config,
+            agent_name,
+            iteration,
+            max_rounds + 1,
+            resp,
+            time.time() - round_start,
+            finish,
+        )
+        final_input = getattr(resp.usage, "prompt_tokens", 0) or 0
+        final_output = getattr(resp.usage, "completion_tokens", 0) or 0
+        final_new_input = new_prompt_tokens(resp.usage, previous_prompt)
+        answer = LLMResponse(
+            text=resp.choices[0].message.content or "",
+            input_tokens=final_input,
+            output_tokens=final_output,
+            stop_reason="max_tokens" if finish == "length" else "end_turn",
+            duration=time.time() - round_start,
+            new_input_tokens=final_new_input,
+        )
+        answer = _continue_truncated(
+            client,
+            model,
+            system,
+            messages[1:],
+            config,
+            agent_name,
+            iteration,
+            answer,
+            max_tokens,
+            tools=round_tools,
+        )
+        total_input += answer.input_tokens
+        total_new_input += answer.new_input_tokens
+        total_output += answer.output_tokens
+        if answer.text.strip():
+            text = answer.text
+            truncated = answer.stop_reason == "max_tokens"
+
     return AgentResult(
-        text="",
+        text=text,
         tool_calls=all_tool_calls,
         total_input_tokens=total_input,
         total_new_input_tokens=total_new_input,
@@ -786,4 +928,5 @@ def run_agent_loop(
         rounds=max_rounds,
         duration=time.time() - start,
         stop_reason="max_rounds",
+        truncated=truncated,
     )
