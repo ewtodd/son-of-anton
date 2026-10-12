@@ -242,10 +242,18 @@ def chat_identity(platform: Any, chat_id: Any, user_id: Any = None) -> Optional[
 
 
 def _cron_identity(session_id: str, config: Dict[str, Any]) -> Optional[Tuple[str, List[str]]]:
-    """Scope a cron session by where its job delivers.
+    """Scope a cron session by where its output goes, else where it was made.
 
-    ``None`` when the session id is not a cron run id or the job is gone —
-    the caller falls back to the parent row or fails closed.
+    * The job delivers to chats: the scope and chats of those targets.
+    * It delivers nowhere (``deliver="local"``, or targets that do not
+      resolve): the chat that created it (``origin``). Its runs are that
+      chat's conversation continued, so they are visible only there.
+    * Nowhere and no ``origin``: the job was made outside any chat — the
+      CLI / TUI (``cronjob`` from an interactive session, ``son-of-anton
+      cron create``), which never records an origin — so it takes the cli
+      scope.
+    * An ``origin`` that names no chat, or a job that is gone: ``None``;
+      the caller falls back to the parent row or fails closed.
     """
     match = _CRON_SESSION_RE.match(str(session_id or ""))
     if not match:
@@ -258,7 +266,16 @@ def _cron_identity(session_id: str, config: Dict[str, Any]) -> Optional[Tuple[st
         return None
     targets = _resolve_delivery_targets(job) or []
     if not targets:
-        return ("shared", [])
+        origin = job.get("origin")
+        if not origin:
+            return (_memory_scope_for("cli", config), [])
+        if not isinstance(origin, dict):
+            return None
+        platform = str(origin.get("platform") or "").strip().lower()
+        identity = chat_identity(platform, origin.get("chat_id"), origin.get("user_id"))
+        if not identity:
+            return None
+        return (_memory_scope_for(platform, config), [identity])
     chats: List[str] = []
     platforms: List[str] = []
     for target in targets:
@@ -282,7 +299,8 @@ def resolve_session_identity(
     * cli/tui sessions take the memory scope of their surface; no chat.
     * messaging sessions take their scope plus ``<platform>:<chat_id>``.
     * cron runs (``cron_<job>_<stamp>``) take the scope and chats of the
-      job's delivery targets; a job that delivers nowhere is ``shared``.
+      job's delivery targets, else of the chat that created the job, else
+      (made from the CLI) the cli scope — see ``_cron_identity``.
     * everything else (subagents, compaction forks without their own origin,
       unknown front-ends) inherits from ``parent_session_id``.
     * no row, an unknown source without a parent, or a messaging row without

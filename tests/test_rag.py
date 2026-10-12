@@ -428,17 +428,28 @@ def test_cron_sessions_take_the_scope_of_their_delivery_target(monkeypatch) -> N
     import cron.jobs
     import cron.scheduler
 
-    jobs = {"abc123def456": {"id": "abc123def456", "deliver": "signal:+1555"},
-            "000000local0": {"id": "000000local0", "deliver": "local"}}
-    targets = {"abc123def456": [{"platform": "signal", "chat_id": "+1555"}], "000000local0": []}
+    jobs = {
+        "abc123def456": {"id": "abc123def456", "deliver": "signal:+1555"},
+        # Made from the CLI: no origin, saved locally.
+        "000000local0": {"id": "000000local0", "deliver": "local"},
+        # Made in a Discord channel, saved locally.
+        "0000origin00": {"id": "0000origin00", "deliver": "local",
+                         "origin": {"platform": "discord", "chat_id": "chanX"}},
+        # An origin that names no chat cannot be placed.
+        "000nochat000": {"id": "000nochat000", "deliver": "local",
+                         "origin": {"platform": "discord"}},
+    }
+    targets = {"abc123def456": [{"platform": "signal", "chat_id": "+1555"}]}
     monkeypatch.setattr(cron.jobs, "get_job", lambda job_id: jobs.get(job_id))
-    monkeypatch.setattr(cron.scheduler, "_resolve_delivery_targets", lambda job: targets[job["id"]])
+    monkeypatch.setattr(cron.scheduler, "_resolve_delivery_targets", lambda job: targets.get(job["id"], []))
 
-    _make_session("cron_abc123def456_20261001_120000", "cron")
-    _make_session("cron_000000local0_20261001_120000", "cron")
-    _make_session("cron_deadbeef0000_20261001_120000", "cron")
+    for job_id in ("abc123def456", "000000local0", "0000origin00", "000nochat000", "deadbeef0000"):
+        _make_session(f"cron_{job_id}_20261001_120000", "cron")
     assert _identity("cron_abc123def456_20261001_120000") == ("gateway", ["signal:+1555"])
-    assert _identity("cron_000000local0_20261001_120000") == ("shared", [])
+    # Delivering nowhere is never "shared": it is the creating chat's, or the CLI's.
+    assert _identity("cron_0000origin00_20261001_120000") == ("gateway", ["discord:chanX"])
+    assert _identity("cron_000000local0_20261001_120000") == ("cli", [])
+    assert _identity("cron_000nochat000_20261001_120000") is None
     # The job is gone: unknown, not shared.
     assert _identity("cron_deadbeef0000_20261001_120000") is None
 
