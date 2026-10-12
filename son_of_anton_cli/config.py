@@ -1662,6 +1662,52 @@ def get_custom_provider_reasoning_decl(
     return out
 
 
+def get_custom_provider_chat_template_kwargs(
+    model: str,
+    base_url: Optional[str],
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return ``custom_providers.<name>.models.<model>.chat_template_kwargs``.
+
+    Same route matching as :func:`get_custom_provider_reasoning_decl`. The
+    table is passed through to the endpoint as
+    ``extra_body.chat_template_kwargs`` (vLLM / llama.cpp / SGLang render
+    the chat template with it — e.g. Qwen3's ``enable_thinking``). Empty
+    dict when undeclared or malformed.
+    """
+    if not model:
+        return {}
+    if custom_providers is None:
+        try:
+            if config is None:
+                config = load_config_readonly()
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return {}
+    if not isinstance(custom_providers, list):
+        return {}
+
+    target_url = normalize_route_base_url(base_url) if base_url else ""
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if not entry_url:
+            continue
+        if target_url and entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        kwargs = model_cfg.get("chat_template_kwargs")
+        return dict(kwargs) if isinstance(kwargs, dict) else {}
+    return {}
+
+
 def get_custom_provider_model_capability(
     model: str,
     base_url: str,

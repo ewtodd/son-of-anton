@@ -7,6 +7,10 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - reasoning_config disabled → top-level reasoning_effort="none"
     (Ollama /v1/chat/completions ignores think=False — ollama#14820)
     + extra_body.think = False for /api/chat and proxies
+    + extra_body.chat_template_kwargs.enable_thinking = False (vLLM /
+      llama.cpp Qwen3-family templates ignore the other two)
+  - custom_providers.<name>.models.<model>.chat_template_kwargs →
+    extra_body.chat_template_kwargs (declared keys win)
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
@@ -82,6 +86,12 @@ class CustomProfile(ProviderProfile):
                 if not _decl or "none" in _decl:
                     top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
+                # vLLM / llama.cpp / SGLang ignore both of the above for
+                # Qwen3-family templates: thinking there is a chat-template
+                # switch, so it only turns off via
+                # ``chat_template_kwargs.enable_thinking``. Endpoints whose
+                # template has no such variable render it as a no-op.
+                extra_body["chat_template_kwargs"] = {"enable_thinking": False}
             elif _effort:
                 # Clamp the internal ladder onto the route's vocabulary
                 # (shared policy in agent.reasoning_effort). Nearest-weaker
@@ -97,6 +107,18 @@ class CustomProfile(ProviderProfile):
                 top_level["reasoning_effort"] = clamp_effort(
                     _effort, _supported or OPENAI_COMPAT_WIRE_EFFORTS
                 )
+
+        # Per-model chat-template variables declared by the user
+        # (``custom_providers.<name>.models.<model>.chat_template_kwargs``)
+        # are passed through verbatim; a declared key wins over the
+        # thinking-off default above.
+        declared_ctk = _custom_route_chat_template_kwargs(
+            ctx.get("model"), ctx.get("base_url")
+        )
+        if declared_ctk:
+            merged_ctk = dict(extra_body.get("chat_template_kwargs") or {})
+            merged_ctk.update(declared_ctk)
+            extra_body["chat_template_kwargs"] = merged_ctk
 
         return extra_body, top_level
 
@@ -137,6 +159,18 @@ def _custom_route_effort_decl(model: str | None, base_url: str | None):
     if efforts:
         return tuple(efforts), set(efforts)
     return None, ()
+
+
+def _custom_route_chat_template_kwargs(model: str | None, base_url: str | None) -> dict:
+    """Return the route's declared ``chat_template_kwargs`` (``{}`` when none)."""
+    if not model:
+        return {}
+    try:
+        from son_of_anton_cli.config import get_custom_provider_chat_template_kwargs
+
+        return get_custom_provider_chat_template_kwargs(str(model), base_url) or {}
+    except Exception:
+        return {}
 
 
 custom = CustomProfile(
