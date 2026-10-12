@@ -74,3 +74,37 @@ def test_declared_template_kwargs_pass_through(profile, configured) -> None:
 def test_a_declared_key_wins_over_the_thinking_off_default(profile, configured) -> None:
     body = _extra_body(profile, {"enabled": False}, model="local/forced")
     assert body["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def _wire_extra_body(profile, reasoning_config, request_overrides, model="local/plain"):
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    kwargs = ChatCompletionsTransport().build_kwargs(
+        model,
+        [{"role": "user", "content": "hi"}],
+        provider_profile=profile,
+        base_url=BASE_URL,
+        reasoning_config=reasoning_config,
+        supports_reasoning=True,
+        request_overrides=request_overrides,
+    )
+    return kwargs.get("extra_body") or {}
+
+
+def test_user_template_kwargs_overrides_keep_thinking_off(profile) -> None:
+    body = _wire_extra_body(
+        profile,
+        {"enabled": False},
+        {"extra_body": {"chat_template_kwargs": {"preserve_thinking": True}, "top_k": 20}},
+    )
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "preserve_thinking": True}
+    assert body["top_k"] == 20
+
+
+def test_a_user_override_key_wins_per_key(profile) -> None:
+    body = _wire_extra_body(
+        profile,
+        {"enabled": False},
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}},
+    )
+    assert body["chat_template_kwargs"]["enable_thinking"] is True

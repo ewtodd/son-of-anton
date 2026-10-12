@@ -35,6 +35,25 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 _CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}$")
 
 
+#: extra_body keys whose value is a dict merged key-by-key when two layers
+#: both set them, instead of the later layer replacing the whole dict.
+#: ``chat_template_kwargs`` collects variables from independent sources —
+#: the profile's thinking-off switch, per-model declarations, the user's
+#: ``request_overrides`` — and a user adding one variable must not silently
+#: drop ``enable_thinking: false``.
+_MERGED_EXTRA_BODY_KEYS = frozenset({"chat_template_kwargs"})
+
+
+def _merge_extra_body(target: dict[str, Any], layer: dict[str, Any]) -> None:
+    """``target.update(layer)``, except merged keys combine (``layer`` wins per key)."""
+    for key, value in layer.items():
+        current = target.get(key)
+        if key in _MERGED_EXTRA_BODY_KEYS and isinstance(current, dict) and isinstance(value, dict):
+            target[key] = {**current, **value}
+        else:
+            target[key] = value
+
+
 def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     """Normalize a physical session_id into a stable logical cache scope.
 
@@ -833,23 +852,23 @@ class ChatCompletionsTransport(ProviderTransport):
             reasoning_config=reasoning_config,
         )
         if profile_body:
-            extra_body.update(profile_body)
+            _merge_extra_body(extra_body, profile_body)
 
         # Profile's reasoning/thinking extra_body entries
         if extra_body_from_profile:
-            extra_body.update(extra_body_from_profile)
+            _merge_extra_body(extra_body, extra_body_from_profile)
 
         # Merge any pre-built extra_body additions from the caller
         additions = params.get("extra_body_additions")
         if additions:
-            extra_body.update(additions)
+            _merge_extra_body(extra_body, additions)
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")
         if overrides:
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
-                    extra_body.update(v)
+                    _merge_extra_body(extra_body, v)
                 else:
                     api_kwargs[k] = v
 
