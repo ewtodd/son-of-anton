@@ -1228,7 +1228,7 @@ def try_recover_primary_transport(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
-        agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent._reasoning_echo_flag = rt.get("reasoning_echo_flag")
 
         if (agent.provider or "").strip().lower() == "moa":
             # MoA is a virtual provider with empty client_kwargs — rebuilding
@@ -1442,7 +1442,7 @@ def restore_primary_runtime(agent) -> bool:
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
-        agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent._reasoning_echo_flag = rt.get("reasoning_echo_flag")
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
@@ -2763,7 +2763,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
-        "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", None),
         "compactor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compactor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compactor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -3675,8 +3675,20 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     """
     from agent.message_sanitization import apply_reasoning_content_policy
 
+    # Classify thinking-only on the SOURCE turn, before the policy strips
+    # reasoning from the wire copy. Otherwise the same stored turn is treated
+    # two ways depending on the route: with echo on it still carries
+    # reasoning and the drop pass removes it; with echo off it arrives empty,
+    # ``repair_empty_non_final_messages`` fills in placeholder text, and the
+    # model sees an "assistant" line it never wrote.
+    if _ra().AIAgent._is_thinking_only_assistant(source_msg):
+        api_msg["_thinking_only"] = True
+
     apply_reasoning_content_policy(
-        source_msg, api_msg, agent._needs_thinking_reasoning_pad()
+        source_msg,
+        api_msg,
+        agent._needs_thinking_reasoning_pad(),
+        agent._reasoning_echo_enabled(),
     )
 
 
@@ -3712,7 +3724,9 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     from agent.message_sanitization import reapply_reasoning_echo
 
     return reapply_reasoning_echo(
-        api_messages, agent._needs_thinking_reasoning_pad()
+        api_messages,
+        agent._needs_thinking_reasoning_pad(),
+        agent._reasoning_echo_enabled(),
     )
 
 

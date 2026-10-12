@@ -4338,6 +4338,10 @@ class AIAgent:
         # inspection since repair_empty_non_final_messages may have healed content.
         if msg.get("_thinking_prefill"):
             return True
+        # Wire copies are classified on their source turn before the
+        # reasoning policy strips fields (copy_reasoning_content_for_api).
+        if msg.get("_thinking_only"):
+            return True
         # Does it have any actual output?
         content = msg.get("content")
         if isinstance(content, str):
@@ -6220,21 +6224,30 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
-            or self._reasoning_echo_opt_in()
         )
         self._thinking_pad_cache = (key, result)
         return result
 
+    def _reasoning_echo_enabled(self) -> bool:
+        """Return True when real ``reasoning_content`` is echoed on replay.
+
+        Every require-side family (``_needs_thinking_reasoning_pad``) echoes;
+        beyond those, ``_reasoning_echo_opt_in`` decides. Echo never
+        fabricates a pad — only the require-side families get one.
+        """
+        return self._needs_thinking_reasoning_pad() or self._reasoning_echo_opt_in()
+
     def _reasoning_echo_opt_in(self) -> bool:
-        """Return True when the user has opted in to ``reasoning_content``
-        echo-back for the *current* provider via config.
+        """Return True when ``reasoning_content`` echo-back is on for the
+        *current* route (beyond the built-in require-side families).
 
-        This covers custom providers and OpenAI-compatible gateways that
-        proxy thinking-mode models (e.g. a reverse proxy fronting Kimi K3
-        or GLM-5.2) but are not matched by the built-in host-based
-        ``_REASONING_ECHO_RULES`` (DeepSeek / Kimi / MiMo).
+        Resolution lives in ``agent.message_sanitization.resolve_reasoning_echo``:
+        per-model ``custom_providers.<name>.models.<model>.reasoning_echo``
+        first, then the explicit per-active-provider flag, then the
+        default (ON for custom / local endpoints, OFF elsewhere).
 
-        The flag is per-active-provider:
+        The explicit flag (``_reasoning_echo_flag``; ``None`` = unset)
+        travels with the active provider:
 
         * **Primary** — read from ``model.reasoning_echo`` in config.toml
           at agent init and on ``switch_model()``.
@@ -6243,23 +6256,46 @@ class AIAgent:
         * **Restore** — ``restore_primary_runtime()`` copies the snapshot
           saved by ``switch_model()``.
 
-        Unlike a global toggle, this flag travels with the active
-        provider, so falling back to a strict provider (Mistral, Groq,
-        Cerebras) correctly strips ``reasoning_content`` even when the
-        primary had the flag enabled.
+        So falling back to a strict provider (Mistral, Groq, Cerebras)
+        correctly strips ``reasoning_content`` even when the primary echoed.
+        Cached per (provider, model, base_url, flag) like the pad check.
         """
-        return bool(getattr(self, "_reasoning_echo_flag", False))
+        flag = getattr(self, "_reasoning_echo_flag", None)
+        key = (
+            self.provider,
+            self.model,
+            getattr(self, "_base_url_lower", self.base_url),
+            flag,
+            id(getattr(self, "_custom_providers", None)),
+        )
+        cached = getattr(self, "_reasoning_echo_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        from agent.message_sanitization import resolve_reasoning_echo
+
+        result = resolve_reasoning_echo(
+            self.provider,
+            self.model,
+            self.base_url,
+            flag,
+            getattr(self, "_custom_providers", None),
+        )
+        self._reasoning_echo_cache = (key, result)
+        return result
 
     @staticmethod
-    def _read_reasoning_echo_from_config() -> bool:
-        """Read ``model.reasoning_echo`` from config; False on any error."""
+    def _read_reasoning_echo_from_config() -> "bool | None":
+        """Read an explicit ``model.reasoning_echo`` from config.
+
+        ``None`` when unset or unreadable — the route default then applies
+        (see ``resolve_reasoning_echo``).
+        """
         try:
             from son_of_anton_cli.config import load_config_readonly
-            return bool(
-                (load_config_readonly().get("model") or {}).get("reasoning_echo")
-            )
+            value = (load_config_readonly().get("model") or {}).get("reasoning_echo")
         except Exception:
-            return False
+            return None
+        return value if isinstance(value, bool) else None
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.

@@ -1887,10 +1887,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.requested_provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
-        # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
+        # Per-provider reasoning_content echo override (see _reasoning_echo_opt_in).
         # Read from the fallback entry so the flag travels with the active
         # provider; restore_primary_runtime will revert it from the snapshot.
-        agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+        # Unset (None) → the route default (on for custom endpoints).
+        _fb_echo = fb.get("reasoning_echo")
+        agent._reasoning_echo_flag = _fb_echo if isinstance(_fb_echo, bool) else None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

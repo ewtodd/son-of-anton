@@ -498,6 +498,8 @@ __all__ = [
     "reasoning_echo_family",
     "matches_reasoning_echo_family",
     "needs_reasoning_echo",
+    "is_custom_route",
+    "resolve_reasoning_echo",
     "apply_reasoning_content_policy",
     "reapply_reasoning_echo",
 ]
@@ -695,6 +697,9 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 #                them.
 #     mimo     — provider "xiaomi", model contains "mimo", or host
 #                *.xiaomimimo.com.
+#   echo side (field accepted, real reasoning sent back, never padded):
+#     custom / local endpoints by default (``resolve_reasoning_echo``),
+#     or any route opted in via ``reasoning_echo = true``.
 #   strict side (field rejected with 400/422 "Extra inputs are not
 #     permitted"): everyone else — Mistral, Cerebras, Groq, SambaNova, …
 #     (#45655). Strip the key entirely, even a single-space pad.
@@ -758,44 +763,137 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
+def is_custom_route(provider: Any, base_url: Any, custom_providers: Any = None) -> bool:
+    """True when (provider, base_url) is a user-declared custom endpoint.
+
+    ``provider == "custom"`` / ``"custom:<name>"`` is the runtime identity of
+    a ``custom_providers`` route; a base_url that equals a declared
+    ``custom_providers`` entry's counts too (a fallback entry can name the
+    same endpoint under another provider label).
+    """
+    provider_lower = str(provider or "").strip().lower()
+    if provider_lower == "custom" or provider_lower.startswith("custom:"):
+        return True
+    if not base_url or not isinstance(custom_providers, list):
+        return False
+    from son_of_anton_cli.route_identity import normalize_route_base_url
+
+    target = normalize_route_base_url(base_url)
+    if not target:
+        return False
+    return any(
+        isinstance(entry, dict)
+        and normalize_route_base_url(entry.get("base_url")) == target
+        for entry in custom_providers
+    )
+
+
+def resolve_reasoning_echo(
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    explicit: "bool | None",
+    custom_providers: Any = None,
+) -> bool:
+    """Decide whether real ``reasoning_content`` is echoed on replay.
+
+    Precedence, most specific first:
+
+    1. ``custom_providers.<name>.models.<model>.reasoning_echo`` (bool) for
+       the active route + model.
+    2. ``explicit`` — ``model.reasoning_echo`` for the primary, or the
+       active ``fallback_providers`` entry's ``reasoning_echo``.
+    3. Default: ON for custom / local endpoints (vLLM, llama.cpp, Ollama,
+       gateways in front of them), OFF everywhere else. Local chat
+       templates (Qwen3 et al.) render the model's own reasoning for the
+       whole tool loop, so stripping it both blinds the model to its
+       earlier reasoning mid-chain and misses the server's prefix cache at
+       every tool call. Hosted strict providers (Mistral, Groq, …) are not
+       custom routes and keep the strip default.
+    """
+    if model and base_url and isinstance(custom_providers, list):
+        try:
+            from son_of_anton_cli.config import get_custom_provider_model_capability
+
+            declared = get_custom_provider_model_capability(
+                model=str(model),
+                base_url=str(base_url),
+                capability="reasoning_echo",
+                custom_providers=custom_providers,
+            )
+        except Exception:
+            declared = None
+        if declared is not None:
+            return declared
+    if isinstance(explicit, bool):
+        return explicit
+    return is_custom_route(provider, base_url, custom_providers)
+
+
 def apply_reasoning_content_policy(
-    source_msg: dict, api_msg: dict, needs_thinking_pad: bool
+    source_msg: dict,
+    api_msg: dict,
+    needs_thinking_pad: bool,
+    echo_reasoning: "bool | None" = None,
 ) -> None:
     """Copy provider-facing reasoning fields onto an API replay message.
 
-    ``needs_thinking_pad`` is the require-side flag (see
-    ``needs_reasoning_echo`` / the agent's cached
-    ``_needs_thinking_reasoning_pad``). Mutates ``api_msg`` in place.
+    Two independent questions decide what goes out:
+
+    * ``needs_thinking_pad`` — the require-side flag (see
+      ``needs_reasoning_echo`` / the agent's cached
+      ``_needs_thinking_reasoning_pad``): the endpoint 400s on an assistant
+      turn WITHOUT ``reasoning_content``, so a pad is synthesized when the
+      turn has no real reasoning.
+    * ``echo_reasoning`` — the endpoint accepts the field and benefits from
+      the model's own reasoning coming back (custom / local endpoints:
+      Qwen3-style chat templates render ``reasoning_content`` for every
+      assistant turn after the last user query, i.e. the whole tool loop,
+      and the local KV prefix cache only hits when the replay matches what
+      was generated). Real reasoning is echoed; nothing is fabricated.
+      ``None`` means "same as ``needs_thinking_pad``" (every require-side
+      endpoint is also an echo endpoint).
+
+    Neither flag → strict side: the key is stripped. Mutates ``api_msg``.
     """
     if source_msg.get("role") != "assistant":
         return
+    echo_reasoning = bool(echo_reasoning or needs_thinking_pad)
+
+    # Strict side (Mistral, Cerebras, Groq, SambaNova, …): these reject ANY
+    # reasoning_content key in input messages with HTTP 400/422 ("Extra
+    # inputs are not permitted"), even an empty string or a single-space
+    # pad. Covers the cross-provider fallback case where a reasoning
+    # primary padded history with " " (refs #45655); ``reapply_reasoning_echo``
+    # covers the already-built api_messages path.
+    if not echo_reasoning:
+        api_msg.pop("reasoning_content", None)
+        return
+
+    normalized_reasoning = source_msg.get("reasoning")
 
     # 1. Explicit reasoning_content already set.
     #
-    # When the active provider enforces the thinking-mode echo-back
-    # (DeepSeek / Kimi / MiMo), preserve it verbatim — that includes their
-    # own space-placeholder written at creation time and any valid reasoning
-    # from the same provider. Sessions persisted BEFORE #17341 have
-    # empty-string placeholders pinned at creation time; DeepSeek V4 Pro
-    # rejects those with HTTP 400, so upgrade "" → " " on replay.
+    # Require-side (DeepSeek / Kimi / MiMo): preserve it verbatim — that
+    # includes their own space-placeholder written at creation time.
+    # Sessions persisted BEFORE #17341 have empty-string placeholders
+    # pinned at creation time; DeepSeek V4 Pro rejects those with HTTP 400,
+    # so upgrade "" → " " on replay.
     #
-    # When the active provider does NOT enforce echo-back, strip the field
-    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
-    # SambaNova, …) reject ANY reasoning_content key in input messages with
-    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
-    # or a single-space pad. This is the cross-provider fallback case: a
-    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
-    # fallback to a strict provider replays that pad and 422s. Stripping
-    # here covers the rebuild path; ``reapply_reasoning_echo`` covers the
-    # already-built api_messages path. Refs #45655.
+    # Echo-only (custom/local): real reasoning goes back verbatim; a blank
+    # value is a pad some require-side provider wrote, not reasoning — fall
+    # back to the turn's own ``reasoning`` text, else drop the key rather
+    # than render an empty think block into the prompt.
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
-        if not needs_thinking_pad:
-            api_msg.pop("reasoning_content", None)
-        elif existing == "":
-            api_msg["reasoning_content"] = " "
-        else:
+        if needs_thinking_pad:
+            api_msg["reasoning_content"] = existing if existing else " "
+        elif existing.strip():
             api_msg["reasoning_content"] = existing
+        elif isinstance(normalized_reasoning, str) and normalized_reasoning.strip():
+            api_msg["reasoning_content"] = normalized_reasoning
+        else:
+            api_msg.pop("reasoning_content", None)
         return
 
     # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
@@ -809,7 +907,6 @@ def apply_reasoning_content_policy(
     # provider's chain of thought to DeepSeek/Kimi. Space (not "")
     # because DeepSeek V4 Pro rejects empty-string reasoning_content
     # in thinking mode (refs #17341).
-    normalized_reasoning = source_msg.get("reasoning")
     if (
         needs_thinking_pad
         and source_msg.get("tool_calls")
@@ -819,20 +916,15 @@ def apply_reasoning_content_policy(
         api_msg["reasoning_content"] = " "
         return
 
-    # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
-    # for providers that use the internal 'reasoning' key.
-    # This must happen before the unconditional empty-string fallback so
+    # 3. Healthy session: promote the internal 'reasoning' field to
+    # 'reasoning_content'. This must happen before the pad fallback so
     # genuine reasoning content is not overwritten (#15812 regression in
-    # PR #15478). Only promote for providers that enforce echo-back —
-    # strict providers reject the field (refs #45655).
+    # PR #15478).
     if isinstance(normalized_reasoning, str) and normalized_reasoning:
-        if needs_thinking_pad:
-            api_msg["reasoning_content"] = normalized_reasoning
-        else:
-            api_msg.pop("reasoning_content", None)
+        api_msg["reasoning_content"] = normalized_reasoning
         return
 
-    # 4. DeepSeek / Kimi thinking mode: all assistant messages need
+    # 4. DeepSeek / Kimi / MiMo thinking mode: every assistant message needs
     # reasoning_content. Inject a single space to satisfy the provider's
     # requirement when no explicit reasoning content is present. Covers
     # both tool-call turns (already-poisoned history with no reasoning
@@ -840,16 +932,24 @@ def apply_reasoning_content_policy(
     # Pro tightened validation and rejects empty string with HTTP 400
     # ("The reasoning content in the thinking mode must be passed back
     # to the API"). Refs #17341.
+    #
+    # Require-side families only: an echo-only endpoint gets no pad — a
+    # " " the model never generated is a fabricated empty think block in
+    # the rendered prompt, not reasoning.
     if needs_thinking_pad:
         api_msg["reasoning_content"] = " "
         return
 
-    # 5. reasoning_content was present but not a string (e.g. None after
-    # context compaction).  Don't pass null to the API.
+    # 5. No reasoning to echo, or reasoning_content was present but not a
+    # string (e.g. None after context compaction). Don't pass null.
     api_msg.pop("reasoning_content", None)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
+def reapply_reasoning_echo(
+    api_messages: list,
+    needs_thinking_pad: bool,
+    echo_reasoning: "bool | None" = None,
+) -> int:
     """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
@@ -862,6 +962,10 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
       echo-back go out without ``reasoning_content`` and the new provider
       rejects them with HTTP 400 ("The reasoning_content in the thinking mode
       must be passed back").  Re-apply the pad.
+
+    * Switching TO an echo-only endpoint (custom / local): real reasoning
+      already on the turn stays; blank pads written for a require-side
+      primary are dropped. Nothing is synthesized.
 
     * Switching TO a strict provider that rejects the field (Mistral,
       Cerebras, Groq, SambaNova, …): assistant turns built under a reasoning
@@ -878,6 +982,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
     Returns the number of assistant turns whose reasoning_content was added or
     removed.
     """
+    echo_reasoning = bool(echo_reasoning or needs_thinking_pad)
     changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
@@ -885,8 +990,16 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
         if needs_thinking_pad:
             if api_msg.get("reasoning_content"):
                 continue
-            apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad)
+            apply_reasoning_content_policy(api_msg, api_msg, True)
             if api_msg.get("reasoning_content"):
+                changed += 1
+        elif echo_reasoning:
+            # Echo-only endpoint — keep genuine reasoning, drop blank pads.
+            rc = api_msg.get("reasoning_content")
+            if "reasoning_content" in api_msg and not (
+                isinstance(rc, str) and rc.strip()
+            ):
+                api_msg.pop("reasoning_content", None)
                 changed += 1
         else:
             # Strict provider — strip any stale reasoning_content pad left
