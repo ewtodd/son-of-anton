@@ -519,6 +519,60 @@ def call_llm(
     )
 
 
+def _message_reasoning(message) -> str:
+    """The reasoning a response carried, under either field name.
+
+    vLLM's reasoning parser has emitted it as ``reasoning_content`` and, more
+    recently, ``reasoning``; proxies pass through one or the other. The SDK
+    keeps unknown fields as extra attributes.
+    """
+    extra = getattr(message, "model_extra", None)
+    for name in ("reasoning_content", "reasoning"):
+        value = getattr(message, name, None)
+        if value is None and isinstance(extra, dict):
+            value = extra.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _parse_tool_arguments(raw, *, truncated: bool) -> tuple[Optional[dict], str]:
+    """Parse one tool call's arguments into ``(arguments, problem)``.
+
+    *arguments* is None when the call must not run, and *problem* says why.
+    Empty arguments are an empty object — a no-argument call like ``end_turn``
+    — unless the response was cut off at the output limit, when empty means
+    the arguments never arrived.
+    """
+    if isinstance(raw, dict):
+        return raw, ""
+    if raw is None or not str(raw).strip():
+        if truncated:
+            return None, "truncated"
+        return {}, ""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None, "truncated" if truncated else "invalid"
+    if not isinstance(parsed, dict):
+        return None, "invalid"
+    return parsed, ""
+
+
+def _rejected_call_message(name: str, problem: str) -> str:
+    if problem == "truncated":
+        return (
+            f"ERROR: this {name} call was NOT executed. Your response reached "
+            "the output token limit before the call's arguments were complete. "
+            "Issue it again with complete arguments — if an argument is long, "
+            "shorten it or split the work across several calls."
+        )
+    return (
+        f"ERROR: this {name} call was NOT executed: its arguments were not a "
+        "valid JSON object. Issue it again with valid JSON arguments."
+    )
+
+
 def run_agent_loop(
     system: str,
     user_content: str,
@@ -619,21 +673,34 @@ def run_agent_loop(
 
         round_calls: list[ToolCall] = []
         tool_messages = []
-        for tool_call in message.tool_calls:
+        replayed_calls = []
+        for index, tool_call in enumerate(message.tool_calls):
             function = tool_call.function
-            try:
-                tool_input = json.loads(function.arguments or "{}")
-            except json.JSONDecodeError:
-                tool_input = {}
+            # Some endpoints omit the id. The tool result must still be paired
+            # with its call, and a None id breaks that on the next request.
+            call_id = getattr(tool_call, "id", None) or f"call_r{round_num}_{index}"
+            raw_arguments = getattr(function, "arguments", None)
+            tool_input, problem = _parse_tool_arguments(
+                raw_arguments, truncated=truncated
+            )
             call_start = time.time()
-            is_error = False
-            try:
-                executed = tool_executor.execute(function.name, tool_input)
-                output = executed.output
-                is_error = executed.is_error
-            except Exception as exc:  # noqa: BLE001 — tool errors are data
-                output = f"tool error: {exc}"
+            if tool_input is None:
+                # Never execute a call whose arguments did not survive: a
+                # truncated write_to_permanent_memory run with {} is an error
+                # the model cannot see, and a cut-off one run with half its
+                # content is worse. Tell it instead.
+                output = _rejected_call_message(function.name, problem)
                 is_error = True
+                tool_input = {}
+            else:
+                is_error = False
+                try:
+                    executed = tool_executor.execute(function.name, tool_input)
+                    output = executed.output
+                    is_error = executed.is_error
+                except Exception as exc:  # noqa: BLE001 — tool errors are data
+                    output = f"tool error: {exc}"
+                    is_error = True
             round_calls.append(
                 ToolCall(
                     tool_name=function.name,
@@ -646,28 +713,44 @@ def run_agent_loop(
             tool_messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": call_id,
                     "content": output,
                 }
             )
+            replayed_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": function.name,
+                        # Replayed arguments must be valid JSON whatever the
+                        # model emitted: chat templates parse them, and a
+                        # truncated string 400s every later round.
+                        "arguments": (
+                            raw_arguments
+                            if not problem
+                            and isinstance(raw_arguments, str)
+                            and raw_arguments.strip()
+                            else json.dumps(tool_input)
+                        ),
+                    },
+                }
+            )
 
-        messages.append(
-            {
-                "role": "assistant",
-                "content": message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in message.tool_calls
-                ],
-            }
-        )
+        assistant_turn: dict[str, Any] = {
+            "role": "assistant",
+            "content": message.content or "",
+            "tool_calls": replayed_calls,
+        }
+        # Replay the reasoning that produced these calls. Qwen3's chat
+        # template renders reasoning_content for the assistant turns after the
+        # last user message; without it the model loses its own interleaved
+        # reasoning between rounds, and the prompt differs from what the
+        # server generated, so its prefix cache misses at every round.
+        reasoning = _message_reasoning(message)
+        if reasoning:
+            assistant_turn["reasoning_content"] = reasoning
+        messages.append(assistant_turn)
         messages.extend(tool_messages)
         all_tool_calls.extend(round_calls)
 
