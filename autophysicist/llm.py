@@ -51,6 +51,12 @@ class ContextTooLongError(Exception):
         super().__init__(f"context too long ({detail})")
 
 
+class PromptTooLargeError(ContextTooLongError):
+    """Even the minimal prompt — system + the iteration's opening message —
+    does not fit the context window, so nothing a tool loop can trim will
+    help. A run should stop on this rather than fail every iteration left."""
+
+
 def is_transient(exc: BaseException) -> bool:
     """True when a retry could plausibly succeed (rate limit, 5xx, network)."""
     if isinstance(exc, (APIConnectionError, APITimeoutError)):
@@ -191,6 +197,56 @@ def _resolve_endpoint(config):
         max_retries=0,
     )
     return client, model
+
+
+#: Windows resolved this process, keyed by (base_url, model) — the metadata
+#: lookup can touch the network and the answer does not change mid-run.
+_CONTEXT_WINDOWS: dict[tuple[str, str], int] = {}
+
+
+def resolve_context_window(config) -> int:
+    """The physics model's context window in tokens, or 0 when unknown.
+
+    ``config.context_length`` (``physics.context_length``, or a window an
+    overflow error reported) wins. Otherwise the main agent's resolver
+    answers — custom_providers per-model ``context_length``, the endpoint's
+    ``/models`` metadata, known model families — for the base URL and model
+    the physics calls actually use.
+    """
+    explicit = int(getattr(config, "context_length", 0) or 0)
+    if explicit > 0:
+        return explicit
+    try:
+        client, model = _resolve_endpoint(config)
+        base_url = str(getattr(client, "base_url", "") or "").rstrip("/")
+        api_key = str(getattr(client, "api_key", "") or "")
+    except Exception:
+        return 0
+    key = (base_url, str(model))
+    if key not in _CONTEXT_WINDOWS:
+        window = 0
+        if model:
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                window = int(
+                    get_model_context_length(
+                        str(model),
+                        base_url=base_url,
+                        api_key="" if api_key == "none" else api_key,
+                    )
+                    or 0
+                )
+            except Exception:
+                window = 0
+        _CONTEXT_WINDOWS[key] = window
+    return _CONTEXT_WINDOWS[key]
+
+
+def note_context_window(config, limit: int) -> None:
+    """Adopt the window a provider's overflow error named — it is the truth."""
+    if limit and limit > 0:
+        config.context_length = int(limit)
 
 
 #: Substrings that actually mean "the request was too long for the model".
@@ -470,9 +526,14 @@ def _continue_truncated(
         )
         start = time.time()
         tool_kwargs = {"tools": tools, "tool_choice": "none"} if tools else {}
-        resp = _create_with_retry(
-            client, model, conversation, max_tokens, config, **tool_kwargs
-        )
+        try:
+            resp = _create_with_retry(
+                client, model, conversation, max_tokens, config, **tool_kwargs
+            )
+        except ContextTooLongError:
+            # The text so far plus the request no longer fits: keep what
+            # there is rather than lose the whole answer.
+            break
         duration = time.time() - start
         choice = resp.choices[0]
         finish = choice.finish_reason or "end_turn"
@@ -603,6 +664,128 @@ def _rejected_call_message(name: str, problem: str) -> str:
     )
 
 
+#: Overflow recoveries one request gets before the error propagates.
+MAX_CONTEXT_RECOVERIES = 3
+#: Fewest output tokens worth sending a request with. Below this an overflow
+#: is answered by trimming history, not by shrinking the reply.
+MIN_OUTPUT_TOKENS = 4096
+#: What a trimmed tool output keeps of its head and tail.
+_TRIM_KEEP_CHARS = 800
+_TRIM_NOTE = (
+    "removed to fit the model's context window; call the tool again if you "
+    "need this output"
+)
+
+
+def _trim_history(messages: list[dict], chars_to_remove: int) -> int:
+    """Shrink the oldest bulky turns in place; return the characters removed.
+
+    Only what the loop itself appended is touched — never the system prompt
+    or the opening user message, which a caller sized deliberately. Oldest
+    first: earlier rounds' reasoning (dropped — the template discards it once
+    a later user turn exists anyway), then tool outputs and long assistant
+    text (clipped to head and tail with a marker), and the latest round only
+    when the older ones were not enough.
+
+    This rewrites past context, which costs the prefix cache — acceptable
+    only because the alternative is a request that cannot be sent at all.
+    """
+    removed = 0
+    body = list(range(2, len(messages)))
+    if not body:
+        return 0
+    # The latest round: its assistant turn and everything after it.
+    last_assistant = max(
+        (i for i in body if messages[i].get("role") == "assistant"), default=None
+    )
+    older = [i for i in body if last_assistant is None or i < last_assistant]
+    latest = [i for i in body if i not in older]
+
+    for indices in (older, latest):
+        for i in indices:
+            if removed >= chars_to_remove:
+                return removed
+            message = messages[i]
+            reasoning = message.get("reasoning_content")
+            if reasoning:
+                removed += len(reasoning)
+                message.pop("reasoning_content")
+        for i in indices:
+            if removed >= chars_to_remove:
+                return removed
+            message = messages[i]
+            if message.get("role") not in ("tool", "assistant"):
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or len(content) <= _TRIM_KEEP_CHARS * 2:
+                continue
+            if _TRIM_NOTE in content:
+                continue
+            clipped = (
+                content[:_TRIM_KEEP_CHARS]
+                + f"\n\n[... {len(content) - 2 * _TRIM_KEEP_CHARS:,} characters "
+                + f"{_TRIM_NOTE} ...]\n\n"
+                + content[-_TRIM_KEEP_CHARS:]
+            )
+            removed += len(content) - len(clipped)
+            message["content"] = clipped
+    return removed
+
+
+def _request_round(
+    client,
+    model,
+    messages: list[dict],
+    max_tokens: int,
+    config,
+    tools,
+    *,
+    tool_choice=None,
+):
+    """One round's request, recovering from a context overflow.
+
+    Up to ``MAX_CONTEXT_RECOVERIES`` times: when the provider says the prompt
+    fits but prompt + ``max_tokens`` does not, the reply is capped to what is
+    left (vLLM rejects on the sum); otherwise the oldest bulky turns are
+    trimmed (:func:`_trim_history`) and the request resent. When nothing the
+    loop added is left to trim, the opening prompt itself is too big and
+    :class:`PromptTooLargeError` says so.
+    """
+    request_max = max_tokens
+    for attempt in range(MAX_CONTEXT_RECOVERIES + 1):
+        try:
+            kwargs = {"tools": tools} if tools else {}
+            if tools and tool_choice:
+                kwargs["tool_choice"] = tool_choice
+            return _create_with_retry(
+                client, model, messages, request_max, config, **kwargs
+            )
+        except ContextTooLongError as exc:
+            note_context_window(config, exc.limit)
+            if attempt == MAX_CONTEXT_RECOVERIES:
+                raise
+            room = (exc.limit - exc.input_tokens) if exc.limit and exc.input_tokens else 0
+            if room >= MIN_OUTPUT_TOKENS and room - 64 < request_max:
+                request_max = room - 64
+                continue
+            total_chars = sum(
+                len(str(m.get("content") or "")) + len(str(m.get("reasoning_content") or ""))
+                for m in messages
+            )
+            if exc.limit and exc.input_tokens:
+                # Tokens over the window plus room for a useful reply, as
+                # characters at a generous 4 per token.
+                excess = exc.input_tokens - (exc.limit - min(request_max, MIN_OUTPUT_TOKENS * 2))
+                target = max(excess, 1) * 4
+            else:
+                target = total_chars // 2
+            if _trim_history(messages, target) == 0:
+                if len(messages) <= 2:
+                    raise PromptTooLargeError(exc.input_tokens, limit=exc.limit) from exc
+                raise
+    raise RuntimeError("unreachable")
+
+
 def run_agent_loop(
     system: str,
     user_content: str,
@@ -628,6 +811,13 @@ def run_agent_loop(
     *final_answer_on_max_rounds*, its answer to one more tools-off request
     asking for it. That is for agents whose answer IS the result (a
     sub-agent); the Manager's result is what it wrote to memory.
+
+    A context overflow is recovered in place (:func:`_request_round`): the
+    reply is capped to the room left, or the oldest tool outputs and
+    reasoning are trimmed, a bounded number of times. When the opening
+    prompt alone does not fit, :class:`PromptTooLargeError` is raised; any
+    other overflow that survives trimming propagates as
+    :class:`ContextTooLongError`.
 
     The loop honours the executor duck-type protocol that the executors in
     this package document and depend on:
@@ -667,8 +857,8 @@ def run_agent_loop(
     for round_num in range(1, max_rounds + 1):
         round_tools = getattr(tool_executor, "active_tools", None) or tools
         round_start = time.time()
-        resp = _create_with_retry(
-            client, model, messages, max_tokens, config, tools=round_tools
+        resp = _request_round(
+            client, model, messages, max_tokens, config, round_tools
         )
         _log_round(
             config,
@@ -870,15 +1060,19 @@ def run_agent_loop(
         else:
             messages.append({"role": "user", "content": cap_prompt})
         round_start = time.time()
-        resp = _create_with_retry(
-            client,
-            model,
-            messages,
-            max_tokens,
-            config,
-            tools=round_tools,
-            tool_choice="none" if round_tools else None,
-        )
+        try:
+            resp = _request_round(
+                client,
+                model,
+                messages,
+                max_tokens,
+                config,
+                round_tools,
+                tool_choice="none",
+            )
+        except ContextTooLongError:
+            resp = None
+    if final_answer_on_max_rounds and resp is not None:
         finish = resp.choices[0].finish_reason or "end_turn"
         _log_round(
             config,

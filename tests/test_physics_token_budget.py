@@ -72,7 +72,7 @@ class _Executor:
     stop_after_round = False
 
     def execute(self, name, args):
-        return ToolCall(tool_name=name, tool_input=args, output="ok", is_error=False)
+        return ToolCall(tool_name=name, tool_input=args, output="ok", is_error=False, duration=0.0)
 
 
 def _tool_response(usage):
@@ -156,6 +156,7 @@ def test_the_manager_winds_down_on_spend_not_on_resent_prompt(
     monkeypatch.setattr("autophysicist.llm._create_with_retry", _create)
 
     config = Config()
+    config.context_length = 1_000_000  # no metadata lookup in a test
     result, executor = _run_iteration(
         system_prompt="s",
         problem_text="p",

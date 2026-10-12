@@ -10,7 +10,7 @@ You operate in iterations. Each iteration, you receive:
 
 - This system prompt (always the same).
 - The **problem statement** (always the same).
-- The **permanent memory**: a growing document of validated results. You will see its full contents.
+- The **permanent memory**: a growing document of validated results. You will see its full contents — or, once it outgrows its share of your context window, its newest entries in full and a condensed digest of the older ones. The complete file stays in your workspace as PERMANENT_MEMORY.md.
 - The **scratchpad**: the last 5 entries of a rolling log of working notes. Older entries are gone from your perspective.
 - The **iteration counter**: the current iteration number.
 

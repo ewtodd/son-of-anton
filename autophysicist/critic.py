@@ -103,7 +103,10 @@ def build_context(
     three times because an explicit instruction beats general guidance. A
     reviewer who does not know what is installed invents work that cannot run.
     """
-    memory = permanent_memory.read_full().strip()
+    # The bounded view the Manager sees, when memory has outgrown its share
+    # of the window — the critic's prompt would overflow on the same file.
+    read = getattr(permanent_memory, "read_for_prompt", permanent_memory.read_full)
+    memory = read().strip()
     runtime_block = (
         f"<execution_environment>\nCode written by this system runs under: "
         f"{runtime}\nDo not suggest a package that is not in that list.\n"

@@ -41,6 +41,11 @@ def resolve_models(config, model: str | None = None) -> None:
         config.reasoning_effort = str(
             physics.get("reasoning_effort") or ""
         ).strip()
+    if not getattr(config, "context_length", 0):
+        try:
+            config.context_length = max(int(physics.get("context_length") or 0), 0)
+        except (TypeError, ValueError):
+            pass
     declared_critique = physics.get("critique_every_n")
     if declared_critique is not None:
         try:

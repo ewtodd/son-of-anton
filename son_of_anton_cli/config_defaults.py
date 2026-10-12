@@ -465,6 +465,14 @@ DEFAULT_CONFIG = {
         # work and end the iteration; at 1.5x the iteration is cut off. It is
         # not a context-window size.
         "token_budget": 0,
+        # The physics model's context window in tokens. 0 resolves it the way
+        # the main agent does (custom_providers.<name>.models.<model>
+        # .context_length, the endpoint's /models metadata, known families).
+        # Each iteration's opening prompt is sized against it — permanent
+        # memory gets a quarter, past which older entries are injected as a
+        # digest (PERMANENT_MEMORY_DIGEST.md) — and an overflow error that
+        # names the real window overrides it for the rest of the run.
+        "context_length": 0,
         # Interpreter that model-authored computations run under. The agent's
         # own venv deliberately ships no scientific stack, so leaving this
         # empty means numpy/scipy/matplotlib are unavailable to physics runs.

@@ -38,7 +38,7 @@ class _Executor:
 
     def execute(self, name, args):
         self.calls.append((name, args))
-        return ToolCall(tool_name=name, tool_input=args, output="ok", is_error=False)
+        return ToolCall(tool_name=name, tool_input=args, output="ok", is_error=False, duration=0.0)
 
 
 def _call(name, arguments, call_id="c1"):

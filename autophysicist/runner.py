@@ -16,6 +16,8 @@ sets ``problem_solved`` on the executor and breaks the outer loop;
 from __future__ import annotations
 
 import argparse
+import copy
+import json
 import os
 import subprocess
 import time
@@ -39,7 +41,15 @@ from .core.config import Config, build_config  # noqa: E402
 from .core.console import console  # noqa: E402
 from .core.models import resolve_models  # noqa: E402
 from .core.problem_spec import ProblemSpec, write_spec  # noqa: E402
-from .llm import run_agent_loop, AgentResult  # noqa: E402
+from .llm import (  # noqa: E402
+    AgentResult,
+    ContextTooLongError,
+    MIN_OUTPUT_TOKENS,
+    PromptTooLargeError,
+    call_llm,
+    resolve_context_window,
+    run_agent_loop,
+)
 from .core.metrics import MetricsTracker  # noqa: E402
 from .verification import (  # noqa: E402
     extract_answer_code,
@@ -53,14 +63,87 @@ from .utils.mcp import LookupToolset, build_lookups  # noqa: E402
 from .utils.sandbox import SandboxPolicy  # noqa: E402
 
 from .critic import run_critique  # noqa: E402
-from .memory import PermanentMemory, Scratchpad  # noqa: E402
+from .memory import (  # noqa: E402
+    PermanentMemory,
+    Scratchpad,
+    estimate_tokens,
+)
 from .tools import ManagerToolExecutor  # noqa: E402
 
 
 def _load_system_prompt() -> str:
     """Load the Manager system prompt from the co-located prompt.md."""
     path = Path(__file__).parent / "prompt.md"
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Context-window budgeting
+# ---------------------------------------------------------------------------
+
+#: Share of the context window the permanent-memory view may fill. The rest
+#: holds the system prompt, the problem, the scratchpad, the critique, the
+#: tool schemas — and every round of the iteration that follows, which is
+#: where most of the window goes.
+MEMORY_CONTEXT_SHARE = 0.25
+#: Share the scratchpad window may fill. Five entries are normally small, but
+#: nothing bounds one entry.
+SCRATCHPAD_CONTEXT_SHARE = 0.10
+
+#: Consecutive iterations that may fail on a context overflow before the run
+#: stops: the next iteration starts from a fresh, bounded prompt, so one
+#: overflow is worth retrying and a second in a row says it will keep failing.
+MAX_CONSECUTIVE_OVERFLOWS = 2
+
+_DIGEST_SYSTEM = """You maintain the digest of the oldest entries of a research \
+project's permanent memory: a log of results that were independently verified \
+before being recorded. The digest replaces those entries in the researcher's \
+context, so it must preserve every established result exactly — numerical \
+values with their units and uncertainties, equations, definitions and \
+notation, which method verified each result, and every correction or \
+retraction (and which earlier entry it corrects). Drop narrative, repetition \
+and superseded intermediate steps, never results. Keep each item's iteration \
+number. Do not add anything that is not in the entries.
+
+You are given the existing digest (if any) and entries to fold into it. Reply \
+with the complete updated digest only, as concise markdown, in at most about \
+{target_words} words."""
+
+
+def _memory_condenser(config: Config):
+    """A condenser for :meth:`PermanentMemory.configure_view` using the model.
+
+    Runs under ``physics.agent_models.memory_digest`` when set, else the
+    Manager's model. Any failure falls back to the deterministic excerpt
+    digest in :mod:`autophysicist.memory`.
+    """
+
+    def condense(text: str, target_tokens: int) -> str:
+        digest_config = copy.copy(config)
+        digest_config.model = config.model_for_agent("memory_digest")
+        cap = int(digest_config.max_tokens_for_agent("memory_digest") * 0.75)
+        target = max(min(target_tokens, cap), 256)
+        response = call_llm(
+            system=_DIGEST_SYSTEM.format(target_words=int(target * 0.75)),
+            user_content=text,
+            config=digest_config,
+            agent_name="memory_digest",
+        )
+        if response.stop_reason == "max_tokens":
+            return ""  # an unfinished digest drops results; use the excerpts
+        return response.text
+
+    return condense
+
+
+def _configure_memory_view(
+    permanent_memory: PermanentMemory, config: Config, window: int
+) -> None:
+    """Bound the memory view to its share of *window* (0 = unbounded)."""
+    permanent_memory.configure_view(
+        int(window * MEMORY_CONTEXT_SHARE) if window else 0,
+        condense=_memory_condenser(config),
+    )
 
 
 def _build_user_content(
@@ -71,10 +154,24 @@ def _build_user_content(
     iteration: int,
     max_iterations: int,
     critique: str = "",
+    scratchpad_max_tokens: int = 0,
 ) -> str:
-    """Assemble the user message for one Manager iteration."""
-    mem_text = permanent_memory.read_full().strip()
+    """Assemble the user message for one Manager iteration.
+
+    Permanent memory comes through its bounded view (see
+    :meth:`PermanentMemory.read_for_prompt`), and the scratchpad window is
+    clipped to *scratchpad_max_tokens* when that is set — keeping the newest
+    notes — so the opening prompt stays inside the context window however
+    long the run gets.
+    """
+    mem_text = permanent_memory.read_for_prompt().strip()
     scratch_text = scratchpad.read_window().strip()
+    if scratchpad_max_tokens and estimate_tokens(scratch_text) > scratchpad_max_tokens:
+        keep = scratchpad_max_tokens * 3
+        scratch_text = (
+            f"[... older scratchpad text omitted to fit the context window — "
+            f"full text in {Scratchpad.FILENAME} ...]\n\n" + scratch_text[-keep:]
+        )
 
     parts = [f"# Iteration {iteration} of {max_iterations}"]
 
@@ -137,7 +234,12 @@ def _run_iteration(
     policy: SandboxPolicy | None = None,
     mcp: LookupToolset | None = None,
 ) -> tuple[AgentResult, ManagerToolExecutor]:
-    """Run one iteration of the Research Manager."""
+    """Run one iteration of the Research Manager.
+
+    Raises :class:`PromptTooLargeError` before calling the model when the
+    opening prompt certainly cannot fit the context window.
+    """
+    window = resolve_context_window(config)
     user_content = _build_user_content(
         problem_text,
         answer_template,
@@ -146,6 +248,7 @@ def _run_iteration(
         iteration,
         max_iterations,
         critique,
+        scratchpad_max_tokens=int(window * SCRATCHPAD_CONTEXT_SHARE) if window else 0,
     )
 
     executor = ManagerToolExecutor(
@@ -175,6 +278,16 @@ def _run_iteration(
         executor.update_manager_tokens(
             kwargs.get("total_new_input", total_input), total_output
         )
+
+    if window:
+        # Optimistic (4 chars a token): this only stops what certainly cannot
+        # fit. A borderline prompt is left to the provider, whose overflow
+        # error run_agent_loop turns into the same PromptTooLargeError.
+        opening = (len(system_prompt) + len(user_content)) // 4 + len(
+            json.dumps(executor.all_tools())
+        ) // 4
+        if opening + MIN_OUTPUT_TOKENS > window:
+            raise PromptTooLargeError(opening, limit=window)
 
     result = run_agent_loop(
         system=system_prompt,
@@ -229,6 +342,55 @@ def _git_commit(workspace_root: Path, iteration: int, result: AgentResult) -> No
         capture_output=True,
         check=False,
     )
+
+
+def _record_failure(
+    workspace_root: Path,
+    config: Config,
+    scratchpad: Scratchpad,
+    iteration: int,
+    exc: BaseException,
+) -> None:
+    """Log a failed iteration, leave the next one a note, and move on."""
+    console.print(f"[red]Iteration {iteration} failed: {exc}[/red]")
+    if config.workspace_dir:
+        log_scaffold_event(
+            config.workspace_dir,
+            iteration,
+            "error",
+            "iteration_failed",
+            str(exc)[:500],
+        )
+    scratchpad.append(
+        f"SYSTEM NOTE: Iteration {iteration} failed with error: {exc}",
+        iteration,
+    )
+    _git_commit(workspace_root, iteration, AgentResult(text="(failed)"))
+    _write_iteration_counter(workspace_root, iteration)
+
+
+def _stop_on_context(
+    workspace_root: Path,
+    config: Config,
+    scratchpad: Scratchpad,
+    iteration: int,
+    reason: str,
+) -> None:
+    """End the run on a context overflow no further iteration can avoid."""
+    console.print(
+        f"[bold red]Stopping the run at iteration {iteration}:[/bold red] {reason}"
+    )
+    if config.workspace_dir:
+        log_scaffold_event(
+            config.workspace_dir,
+            iteration,
+            "error",
+            "context_exhausted",
+            reason[:500],
+        )
+    scratchpad.append(f"SYSTEM NOTE: Run stopped — {reason}", iteration)
+    _git_commit(workspace_root, iteration, AgentResult(text="(context exhausted)"))
+    _write_iteration_counter(workspace_root, iteration)
 
 
 def _write_iteration_counter(workspace_root: Path, iteration: int) -> None:
@@ -454,6 +616,18 @@ def run_autophysicist(
         f"token budget {token_budget:,} per iteration "
         "(new input + output, Manager and sub-agents)"
     )
+    window = resolve_context_window(config)
+    console.print(
+        f"Context:    {window:,} tokens"
+        + (
+            f" (permanent memory bounded to {int(window * MEMORY_CONTEXT_SHARE):,})"
+            if window
+            else ""
+        )
+        if window
+        else "Context:    unknown — permanent memory is not bounded; set "
+        "physics.context_length"
+    )
     console.print(f"Runtime:    {policy.interpreter}")
     console.print(
         "Sandbox:    "
@@ -485,10 +659,15 @@ def run_autophysicist(
     # stack of old critiques competes with the problem it is meant to sharpen.
     # Every one is kept in CRITIQUE_LOG.md.
     critique = ""
+    consecutive_overflows = 0
 
     for iteration in range(start_iteration, max_iterations + 1):
         console.rule(f"[bold]Iteration {iteration}[/bold]")
         iter_start = time.time()
+        # Re-read each iteration: an overflow error can correct the window.
+        _configure_memory_view(
+            permanent_memory, config, resolve_context_window(config)
+        )
 
         try:
             result, executor = _run_iteration(
@@ -513,23 +692,39 @@ def run_autophysicist(
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted by user.[/yellow]")
             break
-        except Exception as exc:
-            console.print(f"[red]Iteration {iteration} failed: {exc}[/red]")
-            if config.workspace_dir:
-                log_scaffold_event(
-                    config.workspace_dir,
-                    iteration,
-                    "error",
-                    "iteration_failed",
-                    str(exc)[:500],
-                )
-            scratchpad.append(
-                f"SYSTEM NOTE: Iteration {iteration} failed with error: {exc}",
+        except PromptTooLargeError as exc:
+            # Nothing the next iteration does differently: the same opening
+            # prompt goes out again. Stop instead of failing every iteration
+            # left.
+            _stop_on_context(
+                workspace_root,
+                config,
+                scratchpad,
                 iteration,
+                f"the opening prompt does not fit the model's context window "
+                f"({exc}). Every remaining iteration would fail the same way. "
+                "Shorten the problem statement or answer template, or set "
+                "physics.context_length if the window is larger than detected.",
             )
-            _git_commit(workspace_root, iteration, AgentResult(text="(failed)"))
-            _write_iteration_counter(workspace_root, iteration)
+            break
+        except ContextTooLongError as exc:
+            consecutive_overflows += 1
+            _record_failure(workspace_root, config, scratchpad, iteration, exc)
+            if consecutive_overflows >= MAX_CONSECUTIVE_OVERFLOWS:
+                _stop_on_context(
+                    workspace_root,
+                    config,
+                    scratchpad,
+                    iteration,
+                    f"{consecutive_overflows} iterations in a row overflowed "
+                    f"the context window even after trimming ({exc}).",
+                )
+                break
             continue
+        except Exception as exc:
+            _record_failure(workspace_root, config, scratchpad, iteration, exc)
+            continue
+        consecutive_overflows = 0
 
         iter_duration = time.time() - iter_start
 

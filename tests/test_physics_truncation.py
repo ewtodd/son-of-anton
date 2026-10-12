@@ -38,7 +38,7 @@ class _Executor:
     stop_after_round = False
 
     def execute(self, name, args):
-        return ToolCall(tool_name=name, tool_input=args, output="docs", is_error=False)
+        return ToolCall(tool_name=name, tool_input=args, output="docs", is_error=False, duration=0.0)
 
 
 def _response(content="", tool_calls=None, finish="stop"):

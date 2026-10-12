@@ -411,6 +411,24 @@ re-sent history — or a prefix the endpoint reports as cached — is counted on
 not every round. At the budget the Manager loses `dispatch_subagent` and is told
 to save its work and end the iteration; at 1.5× the iteration is cut off. It is
 not the model's context window.
+
+**The context window bounds each iteration's prompt.** Permanent memory is
+append-only, and it used to be injected in full every iteration — so a long run
+eventually built a prompt the model could not take, and every iteration after
+that failed. The window comes from `physics.context_length`, or the same
+resolution the main agent uses (a `custom_providers` per-model
+`context_length`, the endpoint's `/models` metadata), and an overflow error
+that names the real window corrects it. Permanent memory gets a quarter of
+it: past that, the newest entries are injected in full and the older ones as a
+digest kept in `PERMANENT_MEMORY_DIGEST.md`, written by the model (excerpts if
+that call fails) and extended only when the full-text part outgrows its
+share. `PERMANENT_MEMORY.md` is never rewritten, and the Manager is told to
+read it when it needs an old entry verbatim. Within an iteration, an overflow
+caps the reply to the room left or trims the oldest tool outputs and resends,
+a few times at most. A run whose opening prompt cannot fit — or that
+overflows two iterations in a row — stops with the reason in the console,
+`EVENT_LOG.jsonl` and the scratchpad, instead of failing every iteration
+left.
 <!---->
 The same thing is reachable from a chat turn — `/mode physics`, then the path —
 which is what the gateway does with a Signal message.

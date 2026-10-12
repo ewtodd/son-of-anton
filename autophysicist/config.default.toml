@@ -19,3 +19,4 @@ manager = 32768
 subagent = 24576
 critic = 16384
 spec_writer = 16384
+memory_digest = 16384

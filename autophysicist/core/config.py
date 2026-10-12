@@ -59,6 +59,11 @@ class Config:
     # Sent as `reasoning_effort` when set. Vocabulary is the endpoint's:
     # low/medium/xhigh for Qwen3.8 on vLLM, low/medium/high for OpenAI.
     reasoning_effort: str = ""
+    # The model's context window in tokens, from physics.context_length. 0
+    # resolves it from config and endpoint metadata at run time
+    # (autophysicist.llm.resolve_context_window); an overflow error that names
+    # the real window overwrites it.
+    context_length: int = 0
     # Run the critic after every Nth iteration. 0 disables.
     critique_every_n: int = DEFAULTS["critique_every_n"]
     # Who writes the critique: "model" (default) or "human". Human mode is
@@ -206,6 +211,7 @@ _CONFIG_FIELDS = frozenset(
         "coder_model",
         "agent_models",
         "reasoning_effort",
+        "context_length",
         "critique_every_n",
         "critic_mode",
     }
