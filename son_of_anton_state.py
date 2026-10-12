@@ -7497,6 +7497,40 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
+    def get_session_family_ids(self, session_id: str, limit: int = 1000) -> List[str]:
+        """Return *session_id*, its ``parent_session_id`` ancestors, and all descendants.
+
+        One conversation spans a lineage of rows (compaction forks, branches,
+        delegate subagents). Retrieval uses this to keep a session from
+        recalling its own live conversation. ``UNION`` (not ``UNION ALL``)
+        makes both walks terminate on a parent cycle.
+        """
+        if not session_id:
+            return []
+        with self._read_ctx() as conn:
+            ancestors = conn.execute(
+                "WITH RECURSIVE anc(id, parent) AS ("
+                " SELECT id, parent_session_id FROM sessions WHERE id = ?"
+                " UNION SELECT s.id, s.parent_session_id FROM sessions s"
+                " JOIN anc ON s.id = anc.parent"
+                ") SELECT id FROM anc LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+            descendants = conn.execute(
+                "WITH RECURSIVE d(id) AS ("
+                " SELECT id FROM sessions WHERE parent_session_id = ?"
+                " UNION SELECT s.id FROM sessions s"
+                " JOIN d ON s.parent_session_id = d.id"
+                ") SELECT id FROM d LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        ids = [session_id]
+        for row in list(ancestors) + list(descendants):
+            sid = row[0]
+            if sid and sid not in ids:
+                ids.append(sid)
+        return ids
+
     def get_dominant_session_model_route(
         self, session_id: str
     ) -> Optional[Dict[str, Any]]:
@@ -10393,7 +10427,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``request_dump_{session_id}_*.json`` files left by the gateway.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
+
+        The session's ``journals/<id>.jsonl`` mirror (and its lock file) goes
+        too, whether or not *sessions_dir* is given: it holds the same
+        conversation, and the retrieval index treats a missing journal as
+        deleted content. Leaving it behind kept a deleted session searchable.
         """
+        try:
+            from agent.session_journal import journal_path
+
+            journal = journal_path(session_id)
+            for p in (journal, journal.with_suffix(journal.suffix + ".lock")):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception:
+            pass
         if sessions_dir is None:
             return
         for suffix in (".json", ".jsonl"):
