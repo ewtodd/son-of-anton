@@ -161,13 +161,31 @@ logs kept elsewhere can appear in the tree without moving. (`notes_dir`
 overrides the location; `memory.rag.sources` is only for files that must
 stay outside it.)
 
-`son-of-anton rag index` embeds new journal lines (incremental by byte offset)
-and changed note files; add `--rebuild` to re-embed from scratch, and run it
-from cron to keep the index fresh. Retrieval happens per user turn: the
-closest chunks for the session's scope are appended to that turn's API copy
-only — never to the stored transcript or the frozen system prompt — so the
-prompt cache is preserved. Journals, including the reasoning and tool detail
-the transcript clips, are the main corpus.
+The index keeps itself fresh: the gateway's housekeeping loop, and each
+interactive CLI start, run a background incremental sync once the last one is
+older than `reindex_interval_minutes` (default 15; `0` turns it off). No cron
+job is needed. `son-of-anton rag index` forces a sync now, and `--rebuild`
+re-embeds from scratch. A sync embeds new complete journal lines
+(incremental by byte offset) and changed note files, commits each file on its
+own (a crash or endpoint failure loses only the batch in flight), and drops
+deleted sessions and notes from the index. Changing the embedding `model`
+rebuilds the index automatically.
+
+Retrieval happens per user turn: the closest chunks above `min_score`
+(default 0.5) are appended to that turn's API copy only — never to the stored
+transcript or the frozen system prompt — so the prompt cache is preserved.
+The block is framed as reference data, not instructions, and secrets are
+redacted before anything is embedded. Visibility follows the memory scopes,
+plus per-chat isolation for messaging: a Signal/Discord/Slack chat recalls
+only its own conversations (and shared/gateway notes); a CLI session recalls
+CLI and shared content, never a chat; subagents and cron runs inherit the
+origin of their parent session or delivery target, and a session whose origin
+cannot be established is not indexed. The current conversation is never
+recalled to itself. The query embedding has a short timeout
+(`search_timeout_seconds`, 3s); after a failure, retrieval pauses for
+`failure_cooldown_seconds` so a down endpoint does not stall every turn.
+Journals, including the reasoning and tool detail the transcript clips, are
+the main corpus; deleting a session deletes its journal.
 <!---->
 ## Physics runs
 <!---->

@@ -26035,8 +26035,9 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
 
     Refreshes the channel directory every 5 minutes and prunes the
     image/audio/video/document/screenshot caches + expired ``son-of-anton debug
-    share`` pastes once per hour, and polls the curator hourly (its inner
-    gate enforces the real weekly cadence).
+    share`` pastes once per hour, polls the curator hourly (its inner
+    gate enforces the real weekly cadence), and keeps the ``memory.rag``
+    retrieval index fresh on its configured interval.
     """
     from gateway.platforms.base import (
         cleanup_audio_cache,
@@ -26055,6 +26056,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
+    RAG_REFRESH_EVERY = 1    # ticks — memory.rag.reindex_interval_minutes gates real work
 
     # Every platform media cache prunes on the same hourly cadence — one loop
     # over (name, cleanup_fn), not a copy-pasted try/except per cache.
@@ -26145,6 +26147,19 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+        # Retrieval index refresh. maybe_refresh_index_async() is gated by
+        # memory.rag.enabled and memory.rag.reindex_interval_minutes (against
+        # a cross-process last-sync marker), and runs the sync on its own
+        # daemon thread, so embedding calls never hold up this loop or
+        # message handling; a sync already running anywhere makes it skip.
+        if tick_count % RAG_REFRESH_EVERY == 0:
+            try:
+                from agent.rag import maybe_refresh_index_async
+
+                maybe_refresh_index_async()
+            except Exception as e:
+                logger.debug("RAG refresh tick error: %s", e)
 
         # Stale-session auto-archive — a live timer, so gateways that stay up
         # for weeks keep sweeping on schedule (the startup hook fires once).

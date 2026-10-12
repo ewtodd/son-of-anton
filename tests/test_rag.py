@@ -639,6 +639,23 @@ def test_periodic_refresh_skips_while_another_sync_holds_the_lock(embed) -> None
         held.release()
 
 
+def test_gateway_housekeeping_drives_the_refresh(monkeypatch) -> None:
+    import threading
+
+    import gateway.run as gateway_run
+
+    calls = []
+    stop = threading.Event()
+
+    def _refresh(config=None):
+        calls.append(1)
+        stop.set()
+
+    monkeypatch.setattr(rag, "maybe_refresh_index_async", _refresh)
+    gateway_run._start_gateway_housekeeping(stop, interval=0)
+    assert calls
+
+
 # ---------------------------------------------------------------------------
 # Prompt-cache contract
 # ---------------------------------------------------------------------------

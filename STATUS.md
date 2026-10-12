@@ -40,8 +40,8 @@ All of the following is merged to `main` and deployed on e-desktop:
   `son-of-anton "prompt"` routes to `chat -q`. `sessions list --json --here`
   is the relay's session picker.
 - **Journal.** Persisted rows are mirrored to `journals/<session>.jsonl` with
-  the reasoning and tool detail the transcript clips. Write-only; never
-  injected.
+  the reasoning and tool detail the transcript clips. Never read back
+  directly (RAG embeds it); deleted with its session.
 - **Relay coding.** The `relay-coding` skill has a chat agent list sessions,
   ask continue-or-new, and run a headless CLI coder in the background with
   `SON_OF_ANTON_DURABLE_APPROVALS=1`. Dangerous commands stage a durable
@@ -50,8 +50,15 @@ All of the following is merged to `main` and deployed on e-desktop:
 - **RAG (optional).** `memory.rag` embeds journals and
   `notes/<scope>/**/*.md` through an OpenAI-compatible `/v1/embeddings`
   endpoint (Bifrost → bge-m3 on oracle) and injects the closest chunks into
-  each turn's API copy only. `son-of-anton rag index` refreshes it
-  incrementally.
+  each turn's API copy only. The index refreshes itself every
+  `reindex_interval_minutes` (gateway housekeeping loop + interactive CLI
+  start); `son-of-anton rag index` forces it. Index format 2: the manifest is
+  the commit point (per-file commits, crash-safe, flock-serialized), records
+  model + vector width, and journal chunks carry their session's memory scope
+  and messaging chat — a chat recalls only itself, the CLI never recalls a
+  chat, unidentifiable sessions are not indexed. Deleting a session deletes
+  its journal and its chunks. A format-1 index is unretrievable until the
+  first sync rebuilds it.
 - **Gateway cache.** Edits to `model.context_length`, `compaction.*`, or a
   per-model `custom_providers` context window rebuild the cached agent on the
   next message instead of waiting for an eviction.
@@ -111,10 +118,13 @@ Ordered by importance. Each item is independently scoped.
 5. **RAG search is a pure-Python cosine scan.** Fine for hundreds of chunks.
    If the journals grow into the tens of thousands, add a keyword/FTS
    prefilter or a candidate cap before ranking.
-6. **RAG refresh should self-register.** When `memory.rag.enabled` is set, a
-   `rag index` cron job should be created automatically (idempotently, per
-   instance) instead of requiring `son-of-anton cron create` by hand. Until
-   then, run `son-of-anton rag index` manually or cron it yourself.
+6. **RAG refresh should self-register.** _Resolved, without cron._ The
+   gateway housekeeping loop calls `agent.rag.maybe_refresh_index_async()`
+   every tick; it is gated by `memory.rag.enabled` and
+   `memory.rag.reindex_interval_minutes` (default 15, `0` off) against a
+   cross-process `.last_sync` marker, and syncs on a daemon thread under a
+   non-blocking lock, so overlapping runs skip. The TUI does the same once at
+   start for CLI-only installs. Tests in `tests/test_rag.py`.
 7. **Cron jobs must always run the current default model.** _Resolved (opt-out)._
    The model is already re-resolved from config on every tick; what blocked
    changing it was the fail-closed #44585 drift guard, which skips an *unpinned*

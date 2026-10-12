@@ -2306,6 +2306,16 @@ def run_app(backend: Any) -> None:
         return
     if not backend.prepare_interactive_state():
         return
+    # Keep the retrieval index fresh for CLI-only installs (no gateway
+    # housekeeping loop): a background incremental sync when the last one is
+    # older than memory.rag.reindex_interval_minutes. Non-blocking; a no-op
+    # when RAG is off.
+    try:
+        from agent.rag import maybe_refresh_index_async
+
+        maybe_refresh_index_async()
+    except Exception:
+        pass
     if getattr(backend, "_resumed", False):
         try:
             backend._preload_resumed_session()
