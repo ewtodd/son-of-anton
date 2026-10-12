@@ -179,13 +179,18 @@ redacted before anything is embedded. Visibility follows the memory scopes,
 plus per-chat isolation for messaging: a Signal/Discord/Slack chat recalls
 only its own conversations (and shared/gateway notes); a CLI session recalls
 CLI and shared content, never a chat; subagents and cron runs inherit the
-origin of their parent session or delivery target, and a session whose origin
-cannot be established is not indexed. The current conversation is never
+origin of their parent session or delivery target (a cron job that delivers
+nowhere takes the chat it was created in, or the CLI scope when it was made
+outside a chat), and a session whose origin cannot be established is not
+indexed. The current conversation is never
 recalled to itself. The query embedding has a short timeout
 (`search_timeout_seconds`, 3s); after a failure, retrieval pauses for
 `failure_cooldown_seconds` so a down endpoint does not stall every turn.
 Journals, including the reasoning and tool detail the transcript clips, are
-the main corpus; deleting a session deletes its journal.
+the main corpus. Deleting a session (`sessions delete`, `sessions prune`, the
+picker, `/exit --delete`) deletes its journal; retention auto-prune and the
+empty-session sweeps keep it, and it stays indexed under the identity
+resolved while its session row existed.
 <!---->
 ## Physics runs
 <!---->

@@ -41,7 +41,8 @@ All of the following is merged to `main` and deployed on e-desktop:
   is the relay's session picker.
 - **Journal.** Persisted rows are mirrored to `journals/<session>.jsonl` with
   the reasoning and tool detail the transcript clips. Never read back
-  directly (RAG embeds it); deleted with its session.
+  directly (RAG embeds it); deleted when the user deletes its session, kept
+  through retention auto-prune and other automatic cleanup.
 - **Relay coding.** The `relay-coding` skill has a chat agent list sessions,
   ask continue-or-new, and run a headless CLI coder in the background with
   `SON_OF_ANTON_DURABLE_APPROVALS=1`. Dangerous commands stage a durable
@@ -56,8 +57,11 @@ All of the following is merged to `main` and deployed on e-desktop:
   the commit point (per-file commits, crash-safe, flock-serialized), records
   model + vector width, and journal chunks carry their session's memory scope
   and messaging chat — a chat recalls only itself, the CLI never recalls a
-  chat, unidentifiable sessions are not indexed. Deleting a session deletes
-  its journal and its chunks. A format-1 index is unretrievable until the
+  chat, unidentifiable sessions are not indexed (a row gone before it was
+  ever resolved is recorded as an orphan and not re-read until it changes).
+  A journal's resolved identity is kept in the manifest, so it stays indexed
+  after auto-prune removes its row. Deleting a session deletes its journal
+  and its chunks. A format-1 index is unretrievable until the
   first sync rebuilds it.
 - **Gateway cache.** Edits to `model.context_length`, `compaction.*`, or a
   per-model `custom_providers` context window rebuild the cached agent on the
