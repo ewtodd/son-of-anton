@@ -4121,25 +4121,26 @@ def cmd_rag(args):
         print("Usage: son-of-anton rag index [--rebuild]")
         return 0
 
-    from agent.rag import get_rag_config, index_dir, sync_index
+    from agent.rag import get_rag_config, sync_index
 
     config = get_rag_config()
-    if getattr(args, "rebuild", False):
-        directory = index_dir(config)
-        for name in ("manifest.json", "chunks.jsonl", "vectors.f32"):
-            try:
-                (directory / name).unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    result = sync_index(config)
+    # Waits for a sync already running (the gateway's periodic refresh) and
+    # rebuilds under the same lock, so a forced run never races it.
+    result = sync_index(config, rebuild=bool(getattr(args, "rebuild", False)))
     if not result.get("ok"):
         print(f"RAG index: {result.get('error')}")
+        if "added" in result:
+            print(f"  committed {result['added']} chunk(s) before stopping; rerun to resume")
         return 1
     print(
-        f"RAG index: added {result['added']} chunk(s) — "
+        f"RAG index: added {result['added']} chunk(s), pruned {result.get('pruned', 0)} — "
         f"{result['journals']} journal(s), {result['sources']} source file(s)"
     )
+    if result.get("skipped"):
+        print(
+            f"  {result['skipped']} journal(s) skipped: their session origin could not "
+            "be established (retried on the next sync)"
+        )
     print(f"  {result['index_dir']}")
     return 0
 

@@ -1495,7 +1495,9 @@ DEFAULT_CONFIG = {
         # configured note files with an OpenAI-compatible embeddings endpoint
         # and injects the closest chunks into each turn's API copy. The system
         # prompt and the stored transcript stay untouched, so the prompt cache
-        # is preserved. Build/refresh the index with `son-of-anton rag index`.
+        # is preserved. The index refreshes itself (gateway housekeeping loop,
+        # and interactive CLI start) every reindex_interval_minutes;
+        # `son-of-anton rag index [--rebuild]` forces a sync.
         "rag": {
             "enabled": False,
             # e.g. http://10.0.0.6:4002/v1 (Bifrost) or any OpenAI-compatible
@@ -1505,7 +1507,17 @@ DEFAULT_CONFIG = {
             "api_key_env": "BIFROST_SOA_VK",
             "model": "bge-m3",
             "top_k": 5,
-            "min_score": 0.0,
+            # Cosine floor. bge-m3 puts unrelated passages around 0.3-0.45
+            # and topical matches from ~0.55 up; 0.5 keeps an off-topic turn
+            # from carrying five irrelevant chunks.
+            "min_score": 0.5,
+            # Per-turn query embedding runs before the first model call, so
+            # it gets a short timeout; after a failure, retrieval is skipped
+            # for failure_cooldown_seconds (one WARNING per window).
+            "search_timeout_seconds": 3.0,
+            "failure_cooldown_seconds": 60,
+            # Automatic incremental refresh; 0 disables it.
+            "reindex_interval_minutes": 15,
             # Extra note files outside the notes tree, each
             # {path: ..., scope: shared|cli|gateway}.
             "sources": [],
