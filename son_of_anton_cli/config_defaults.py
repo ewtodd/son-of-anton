@@ -701,9 +701,10 @@ DEFAULT_CONFIG = {
     # default was a touch short for HTTP/OAuth servers on a cold connect; a
     # modest bump lets more of them land in the FIRST turn's snapshot.  This is
     # only a turn-1 latency/UX knob: a server that misses this window is still
-    # picked up automatically on the next turn by the between-turns refresh
-    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
-    # small so a slow/dead server adds little to first-response latency.
+    # picked up automatically by the between-turns refresh during the
+    # conversation's opening turns (``mcp.refresh_turns``; see
+    # agent/turn_context.py).  Keep it small so a slow/dead server adds little
+    # to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
     # Single-query (``son-of-anton -q/-z "..."``) variant of mcp_discovery_timeout.
@@ -728,6 +729,15 @@ DEFAULT_CONFIG = {
         # When disabled, the watcher still detects the change and prints
         # guidance to apply it deliberately via /reload-mcp.
         "auto_reload_on_config_change": True,
+        # How many opening turns of a conversation may automatically ADD tools
+        # from an MCP server that finished connecting late (missed the startup
+        # wait). Any change to the tool list re-prefills the whole cached
+        # conversation, so after this window the tool list is frozen: a server
+        # that parks keeps its tools in the schema (calls report it
+        # unavailable) and newly appearing tools wait for /reload-mcp or the
+        # next session. A resumed session only refreshes while it has no MCP
+        # tools at all. 0 disables the automatic refresh entirely.
+        "refresh_turns": 3,
     },
 
     # Tool-output truncation thresholds. When terminal output or a

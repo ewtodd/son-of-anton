@@ -4104,23 +4104,28 @@ class MCPServerTask:
                 task.cancel()
             await asyncio.gather(*self._pending_refresh_tasks, return_exceptions=True)
             self._pending_refresh_tasks.clear()
-        self._deregister_tools()
+        self._deregister_tools("disconnected")
         self.session = None
 
-    def _deregister_tools(self) -> None:
+    def _deregister_tools(self, reason: str = "reconnecting") -> None:
         """Drop this server's tools from the global registry (idempotent).
 
-        Pulls the server's tool schemas out of the registry so the agent
-        stops advertising them to the model. Called on shutdown AND when the
-        reconnect budget is exhausted, so a dead server never leaves phantom
-        tool definitions bloating the prompt cache and producing "not
-        connected" errors on every turn.
+        Pulls the server's tool schemas out of the registry so NEW tool
+        snapshots (a new session, /reload-mcp, an agent still inside its
+        opening-turns refresh window) don't advertise them. Called on shutdown
+        (``reason="disconnected"``) AND when the reconnect budget is exhausted
+        (``reason="reconnecting"``: the server parks and self-probes).
+
+        An agent whose snapshot is already frozen keeps these tools in its
+        schema — removing them would bust the conversation's prompt cache.
+        Its calls are answered by ``departed_mcp_tool_error`` (via *reason*)
+        until revival re-registers the same names.
         """
         from tools.registry import registry
 
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
             registry.deregister(tool_name)
-            _forget_mcp_tool_server(tool_name)
+            _forget_mcp_tool_server(tool_name, reason)
         self._registered_tool_names = []
 
     async def _wait_for_lazy_reconnect(self) -> None:
@@ -4904,12 +4909,24 @@ _parallel_safe_servers: set = set()
 # on parsing or re-sanitizing the generated name.
 _mcp_tool_server_names: Dict[str, str] = {}
 
+# Tools an MCP server registered and later took back, keyed by registry name,
+# valued ``(raw_server_name, reason)``. An agent's tool snapshot is frozen after
+# its opening turns (see ``agent/turn_context.py``), so a server that parks or
+# disconnects leaves its tools in the model's schema; a call to one must then
+# say *why* it can't run rather than "Unknown tool". Reasons:
+#   ``reconnecting`` — parked/degraded; the self-probe may bring it back.
+#   ``disconnected`` — the server task was shut down.
+#   ``removed``      — the server no longer advertises this tool.
+# Re-registering the name (revival, /reload-mcp) clears the entry.
+_mcp_departed_tools: Dict[str, Tuple[str, str]] = {}
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
-# _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
+# _parallel_safe_servers, _mcp_tool_server_names, _mcp_departed_tools, and
+# _stdio_pids.
 _lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -6565,12 +6582,50 @@ def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
     """Remember the exact raw MCP server that registered *tool_name*."""
     with _lock:
         _mcp_tool_server_names[tool_name] = server_name
+        _mcp_departed_tools.pop(tool_name, None)
 
 
-def _forget_mcp_tool_server(tool_name: str) -> None:
-    """Forget MCP server provenance for a deregistered tool."""
+def _forget_mcp_tool_server(tool_name: str, reason: str = "removed") -> None:
+    """Forget MCP server provenance for a deregistered tool.
+
+    Remembers which server the tool came from and why it left (see
+    ``_mcp_departed_tools``) so a call from a frozen tool snapshot gets an
+    actionable error instead of "Unknown tool".
+    """
     with _lock:
-        _mcp_tool_server_names.pop(tool_name, None)
+        server_name = _mcp_tool_server_names.pop(tool_name, None)
+        if server_name is not None:
+            _mcp_departed_tools[tool_name] = (server_name, reason)
+
+
+def departed_mcp_tool_error(tool_name: str) -> Optional[str]:
+    """Explain why a once-registered MCP tool can't be called right now.
+
+    Returns ``None`` when *tool_name* is registered or was never an MCP tool,
+    so callers fall through to normal dispatch / "Unknown tool".
+    """
+    with _lock:
+        if tool_name in _mcp_tool_server_names:
+            return None
+        departed = _mcp_departed_tools.get(tool_name)
+    if departed is None:
+        return None
+    server_name, reason = departed
+    if reason == "reconnecting":
+        return (
+            f"MCP server '{server_name}' is currently unavailable "
+            "(reconnecting); try again later or continue without it."
+        )
+    if reason == "disconnected":
+        return (
+            f"MCP server '{server_name}' is disconnected; its tools are "
+            "unavailable until it reconnects (/reload-mcp). Continue without it."
+        )
+    return (
+        f"MCP server '{server_name}' no longer provides '{tool_name}'; "
+        "continue without it (the tool list updates on /reload-mcp or in a "
+        "new session)."
+    )
 
 
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
@@ -7590,8 +7645,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     return result
 
 
-# Serializes in-place mutation of an agent's tool snapshot.  The reload RPC,
-# the gateway reload, and the late-binding refresh thread all swap
+# Serializes in-place mutation of an agent's tool snapshot.  /reload-mcp (CLI
+# and gateway) and the opening-turns between-turns refresh all swap
 # ``agent.tools`` / ``agent.valid_tool_names`` after the agent was built; the
 # agent's run loop reads those during tool iteration, so a concurrent write
 # mid-read could otherwise expose a half-updated list.
@@ -7632,6 +7687,7 @@ def refresh_agent_mcp_tools(
     enabled_override=None,
     disabled_override=None,
     quiet_mode: bool = True,
+    additive_only: bool = False,
 ) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry.
 
@@ -7640,9 +7696,13 @@ def refresh_agent_mcp_tools(
     *after* that snapshot — a slow HTTP/OAuth server that misses the bounded
     startup wait, or a ``/reload-mcp`` — their tools are invisible until the
     snapshot is rebuilt.  This is the single shared rebuild used by every such
-    caller (the TUI ``reload.mcp`` RPC, the gateway reload, the late-binding
-    refresh thread, and the per-turn between-turns refresh) so they can't drift
+    caller (CLI/TUI ``/reload-mcp``, the gateway reload, and the opening-turns
+    between-turns refresh in ``agent/turn_context.py``) so they can't drift
     apart again.
+
+    ``additive_only=True`` (the automatic between-turns path) never removes or
+    reorders anything: tools absent from the live registry (a parked server)
+    stay in the snapshot, and only names the snapshot lacks are appended.
 
     The rebuild respects the agent's own ``enabled_toolsets`` /
     ``disabled_toolsets`` (the same filtering it was built with) and diffs by
@@ -7664,16 +7724,17 @@ def refresh_agent_mcp_tools(
     callers can decide whether to notify the user / re-emit session info.  The
     caller owns the prompt-cache contract: this helper does NOT check turn state,
     because each caller has a different policy (``/reload-mcp`` rebuilds after
-    explicit user consent; the late-binding and between-turns paths only rebuild
-    at a turn boundary, before that turn's ``tools=`` prefix is assembled).
+    explicit user consent; the between-turns path only runs, additively, during
+    a session's opening turns — any change to ``tools=`` re-prefills the whole
+    conversation, so it must never fire on an established conversation).
     """
     from model_tools import get_tool_definitions
     from tools.registry import registry
 
     # Explicit reloads (/reload-mcp) pass freshly-resolved toolsets so a server
     # the user just ENABLED in config is picked up; the agent's stored selection
-    # is then updated to match. The automatic paths (between-turns, late-binding)
-    # pass nothing and reuse the agent's build-time selection unchanged.
+    # is then updated to match. The automatic between-turns path
+    # passes nothing and reuses the agent's build-time selection unchanged.
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else getattr(agent, "enabled_toolsets", None)
         disabled = disabled_override if disabled_override is not None else getattr(agent, "disabled_toolsets", None)
@@ -7685,8 +7746,8 @@ def refresh_agent_mcp_tools(
 
     # Capture the registry generation this rebuild is derived from BEFORE the
     # (potentially slow) get_tool_definitions call. Used at publish time to
-    # reject a stale write: if two callers race (e.g. the late-refresh daemon
-    # and the between-turns prologue around turn 1), a slower caller that
+    # reject a stale write: if two callers race (e.g. /reload-mcp and the
+    # between-turns prologue around turn 1), a slower caller that
     # computed an OLDER set must not clobber a newer set another caller already
     # published. ``registry._generation`` bumps on every (de)register.
     snapshot_generation = registry._generation
@@ -7732,6 +7793,25 @@ def refresh_agent_mcp_tools(
             t["function"]["name"]
             for t in (getattr(agent, "tools", None) or [])
         }
+        if additive_only:
+            added_defs = [
+                t for t in new_defs if t["function"]["name"] not in current
+            ]
+            agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
+            if not added_defs:
+                return set()
+            added_names = {t["function"]["name"] for t in added_defs}
+            # New list objects (never in-place appends) so a concurrent reader
+            # holding the old list sees a consistent snapshot.
+            agent.tools = list(getattr(agent, "tools", None) or []) + added_defs
+            agent.valid_tool_names = (
+                set(getattr(agent, "valid_tool_names", None) or current)
+                | added_names
+            )
+            engine_names = getattr(agent, "_context_engine_tool_names", None)
+            if isinstance(engine_names, set):
+                engine_names.update(staged_engine_names & added_names)
+            return added_names
         if new_names == current:
             # No change → leave the live snapshot untouched (no churn), but
             # record the generation so an in-flight older caller can't clobber.
@@ -7746,6 +7826,37 @@ def refresh_agent_mcp_tools(
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         return new_names - current
+
+
+def pending_mcp_tool_names(agent) -> set:
+    """MCP tools the registry offers that *agent*'s frozen snapshot lacks.
+
+    Respects the agent's own toolset selection (a restricted gateway session
+    never reports tools it could not get from /reload-mcp either). Empty when
+    the snapshot carries the tool-search bridge: ``tool_search``/``tool_call``
+    read the LIVE catalog, so new deferred tools are already reachable. Cheap
+    when nothing is pending: the expensive ``get_tool_definitions`` only runs
+    once some registered MCP name is missing from the snapshot.
+    """
+    from tools.tool_search import BRIDGE_TOOL_NAMES
+
+    have = set(getattr(agent, "valid_tool_names", None) or ())
+    if have & BRIDGE_TOOL_NAMES:
+        return set()
+    with _lock:
+        registered = set(_mcp_tool_server_names)
+    if not (registered - have):
+        return set()
+    from model_tools import get_tool_definitions
+
+    defs = get_tool_definitions(
+        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    ) or []
+    offered = {t["function"]["name"] for t in defs}
+    return (offered & registered) - have
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

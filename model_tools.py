@@ -22,6 +22,7 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import re
+import sys
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1146,6 +1147,31 @@ def _emit_post_tool_call_hook(
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
+def _departed_mcp_tool_error(function_name: str) -> Optional[str]:
+    """Tool-error JSON for an MCP tool whose server has taken it back.
+
+    An agent's tool list is frozen after its opening turns (prompt caching),
+    so it can still hold tools of an MCP server that has since parked or
+    disconnected. Calling one must explain that instead of "Unknown tool".
+    Returns ``None`` (dispatch normally) for anything else.
+    """
+    if not function_name.startswith("mcp__"):
+        return None
+    if "tools.mcp_tool" not in sys.modules:
+        return None
+    if registry.get_entry(function_name) is not None:
+        return None
+    try:
+        from tools.mcp_tool import departed_mcp_tool_error
+        message = departed_mcp_tool_error(function_name)
+    except Exception:
+        logger.debug("departed MCP tool lookup failed", exc_info=True)
+        return None
+    if message is None:
+        return None
+    return tool_error(message)
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -1419,6 +1445,9 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    departed = _departed_mcp_tool_error(function_name)
+                    if departed is not None:
+                        return departed
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,

@@ -211,6 +211,24 @@ def _core_tool_names() -> frozenset[str]:
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
 
+def _departed_mcp_message(name: str) -> Optional[str]:
+    """Why a once-registered MCP tool is gone (parked/disconnected server).
+
+    The model may still see such a tool in a frozen listing; tell it the
+    server is unavailable rather than calling the name non-deferrable.
+    """
+    import sys
+
+    if not name.startswith("mcp__") or "tools.mcp_tool" not in sys.modules:
+        return None
+    try:
+        from tools.mcp_tool import departed_mcp_tool_error
+
+        return departed_mcp_tool_error(name)
+    except Exception:
+        return None
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
@@ -938,6 +956,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
     if not name:
         return tool_error("name is required")
     if not is_deferrable_tool_name(name):
+        departed = _departed_mcp_message(name)
+        if departed is not None:
+            return tool_error(departed)
         return tool_error(
             f"'{name}' is not a deferrable tool. If you see it in the tools list "
             "already, call it directly; otherwise check the spelling against tool_search."
@@ -1055,6 +1076,9 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
     if not is_deferrable_tool_name(name):
+        departed = _departed_mcp_message(name)
+        if departed is not None:
+            return None, {}, departed
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."

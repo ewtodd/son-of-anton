@@ -10972,7 +10972,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Refresh the agent's tool list so the model can call new tools.
             # Route through the shared helper so this CLI /reload-mcp path stays
-            # in lockstep with the TUI RPC / gateway reload / late-binding paths
+            # in lockstep with the gateway reload / between-turns refresh paths
             # (name-diff, thread-safe, and — critically — additive-preserving so
             # memory-provider and context-engine tools survive the rebuild).
             if self.agent is not None:

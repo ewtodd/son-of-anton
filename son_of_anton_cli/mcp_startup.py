@@ -182,7 +182,8 @@ def wait_for_mcp_discovery(
     users with no MCP servers or fast servers pay ~0s.  The bound (from
     ``mcp_discovery_timeout`` in config) just caps the wait so a dead server
     can't freeze startup; servers that miss it are picked up by the automatic
-    late-binding refresh.
+    between-turns refresh, which only runs during a conversation's opening
+    turns (``mcp.refresh_turns``) — later arrivals wait for /reload-mcp.
 
     When ``single_query`` is True, the bound comes from
     ``mcp_single_query_discovery_timeout`` instead (default 15s vs 1.5s

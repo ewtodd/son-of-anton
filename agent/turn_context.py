@@ -410,6 +410,126 @@ def _should_idle_compact(
     return tokens > floor_tokens
 
 
+DEFAULT_MCP_REFRESH_TURNS = 3
+_MCP_TOOL_PREFIX = "mcp__"
+# Mirrors tools.tool_search.BRIDGE_TOOL_NAMES without importing it here.
+_TOOL_SEARCH_BRIDGE = frozenset({"tool_search", "tool_describe", "tool_call"})
+
+
+def mcp_auto_refresh_window_open(
+    *,
+    turns_seen: int,
+    refresh_turns: int,
+    resumed: bool,
+    has_mcp_tools: bool,
+) -> bool:
+    """May this turn's prologue still ADD late-connecting MCP tools?
+
+    ``tools=`` sits ahead of the messages in the cached prefix, so ANY change
+    to the agent's tool list re-prefills the whole conversation. The automatic
+    refresh therefore only runs during a conversation's opening turns — the
+    slow-connect case, where a server missed the bounded startup wait — and
+    after that the snapshot is frozen (``/reload-mcp`` or a new session picks
+    up later changes).
+
+    * ``turns_seen`` — turns this agent has already run for the current
+      conversation (counted per agent, reset with the session).
+    * ``resumed`` — the conversation already had user turns when this agent
+      first saw it (a resumed session, or a gateway agent rebuilt for an
+      ongoing chat). Its cache prefix is long, so the window only stays open
+      while the agent has NO MCP tools at all: a server that missed startup
+      lands once (one re-prefill, instead of the tools being missing for the
+      whole session) and the snapshot freezes as soon as it has any.
+
+    Pure predicate so the policy is unit-testable without a live agent.
+    """
+    if refresh_turns <= 0 or turns_seen >= refresh_turns:
+        return False
+    if resumed and has_mcp_tools:
+        return False
+    return True
+
+
+def run_between_turns_mcp_refresh(
+    agent: Any, conversation_history: Optional[List[Dict[str, Any]]]
+) -> set:
+    """Per-turn MCP tool refresh, bounded to the opening turns.
+
+    Within the window the refresh is additive-only: tools of a server that
+    parked/disconnected stay in the snapshot (their calls get a clear
+    "unavailable" error from dispatch) and only newly-connected tools are
+    appended. Outside the window ``agent.tools`` is never touched; at most a
+    one-line status notice says new MCP tools are available via /reload-mcp
+    (status channel only — nothing enters the conversation).
+
+    Returns the names added to ``agent.tools`` (empty when frozen/unchanged).
+    """
+    if getattr(agent, "_skip_mcp_refresh", False):
+        return set()
+
+    # Count EVERY turn (not only ones with MCP tools registered) so a server
+    # that connects on turn 7 is outside a 3-turn window.
+    turns_seen = int(getattr(agent, "_mcp_refresh_turns_seen", 0) or 0)
+    agent._mcp_refresh_turns_seen = turns_seen + 1
+    resumed = getattr(agent, "_mcp_refresh_resumed", None)
+    if resumed is None:
+        resumed = any(
+            isinstance(m, Mapping) and m.get("role") == "user"
+            for m in (conversation_history or [])
+        )
+        agent._mcp_refresh_resumed = resumed
+
+    # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp`` package
+    # (~0.4s measured) even when the user has zero MCP servers configured.
+    # MCP tools can only be registered by code that has already imported it
+    # (discovery, /reload-mcp) — so if it isn't loaded there is nothing to do.
+    import sys as _sys
+    if "tools.mcp_tool" not in _sys.modules:
+        return set()
+    from tools.mcp_tool import (
+        has_registered_mcp_tools,
+        pending_mcp_tool_names,
+        refresh_agent_mcp_tools,
+    )
+    if not has_registered_mcp_tools():
+        return set()
+
+    refresh_turns = getattr(agent, "_mcp_refresh_turns", DEFAULT_MCP_REFRESH_TURNS)
+    # MCP tools are usually deferred behind the tool-search bridge, so the
+    # bridge's presence counts too (and an additive refresh could not add
+    # anything to a bridged snapshot anyway — the bridge names are fixed).
+    has_mcp_tools = any(
+        str(name).startswith(_MCP_TOOL_PREFIX) or name in _TOOL_SEARCH_BRIDGE
+        for name in (getattr(agent, "valid_tool_names", None) or ())
+    )
+    if mcp_auto_refresh_window_open(
+        turns_seen=turns_seen,
+        refresh_turns=int(refresh_turns),
+        resumed=bool(resumed),
+        has_mcp_tools=has_mcp_tools,
+    ):
+        return refresh_agent_mcp_tools(agent, quiet_mode=True, additive_only=True)
+
+    # Frozen. Tell the user (once per registry change) that tools exist which
+    # this session can't see without /reload-mcp.
+    from tools.registry import registry
+    generation = registry._generation
+    if getattr(agent, "_mcp_pending_checked_generation", None) == generation:
+        return set()
+    agent._mcp_pending_checked_generation = generation
+    pending = pending_mcp_tool_names(agent)
+    notified = getattr(agent, "_mcp_pending_notified", None) or set()
+    if pending and not pending <= notified:
+        agent._mcp_pending_notified = set(notified) | pending
+        emit = getattr(agent, "_emit_status", None)
+        if callable(emit):
+            emit(
+                f"{len(pending)} new MCP tool(s) available; "
+                "run /reload-mcp to add them to this session."
+            )
+    return set()
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -523,28 +643,14 @@ def build_turn_context(
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
     # connect, missing the bounded startup wait) lands in THIS turn's tool
-    # snapshot.  This is cache-safe by construction: it runs in the per-turn
-    # prologue, before this turn's first API call assembles ``tools=``, so it
-    # only ever extends a fresh request prefix — it never mutates the cached
-    # prefix of an in-flight turn.  No-op when no MCP servers are registered
-    # (the common case, gated by the cheap ``has_registered_mcp_tools`` check)
-    # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
-    # name and leaves the snapshot untouched on no-change).
+    # snapshot.  This is NOT free: ``tools=`` precedes the messages in the
+    # cached prefix, so any change re-prefills the entire conversation.  It is
+    # therefore additive-only and confined to the opening turns
+    # (``mcp.refresh_turns``); after that the snapshot is frozen, a parked
+    # server's tools stay in the schema (dispatch reports them unavailable),
+    # and new tools wait for /reload-mcp.  See ``run_between_turns_mcp_refresh``.
     try:
-        if not getattr(agent, "_skip_mcp_refresh", False):
-            # Import-cost gate: ``tools.mcp_tool`` pulls in the whole ``mcp``
-            # package (~0.4s measured) even when the user has zero MCP servers
-            # configured.  MCP tools can only be registered by code that has
-            # already imported ``tools.mcp_tool`` (discovery, /reload-mcp,
-            # late-binding refresh) — so if it isn't in sys.modules yet, there
-            # is nothing to refresh and the import can be skipped outright.
-            # This keeps the no-MCP first turn off the heavy import path
-            # without changing behavior for MCP users.
-            import sys as _sys
-            if "tools.mcp_tool" in _sys.modules:
-                from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
-                if has_registered_mcp_tools():
-                    refresh_agent_mcp_tools(agent, quiet_mode=True)
+        run_between_turns_mcp_refresh(agent, conversation_history)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 

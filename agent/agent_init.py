@@ -751,6 +751,12 @@ def init_agent(
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
     # byte-identical to a parent for provider cache parity.
     agent._skip_mcp_refresh = False
+    # Opening-turns window for that refresh (``mcp.refresh_turns``, read with
+    # the rest of the agent config below). ``_mcp_refresh_resumed`` is decided
+    # on the first turn from the conversation history it is handed.
+    agent._mcp_refresh_turns = 3
+    agent._mcp_refresh_turns_seen = 0
+    agent._mcp_refresh_resumed = None
     # Registry generation the current tool snapshot was derived from. Lets a
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
@@ -1316,6 +1322,17 @@ def init_agent(
                 )
     except Exception:
         agent.lmstudio_load_mode = "explicit"
+
+    try:
+        _mcp_section = _agent_cfg.get("mcp", {})
+        if isinstance(_mcp_section, dict) and "refresh_turns" in _mcp_section:
+            agent._mcp_refresh_turns = max(0, int(_mcp_section["refresh_turns"]))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid mcp.refresh_turns=%r; using %d.",
+            _agent_cfg.get("mcp", {}).get("refresh_turns"),
+            agent._mcp_refresh_turns,
+        )
 
     try:
         agent._tool_guardrails = ToolCallGuardrailController(

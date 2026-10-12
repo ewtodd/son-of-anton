@@ -716,6 +716,11 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
+        # MCP opening-turns refresh window restarts with the new session
+        # (/new, /resume, /branch); see agent.turn_context.
+        self._mcp_refresh_turns_seen = 0
+        self._mcp_refresh_resumed = None
+
         # Copilot x-initiator: True for the first API call of a user turn,
         # False for tool-loop follow-ups (#3040).
         self._is_user_initiated_turn = False
