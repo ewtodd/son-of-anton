@@ -10420,7 +10420,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     @staticmethod
-    def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
+    def _remove_session_files(
+        sessions_dir: Optional[Path],
+        session_id: str,
+        *,
+        remove_journal: bool = False,
+    ) -> None:
         """Remove on-disk transcript files for a session.
 
         Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
@@ -10428,22 +10433,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
 
-        The session's ``journals/<id>.jsonl`` mirror (and its lock file) goes
-        too, whether or not *sessions_dir* is given: it holds the same
-        conversation, and the retrieval index treats a missing journal as
-        deleted content. Leaving it behind kept a deleted session searchable.
+        With *remove_journal* the session's ``journals/<id>.jsonl`` mirror
+        (and its lock file) goes too, whether or not *sessions_dir* is given:
+        the retrieval index treats a missing journal as deleted content, so a
+        session the USER deletes must not stay searchable. Automatic cleanup
+        (retention auto-prune, empty/ghost session removal) leaves it: the
+        journals are the long-term retrieval corpus, and the index keeps a
+        journal indexable after its row is gone.
         """
-        try:
-            from agent.session_journal import journal_path
+        if remove_journal:
+            try:
+                from agent.session_journal import journal_path
 
-            journal = journal_path(session_id)
-            for p in (journal, journal.with_suffix(journal.suffix + ".lock")):
-                try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        except Exception:
-            pass
+                journal = journal_path(session_id)
+                for p in (journal, journal.with_suffix(journal.suffix + ".lock")):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            except Exception:
+                pass
         if sessions_dir is None:
             return
         for suffix in (".json", ".jsonl"):
@@ -10484,8 +10493,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
+        *,
+        remove_journal: bool = False,
     ) -> bool:
         """Delete a session and all its messages.
+
+        *remove_journal* also deletes the sessions' ``journals/`` mirrors —
+        pass it for a deletion the user asked for (``sessions delete``, the
+        picker, ``/exit --delete``), never for automatic cleanup; see
+        :meth:`_remove_session_files`.
 
         Delegate subagent children (``model_config._delegate_from``) are
         cascade-deleted with the parent so they never resurface in session
@@ -10534,8 +10550,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         deleted = self._execute_write(_do)
         if deleted:
             for delegate_id in removed_delegate_ids:
-                self._remove_session_files(sessions_dir, delegate_id)
-            self._remove_session_files(sessions_dir, session_id)
+                self._remove_session_files(
+                    sessions_dir, delegate_id, remove_journal=remove_journal
+                )
+            self._remove_session_files(
+                sessions_dir, session_id, remove_journal=remove_journal
+            )
         return bool(deleted)
 
     def delete_session_if_empty(
@@ -10901,9 +10921,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
+        *,
+        remove_journals: bool = False,
         **filters,
     ) -> int:
         """Delete sessions matching the filters. Returns count deleted.
+
+        *remove_journals* deletes the pruned sessions' ``journals/`` mirrors
+        too — for ``son-of-anton sessions prune``, which the user runs and
+        confirms. Retention auto-prune (:meth:`maybe_auto_prune_and_vacuum`)
+        leaves them: they are the long-term retrieval corpus.
 
         By default, delete ended sessions inactive for
         ``older_than_days`` days, optionally restricted to ``source``.
@@ -10970,7 +10997,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         count = self._execute_write(_do)
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
-            self._remove_session_files(sessions_dir, sid)
+            self._remove_session_files(
+                sessions_dir, sid, remove_journal=remove_journals
+            )
         return count
 
     def purge_stale_tool_call_markers(

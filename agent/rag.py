@@ -29,9 +29,12 @@ On-disk layout (``FORMAT_VERSION`` 2), all under ``index_dir()``:
 Visibility. Every journal chunk carries the memory scope of its session
 (``tools.memory_tool.resolve_memory_scope``) and, for messaging sessions, the
 chat it came from (``chats``). A chunk that carries ``chats`` is retrievable
-only from one of those chats; a CLI session never sees one. Sessions whose
-origin cannot be established are not indexed (fail closed) and are retried
-on the next sync.
+only from one of those chats; a CLI session never sees one. The identity
+resolved for a journal is persisted in its manifest entry, so a journal
+outlives its session row (retention pruning keeps journals). Sessions whose
+origin cannot be established are not indexed (fail closed): a store that
+cannot answer is retried on the next sync, a row that is gone and was never
+resolved is recorded as an orphan and not re-read until the file changes.
 
 Retrieval happens per user turn in ``agent.turn_context`` and rides the
 API-copy sidecar (``api_content``), so the frozen system prompt and the prompt
@@ -593,6 +596,15 @@ def _reset_index(directory: Path, previous: Optional[Dict[str, Any]]) -> Dict[st
     """
     epoch = int((previous or {}).get("epoch") or 0) + 1
     manifest = _empty_manifest(epoch)
+    # Identities outlive the vectors: a journal whose session row has since
+    # been pruned can only be re-indexed under the identity resolved while
+    # the row existed, and an orphan need not be re-read.
+    for name, entry in ((previous or {}).get("journals") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        kept = {key: entry[key] for key in ("identity", "orphan") if key in entry}
+        if kept:
+            manifest["journals"][name] = kept
     (directory / manifest["chunks_file"]).write_bytes(b"")
     (directory / manifest["vectors_file"]).write_bytes(b"")
     with _commit_lock(directory, exclusive=True):
@@ -777,6 +789,21 @@ def _chunk_is_live(chunk: Dict[str, Any], manifest: Dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+class IdentityUnavailable(RuntimeError):
+    """The session store could not answer right now — retry next sync."""
+
+
+def _stored_identity(entry: Dict[str, Any]) -> Optional[Tuple[str, List[str]]]:
+    stored = entry.get("identity")
+    if not isinstance(stored, dict):
+        return None
+    scope = stored.get("scope")
+    chats = stored.get("chats")
+    if not isinstance(scope, str) or not scope or not isinstance(chats, list):
+        return None
+    return (scope, [str(chat) for chat in chats])
+
+
 def _index_journal(
     path: Path,
     writer: _IndexWriter,
@@ -786,21 +813,71 @@ def _index_journal(
 ) -> Tuple[int, bool]:
     """Index new complete lines of one journal. Returns ``(added, skipped)``.
 
-    Commits nothing until the batch is embedded; an embedding failure raises
-    with the manifest and data files untouched for this journal.
+    The session's identity is settled before anything is read:
+
+    * resolved live from the session store — used, and persisted in the
+      manifest entry (``identity``), so the journal stays indexable after
+      its row is pruned (retention auto-prune keeps journals: they are the
+      long-term corpus);
+    * the row is gone (``identity`` returns ``None``) but an identity was
+      persisted earlier — that one is used;
+    * gone and never resolved — an orphan. Its size and mtime are recorded
+      (``orphan``) and it is not read again until the file changes;
+    * the store is unavailable (``identity`` raises ``IdentityUnavailable``)
+      — a persisted identity is used, else the journal is retried next sync
+      with nothing recorded.
+
+    Never indexed as shared without an identity (fail closed). Commits
+    nothing until the batch is embedded; an embedding failure raises with
+    the manifest and data files untouched for this journal.
     """
     manifest = writer.manifest
     entry = dict(manifest["journals"].get(display_name) or {})
     offset = int(entry.get("offset") or 0)
     generation = int(entry.get("generation") or 1)
-    size = path.stat().st_size
+    stat = path.stat()
+    size = stat.st_size
+    fingerprint = {"size": size, "mtime_ns": stat.st_mtime_ns}
+    if entry.get("orphan") == fingerprint:
+        return 0, True
     if size < offset:
         # Rewritten (or re-created) under the same name: start a new
         # generation so the old chunks drop out of search and get pruned.
         generation += 1
         offset = 0
+    session_id = path.stem
+    stored = _stored_identity(entry)
     if size <= offset:
+        if entry and stored is None:
+            # Fully indexed before identities were persisted: record it now,
+            # while the row still exists, so a rebuild after the row is
+            # pruned can re-index it.
+            try:
+                live = identity(session_id)
+            except IdentityUnavailable:
+                return 0, False
+            updated = dict(entry)
+            if live is None:
+                updated["orphan"] = fingerprint
+            else:
+                updated["identity"] = {"scope": live[0], "chats": sorted(set(live[1]))}
+            writer.commit([], [], lambda m: m["journals"].__setitem__(display_name, updated))
         return 0, False
+    try:
+        resolved = identity(session_id)
+    except IdentityUnavailable:
+        if stored is None:
+            return 0, True
+        resolved = stored
+    if resolved is None:
+        resolved = stored
+    if resolved is None:
+        orphan_entry = dict(entry)
+        orphan_entry["orphan"] = fingerprint
+        writer.commit(
+            [], [], lambda m: m["journals"].__setitem__(display_name, orphan_entry)
+        )
+        return 0, True
     with open(path, "rb") as handle:
         handle.seek(offset)
         raw = handle.read(size - offset)
@@ -808,12 +885,6 @@ def _index_journal(
     if last_newline < 0:
         return 0, False
     complete = raw[:last_newline + 1]
-    session_id = path.stem
-    resolved = identity(session_id)
-    if resolved is None:
-        # Fail closed: never index an unidentified session as shared. The
-        # offset stays put, so the next sync retries.
-        return 0, True
     scope, chats = resolved
     pending_texts: List[str] = []
     pending_meta: List[Dict[str, Any]] = []
@@ -856,6 +927,7 @@ def _index_journal(
         "generation": generation,
         "session": session_id,
         "chunks": previous_chunks + len(pending_meta),
+        "identity": {"scope": scope, "chats": sorted(set(chats))},
     }
     writer.commit(
         pending_meta,
@@ -1038,13 +1110,16 @@ def _sync_locked(directory: Path, config: Dict[str, Any], *, rebuild: bool) -> D
         logger.warning("RAG index: session store unavailable; journals skipped this run", exc_info=True)
 
     def _identity(session_id: str) -> Optional[Tuple[str, List[str]]]:
+        # None = the session store answered and the session cannot be
+        # identified (its row is gone, or names no chat): permanent for
+        # this file. A failure to answer is transient.
         if get_row is None:
-            return None
+            raise IdentityUnavailable("session store unavailable")
         try:
             return resolve_session_identity(session_id, get_row, config)
-        except Exception:
+        except Exception as exc:
             logger.debug("RAG index: identity lookup failed for %s", session_id, exc_info=True)
-            return None
+            raise IdentityUnavailable(str(exc)) from exc
 
     journals_dir = get_son_of_anton_home() / "journals"
     try:

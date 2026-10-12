@@ -385,7 +385,9 @@ class TextualBackend(SonOfAntonCLI):
                     from son_of_anton_constants import get_son_of_anton_home
 
                     deleted = session_db.delete_session(
-                        agent.session_id, sessions_dir=get_son_of_anton_home() / "sessions"
+                        agent.session_id,
+                        sessions_dir=get_son_of_anton_home() / "sessions",
+                        remove_journal=True,
                     )
                     print(
                         f"  {'✓' if deleted else '✗'} Session {agent.session_id}"

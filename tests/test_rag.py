@@ -268,7 +268,7 @@ def test_deleted_session_drops_its_journal_and_its_chunks(embed, tmp_path) -> No
     assert any("deleted" in h["text"] for h in rag.search("alpha", config=_config(), scope="cli"))
 
     db = SessionDB()
-    assert db.delete_session(gone, sessions_dir=tmp_path)
+    assert db.delete_session(gone, sessions_dir=tmp_path, remove_journal=True)
     db.close()
     assert not _journal_path(gone).exists()
 
@@ -392,18 +392,108 @@ def test_subagents_inherit_their_parent_session_identity() -> None:
     assert _identity("20261001_000092_grand") == ("gateway", ["slack:C9"])
 
 
-def test_unknown_origin_fails_closed_and_is_retried(embed) -> None:
+def test_unknown_origin_fails_closed_and_is_not_reread_until_it_changes(
+    embed, monkeypatch
+) -> None:
     sid = "20261001_000095_unknown"
-    _write_journal(sid, [_msg("alpha origin unknown")])  # no session row yet
+    _write_journal(sid, [_msg("alpha origin unknown")])  # no session row
     _make_session("20261001_000096_desk", "desktop")
     _write_journal("20261001_000096_desk", [_msg("alpha unknown front-end")])
     result = rag.sync_index(_config())
     assert result["skipped"] == 2 and result["added"] == 0
     assert rag.search("alpha", config=_config(), scope="shared") == []
 
+    # Orphans are recorded: the next sync neither reads them nor asks the
+    # session store about them again.
+    reads, lookups = [], []
+    real_open, real_resolve = open, rag.resolve_session_identity
+    monkeypatch.setattr(rag, "open", lambda path, *a, **k: (reads.append(str(path)), real_open(path, *a, **k))[1], raising=False)
+    monkeypatch.setattr(rag, "resolve_session_identity", lambda sid_, *a, **k: (lookups.append(sid_), real_resolve(sid_, *a, **k))[1])
+    result = rag.sync_index(_config())
+    assert result["skipped"] == 2 and result["added"] == 0
+    assert not any("journals" in path for path in reads)
+    assert lookups == []
+
+    # A changed file is looked at again.
     _make_session(sid, "cli")
-    assert rag.sync_index(_config())["added"] >= 1
+    _append_journal(sid, json.dumps(_msg("alpha more")) + "\n")
+    assert rag.sync_index(_config())["added"] >= 2
     assert any("origin unknown" in h["text"] for h in rag.search("alpha", config=_config(), scope="cli"))
+
+
+def test_a_session_store_outage_is_retried_not_recorded(embed, monkeypatch) -> None:
+    import son_of_anton_state
+
+    sid = "20261001_000094_outage"
+    _make_session(sid, "cli")
+    _write_journal(sid, [_msg("alpha after outage")])
+    real = son_of_anton_state.SessionDB
+
+    def _broken(*args, **kwargs):
+        raise RuntimeError("state.db locked")
+
+    monkeypatch.setattr(son_of_anton_state, "SessionDB", _broken)
+    assert rag.sync_index(_config())["skipped"] == 1
+    monkeypatch.setattr(son_of_anton_state, "SessionDB", real)
+    assert rag.sync_index(_config())["added"] == 1
+
+
+def test_auto_pruned_sessions_keep_their_journal_and_stay_searchable(embed, tmp_path) -> None:
+    sid = "20261001_000093_pruned"
+    _make_session(sid, "cli")
+    _write_journal(sid, [_msg("alpha long ago")])
+    assert rag.sync_index(_config())["added"] == 1
+
+    db = SessionDB()
+    db.end_session(sid, "cli_close")
+    db.prune_sessions(older_than_days=None, started_before=4_102_444_800, sessions_dir=tmp_path)
+    assert db.get_session(sid) is None
+    db.close()
+    assert _journal_path(sid).exists(), "automatic cleanup keeps the journal"
+
+    # The row is gone, but the identity resolved while it existed is kept:
+    # new lines index, and a full rebuild re-indexes the whole journal.
+    _append_journal(sid, json.dumps(_msg("alpha appended later")) + "\n")
+    assert rag.sync_index(_config())["added"] == 1
+    rag.sync_index(_config(), rebuild=True)
+    hits = {h["text"] for h in rag.search("alpha", config=_config(), scope="cli")}
+    assert hits == {"user: alpha long ago", "user: alpha appended later"}
+    assert rag.search("alpha", config=_config(), scope="gateway") == []
+
+
+def test_only_explicit_deletion_removes_journals(tmp_path) -> None:
+    ids = [f"20261001_00009{i}_j" for i in range(4)]
+    for sid in ids:
+        _make_session(sid, "cli")
+        _write_journal(sid, [_msg("alpha")])
+    db = SessionDB()
+    try:
+        assert db.delete_session(ids[0], sessions_dir=tmp_path)
+        assert db.delete_session(ids[1], sessions_dir=tmp_path, remove_journal=True)
+        for sid in ids[2:]:
+            db.end_session(sid, "cli_close")
+        db.prune_sessions(
+            older_than_days=None, started_before=4_102_444_800, sessions_dir=tmp_path,
+            title_like=None,
+        )
+    finally:
+        db.close()
+    assert _journal_path(ids[0]).exists()
+    assert not _journal_path(ids[1]).exists()
+    assert _journal_path(ids[2]).exists() and _journal_path(ids[3]).exists()
+
+    _make_session("20261001_000099_p", "cli")
+    _write_journal("20261001_000099_p", [_msg("alpha")])
+    db = SessionDB()
+    try:
+        db.end_session("20261001_000099_p", "cli_close")
+        db.prune_sessions(
+            older_than_days=None, started_before=4_102_444_800, sessions_dir=tmp_path,
+            remove_journals=True,
+        )
+    finally:
+        db.close()
+    assert not _journal_path("20261001_000099_p").exists()
 
 
 def test_session_store_failure_skips_journals_but_keeps_notes(embed, monkeypatch) -> None:

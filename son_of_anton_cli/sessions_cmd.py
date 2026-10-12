@@ -890,6 +890,7 @@ def cmd_sessions(args, sessions_parser=None):
                     resolved_session_id,
                     sessions_dir=sessions_dir,
                     expected_delete_ids=delete_target_ids,
+                    remove_journal=True,
                 ):
                     delegate_count = len(delete_target_ids) - 1
                     delegate_suffix = (
@@ -969,7 +970,9 @@ def cmd_sessions(args, sessions_parser=None):
                 return
             deleted = 0
             for target_id in session_ids:
-                if db.delete_session(target_id, sessions_dir=sessions_dir):
+                if db.delete_session(
+                    target_id, sessions_dir=sessions_dir, remove_journal=True
+                ):
                     deleted += 1
             print(f"Deleted {deleted} session(s).")
             return
@@ -995,7 +998,9 @@ def cmd_sessions(args, sessions_parser=None):
                 return
         elif _pinned_note:
             print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-        if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
+        if db.delete_session(
+            resolved_session_id, sessions_dir=sessions_dir, remove_journal=True
+        ):
             print(f"Deleted session '{resolved_session_id}'.")
         else:
             print(f"Session '{args.session_id}' not found.")
@@ -1154,7 +1159,9 @@ def cmd_sessions(args, sessions_parser=None):
 
         if action == "prune":
             sessions_dir = get_son_of_anton_home() / "sessions"
-            count = db.prune_sessions(sessions_dir=sessions_dir, **filters)
+            count = db.prune_sessions(
+                sessions_dir=sessions_dir, remove_journals=True, **filters
+            )
             print(f"Pruned {count} session(s).")
         else:
             count = db.archive_sessions(**filters)
