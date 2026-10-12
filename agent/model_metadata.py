@@ -619,6 +619,14 @@ _CONTAINER_LOCAL_SUFFIXES = (
     ".containers.internal",
     ".lima.internal",
 )
+# LAN-only DNS suffixes: mDNS (``.local``), the conventional home-router
+# zones, and RFC 8375's ``home.arpa``. None of these resolve publicly.
+_LAN_HOST_SUFFIXES = (
+    ".local",
+    ".lan",
+    ".home.arpa",
+    ".localdomain",
+)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -836,7 +844,7 @@ def is_local_endpoint(base_url: str) -> bool:
 
     Recognises loopback (``localhost``, ``127.0.0.0/8``, ``::1``),
     container-internal DNS names (``host.docker.internal`` et al.),
-    RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
+    LAN-only DNS names (``*.local``, ``*.lan``, ``*.home.arpa``), RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
     link-local, and Tailscale CGNAT (``100.64.0.0/10``). Tailscale CGNAT
     is included so remote-but-trusted Ollama boxes reached over a
     Tailscale mesh get the same timeout auto-bumps as localhost Ollama.
@@ -854,6 +862,8 @@ def is_local_endpoint(base_url: str) -> bool:
         return True
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
+        return True
+    if any(host.endswith(suffix) for suffix in _LAN_HOST_SUFFIXES):
         return True
     # Unqualified hostnames (no dots) are local by definition — Docker
     # Compose service names, /etc/hosts entries, or mDNS names.

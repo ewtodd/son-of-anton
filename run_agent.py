@@ -6207,6 +6207,12 @@ class AIAgent:
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
         #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
+        An EXPLICIT ``reasoning_echo = true`` (``model.reasoning_echo``, a
+        fallback entry's, or a per-model ``custom_providers`` declaration)
+        counts too: it is how a gateway the host rules can't see through —
+        a reverse proxy fronting Kimi or GLM — is declared, and those
+        endpoints 400 on an unpadded turn exactly like the families. The
+        local-endpoint echo DEFAULT is not an opt-in and never pads.
 
         Result cached on the AIAgent instance keyed by (provider, model,
         base_url); invalidated whenever ``switch_model()`` /
@@ -6216,7 +6222,13 @@ class AIAgent:
         ``urlparse``) calls under it. Caching drops the per-turn cost from
         ~5us × 16 = ~80us to <1us.
         """
-        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        key = (
+            self.provider,
+            self.model,
+            getattr(self, "_base_url_lower", self.base_url),
+            getattr(self, "_reasoning_echo_flag", None),
+            id(getattr(self, "_custom_providers", None)),
+        )
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -6224,6 +6236,7 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
+            or self._reasoning_echo_explicit_opt_in()
         )
         self._thinking_pad_cache = (key, result)
         return result
@@ -6237,6 +6250,18 @@ class AIAgent:
         """
         return self._needs_thinking_reasoning_pad() or self._reasoning_echo_opt_in()
 
+    def _reasoning_echo_explicit_opt_in(self) -> bool:
+        """True when the user explicitly set ``reasoning_echo = true`` for
+        the active route (per-model declaration or the per-provider flag)."""
+        from agent.message_sanitization import explicit_reasoning_echo
+
+        return explicit_reasoning_echo(
+            self.model,
+            self.base_url,
+            getattr(self, "_reasoning_echo_flag", None),
+            getattr(self, "_custom_providers", None),
+        ) is True
+
     def _reasoning_echo_opt_in(self) -> bool:
         """Return True when ``reasoning_content`` echo-back is on for the
         *current* route (beyond the built-in require-side families).
@@ -6244,7 +6269,8 @@ class AIAgent:
         Resolution lives in ``agent.message_sanitization.resolve_reasoning_echo``:
         per-model ``custom_providers.<name>.models.<model>.reasoning_echo``
         first, then the explicit per-active-provider flag, then the
-        default (ON for custom / local endpoints, OFF elsewhere).
+        default (ON for local / private-network endpoints, OFF elsewhere —
+        hosted APIs configured as custom providers included).
 
         The explicit flag (``_reasoning_echo_flag``; ``None`` = unset)
         travels with the active provider:

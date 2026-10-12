@@ -1890,7 +1890,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Per-provider reasoning_content echo override (see _reasoning_echo_opt_in).
         # Read from the fallback entry so the flag travels with the active
         # provider; restore_primary_runtime will revert it from the snapshot.
-        # Unset (None) → the route default (on for custom endpoints).
+        # Unset (None) → the route default (on for local / private-network
+        # endpoints only); an explicit true also pads (see
+        # _needs_thinking_reasoning_pad).
         _fb_echo = fb.get("reasoning_echo")
         agent._reasoning_echo_flag = _fb_echo if isinstance(_fb_echo, bool) else None
         if hasattr(agent, "_transport_cache"):

@@ -360,8 +360,12 @@ DEFAULT_CONFIG = {
         # resolve_reasoning_echo), most specific first:
         #   custom_providers.<name>.models.<model>.reasoning_echo
         #   model.reasoning_echo / a fallback_providers entry's reasoning_echo
-        #   default: on for custom/local endpoints, off elsewhere (strict
-        #   hosted APIs such as Mistral/Groq 400 on the field).
+        #   default: on for local / private-network endpoints (loopback,
+        #   RFC-1918, .local/.lan), off elsewhere — hosted APIs such as
+        #   Mistral/Groq 400 on the field even when declared as
+        #   custom_providers.
+        # An explicit true also pads turns that have no reasoning (for a
+        # gateway fronting Kimi-style models); the local default never pads.
         # DeepSeek / Kimi / MiMo are always echoed (and padded) by host/name.
     },
 

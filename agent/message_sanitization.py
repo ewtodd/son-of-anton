@@ -498,7 +498,7 @@ __all__ = [
     "reasoning_echo_family",
     "matches_reasoning_echo_family",
     "needs_reasoning_echo",
-    "is_custom_route",
+    "explicit_reasoning_echo",
     "resolve_reasoning_echo",
     "apply_reasoning_content_policy",
     "reapply_reasoning_echo",
@@ -698,8 +698,10 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 #     mimo     — provider "xiaomi", model contains "mimo", or host
 #                *.xiaomimimo.com.
 #   echo side (field accepted, real reasoning sent back, never padded):
-#     custom / local endpoints by default (``resolve_reasoning_echo``),
-#     or any route opted in via ``reasoning_echo = true``.
+#     local / private-network endpoints by default
+#     (``resolve_reasoning_echo``). An EXPLICIT ``reasoning_echo = true``
+#     joins the require side instead (echo + pad): it is how a gateway
+#     fronting a Kimi-style model is declared.
 #   strict side (field rejected with 400/422 "Extra inputs are not
 #     permitted"): everyone else — Mistral, Cerebras, Groq, SambaNova, …
 #     (#45655). Strip the key entirely, even a single-space pad.
@@ -763,53 +765,18 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
-def is_custom_route(provider: Any, base_url: Any, custom_providers: Any = None) -> bool:
-    """True when (provider, base_url) is a user-declared custom endpoint.
-
-    ``provider == "custom"`` / ``"custom:<name>"`` is the runtime identity of
-    a ``custom_providers`` route; a base_url that equals a declared
-    ``custom_providers`` entry's counts too (a fallback entry can name the
-    same endpoint under another provider label).
-    """
-    provider_lower = str(provider or "").strip().lower()
-    if provider_lower == "custom" or provider_lower.startswith("custom:"):
-        return True
-    if not base_url or not isinstance(custom_providers, list):
-        return False
-    from son_of_anton_cli.route_identity import normalize_route_base_url
-
-    target = normalize_route_base_url(base_url)
-    if not target:
-        return False
-    return any(
-        isinstance(entry, dict)
-        and normalize_route_base_url(entry.get("base_url")) == target
-        for entry in custom_providers
-    )
-
-
-def resolve_reasoning_echo(
-    provider: Any,
+def explicit_reasoning_echo(
     model: Any,
     base_url: Any,
     explicit: "bool | None",
     custom_providers: Any = None,
-) -> bool:
-    """Decide whether real ``reasoning_content`` is echoed on replay.
+) -> "bool | None":
+    """The user's explicit ``reasoning_echo`` choice for this route, if any.
 
-    Precedence, most specific first:
-
-    1. ``custom_providers.<name>.models.<model>.reasoning_echo`` (bool) for
-       the active route + model.
-    2. ``explicit`` — ``model.reasoning_echo`` for the primary, or the
-       active ``fallback_providers`` entry's ``reasoning_echo``.
-    3. Default: ON for custom / local endpoints (vLLM, llama.cpp, Ollama,
-       gateways in front of them), OFF everywhere else. Local chat
-       templates (Qwen3 et al.) render the model's own reasoning for the
-       whole tool loop, so stripping it both blinds the model to its
-       earlier reasoning mid-chain and misses the server's prefix cache at
-       every tool call. Hosted strict providers (Mistral, Groq, …) are not
-       custom routes and keep the strip default.
+    ``custom_providers.<name>.models.<model>.reasoning_echo`` (bool) for the
+    active route + model first, then ``explicit`` — ``model.reasoning_echo``
+    for the primary, or the active ``fallback_providers`` entry's
+    ``reasoning_echo``. ``None`` when neither is set.
     """
     if model and base_url and isinstance(custom_providers, list):
         try:
@@ -827,7 +794,53 @@ def resolve_reasoning_echo(
             return declared
     if isinstance(explicit, bool):
         return explicit
-    return is_custom_route(provider, base_url, custom_providers)
+    return None
+
+
+def resolve_reasoning_echo(
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    explicit: "bool | None",
+    custom_providers: Any = None,
+) -> bool:
+    """Decide whether real ``reasoning_content`` is echoed on replay.
+
+    Precedence, most specific first:
+
+    1. ``custom_providers.<name>.models.<model>.reasoning_echo`` (bool) for
+       the active route + model.
+    2. ``explicit`` — ``model.reasoning_echo`` for the primary, or the
+       active ``fallback_providers`` entry's ``reasoning_echo``.
+    3. Default: ON only for endpoints on the user's own machine or network
+       (``agent.model_metadata.is_local_endpoint``: loopback, RFC-1918 /
+       ULA, link-local, Tailscale CGNAT, unqualified / ``.local`` /
+       ``.lan`` hostnames) — vLLM, llama.cpp, Ollama, a llama-swap box on
+       the LAN. Local chat templates (Qwen3 et al.) render the model's own
+       reasoning for the whole tool loop, so stripping it both blinds the
+       model to its earlier reasoning mid-chain and misses the server's
+       prefix cache at every tool call. OFF everywhere else — including
+       hosted APIs configured as ``custom_providers`` (Groq, Mistral,
+       Cerebras, …), which 400 on the field. ``provider`` is not consulted:
+       in this fork every endpoint, hosted or not, is a custom provider, so
+       the label says nothing about what the server accepts.
+
+    The require-side families (DeepSeek / Kimi / MiMo) echo regardless; see
+    ``needs_reasoning_echo``. An explicit opt-in (1 or 2 set to ``true``)
+    also pads like they do — see ``AIAgent._needs_thinking_reasoning_pad``;
+    the local default echoes real reasoning only.
+    """
+    declared = explicit_reasoning_echo(model, base_url, explicit, custom_providers)
+    if declared is not None:
+        return declared
+    if not base_url:
+        return False
+    from agent.model_metadata import is_local_endpoint
+
+    try:
+        return is_local_endpoint(str(base_url))
+    except Exception:
+        return False
 
 
 def apply_reasoning_content_policy(
@@ -846,7 +859,7 @@ def apply_reasoning_content_policy(
       turn WITHOUT ``reasoning_content``, so a pad is synthesized when the
       turn has no real reasoning.
     * ``echo_reasoning`` — the endpoint accepts the field and benefits from
-      the model's own reasoning coming back (custom / local endpoints:
+      the model's own reasoning coming back (local endpoints:
       Qwen3-style chat templates render ``reasoning_content`` for every
       assistant turn after the last user query, i.e. the whole tool loop,
       and the local KV prefix cache only hits when the replay matches what
@@ -880,7 +893,7 @@ def apply_reasoning_content_policy(
     # pinned at creation time; DeepSeek V4 Pro rejects those with HTTP 400,
     # so upgrade "" → " " on replay.
     #
-    # Echo-only (custom/local): real reasoning goes back verbatim; a blank
+    # Echo-only (local default): real reasoning goes back verbatim; a blank
     # value is a pad some require-side provider wrote, not reasoning — fall
     # back to the turn's own ``reasoning`` text, else drop the key rather
     # than render an empty think block into the prompt.
@@ -963,7 +976,7 @@ def reapply_reasoning_echo(
       rejects them with HTTP 400 ("The reasoning_content in the thinking mode
       must be passed back").  Re-apply the pad.
 
-    * Switching TO an echo-only endpoint (custom / local): real reasoning
+    * Switching TO an echo-only endpoint (local default): real reasoning
       already on the turn stays; blank pads written for a require-side
       primary are dropped. Nothing is synthesized.
 

@@ -6,9 +6,11 @@ the model to its own earlier reasoning mid-chain and misses the local
 server's prefix cache at every tool call. The contracts here:
 
 * the echo decision resolves per route (per-model declaration > explicit
-  flag > "custom routes echo, everything else strips");
-* echo replays the model's real reasoning and never fabricates a pad —
-  only the require-side families (DeepSeek / Kimi / MiMo) are padded;
+  flag > "local / private-network endpoints echo, everything else
+  strips" — hosted APIs declared as custom providers included);
+* the local default replays the model's real reasoning and never
+  fabricates a pad — only the require-side families (DeepSeek / Kimi /
+  MiMo) and an explicit ``reasoning_echo = true`` are padded;
 * reasoning captured from a stream reaches the stored assistant message;
 * a thinking-only turn is treated the same whether or not the route echoes.
 """
@@ -25,7 +27,9 @@ from agent.message_sanitization import (
     resolve_reasoning_echo,
 )
 
-CUSTOM_URL = "http://gateway.invalid:4002/v1"
+CUSTOM_URL = "http://192.168.1.20:4002/v1"
+TOOL_CALLS = [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+HOSTED_URL = "https://api.groq.invalid/openai/v1"
 PROVIDERS = [
     {
         "name": "custom",
@@ -33,37 +37,109 @@ PROVIDERS = [
         "models": {
             "local/qwen": {},
             "local/no-echo": {"reasoning_echo": False},
+            "local/kimi-proxy": {"reasoning_echo": True},
         },
-    }
+    },
+    # A hosted strict API declared the way every endpoint is in this fork.
+    {"name": "groq", "base_url": HOSTED_URL, "models": {"llama": {}}},
 ]
 
 
 # ── route resolution ──────────────────────────────────────────────────────
 
 
-def test_custom_routes_echo_by_default() -> None:
-    assert resolve_reasoning_echo("custom", "local/qwen", CUSTOM_URL, None, PROVIDERS)
-    assert resolve_reasoning_echo("custom:lab", "anything", "http://x.invalid/v1", None, [])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/v1",
+        "http://localhost:11434/v1",
+        "http://10.0.0.6:4002/v1",
+        "http://172.20.1.2:8000/v1",
+        "http://192.168.1.20:4002/v1",
+        "http://169.254.10.10/v1",
+        "http://[fd00::5]:8000/v1",
+        "http://llama-box.local:8080/v1",
+        "http://gpu.lan/v1",
+        "http://strix.home.arpa/v1",
+        "http://llamaswap:8080/v1",
+    ],
+)
+def test_local_and_private_network_endpoints_echo_by_default(url: str) -> None:
+    for provider in ("custom", "custom:lab", "ollama"):
+        assert resolve_reasoning_echo(provider, "m", url, None, PROVIDERS), (provider, url)
 
 
-def test_a_base_url_declared_in_custom_providers_is_a_custom_route() -> None:
-    assert resolve_reasoning_echo("openai", "local/qwen", CUSTOM_URL, None, PROVIDERS)
-
-
-def test_non_custom_routes_strip_by_default() -> None:
-    assert not resolve_reasoning_echo(
-        "mistral", "mistral-large", "https://api.mistral.invalid/v1", None, PROVIDERS
-    )
+@pytest.mark.parametrize(
+    "url",
+    [
+        HOSTED_URL,
+        "https://api.mistral.ai/v1",
+        "https://api.cerebras.ai/v1",
+        "https://gateway.example.com/v1",
+    ],
+)
+def test_hosted_endpoints_strip_by_default_even_as_custom_providers(url: str) -> None:
+    for provider in ("custom", "custom:groq", "mistral"):
+        assert not resolve_reasoning_echo(provider, "llama", url, None, PROVIDERS), (provider, url)
 
 
 @pytest.mark.parametrize("explicit", [True, False])
 def test_an_explicit_flag_beats_the_route_default(explicit: bool) -> None:
     assert resolve_reasoning_echo("custom", "local/qwen", CUSTOM_URL, explicit, PROVIDERS) is explicit
-    assert resolve_reasoning_echo("groq", "m", "https://groq.invalid/v1", explicit, []) is explicit
+    assert resolve_reasoning_echo("custom", "llama", HOSTED_URL, explicit, PROVIDERS) is explicit
 
 
 def test_a_per_model_declaration_beats_the_explicit_flag() -> None:
     assert not resolve_reasoning_echo("custom", "local/no-echo", CUSTOM_URL, True, PROVIDERS)
+
+
+# ── padding: explicit opt-in pads, the local default does not ─────────────
+
+
+def _route_agent(*, model: str, base_url: str, flag):
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent.provider = "custom"
+    agent.model = model
+    agent.base_url = base_url
+    agent._custom_providers = PROVIDERS
+    agent._reasoning_echo_flag = flag
+    return agent
+
+
+def test_local_default_echoes_without_padding() -> None:
+    agent = _route_agent(model="local/qwen", base_url=CUSTOM_URL, flag=None)
+    assert agent._reasoning_echo_enabled()
+    assert not agent._needs_thinking_reasoning_pad()
+
+
+@pytest.mark.parametrize(
+    "model,base_url,flag",
+    [
+        # model.reasoning_echo = true on a gateway fronting a thinking model
+        ("glm-5.2", "https://proxy.example.com/v1", True),
+        # per-model declaration
+        ("local/kimi-proxy", CUSTOM_URL, None),
+    ],
+)
+def test_an_explicit_opt_in_echoes_and_pads(model: str, base_url: str, flag) -> None:
+    agent = _route_agent(model=model, base_url=base_url, flag=flag)
+    assert agent._reasoning_echo_enabled()
+    assert agent._needs_thinking_reasoning_pad()
+    api = {"role": "assistant", "content": "", "tool_calls": TOOL_CALLS}
+    from agent.agent_runtime_helpers import copy_reasoning_content_for_api
+
+    copy_reasoning_content_for_api(agent, dict(api), api)
+    assert isinstance(api.get("reasoning_content"), str) and api["reasoning_content"]
+
+
+def test_the_pad_decision_follows_a_flag_change() -> None:
+    agent = _route_agent(model="glm-5.2", base_url="https://proxy.example.com/v1", flag=True)
+    assert agent._needs_thinking_reasoning_pad()
+    agent._reasoning_echo_flag = None  # e.g. fallback to an entry without the flag
+    assert not agent._needs_thinking_reasoning_pad()
+    assert not agent._reasoning_echo_enabled()
 
 
 # ── replay policy ─────────────────────────────────────────────────────────
@@ -75,7 +151,6 @@ def _replay(source: dict, *, pad: bool, echo: bool) -> dict:
     return api
 
 
-TOOL_CALLS = [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
 
 
 @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
