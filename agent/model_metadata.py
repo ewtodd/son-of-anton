@@ -1074,6 +1074,42 @@ def _extract_max_completion_tokens(payload: Dict[str, Any]) -> Optional[int]:
     return _extract_first_int(payload, _MAX_COMPLETION_KEYS)
 
 
+def _extract_reasoning_decl(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Reasoning-effort vocabulary a ``/models`` entry advertises, if any.
+
+    A front that knows which levels each model's server takes (llm-gateway)
+    lists them as ``reasoning_efforts`` (weakest first), the level the server
+    applies when none is sent as ``default_reasoning_effort``, and its
+    explicit rewrites (``medium`` → ``high`` on a none/low/high/max model) as
+    ``reasoning_effort_aliases``. Read here so a custom route needs no
+    hand-declared ``reasoning_efforts`` — the same way its context window
+    comes from ``context_length``.
+    """
+    out: Dict[str, Any] = {}
+    efforts = payload.get("reasoning_efforts")
+    if isinstance(efforts, (list, tuple)):
+        levels = tuple(
+            level.strip().lower()
+            for level in efforts
+            if isinstance(level, str) and level.strip()
+        )
+        if levels:
+            out["reasoning_efforts"] = levels
+    default = payload.get("default_reasoning_effort")
+    if isinstance(default, str) and default.strip():
+        out["default_reasoning_effort"] = default.strip().lower()
+    aliases = payload.get("reasoning_effort_aliases")
+    if isinstance(aliases, dict):
+        mapped = {
+            k.strip().lower(): v.strip().lower()
+            for k, v in aliases.items()
+            if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip()
+        }
+        if mapped:
+            out["reasoning_effort_aliases"] = mapped
+    return out
+
+
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     novita_input = payload.get("input_token_price_per_m")
     novita_output = payload.get("output_token_price_per_m")
@@ -1303,6 +1339,7 @@ def fetch_endpoint_model_metadata(
                 pricing = _extract_pricing(model)
                 if pricing:
                     entry["pricing"] = pricing
+                entry.update(_extract_reasoning_decl(model))
                 _add_model_aliases(cache, model_id, entry)
 
             # If this is a llama.cpp server, query /props for actual allocated context
@@ -1347,6 +1384,48 @@ def fetch_endpoint_model_metadata(
     _endpoint_model_metadata_cache[normalized] = {}
     _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}
+
+
+def get_endpoint_reasoning_decl(
+    model: str,
+    base_url: str,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return the reasoning vocabulary *base_url*'s ``/models`` lists for *model*.
+
+    Same shape as ``get_custom_provider_reasoning_decl`` plus the aliases:
+    ``{"efforts": tuple, "effort": str, "aliases": dict}``, each field absent
+    when the endpoint does not list it. The model id is matched exactly (or
+    by its bare name), never fuzzily: a neighbour's vocabulary is worse than
+    none.
+
+    With ``api_key=None`` only what an earlier fetch cached is read — no
+    network, whatever its age — for per-request paths that hold no
+    credential. With a key (``""`` for an open endpoint) the endpoint's
+    ``/models`` is fetched through the usual per-URL cache. Keyless fetches
+    are never made implicitly: a 401 is cached for the endpoint and would
+    hide its context window from the keyed probe for the cache TTL.
+    """
+    if not model or not base_url:
+        return {}
+    if api_key is None:
+        cache = _endpoint_model_metadata_cache.get(_normalize_base_url(base_url)) or {}
+    else:
+        try:
+            cache = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+        except Exception:
+            return {}
+    entry = cache.get(model) or cache.get(_strip_provider_prefix(model))
+    if not isinstance(entry, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    if entry.get("reasoning_efforts"):
+        out["efforts"] = tuple(entry["reasoning_efforts"])
+    if entry.get("default_reasoning_effort"):
+        out["effort"] = entry["default_reasoning_effort"]
+    if entry.get("reasoning_effort_aliases"):
+        out["aliases"] = dict(entry["reasoning_effort_aliases"])
+    return out
 
 
 # Per-upstream /models results, keyed by upstream base URL. A proxy fans out to

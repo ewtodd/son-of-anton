@@ -981,6 +981,21 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    # A front that knows which models are loaded (llm-gateway, before servers
+    # that share GPUs and run one set of models at a time) answers a request
+    # for an unloaded model with 503 ``model_not_loaded``. Without a
+    # Retry-After the other set is serving and stays up until someone
+    # switches: retrying only burns the backoff budget, so fall back (or
+    # stop) and let the body's message — which names the models to use
+    # instead — reach the user. With a Retry-After the wanted set is loading
+    # or the host is switching, and the generic 503 path retries.
+    if error_code == "model_not_loaded" and not _has_retry_after(error):
+        return _result(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -1833,6 +1848,16 @@ def _extract_status_code(error: Exception) -> Optional[int]:
             break
         current = cause
     return None
+
+
+def _has_retry_after(error: Exception) -> bool:
+    """Whether the error's HTTP response carries a usable ``Retry-After``."""
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if headers is None:
+        return False
+    from agent.retry_utils import parse_retry_after_seconds
+
+    return parse_retry_after_seconds(headers) is not None
 
 
 def _extract_error_body(error: Exception) -> dict:

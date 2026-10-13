@@ -64,10 +64,12 @@ class CustomProfile(ProviderProfile):
             # vocabulary — a Qwen3-on-vLLM route through LiteLLM accepts
             # exactly none/low/medium/xhigh and 400s on minimal/high/max/
             # ultra (verified live). When the user declares the set, clamp
-            # against it; otherwise fall back to the widest OpenAI-compat
-            # vocabulary (permissive endpoints ignore unknown levels, and
-            # we must not guess a narrower set).
-            _supported, _decl = _custom_route_effort_decl(
+            # against it; otherwise use the set the endpoint's ``/models``
+            # lists for the model (llm-gateway does), with its aliases; and
+            # otherwise fall back to the widest OpenAI-compat vocabulary
+            # (permissive endpoints ignore unknown levels, and we must not
+            # guess a narrower set).
+            _supported, _decl, _aliases = _custom_route_effort_decl(
                 ctx.get("model"), ctx.get("base_url")
             )
             if _effort == "none" or _enabled is False:
@@ -98,14 +100,16 @@ class CustomProfile(ProviderProfile):
                 # semantics give exactly the right mappings on a
                 # none/low/medium/xhigh route: high→medium, max/ultra→xhigh
                 # (the endpoint's own top), minimal→low. Forwarding "ultra"
-                # verbatim is a guaranteed 400 (#89503).
+                # verbatim is a guaranteed 400 (#89503). Aliases the endpoint
+                # lists (medium→high on a none/low/high/max model) come first,
+                # so the level sent is the one the endpoint would pick itself.
                 from agent.reasoning_effort import (
                     OPENAI_COMPAT_WIRE_EFFORTS,
                     clamp_effort,
                 )
 
                 top_level["reasoning_effort"] = clamp_effort(
-                    _effort, _supported or OPENAI_COMPAT_WIRE_EFFORTS
+                    _effort, _supported or OPENAI_COMPAT_WIRE_EFFORTS, _aliases
                 )
 
         # Per-model chat-template variables declared by the user
@@ -136,29 +140,42 @@ class CustomProfile(ProviderProfile):
 
 
 def _custom_route_effort_decl(model: str | None, base_url: str | None):
-    """Return ``(supported_tuple, declared_set)`` for this route, or ``(None, ())``.
+    """Return ``(supported_tuple, known_set, aliases)`` for this route.
 
-    Reads the optional per-route accepted-effort declaration
-    (``custom_providers.<name>.models.<model>.reasoning_efforts``) via the
-    shared config helper. ``supported_tuple`` is the declared vocabulary to
-    clamp against (or ``None`` → caller falls back to the widest
-    OpenAI-compat set); ``declared_set`` is the same levels as a set for the
-    disable-path ``"none" in _decl`` check (empty when undeclared).
+    The vocabulary comes from the optional per-route declaration
+    (``custom_providers.<name>.models.<model>.reasoning_efforts``, via the
+    shared config helper) or, when there is none, from what the endpoint's
+    ``/models`` listed for the model on the agent's last probe (cache only —
+    no request is made here). ``supported_tuple`` is the vocabulary to clamp
+    against (``None`` → caller falls back to the widest OpenAI-compat set);
+    ``known_set`` is the same levels as a set for the disable-path
+    ``"none" in _decl`` check (empty when unknown); ``aliases`` are the
+    endpoint's listed rewrites (``None`` for a declared set, which is the
+    user's word and carries none).
     """
     if not model:
-        return None, ()
+        return None, (), None
     try:
         from son_of_anton_cli.config import get_custom_provider_reasoning_decl
-    except Exception:
-        return None, ()
-    try:
+
         decl = get_custom_provider_reasoning_decl(str(model), base_url) or {}
     except Exception:
-        return None, ()
+        decl = {}
     efforts = decl.get("efforts")
     if efforts:
-        return tuple(efforts), set(efforts)
-    return None, ()
+        return tuple(efforts), set(efforts), None
+    if not base_url:
+        return None, (), None
+    try:
+        from agent.model_metadata import get_endpoint_reasoning_decl
+
+        listed = get_endpoint_reasoning_decl(str(model), str(base_url))
+    except Exception:
+        listed = {}
+    efforts = listed.get("efforts")
+    if efforts:
+        return tuple(efforts), set(efforts), listed.get("aliases")
+    return None, (), None
 
 
 def _custom_route_chat_template_kwargs(model: str | None, base_url: str | None) -> dict:

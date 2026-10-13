@@ -116,8 +116,11 @@ def supported_efforts_for(
 
       1. the route's declared set
          (``custom_providers.<name>.models.<model>.reasoning_efforts``),
-      2. known wire hosts (Kimi, TokenHub),
-      3. the widest OpenAI-compatible vocabulary.
+      2. the set the endpoint's ``/models`` lists for the model
+         (``reasoning_efforts``, as llm-gateway serves it), from the agent's
+         last probe — read from cache, no request is made,
+      3. known wire hosts (Kimi, TokenHub),
+      4. the widest OpenAI-compatible vocabulary.
 
     ``provider`` is accepted for call-site symmetry; the fork's remaining
     routes are host- and declaration-driven.
@@ -137,6 +140,15 @@ def supported_efforts_for(
         efforts = decl.get("efforts")
         if efforts:
             return tuple(str(level) for level in efforts)
+        if base_url:
+            try:
+                from agent.model_metadata import get_endpoint_reasoning_decl
+
+                efforts = get_endpoint_reasoning_decl(str(model), base_url).get("efforts")
+            except Exception:
+                efforts = None
+            if efforts:
+                return tuple(efforts)
 
     if base_url:
         if any(base_url_host_matches(base_url, host) for host in _KIMI_EFFORT_HOSTS):

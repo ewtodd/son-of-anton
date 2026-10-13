@@ -1307,6 +1307,34 @@ def interruptible_api_call(agent, api_kwargs: dict):
     return result["response"]
 
 
+def _probe_endpoint_reasoning_decl(agent) -> None:
+    """Fetch a custom route's ``/models`` so its listed effort vocabulary is cached.
+
+    A custom endpoint may list each model's ``reasoning_efforts`` (and
+    aliases) in ``/models`` the way it lists ``context_length``; the custom
+    profile clamps against that when the route declares no set of its own.
+    The profile holds no credential, so it only reads the metadata cache —
+    this fills it, with the route's key, through the usual per-URL cache (a
+    request at most once per TTL).
+    """
+    try:
+        from son_of_anton_constants import _is_custom_family_provider
+
+        if not (
+            _is_custom_family_provider(agent.provider)
+            and agent.base_url
+            and agent.model
+        ):
+            return
+        from agent.model_metadata import get_endpoint_reasoning_decl
+
+        get_endpoint_reasoning_decl(
+            agent.model, agent.base_url, getattr(agent, "api_key", "") or ""
+        )
+    except Exception:
+        logger.debug("Endpoint reasoning-effort probe failed", exc_info=True)
+
+
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     if tools_for_api is None:
@@ -1366,6 +1394,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             _ant_max = _get_anthropic_max_output(agent.model)
     except Exception:
         pass
+
+    _probe_endpoint_reasoning_decl(agent)
 
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
