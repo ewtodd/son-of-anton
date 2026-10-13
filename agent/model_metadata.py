@@ -1077,7 +1077,7 @@ def _extract_max_completion_tokens(payload: Dict[str, Any]) -> Optional[int]:
 def _extract_reasoning_decl(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Reasoning-effort vocabulary a ``/models`` entry advertises, if any.
 
-    A front that knows which levels each model's server takes (llm-gateway)
+    A front that knows which levels each model's server takes (maitred)
     lists them as ``reasoning_efforts`` (weakest first), the level the server
     applies when none is sent as ``default_reasoning_effort``, and its
     explicit rewrites (``medium`` → ``high`` on a none/low/high/max model) as

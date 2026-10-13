@@ -1,6 +1,6 @@
 """A custom route's effort vocabulary can come from the endpoint, like its window.
 
-A front such as llm-gateway lists, per model in ``/models``, the
+A front such as maitred lists, per model in ``/models``, the
 ``reasoning_efforts`` its server takes (weakest first) and the explicit
 rewrites it applies (``reasoning_effort_aliases``), next to
 ``context_length``. Contracts:
@@ -38,7 +38,7 @@ API_EFFORTS = ("low", "high", "max")
 
 
 def _gateway_models():
-    """/v1/models as llm-gateway serves it."""
+    """/v1/models as maitred serves it."""
     return {
         "object": "list",
         "data": [

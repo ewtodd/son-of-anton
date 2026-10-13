@@ -117,7 +117,7 @@ def supported_efforts_for(
       1. the route's declared set
          (``custom_providers.<name>.models.<model>.reasoning_efforts``),
       2. the set the endpoint's ``/models`` lists for the model
-         (``reasoning_efforts``, as llm-gateway serves it), from the agent's
+         (``reasoning_efforts``, as maitred serves it), from the agent's
          last probe — read from cache, no request is made,
       3. known wire hosts (Kimi, TokenHub),
       4. the widest OpenAI-compatible vocabulary.

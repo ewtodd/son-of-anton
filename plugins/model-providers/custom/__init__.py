@@ -65,7 +65,7 @@ class CustomProfile(ProviderProfile):
             # exactly none/low/medium/xhigh and 400s on minimal/high/max/
             # ultra (verified live). When the user declares the set, clamp
             # against it; otherwise use the set the endpoint's ``/models``
-            # lists for the model (llm-gateway does), with its aliases; and
+            # lists for the model (maitred does), with its aliases; and
             # otherwise fall back to the widest OpenAI-compat vocabulary
             # (permissive endpoints ignore unknown levels, and we must not
             # guess a narrower set).

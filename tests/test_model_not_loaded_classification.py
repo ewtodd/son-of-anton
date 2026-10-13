@@ -1,6 +1,6 @@
 """A gateway's "model not loaded" 503 is a routing answer, not an overload.
 
-llm-gateway fronts servers that share GPUs and run one set of models at a
+maitred fronts servers that share GPUs and run one set of models at a
 time. A request for a model of the other set gets 503 with
 ``code: model_not_loaded`` and a message naming what to use instead; it
 adds ``Retry-After`` only when waiting helps (the wanted set is loading or

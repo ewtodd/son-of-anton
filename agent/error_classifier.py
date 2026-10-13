@@ -981,7 +981,7 @@ def classify_api_error(
             should_fallback=True,
         )
 
-    # A front that knows which models are loaded (llm-gateway, before servers
+    # A front that knows which models are loaded (maitred, before servers
     # that share GPUs and run one set of models at a time) answers a request
     # for an unloaded model with 503 ``model_not_loaded``. Without a
     # Retry-After the other set is serving and stays up until someone
