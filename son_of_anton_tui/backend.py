@@ -345,6 +345,13 @@ class TextualBackend(SonOfAntonCLI):
         except Exception:
             pass
 
+        # Delegation results still waiting for a turn go back to state.db so
+        # the next start replays them instead of losing them with the queue.
+        try:
+            self._release_unsettled_notifications()
+        except Exception:
+            pass
+
         agent = getattr(self, "agent", None)
         was_running = bool(agent and getattr(self, "_agent_running", False))
 
@@ -459,6 +466,12 @@ class TextualBackend(SonOfAntonCLI):
         try:
             return self.chat(message, images=images)
         finally:
+            # A drained delegation result is acknowledged only now, and only
+            # if this turn took it; otherwise it goes back on the queue.
+            try:
+                self._settle_notification_delivery(message)
+            except Exception:
+                logging.debug("settling a delegation result failed", exc_info=True)
             self._agent_running = False
             self._interactive_turn = False
             self._spinner_text = ""
@@ -593,6 +606,11 @@ class TextualBackend(SonOfAntonCLI):
             self._close_model_picker()
         except Exception:
             pass
+
+    def has_pending_input(self) -> bool:
+        """Whether backend work (notifications, goal/loop turns) is queued."""
+        q = getattr(self, "_pending_input", None)
+        return q is not None and not q.empty()
 
     def drain_pending_input(self) -> list:
         """Messages re-queued by an interrupt or a leftover steer."""

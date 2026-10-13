@@ -1777,7 +1777,7 @@ def dump_api_request_debug(
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         # Sanitize the session ID into a traversal-free path segment — it can
-        # originate from untrusted input (X-Son of Anton-Session-Id header), and an
+        # originate from untrusted input (``--resume <id>``, imported sessions), and an
         # unsanitized "../"-shaped ID would write the dump outside logs_dir.
         safe_sid = _ra()._safe_session_filename_component(agent.session_id)
         dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{timestamp}.json"

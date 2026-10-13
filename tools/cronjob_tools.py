@@ -1076,12 +1076,7 @@ def _try_dispatch_background_run(
         pass
 
     try:
-        from tools.async_delegation import (
-            _current_origin_session_id,
-            dispatch_async_delegation,
-        )
-
-        origin_session_id = _current_origin_session_id()
+        from tools.async_delegation import dispatch_async_delegation
     except Exception as e:
         logger.warning(
             "cronjob run: async delegation registry unavailable (%s); "
@@ -1143,7 +1138,6 @@ def _try_dispatch_background_run(
         parent_session_id=str(session_id) if session_id else None,
         runner=_runner,
         origin_ui_session_id=origin_ui_session_id,
-        origin_session_id=origin_session_id,
         max_async_children=max_async,
     )
 

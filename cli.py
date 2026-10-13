@@ -9838,12 +9838,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         delivered a completion that belongs to this one.
         """
         from tools.process_registry import process_registry
-        from tools.async_delegation import (
-            claim_event_delivery,
-            complete_event_delivery,
-        )
+        from tools.async_delegation import claim_event_delivery
 
         session_key = getattr(self, "session_id", "") or ""
+        unsettled = self._unsettled_notifications()
         for event, synthetic_message in process_registry.drain_notifications(
             session_key=session_key,
             owns_event=self._owns_process_notification,
@@ -9851,8 +9849,97 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
+            if claim:
+                # Durable delegation result: keep the claim (so no other
+                # consumer takes it) but acknowledge only once a turn has
+                # actually taken the message — see
+                # _settle_notification_delivery. _pending_input is volatile;
+                # an early ack lost results whose turn never ran (a refused
+                # turn, or an exit before the queue drained).
+                unsettled[synthetic_message.strip()] = (event, claim, 0)
             self._pending_input.put(synthetic_message)
+
+    # A durable notification whose turn keeps being refused is handed back to
+    # state.db (still pending; replayed on the next start) after this many tries.
+    _MAX_NOTIFICATION_TURN_ATTEMPTS = 3
+
+    def _unsettled_notifications(self) -> dict:
+        unsettled = getattr(self, "_unsettled_notification_claims", None)
+        if unsettled is None:
+            unsettled = {}
+            self._unsettled_notification_claims = unsettled
+        return unsettled
+
+    def _settle_notification_delivery(self, message: Any) -> None:
+        """Acknowledge or re-queue a drained notification after its turn.
+
+        ``message`` is the input a turn was just run with. When it is a durable
+        delegation completion, the delivery is acknowledged only if the turn
+        took it into the conversation; a turn that never started (session turn
+        lease refused, credential/agent init failure, an exception before the
+        transcript was written) re-queues it instead, bounded by
+        ``_MAX_NOTIFICATION_TURN_ATTEMPTS``, after which the claim is released
+        so the row stays pending for replay on the next start.
+        """
+        if not isinstance(message, str):
+            return
+        unsettled = self._unsettled_notifications()
+        key = message.strip()
+        entry = unsettled.pop(key, None)
+        if entry is None:
+            return
+        event, claim, attempts = entry
+        from tools.async_delegation import (
+            complete_event_delivery,
+            release_event_delivery,
+        )
+
+        if self._turn_took_message(key):
             complete_event_delivery(event, claim)
+            return
+        attempts += 1
+        if attempts >= self._MAX_NOTIFICATION_TURN_ATTEMPTS:
+            logging.warning(
+                "Delegation result %s was not taken by %d turns; leaving it "
+                "pending for the next session start.",
+                event.get("delegation_id"), attempts,
+            )
+            release_event_delivery(event, claim)
+            return
+        unsettled[key] = (event, claim, attempts)
+        self._pending_input.put(message)
+
+    def _turn_took_message(self, message: str) -> bool:
+        """Whether the transcript holds ``message`` as (part of) a user message.
+
+        Containment, not equality: a turn may prepend an API-local note or
+        append expanded context to the text it was given.
+        """
+        for msg in reversed(self.conversation_history or []):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and message in content:
+                return True
+        return False
+
+    def _release_unsettled_notifications(self) -> None:
+        """Hand every still-queued durable completion back to state.db.
+
+        Called on shutdown: the in-memory queue dies with the process, and a
+        released claim lets the next start replay the result immediately.
+        """
+        unsettled = self._unsettled_notifications()
+        if not unsettled:
+            return
+        from tools.async_delegation import release_event_delivery
+
+        for event, claim, _attempts in list(unsettled.values()):
+            try:
+                release_event_delivery(event, claim)
+            except Exception:
+                logging.debug("releasing a queued delegation result failed", exc_info=True)
+        unsettled.clear()
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
@@ -12002,6 +12089,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self, "_pending_one_turn_model_restore", None
                 )
                 self._pending_one_turn_model_restore = None
+                self._seed_loaded_transcript_mark()
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -13019,6 +13107,7 @@ def main(
                         # status lines).  The response is printed once below.
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
+                        cli._seed_loaded_transcript_mark()
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,

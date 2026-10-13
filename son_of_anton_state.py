@@ -9189,6 +9189,46 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
         return int(row[0]) if row else 0
 
+    def get_transcript_mark(self, session_id: str) -> Optional[Tuple[str, str, int, int]]:
+        """Fingerprint of a session's durable transcript, for spotting other writers.
+
+        ``(session_id, compaction tip, MAX(id) of active rows, active row
+        count)``. An agent records it at the end of each turn and compares it at
+        the next turn's start: any difference means another process appended,
+        rewound, or compacted the session in between, so the caller's in-memory
+        history is stale. The max id catches appends and tail rewinds, the count
+        catches deactivations below the tail, and the tip catches a compaction
+        that rotated the session to a continuation child. Returns ``None`` for an
+        empty id.
+        """
+        if not session_id:
+            return None
+        tip = self.get_compaction_tip(session_id) or session_id
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0), COUNT(*) FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        max_id, count = (int(row[0]), int(row[1])) if row else (0, 0)
+        return (session_id, tip, max_id, count)
+
+    def transcript_moved_since(
+        self, mark: Optional[Tuple[str, str, int, int]], session_id: str
+    ) -> bool:
+        """True when another writer changed *session_id*'s transcript after *mark*.
+
+        *mark* is what :meth:`get_transcript_mark` returned when the caller last
+        knew the transcript matched its in-memory history. No mark, or a mark
+        taken for a different session (the caller switched sessions itself, and
+        that switch already loaded the transcript), proves nothing and returns
+        False — reloading is reserved for a real foreign write, because a reload
+        costs the caller its prompt-cache prefix.
+        """
+        if not mark or not session_id or mark[0] != session_id:
+            return False
+        return self.get_transcript_mark(session_id) != tuple(mark)
+
     def archive_and_compact(
         self,
         session_id: str,

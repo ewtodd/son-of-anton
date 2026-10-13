@@ -354,6 +354,7 @@ class CLIAgentSetupMixin:
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored
+                self._note_loaded_transcript()
                 msg_count = len([m for m in restored if m.get("role") == "user"])
                 title_part = ""
                 if session_meta.get("title"):
@@ -554,6 +555,33 @@ class CLIAgentSetupMixin:
             return None
         return None
 
+    def _note_loaded_transcript(self) -> None:
+        """Remember the store's transcript mark for the history just loaded.
+
+        The agent compares it at the start of its next turn
+        (``SessionDB.transcript_moved_since``), so a turn another process runs
+        on this session between the load and that turn — the gateway resuming
+        it from Signal, say — is reloaded rather than silently skipped by the
+        in-memory history. Applied by :meth:`_seed_loaded_transcript_mark`,
+        because a startup resume loads history before the agent exists.
+        """
+        try:
+            self._loaded_transcript_mark = self._session_db.get_transcript_mark(
+                self.session_id
+            )
+        except Exception:
+            self._loaded_transcript_mark = None
+
+    def _seed_loaded_transcript_mark(self) -> None:
+        """Hand a pending load mark to the agent before its next turn."""
+        mark = getattr(self, "_loaded_transcript_mark", None)
+        agent = getattr(self, "agent", None)
+        if not mark or agent is None:
+            return
+        self._loaded_transcript_mark = None
+        if mark[0] == self.session_id:
+            agent._durable_transcript_mark = mark
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -609,6 +637,7 @@ class CLIAgentSetupMixin:
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
+            self._note_loaded_transcript()
             self._resume_display_history = [
                 m for m in display_history if m.get("role") != "session_meta"
             ]

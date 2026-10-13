@@ -173,10 +173,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         ("task_json", "TEXT"),
         ("delivery_claim", "TEXT"),
         ("delivery_claimed_at", "REAL"),
-        # Raw api_server session id (X-Son of Anton-Session-Id) of the ORIGINATING
-        # request — the wake self-post target. Without persisting it,
-        # completions recovered after a process restart are unroutable on
-        # api_server (the in-memory record that carried it is gone).
+        # Unused since the api_server (its only reader) was removed; kept so
+        # every state.db carries the same columns.
         ("origin_session_id", "TEXT"),
     ):
         if name not in columns:
@@ -257,13 +255,12 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
-             owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", "")),
+             owner_started_at, json.dumps(task_payload)),
         )
     _prune_durable_records()
 
@@ -336,12 +333,12 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -353,9 +350,6 @@ def recover_abandoned_delegations() -> int:
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
-                # Restore the durable wake target so completions recovered
-                # after a restart remain routable to api_server sessions.
-                "origin_session_id": origin_session_id or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
@@ -644,34 +638,6 @@ def _prune_completed_locked() -> None:
         _records.pop(rid, None)
 
 
-def _current_origin_session_id() -> str:
-    """Raw session id of the ORIGINATING api_server request, or ``""``.
-
-    The obvious source — ``SON_OF_ANTON_SESSION_ID`` via ``get_session_env`` — is
-    NOT safe to read at dispatch time: constructing a child agent
-    (``agent/agent_init.py``) calls ``set_current_session_id(child.session_id)``,
-    clobbering that ContextVar *and* ``os.environ`` with the subagent's
-    internal ``{timestamp}_{uuid}`` id moments before the dispatch code reads
-    it, so the completion wake would self-post into the subagent's own
-    (unread) session instead of the spawner's.
-
-    The request-scoped ``SON_OF_ANTON_SESSION_CHAT_ID`` binding survives child
-    construction: ``_bind_api_server_session`` binds ``chat_id`` to the raw
-    ``X-Son of Anton-Session-Id``, and its only writer is ``set_session_vars`` —
-    ``set_current_session_id`` never touches it. Gate on the platform: on
-    push platforms ``chat_id`` is a chat, not a session, so yield ``""``
-    there.
-    """
-    try:
-        from gateway.session_context import get_session_env
-
-        if get_session_env("SON_OF_ANTON_SESSION_PLATFORM", "") != "api_server":
-            return ""
-        return get_session_env("SON_OF_ANTON_SESSION_CHAT_ID", "") or ""
-    except Exception:
-        return ""
-
-
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -683,7 +649,6 @@ def dispatch_async_delegation(
     parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
-    origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
@@ -741,7 +706,6 @@ def dispatch_async_delegation(
         "model": model,
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
-        "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         **_capture_routing_origin(),
         "status": "running",
@@ -889,7 +853,6 @@ def _push_completion_event(
         # session; empty string => CLI (single-session) path.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
-        "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
@@ -945,7 +908,6 @@ def dispatch_async_delegation_batch(
     parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
-    origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
@@ -988,7 +950,6 @@ def dispatch_async_delegation_batch(
         "model": model,
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
-        "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         **_capture_routing_origin(),
         "status": "running",
@@ -1101,7 +1062,6 @@ def _push_batch_completion_event(
         "delegation_id": event_record.get("delegation_id"),
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
-        "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),

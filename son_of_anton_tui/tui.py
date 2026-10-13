@@ -850,6 +850,11 @@ if _TEXTUAL_AVAILABLE:
             # are dispatched after the turn unless /sendnow redirects the live
             # turn onto one of them first.
             self._queued_items: list[str] = []
+            # Dispatch chains in flight (a turn/command plus the follow-ups and
+            # backend work it dispatches after itself). Input arriving while a
+            # chain runs queues behind it instead of starting a second chain:
+            # two chains run turns concurrently on one session.
+            self._dispatch_chains = 0
             self._last_ctrl_c = 0.0
             self._snap_cache: Optional[tuple] = None
             self._log_handlers: list[tuple[logging.Handler, Any]] = []
@@ -1290,6 +1295,36 @@ if _TEXTUAL_AVAILABLE:
             self._refresh_chrome()
             if self.backend is not None:
                 self.backend.idle_tick()
+                self._dispatch_idle_work()
+
+        def _dispatch_idle_work(self) -> None:
+            """Run work that was queued while nothing was dispatching.
+
+            The idle tick drains background notifications (delegation results,
+            process completions) and due ``/loop`` wakeups into the backend's
+            queue. The old REPL ran that queue as soon as it was idle; without
+            this they waited for the user's next message.
+            """
+            backend = self.backend
+            if backend is None or self._busy or self._dispatch_chains or self._modal_open:
+                return
+            has_pending = getattr(backend, "has_pending_input", None)
+            backend_work = bool(has_pending()) if callable(has_pending) else False
+            if not (backend_work or self._queued_items):
+                return
+            self._start_dispatch_chain(self._after_dispatch())
+
+        def _start_dispatch_chain(self, coro: Any) -> None:
+            """Run ``coro`` as a dispatch chain, counted while it runs."""
+            self._dispatch_chains += 1
+
+            async def _chain() -> None:
+                try:
+                    await coro
+                finally:
+                    self._dispatch_chains -= 1
+
+            self.run_worker(_chain(), group="dispatch", exclusive=False)
 
         def _refresh_chrome(self) -> None:
             self._refresh_scheduled = False
@@ -1830,9 +1865,10 @@ if _TEXTUAL_AVAILABLE:
                 self._send_queued_now(send_all=True)
                 return
 
-            if self._busy:
-                # The agent is mid-turn: park the message above the prompt.
-                # /sendnow redirects the live turn onto it instead.
+            if self._busy or self._dispatch_chains:
+                # The agent is mid-turn (or between the turns of a running
+                # chain): park the message above the prompt. /sendnow
+                # redirects the live turn onto it instead.
                 if send_now and self._busy == "turn":
                     self._send_text_now(value)
                 else:
@@ -1840,7 +1876,7 @@ if _TEXTUAL_AVAILABLE:
                     self._note("queued for the next turn", muted=True)
                 self._update_status()
                 return
-            self.run_worker(self._dispatch(value), group="dispatch", exclusive=False)
+            self._start_dispatch_chain(self._dispatch(value))
 
         def _redirect_into_turn(self, payload: str) -> bool:
             """Ask the live agent to absorb ``payload`` as a user correction.
@@ -1978,11 +2014,7 @@ if _TEXTUAL_AVAILABLE:
 
             def _picked(result: Any) -> None:
                 if result:
-                    self.run_worker(
-                        self._resume_session(str(result)),
-                        group="dispatch",
-                        exclusive=False,
-                    )
+                    self._start_dispatch_chain(self._resume_session(str(result)))
 
             self._push(ChoiceModal("Resume session", rows, filterable=True), _picked)
 

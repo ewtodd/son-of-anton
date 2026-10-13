@@ -308,8 +308,8 @@ def _pool_may_recover_from_rate_limit(pool) -> bool:
 def _safe_session_filename_component(session_id: str) -> str:
     """Return a stable, path-safe filename component for a session ID.
 
-    Session IDs can originate from untrusted input (e.g. the
-    ``X-Son of Anton-Session-Id`` API header) and are otherwise interpolated raw
+    Session IDs can originate from untrusted input (e.g. ``--resume <id>`` or
+    an imported foreign session) and are otherwise interpolated raw
     into on-disk artifact filenames under ``~/.son-of-anton/sessions/``.  Without
     sanitization, a traversal-shaped ID such as ``../../../../etc/pwned``
     would let a caller write the session snapshot / request dump outside the
@@ -2919,7 +2919,7 @@ class AIAgent:
         # session-id changes land in the right file without any re-point
         # bookkeeping at the call sites.  Sanitize the session ID into a
         # single traversal-free path segment — session IDs can come from
-        # untrusted input (X-Son of Anton-Session-Id header) and must not escape
+        # untrusted input (``--resume <id>``, imported sessions) and must not escape
         # the sessions directory.
         try:
             safe_sid = _safe_session_filename_component(self.session_id)
@@ -7109,18 +7109,43 @@ class AIAgent:
                 durable_turn_lease = _durable_holder
                 self._active_session_turn_lease_holder = _durable_holder
                 self._active_session_turn_lease_ttl_seconds = _lease_ttl
+                # Another process may also have run a whole turn on this
+                # session BETWEEN this agent's turns (the gateway resuming a
+                # TUI session, a cron delivery, a mirror write) without ever
+                # overlapping, so the lease never waited. The transcript mark
+                # recorded at the end of this agent's previous turn says
+                # whether the durable transcript moved since then.
+                _transcript_moved = False
+                if callable(getattr(type(_turn_db), "transcript_moved_since", None)):
+                    try:
+                        _transcript_moved = _turn_db.transcript_moved_since(
+                            getattr(self, "_durable_transcript_mark", None),
+                            session_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not compare the session transcript mark; "
+                            "keeping the in-memory history",
+                            exc_info=True,
+                        )
                 if _lease_waited:
                     self._emit_status(
                         "Session is free; loading the latest transcript..."
                     )
+                elif _transcript_moved:
+                    self._emit_status(
+                        "This session changed in another Son of Anton process; "
+                        "loading the latest transcript..."
+                    )
 
                 # The holder may have compacted and rotated the session while
-                # this process waited. Resolve and reload only AFTER admission;
-                # a caller-provided in-memory snapshot is necessarily stale.
-                # Skip when acquisition was immediate — no other process held
-                # the lease, so the in-memory history is current and reloading
-                # would only cause an unnecessary prompt cache miss.
-                if _lease_waited:
+                # this process waited, or another process may have written to
+                # it since this agent's last turn. Resolve and reload only AFTER
+                # admission; a caller-provided in-memory snapshot is necessarily
+                # stale. Skip when acquisition was immediate and the transcript
+                # mark is unchanged — the in-memory history is current and
+                # reloading would only cause an unnecessary prompt cache miss.
+                if _lease_waited or _transcript_moved:
                     latest_session_id = _turn_db.resolve_resume_session_id(session_id)
                     if latest_session_id:
                         self.session_id = latest_session_id
@@ -7257,6 +7282,24 @@ class AIAgent:
                     # Interrupt clear is deferred to after thread join in the
                     # outer finally: a refresher firing between stop and join
                     # would otherwise set an interrupt that survives the clear.
+            # The turn returned, its rows are flushed, and the caller adopts
+            # result["messages"]: record what the durable transcript looks like
+            # now, so the next turn can tell a foreign write from its own.
+            # Taken while the turn lease is still held. A turn that raised
+            # keeps the previous mark, so the next one reloads if anything
+            # (including this turn's partial flush) reached the store.
+            if (
+                _turn_db is not None
+                and not getattr(self, "_persist_disabled", False)
+                and callable(getattr(type(_turn_db), "get_transcript_mark", None))
+            ):
+                try:
+                    self._durable_transcript_mark = _turn_db.get_transcript_mark(
+                        getattr(self, "session_id", None) or session_id
+                    )
+                except Exception:
+                    self._durable_transcript_mark = None
+                    logger.debug("Could not record the session transcript mark", exc_info=True)
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"

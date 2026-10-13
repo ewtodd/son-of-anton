@@ -13,7 +13,7 @@ See ``docs/relay-connector-contract.md`` for the formal cross-repo interface.
 Activation is driven by configuration, not a separate feature flag: the relay
 platform is registered when a connector relay URL is configured
 (``GATEWAY_RELAY_URL`` env or ``gateway.relay_url`` in config.toml). Deployments
-that don't set it are unaffected — exactly the same shape as ``gateway.proxy_url``.
+that don't set it are unaffected.
 """
 
 from __future__ import annotations
@@ -509,10 +509,10 @@ def _resolve_relay_identity_token() -> str:
     """Resolve the caller-identity bearer token the connector introspects to a tenant.
 
     Canonical resolver shared by the runtime self-provision path and the
-    ``son-of-anton gateway enroll`` CLI. Three modes, in precedence order:
+    ``son-of-anton gateway enroll`` CLI. Two modes, in precedence order:
 
-      1. **Generic OIDC client-credentials** (air-gapped / self-hosted-IdP, NO
-         Nous Portal): when ``gateway.idp.token_url`` (or
+      1. **Generic OIDC client-credentials** (air-gapped / self-hosted IdP):
+         when ``gateway.idp.token_url`` (or
          ``GATEWAY_RELAY_IDP_TOKEN_URL``) is configured together with a client
          id/secret, obtain a workload access token via the OAuth2
          ``client_credentials`` grant against the operator's own IdP (Entra;
@@ -525,9 +525,8 @@ def _resolve_relay_identity_token() -> str:
          IS the token — either a raw JWT string or a JSON envelope with an
          ``access_token`` field. No client registration involved; possession
          of the (typically loopback) endpoint is the credential.
-      2. **Nous Portal** (default): ``resolve_nous_access_token()`` — existing
-         managed/hosted behaviour.
 
+    With no ``token_url`` configured there is no identity, and it returns ``""``.
     Raises on failure; callers decide whether that's fatal (enroll CLI) or a
     graceful boot no-op (self-provision).
     """
@@ -628,10 +627,10 @@ def self_provision_relay() -> bool:
     """Boot-time relay self-provision: mint relay creds in-process, no human, no disk.
 
     Fires when relay is configured (``relay_url()`` set) and NO per-gateway secret
-    is already present, AND the agent can resolve its own Nous access token. In
-    that case the runtime resolves the agent's own Nous access token (the same
-    ``resolve_nous_access_token()`` the enroll CLI / dashboard register use),
-    POSTs ``/relay/provision`` asserting its own endpoint + route keys, and sets
+    is already present, AND ``_resolve_relay_identity_token()`` yields an
+    identity token (the operator's IdP or an ambient token endpoint — the same
+    resolver the enroll CLI uses). In that case the runtime POSTs
+    ``/relay/provision`` asserting its own endpoint + route keys, and sets
     ``GATEWAY_RELAY_ID`` / ``GATEWAY_RELAY_SECRET`` / ``GATEWAY_RELAY_DELIVERY_KEY``
     into ``os.environ`` so the subsequent ``register_relay_adapter()`` picks them
     up. The creds live ONLY in process memory — never written to ``~/.son-of-anton/.env``.
@@ -643,12 +642,12 @@ def self_provision_relay() -> bool:
     at a connector and didn't pin a secret" — which is both NAS-independent and
     self-guarding:
 
-      - A NAS-hosted agent: has ``GATEWAY_RELAY_URL``, no pinned secret, and a
-        bootstrapped NAS token -> self-provisions.
+      - A hosted agent: has ``GATEWAY_RELAY_URL``, no pinned secret, and an
+        identity token from its IdP or ambient endpoint -> self-provisions.
       - A self-hosted operator who ran ``son-of-anton gateway enroll``: has a PINNED
         ``GATEWAY_RELAY_SECRET`` -> skipped (the secret-present guard below).
-      - A self-hosted box with a relay URL but no NAS identity:
-        ``resolve_nous_access_token()`` fails -> graceful no-op.
+      - A self-hosted box with a relay URL but no IdP configured: no identity
+        token -> graceful no-op.
 
     Stateless: process-env creds don't survive a restart, so a hosted container
     re-provisions every boot; the connector's rotation window covers a still-
@@ -682,6 +681,11 @@ def self_provision_relay() -> bool:
         # No resolvable identity (e.g. a self-hosted box that hasn't enrolled and
         # configured no IdP) -> nothing to provision with; skip quietly and boot.
         logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
+        return False
+    if not access_token:
+        # No IdP / ambient endpoint configured: nothing to assert an identity
+        # with, so provisioning could only be rejected. Boot unprovisioned.
+        logger.info("relay self-provision skipped: no identity token configured")
         return False
 
     identities = relay_platform_identities()

@@ -701,6 +701,7 @@ class CLICommandsMixin:
         )
         restored = [m for m in (model_history or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
+        self._note_loaded_transcript()
         self._resume_display_history = [
             m for m in (display_history or []) if m.get("role") != "session_meta"
         ]

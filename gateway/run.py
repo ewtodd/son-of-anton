@@ -99,7 +99,6 @@ _USER_BOUNDARY_END_REASONS = (
 # transport cannot block the session-stall watcher pass (notify-only path;
 # on timeout the latch stays clear and the next tick retries).
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
-_GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
 
 _NOISY_STATUS_RE = re.compile(
@@ -5177,7 +5176,6 @@ class TurnRunner:
                     _consumer_cfg, _pause_typing_before_finalize = (
                         self._runner._build_stream_consumer_config(
                             ctx.source, _scfg, _adapter,
-                            on_missing_cursor="raise",
                         )
                     )
                     _stream_consumer = GatewayStreamConsumer(
@@ -21325,27 +21323,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     break
         if not adapter:
             return None
-        from gateway.wake import adapter_supports_push as _wake_push_ok
-        if not _wake_push_ok(adapter):
-            # Non-push adapters resolved WITH routing metadata self-post
-            # through the adapter's own delivery entry point instead.
-            from gateway.wake import deliver_wake
-            raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
-            try:
-                logger.info(
-                    "Watch pattern notification — waking non-push session "
-                    "%s via self-post",
-                    raw_sid,
-                )
-                await deliver_wake(adapter, text=synth_text, session_id=raw_sid)
-                return True
-            except Exception as e:
-                logger.warning(
-                    "Watch notification self-post wake failed for session "
-                    "%s: %s",
-                    raw_sid, e,
-                )
-                return False
+        if not getattr(adapter, "supports_async_delivery", True):
+            # A request/response adapter has no channel to push a later turn
+            # through. Async tools are told so up front (the session context's
+            # async-delivery flag) and run inline there, so an event routed
+            # here has nowhere to go.
+            logger.warning(
+                "Dropping watch notification: %s cannot deliver asynchronously",
+                platform_name,
+            )
+            return None
         try:
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
@@ -23921,44 +23908,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             ).start()
         return len(to_evict)
 
-    # ------------------------------------------------------------------
-    # Proxy mode: forward messages to a remote Son of Anton API server
-    # ------------------------------------------------------------------
-
-    def _get_proxy_url(self) -> Optional[str]:
-        """Return the proxy URL if proxy mode is configured, else None.
-
-        Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
-        then ``gateway.proxy_url`` in config.toml.
-        """
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
-        if url:
-            return url.rstrip("/")
-        cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("proxy_url")
-        url = (url or "").strip()
-        if url:
-            return url.rstrip("/")
-        return None
-
     def _build_stream_consumer_config(
         self,
         source: "SessionSource",
         scfg: Any,
         adapter: Any,
-        *,
-        on_missing_cursor: str,
     ) -> "tuple[Any, Optional[Callable[[], None]]]":
-        """Build the shared ``StreamConsumerConfig`` and the optional
-        pause-typing closure used by both agent-run paths.
+        """Build the ``StreamConsumerConfig`` and the optional pause-typing
+        closure for an agent run.
 
-        ``on_missing_cursor`` controls how platforms whose adapter sets
-        ``SUPPORTS_MESSAGE_EDITING = False`` are handled — both semantics
-        are preserved verbatim from the pre-refactor call sites:
-
-        - ``"fallback"`` (proxy path): stream anyway with an empty cursor.
-        - ``"raise"`` (in-process agent path): raise ``RuntimeError`` so
-          the caller's ``except`` skips streaming entirely.
+        Raises ``RuntimeError`` for a platform whose adapter sets
+        ``SUPPORTS_MESSAGE_EDITING = False``, so the caller's ``except``
+        skips streaming entirely.
 
         Returns ``(consumer_cfg, pause_typing_before_finalize)``.
         """
@@ -23970,12 +23931,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # without edit support, the consumer sends a partial
         # first message that can never be updated, resulting in
         # duplicate messages (partial + final).
-        # (The proxy path instead opts into a cursorless fallback
-        # via on_missing_cursor="fallback".)
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        if not _adapter_supports_edit and on_missing_cursor == "raise":
+        if not getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True):
             raise RuntimeError("skip streaming for non-editable platform")
-        _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
+        _effective_cursor = scfg.cursor
         _buffer_only = False
         # Fresh-final (fresh-message replacement of a long-lived streamed
         # preview) is a per-platform opt-in; none of the remaining platforms
@@ -23992,275 +23950,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             chat_type=getattr(source, "chat_type", "") or "",
         )
         return _consumer_cfg, _pause_typing_before_finalize
-
-    async def _run_agent_via_proxy(
-        self,
-        message: str,
-        context_prompt: str,
-        history: List[Dict[str, Any]],
-        source: "SessionSource",
-        session_id: str,
-        session_key: str = None,
-        run_generation: Optional[int] = None,
-        event_message_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Forward the message to a remote Son of Anton API server instead of
-        running a local AIAgent.
-
-        When ``GATEWAY_PROXY_URL`` (or ``gateway.proxy_url`` in config.toml)
-        is set, the gateway becomes a thin relay: it handles platform I/O
-        (encryption, threading, media) and delegates all agent work to the
-        remote server via ``POST /v1/chat/completions`` with SSE streaming.
-
-        This lets a Docker container handle E2EE while the actual
-        agent runs on the host with full access to local files, memory,
-        skills, and a unified session store.
-        """
-        try:
-            from aiohttp import ClientSession as _AioClientSession, ClientTimeout
-        except ImportError:
-            return {
-                "final_response": "Proxy mode requires aiohttp. Install with: pip install aiohttp",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-            }
-
-        proxy_url = self._get_proxy_url()
-        if not proxy_url:
-            return {
-                "final_response": "Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-            }
-
-        try:
-            from agent.secret_scope import get_secret
-
-            proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
-        except Exception:
-            proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
-
-        def _run_still_current() -> bool:
-            if run_generation is None or not session_key:
-                return True
-            return self._is_session_run_current(session_key, run_generation)
-
-        # We always include the current message.  For history, send a
-        # compact version (text-only user/assistant turns) — the remote
-        # handles tool replay and system prompts.
-        api_messages: List[Dict[str, str]] = []
-
-        if context_prompt:
-            api_messages.append({"role": "system", "content": context_prompt})
-
-        for msg in history:
-            role = msg.get("role")
-            content = msg.get("content")
-            if role in {"user", "assistant"} and content:
-                api_messages.append({"role": role, "content": content})
-
-        api_messages.append({"role": "user", "content": message})
-
-        # HTTP headers ---------------------------------------------------
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if proxy_key:
-            headers["Authorization"] = f"Bearer {proxy_key}"
-        if session_id:
-            headers["X-Son of Anton-Session-Id"] = session_id
-
-        body = {
-            "model": "son-of-anton",
-            "messages": api_messages,
-            "stream": True,
-        }
-
-        # Set up platform streaming if available -------------------------
-        _stream_consumer = None
-        _scfg = getattr(getattr(self, "config", None), "streaming", None)
-        if _scfg is None:
-            from gateway.config import StreamingConfig
-            _scfg = StreamingConfig()
-
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
-        from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(
-            user_config, platform_key, "streaming"
-        )
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
-        )
-
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
-
-        if _streaming_enabled:
-            try:
-                from gateway.stream_consumer import GatewayStreamConsumer
-                _adapter = self._adapter_for_source(source)
-                if _adapter:
-                    _consumer_cfg, _pause_typing_before_finalize = (
-                        self._build_stream_consumer_config(
-                            source, _scfg, _adapter,
-                            on_missing_cursor="fallback",
-                        )
-                    )
-                    _stream_consumer = GatewayStreamConsumer(
-                        adapter=_adapter,
-                        chat_id=source.chat_id,
-                        config=_consumer_cfg,
-                        metadata=_thread_metadata,
-                        on_before_finalize=_pause_typing_before_finalize,
-                        initial_reply_to_id=event_message_id,
-                        run_still_current=_run_still_current,
-                    )
-            except Exception as _sc_err:
-                logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
-
-        # Run the stream consumer task in the background
-        stream_task = None
-        if _stream_consumer:
-            stream_task = asyncio.create_task(_stream_consumer.run())
-
-        # Send typing indicator
-        _adapter = self._adapter_for_source(source)
-        if _adapter:
-            try:
-                await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
-            except Exception:
-                pass
-
-        # Make the HTTP request with SSE streaming -----------------------
-        full_response = ""
-        _start = time.time()
-
-        try:
-            _timeout = ClientTimeout(total=0, sock_read=1800)
-            async with _AioClientSession(timeout=_timeout) as session:
-                async with session.post(
-                    f"{proxy_url}/v1/chat/completions",
-                    json=body,
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        logger.warning(
-                            "Proxy error (%d) from %s: %s",
-                            resp.status, proxy_url, error_text[:500],
-                        )
-                        return {
-                            "final_response": f"Proxy error ({resp.status}): {error_text[:300]}",
-                            "messages": [],
-                            "api_calls": 0,
-                            "tools": [],
-                        }
-
-                    # Parse SSE stream
-                    buffer = ""
-                    async for chunk in resp.content.iter_any():
-                        if not _run_still_current():
-                            logger.info(
-                                "Discarding stale proxy stream for %s — generation %d is no longer current",
-                                session_key or "?",
-                                run_generation or 0,
-                            )
-                            return {
-                                "final_response": "",
-                                "messages": [],
-                                "api_calls": 0,
-                                "tools": [],
-                                "history_offset": len(history),
-                                "session_id": session_id,
-                                "response_previewed": False,
-                            }
-                        text = chunk.decode("utf-8", errors="replace")
-                        buffer += text
-
-                        # Process complete SSE lines
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith("data: "):
-                                data = line[6:]
-                                if data.strip() == "[DONE]":
-                                    break
-                                try:
-                                    obj = json.loads(data)
-                                    choices = obj.get("choices", [])
-                                    if choices:
-                                        delta = choices[0].get("delta", {})
-                                        content = delta.get("content", "")
-                                        if content:
-                                            full_response += content
-                                            if _stream_consumer:
-                                                _stream_consumer.on_delta(content)
-                                except json.JSONDecodeError:
-                                    pass
-                        if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
-                            raise ValueError(
-                                "Proxy SSE stream exceeded max buffer size without a line boundary"
-                            )
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error("Proxy connection error to %s: %s", proxy_url, e)
-            if not full_response:
-                return {
-                    "final_response": f"Proxy connection error: {e}",
-                    "messages": [],
-                    "api_calls": 0,
-                    "tools": [],
-                }
-            # Partial response — return what we got
-        finally:
-            # Finalize stream consumer
-            if _stream_consumer:
-                _stream_consumer.finish()
-            if stream_task:
-                try:
-                    await asyncio.wait_for(stream_task, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    stream_task.cancel()
-
-        _elapsed = time.time() - _start
-        if not _run_still_current():
-            logger.info(
-                "Discarding stale proxy result for %s — generation %d is no longer current",
-                session_key or "?",
-                run_generation or 0,
-            )
-            return {
-                "final_response": "",
-                "messages": [],
-                "api_calls": 0,
-                "tools": [],
-                "history_offset": len(history),
-                "session_id": session_id,
-                "response_previewed": False,
-            }
-        logger.info(
-            "proxy response: url=%s session=%s time=%.1fs response=%d chars",
-            proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
-        )
-
-        return {
-            "final_response": full_response or "(No response from remote agent)",
-            "messages": [
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": full_response},
-            ],
-            "api_calls": 1,
-            "tools": [],
-            "history_offset": len(history),
-            "session_id": session_id,
-            "response_previewed": _stream_consumer is not None and bool(full_response),
-        }
 
     # ------------------------------------------------------------------
 
@@ -24293,19 +23982,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
-        # ---- Proxy mode: delegate to remote API server ----
-        if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
-                message=message,
-                context_prompt=context_prompt,
-                history=history,
-                source=source,
-                session_id=session_id,
-                session_key=session_key,
-                run_generation=run_generation,
-                event_message_id=event_message_id,
-            )
-
         from run_agent import AIAgent
         import queue
 

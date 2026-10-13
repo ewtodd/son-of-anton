@@ -38,7 +38,12 @@ All of the following is merged to `main` and deployed on e-desktop:
 - **Sessions.** Rows record cwd + git root/branch. Bare `-c` resumes the
   current workspace only — no breadcrumb, no global fallback. Bare
   `son-of-anton "prompt"` routes to `chat -q`. `sessions list --json --here`
-  is the relay's session picker.
+  is the relay's session picker. One session can be driven from two surfaces
+  (the TUI and Signal on a `single_user` instance): the agent records
+  `SessionDB.get_transcript_mark()` after each turn (the CLI also at each
+  load), and when another process wrote to the session in between, the next
+  turn reloads the transcript instead of running on stale in-memory history.
+  No foreign write means no reload, so the prompt cache is untouched.
 - **Journal.** Persisted rows are mirrored to `journals/<session>.jsonl` with
   the reasoning and tool detail the transcript clips. Never read back
   directly (RAG embeds it); deleted when the user deletes its session, kept
@@ -99,11 +104,30 @@ All of the following is merged to `main` and deployed on e-desktop:
 
 Ordered by importance. Each item is independently scoped.
 
-1. **Delegation and sub-agents are broken.** `delegate_task` does not
-   reliably run or return usable results (reported 2026-10-08; not yet
-   root-caused). Debug the dispatch/execution path end to end before building
-   anything on top of it. The physics sub-agent round-cap failure (item 10)
-   is a separate, diagnosed instance of sub-agents coming back empty.
+1. **Delegation and sub-agents are broken.** _Resolved._ Root-caused from the
+   2026-10-07 logs and fixed end to end (E2E against `unholy/dsv4-flash`):
+   - A child whose API calls all failed was reported `completed` /
+     `max_iterations` / `truncated` with the error text as its summary. One
+     mapping (`_classify_child_result`) now makes `failed`/`partial` turns
+     `failed` with the error in `error`, on every sync/batch/async path.
+   - The output-schema retry ran with no history (the child redid the whole
+     task from "your previous response was rejected"), also after failed turns,
+     and outside the subagent harness. It now continues the child's own
+     transcript, only after a turn that produced an answer, through the same
+     worker/approval/timeout harness as the first turn (`_run_child_turn`).
+   - Background results were acknowledged in state.db when queued in memory,
+     and since the Textual port only the user's next message drained that
+     queue — results waited hours, and one refused by a lease-abort turn was
+     lost. Delivery is acknowledged only once a turn took the result (refused
+     turns re-queue it; leftovers are released at shutdown), and the TUI's idle
+     tick runs queued backend work (which also restores `/loop` wakeups).
+   - Left as is, deliberately: the reasoning-model stale floor (e.g. `qwen3`
+     → 180s) still applies to local endpoints, so a slow local reasoning model
+     as the delegation model needs `stale_timeout_seconds` on its provider;
+     the default `unholy/dsv4-flash` matches no floor. An interrupt from the
+     previous turn can still abort the next turn's lease wait (results now
+     survive it). Tests in `tests/test_delegation_outcomes.py` and
+     `tests/test_delegation_delivery.py`.
 2. **Live-validate the relay round trip.** The code is complete and
    unit-tested, but no real Signal coding request has gone through the whole
    path: skill → background coder → dangerous command → watcher prompt in the
@@ -137,10 +161,11 @@ Ordered by importance. Each item is independently scoped.
    the README ("Cron") and covered by `tests/test_cron_model_drift_guard.py`;
    this instance has it off (local models, no spend), so unpinned jobs track the
    live default.
-8. **Deep-Nous prose residue.** The gateway relay's enroll docstring still
-   names `resolve_nous_access_token()` (never called;
-   `gateway/relay/__init__.py:528/633/651`). Cosmetic. (The old `doctor.py`
-   probe is gone — the file was deleted in `bebf5cd6`.)
+8. **Deep-Nous prose residue.** _Resolved._ The relay identity-token and
+   self-provision docstrings describe the two remaining modes (operator IdP,
+   ambient endpoint), and self-provision skips cleanly when neither is
+   configured instead of posting an empty token. The gateway's proxy mode
+   (`GATEWAY_PROXY_URL`, a forwarder to the deleted api_server) is removed.
 9. **TUI gaps from the REPL.** _Resolved._ The Textual TUI carries `/image`
    and `/paste` attachments plus `/agents`
    (`son_of_anton_cli/commands.py`, `cli_commands_mixin.py`).
@@ -161,16 +186,18 @@ Ordered by importance. Each item is independently scoped.
     round cap stays at 6. Secondary run issues from that run, still open:
     0 durable output across 2 iterations (no RESULTS.txt / features / calib),
     critic is ~298s per iteration, `df_cache` capped at 50k events vs
-    1.8M–13.4M real, waveform polarity (+1 vs −1) never settled by an
-    artifact, and pure files carry two `Data_R` trees while `load_tree_data`
-    reads only the first.
+    1.8M–13.4M real, and waveform polarity (+1 vs −1) never settled by an
+    artifact. (The "two `Data_R` trees" in each YAP file are ROOT AutoSave
+    cycles of one tree — e.g. `DataR_Am241.root` holds `Data_R;18` with
+    1,830,886 entries and the older snapshot `;17` with 1,759,126 — so reading
+    the newest cycle is correct, not a bug.)
 
 ## Operational notes
 
 - Repo `git@github.com:ewtodd/son-of-anton.git`, branch `main`. Sole
   authorship, no `Co-authored-by` trailers; the bot commit identity is in the
   repo git config.
-- Tests: `nix develop -c scripts/run_tests.sh` (742 tests, 68 files, ~35s).
+- Tests: `nix develop -c scripts/run_tests.sh` (1005 tests, 87 files, ~50s).
   Pre-commit (`nix develop -c pre-commit install`) runs ruff plus that suite.
 - Deployment: `/etc/nixos` host `e-desktop`, flake input `son-of-anton`
   following `main`; bump the input and reactivate. Bifrost on oracle fronts

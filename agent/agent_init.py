@@ -1263,6 +1263,10 @@ def init_agent(
     # the race before the agent's normal early turn flush.
     agent._pending_cli_user_message = None
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+    # SessionDB.get_transcript_mark() as of this agent's last turn (or the
+    # caller's last load); a different mark at the next turn means another
+    # process wrote to the session in between and the history is reloaded.
+    agent._durable_transcript_mark = None
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().
     # Some temporary helper agents (manual compaction / session-hygiene /

@@ -786,6 +786,60 @@ def _looks_like_error_output(content: Any) -> bool:
     )
 
 
+def _child_turn_failed(result: Dict[str, Any]) -> bool:
+    """True when a child turn ended without producing its own answer.
+
+    ``run_conversation`` marks those turns ``failed`` (API retries exhausted,
+    invalid responses, context walls), ``partial`` (aborted mid-response) or
+    ``interrupted``; their ``final_response`` is the loop's error/guidance
+    text, not the child's work.
+    """
+    return bool(
+        result.get("failed") or result.get("partial") or result.get("interrupted")
+    )
+
+
+_NO_RESPONSE_ERROR = "Subagent did not produce a response."
+
+
+def _classify_child_result(
+    result: Dict[str, Any],
+) -> tuple[str, str, str, Optional[str]]:
+    """Map a child's ``run_conversation`` result to the delegation outcome.
+
+    Returns ``(status, exit_reason, summary, error)``:
+
+    - ``interrupted`` turns stay ``interrupted`` (stop/steer/cancel).
+    - ``failed``/``partial`` turns are ``failed`` with ``exit_reason='failed'``
+      and the loop's error text as ``error``. Their ``final_response`` is
+      that error text, so it is never passed off as the child's summary — a
+      ``partial`` turn keeps its truncated output only when it differs from
+      the error.
+    - Otherwise a non-empty answer is ``completed``; ``exit_reason`` says
+      whether the child finished (``completed``) or ran out of iterations
+      (``max_iterations`` — summarised but truncated).
+    - The literal ``(empty)`` sentinel (empty-response retries exhausted) and
+      an empty answer are ``failed``.
+    """
+    final = result.get("final_response") or ""
+    if not isinstance(final, str):
+        final = str(final)
+    reported_error = result.get("error")
+    if result.get("interrupted"):
+        return "interrupted", "interrupted", final, None
+    if result.get("failed") or result.get("partial"):
+        if result.get("failed"):
+            error = final.strip() or str(reported_error or "") or _NO_RESPONSE_ERROR
+            return "failed", "failed", "", error
+        error = str(reported_error or "") or final.strip() or _NO_RESPONSE_ERROR
+        summary = final if final.strip() and final.strip() != error.strip() else ""
+        return "failed", "failed", summary, error
+    exit_reason = "completed" if result.get("completed", False) else "max_iterations"
+    if final and final.strip() != "(empty)":
+        return "completed", exit_reason, final, None
+    return "failed", exit_reason, final, str(reported_error or "") or _NO_RESPONSE_ERROR
+
+
 def _normalize_role(r: Optional[str]) -> str:
     """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
 
@@ -2679,15 +2733,6 @@ def _run_single_child(
         # below; a stdlib non-daemon worker would then block interpreter
         # exit at atexit-join time if the child never unwinds.
         from tools.daemon_pool import DaemonThreadPoolExecutor
-        _timeout_executor = DaemonThreadPoolExecutor(
-            max_workers=1,
-            # Install a non-interactive approval callback in the worker thread
-            # so dangerous-command prompts from the subagent don't fall back to
-            # input() and deadlock the parent's prompt_toolkit TUI.
-            # Callback (deny vs approve) is governed by delegation.subagent_auto_approve.
-            initializer=_set_subagent_approval_cb,
-            initargs=(_get_subagent_approval_callback(),),
-        )
         # Capture the worker thread so the timeout diagnostic can dump its
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
@@ -2703,24 +2748,51 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Child text relay failed: %s", e)
 
-        def _run_with_thread_capture():
-            _worker_thread_holder["t"] = threading.current_thread()
-            from agent.delegation_context import delegated_child_context
+        def _run_child_turn(
+            user_message: str,
+            conversation_history: Optional[List[Dict[str, Any]]] = None,
+        ) -> Dict[str, Any]:
+            """Run ONE child turn under the full subagent harness.
 
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=goal,
-                    task_id=child_task_id,
-                    stream_callback=_relay_child_text,
-                )
+            Every child turn — the task itself and any follow-up turn such as
+            the output-schema retry — must run on a fresh daemon worker with
+            the subagent approval callback installed (so dangerous-command
+            prompts never fall back to the parent's interactive approval or
+            input()), inside ``delegated_child_context`` (inline API calls,
+            #60203), and under the same optional hard timeout.
+            """
+            executor = DaemonThreadPoolExecutor(
+                max_workers=1,
+                # Callback (deny vs approve) is governed by
+                # delegation.subagent_auto_approve.
+                initializer=_set_subagent_approval_cb,
+                initargs=(_get_subagent_approval_callback(),),
+            )
 
-        _child_context = contextvars.copy_context()
-        _child_future = _timeout_executor.submit(
-            _child_context.run,
-            _run_with_thread_capture,
-        )
+            def _run_with_thread_capture():
+                _worker_thread_holder["t"] = threading.current_thread()
+                from agent.delegation_context import delegated_child_context
+
+                with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                    return child.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=child_task_id,
+                        stream_callback=_relay_child_text,
+                    )
+
+            future = executor.submit(
+                contextvars.copy_context().run, _run_with_thread_capture
+            )
+            try:
+                return future.result(timeout=child_timeout)
+            finally:
+                # Shut down executor without waiting — if the child thread
+                # is stuck on blocking I/O, wait=True would hang forever.
+                executor.shutdown(wait=False)
+
         try:
-            result = _child_future.result(timeout=child_timeout)
+            result = _run_child_turn(goal)
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
@@ -2837,10 +2909,6 @@ def _run_single_child(
                 )
             _attach_worktree(_error_entry)
             return _error_entry
-        finally:
-            # Shut down executor without waiting — if the child thread
-            # is stuck on blocking I/O, wait=True would hang forever.
-            _timeout_executor.shutdown(wait=False)
 
         # T1-24: structured-output contract validation + ONE bounded retry.
         # Runs only when a schema was attached at dispatch; schema-less
@@ -2865,18 +2933,26 @@ def _run_single_child(
             if (
                 not _schema_valid
                 and _first_text.strip()
-                and not result.get("interrupted", False)
+                and not _child_turn_failed(result)
             ):
                 # Exactly one retry turn, carrying the validation errors
-                # verbatim (no schema re-paste — the child already holds
-                # the contract in its context).
+                # verbatim (no schema re-paste: the contract is in the
+                # child's system prompt). The retry continues the child's own
+                # conversation — without that history it sees only "your
+                # previous response was rejected" and redoes the whole task.
+                # A turn that failed/was interrupted has no answer to correct,
+                # so it is never retried (its final_response is error text).
                 _schema_retries = 1
                 _retry_result = None
+                _prior_messages = result.get("messages")
                 try:
-                    _retry_result = child.run_conversation(
-                        user_message=build_retry_message(_schema_errors),
-                        task_id=child_task_id,
-                        stream_callback=_relay_child_text,
+                    _retry_result = _run_child_turn(
+                        build_retry_message(_schema_errors),
+                        conversation_history=(
+                            _prior_messages
+                            if isinstance(_prior_messages, list)
+                            else None
+                        ),
                     )
                 except Exception as _retry_exc:
                     logger.warning(
@@ -2884,24 +2960,35 @@ def _run_single_child(
                         task_index,
                         _retry_exc,
                     )
+                    # A timed-out retry must not keep running unobserved.
+                    try:
+                        request_hard_interrupt(child)
+                    except Exception:
+                        pass
                 if isinstance(_retry_result, dict):
-                    _retry_text = _retry_result.get("final_response") or ""
-                    if _retry_text.strip():
-                        result["final_response"] = _retry_text
                     try:
                         result["api_calls"] = int(
                             result.get("api_calls", 0) or 0
                         ) + int(_retry_result.get("api_calls", 0) or 0)
                     except (TypeError, ValueError):
                         pass
+                    # run_conversation returns the full transcript (history
+                    # + this turn), so it replaces — never extends — the
+                    # first turn's messages.
                     _retry_messages = _retry_result.get("messages")
-                    if isinstance(_retry_messages, list) and isinstance(
-                        result.get("messages"), list
-                    ):
-                        result["messages"] = result["messages"] + _retry_messages
-                    _schema_valid, _schema_errors = validate_output(
-                        _retry_text, _output_schema
-                    )
+                    if isinstance(_retry_messages, list):
+                        result["messages"] = _retry_messages
+                    if _retry_result.get("interrupted"):
+                        # Stopped during the retry: report the interruption,
+                        # keep the first (schema-invalid) answer as output.
+                        result["interrupted"] = True
+                    elif not _child_turn_failed(_retry_result):
+                        _retry_text = _retry_result.get("final_response") or ""
+                        if _retry_text.strip():
+                            result["final_response"] = _retry_text
+                            _schema_valid, _schema_errors = validate_output(
+                                _retry_text, _output_schema
+                            )
 
         # Linearization boundary for registry steering. From this point on the
         # child cannot consume another steer. Closing under the registry lock
@@ -2927,27 +3014,10 @@ def _run_single_child(
 
         duration = round(time.monotonic() - child_start, 2)
 
-        summary = result.get("final_response") or ""
-        completed = result.get("completed", False)
-        interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
-
-        # The child emits the literal "(empty)" sentinel (see run_agent.py) when
-        # it gives up after repeated empty-LLM-response retries — typically a
-        # transport bug (misrouted provider, adapter returning empty
-        # ChatCompletion, etc.). Treat it as a failure so the parent surfaces
-        # it instead of silently accepting zero-content "success".
-        _empty_sentinel = summary.strip() == "(empty)"
-
-        if interrupted:
-            status = "interrupted"
-        elif summary and not _empty_sentinel:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
-            status = "completed"
-        else:
-            status = "failed"
+        status, exit_reason, summary, _failure_error = _classify_child_result(
+            result
+        )
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
@@ -2986,14 +3056,6 @@ def _run_single_child(
                     elif tool_trace:
                         # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
-
-        # Determine exit reason
-        if interrupted:
-            exit_reason = "interrupted"
-        elif completed:
-            exit_reason = "completed"
-        else:
-            exit_reason = "max_iterations"
 
         # Extract token counts (safe for mock objects)
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
@@ -3054,7 +3116,7 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            entry["error"] = _failure_error
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.
@@ -3718,17 +3780,6 @@ def delegate_task(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
 
-    # Capture the ORIGINATING session's wake target BEFORE any child agent is
-    # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
-    # set_current_session_id(child.session_id), which clobbers the
-    # SON_OF_ANTON_SESSION_ID ContextVar and os.environ with the subagent's internal
-    # id before the background-dispatch code below would read it. The
-    # request-scoped chat_id binding (the raw X-Son of Anton-Session-Id on
-    # api_server) is untouched by child construction, so read it here and
-    # thread it through the dispatch.
-    from tools.async_delegation import _current_origin_session_id
-
-    _origin_wake_sid = _current_origin_session_id()
     try:
         from gateway.session_context import get_session_env
 
@@ -4020,29 +4071,6 @@ def delegate_task(
         except Exception:
             _async_ok = True
 
-        _wake_sid = ""
-        if not _async_ok:
-            # The adapter itself cannot push, but if a raw session id is
-            # bound (the API server always binds one — see
-            # ApiServerAdapter._bind_api_server_session), gateway.wake can
-            # still reach the session by self-POSTing /v1/chat/completions
-            # with that id in X-Son of Anton-Session-Id once the batch completes.
-            # Only fall back to forced-sync execution when there is truly no
-            # session id to wake. Uses the origin captured before child
-            # construction (see _origin_wake_sid above) — reading
-            # SON_OF_ANTON_SESSION_ID here would return the subagent's internal id.
-            _wake_sid = _origin_wake_sid
-            if _wake_sid:
-                logger.info(
-                    "delegate_task: async delivery unsupported on this "
-                    "session, but a session id is bound (%s) — dispatching "
-                    "in the background and waking the session via self-post "
-                    "when it completes instead of forcing synchronous "
-                    "execution.",
-                    _wake_sid,
-                )
-                _async_ok = True
-
         if not _async_ok:
             logger.info(
                 "delegate_task: async delivery unsupported on this session "
@@ -4171,7 +4199,6 @@ def delegate_task(
             model=creds["model"],
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
-            origin_session_id=_wake_sid,
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
