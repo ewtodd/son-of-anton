@@ -56,7 +56,7 @@ try:
     )
     from textual.widgets.option_list import Option
 
-    from son_of_anton_tui.feed import FeedStyle, VirtualFeed
+    from son_of_anton_tui.feed import NOTE_INDENT, FeedStyle, VirtualFeed
 
     _TEXTUAL_AVAILABLE = True
 except Exception:  # pragma: no cover - import-time guard
@@ -961,7 +961,7 @@ if _TEXTUAL_AVAILABLE:
             self._stderr_buf = ""
             self._redirect_log_handlers()
             if self.backend is not None:
-                self.backend.attach(_AppSink(self), feed_width=self._feed_inner_width())
+                self.backend.attach(_AppSink(self), feed_width=self._feed_inner_width() - NOTE_INDENT)
                 self._render_resumed_history()
             self.set_interval(0.12, self._tick_spinner)
             self.set_interval(1.0, self._tick_chrome)
@@ -984,14 +984,14 @@ if _TEXTUAL_AVAILABLE:
 
         def on_resize(self, event: Any) -> None:
             self._apply_sidebar(event.size.width)
-            # The feed adopts its real width from its own resize (which fires
-            # after layout); this callback only refreshes the backend console
-            # width the classic CLI output wraps to.
-            self.call_after_refresh(self._on_resized)
 
-        def _on_resized(self) -> None:
+        @on(VirtualFeed.Resized)
+        def _feed_resized(self, event: VirtualFeed.Resized) -> None:
+            # The backend console wraps the classic CLI output that lands in
+            # indented note blocks. Measuring here, not from the app's resize:
+            # that fires before layout, so the backend lagged one resize behind.
             if self.backend is not None:
-                self.backend.set_feed_width(self._feed_inner_width())
+                self.backend.set_feed_width(event.width - NOTE_INDENT)
 
         def _wide(self, width: Optional[int] = None) -> bool:
             return (self.size.width if width is None else width) > SIDEBAR_THRESHOLD
@@ -2269,7 +2269,6 @@ if _TEXTUAL_AVAILABLE:
         def action_toggle_sidebar(self) -> None:
             self._sidebar_forced = not self._sidebar_visible()
             self._apply_sidebar(self.size.width)
-            self.call_after_refresh(self._on_resized)
             self._update_context()
 
         def action_feed_page_up(self) -> None:

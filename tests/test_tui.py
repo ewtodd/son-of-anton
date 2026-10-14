@@ -1515,6 +1515,62 @@ def test_wordmark_never_outgrows_its_column_across_resizes() -> None:
     asyncio.run(run())
 
 
+def test_transcript_rows_fit_the_feed_across_resizes(backend) -> None:
+    """No transcript row is wider than the feed, and CLI output never re-wraps.
+
+    Indented blocks (paragraphs, headings, notes, reasoning) wrapped at the
+    full feed width and were indented afterwards, so every full line ran past
+    the viewport and lost its last few characters to the crop. The backend
+    console the classic CLI output wraps to was sized from the app's resize,
+    which fires before layout, so it trailed one resize behind.
+    """
+    _textual()
+    from rich.text import Text
+
+    b, _rec = backend
+    b.detach()
+    words = "the sanitizer catches the invalid access and the process segfaults " * 4
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(0.3)
+            feed = app.query_one("#feed")
+            feed.add_user(words)
+            feed.add_markdown(f"# {words}\n\n{words}\n\n- {words}\n\n> {words}\n")
+            feed.add_note(Text(words))
+            feed.add_rich(Text(words))
+            feed.open_reasoning().append(words)
+            feed.flush()
+
+            for width in (120, 70, 160, 50, 100):
+                await pilot.resize_terminal(width, 30)
+                await pilot.pause(0.3)
+                for block in feed._blocks:
+                    for strip in block.lines:
+                        assert strip.cell_length <= feed._width, (
+                            f"{block.kind} row is {strip.cell_length} cells in a "
+                            f"{feed._width}-cell feed at term width {width}"
+                        )
+
+                # A console line already wrapped by the backend must land as
+                # exactly one indented row: no crop, no second wrap.
+                feed.reset_note()
+                before = len(feed._blocks)
+                b.console.print(f"width {width}: {words}")
+                await pilot.pause(0.3)
+                feed.flush()
+                printed = [blk for blk in feed._blocks[before:] if blk.kind == "note"]
+                assert printed, "console output never reached the feed"
+                rows = [strip for blk in printed for strip in blk.lines]
+                assert all(strip.cell_length <= feed._width for strip in rows)
+                assert len(rows) == sum(len(blk.texts) for blk in printed), (
+                    f"console lines re-wrapped in the feed at term width {width}"
+                )
+
+    asyncio.run(run())
+
+
 def test_blocks_are_separated_the_way_opencode_separates_them() -> None:
     """A row after a block gets a blank line; consecutive tool rows stay tight."""
     _textual()

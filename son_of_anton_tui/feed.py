@@ -54,6 +54,9 @@ TOOL_ICON_WIDTH = 2
 # Consecutive ANSI lines merge into one note block; the cap keeps a flood of
 # output re-rendering a bounded block.
 _NOTE_MERGE_MAX_LINES = 100
+# Notes and chrome sit this many columns in from the feed's edge, so text
+# printed for them must wrap this much narrower than the feed.
+NOTE_INDENT = 3
 
 
 def _to_strips(renderable: Any, width: int) -> list[Strip]:
@@ -156,8 +159,13 @@ def _render_inline_children(children: list, styles: FeedStyle, base: str = "") -
     return text
 
 
-def _block_strips(body: Text, width: int, pad: int) -> list[Strip]:
-    return _pad(_to_strips(body, width), pad)
+def _block_strips(body: Any, width: int, pad: int) -> list[Strip]:
+    """Wrap ``body`` to fit beside a ``pad``-column indent, then indent it.
+
+    The indent is part of the row: wrapping at the full width and indenting
+    afterwards pushed every full line past the viewport, where it was cropped.
+    """
+    return _pad(_to_strips(body, max(1, width - pad)), pad)
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +299,7 @@ class _StaticBlock(_Block):
 
     __slots__ = ("renderable", "style_str", "pad")
 
-    def __init__(self, kind: str, renderable: Any, style_str: str = "", pad: int = 3) -> None:
+    def __init__(self, kind: str, renderable: Any, style_str: str = "", pad: int = NOTE_INDENT) -> None:
         super().__init__(kind)
         self.renderable = renderable
         self.style_str = style_str
@@ -302,7 +310,7 @@ class _StaticBlock(_Block):
         if self.style_str and isinstance(renderable, Text):
             renderable = renderable.copy()
             renderable.stylize(self.style_str)
-        self.lines = _pad(_to_strips(renderable, width), self.pad)
+        self.lines = _block_strips(renderable, width, self.pad)
         self.height = len(self.lines)
         self.dirty = False
 
@@ -398,8 +406,8 @@ class _NoteBlock(_Block):
     def render(self, width: int, styles: FeedStyle) -> None:
         out: list[Strip] = []
         for line in self.texts:
-            out.extend(_to_strips(line, width))
-        self.lines = _pad(out, 3)
+            out.extend(_block_strips(line, width, NOTE_INDENT))
+        self.lines = out
         self.height = len(self.lines)
         self.dirty = False
 
@@ -487,13 +495,11 @@ class _ReasoningBlock(_Block):
         if self.collapsed:
             count = self._line_count()
             label = f"▶ reasoning · {count} line{'s' if count != 1 else ''}"
-            self.lines = _pad(_to_strips(Text(label, style=styles.secondary), width), 3)
+            self.lines = _block_strips(Text(label, style=styles.secondary), width, 3)
         else:
-            lines = _pad(_to_strips(Text("▼ reasoning", style=styles.secondary), width), 3)
+            lines = _block_strips(Text("▼ reasoning", style=styles.secondary), width, 3)
             if self.buffer.strip():
-                lines += _pad(
-                    _to_strips(Text(self.buffer.strip(), style=styles.secondary), width), 5
-                )
+                lines += _block_strips(Text(self.buffer.strip(), style=styles.secondary), width, 5)
             self.lines = lines
         self.height = len(self.lines)
         self.dirty = False
@@ -585,6 +591,13 @@ class VirtualFeed(ScrollView):
         def __init__(self, text: str) -> None:
             super().__init__()
             self.text = text
+
+    class Resized(Message):
+        """The feed adopted a new content width, measured after layout."""
+
+        def __init__(self, width: int) -> None:
+            super().__init__()
+            self.width = width
 
     # Kinds whose end earns a blank line before the next block (opencode's
     # alwaysSeparate set).
@@ -707,6 +720,7 @@ class VirtualFeed(ScrollView):
             block.render(width, self._styles)
         self._sync(0)
         self.refresh()
+        self.post_message(self.Resized(width))
 
     # ---------------- chrome ----------------
 
