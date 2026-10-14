@@ -24,6 +24,7 @@
   # linux-only deps
   wl-clipboard,
   xclip,
+  libnotify,
 
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
@@ -116,6 +117,8 @@ let
     bubblewrap
     wl-clipboard
     xclip
+    # notify-send: an unanswered clarify question nudges the user.
+    libnotify
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;

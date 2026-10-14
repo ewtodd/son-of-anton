@@ -26,12 +26,19 @@ MAX_CHOICES = 4
 MAX_QUESTIONS = 5
 
 # Canonical timeout sentinel returned to the agent when the user never
-# answers. The CLI has always returned this exact text; the batch fallback
-# loop also recognises it (alongside ``None``) as "the user walked away",
-# which aborts the remaining questions instead of pestering one by one.
+# answers, on every surface (CLI/TUI and gateway). The batch fallback loop
+# also recognises it (alongside ``None``) as "the user walked away", which
+# aborts the remaining questions instead of pestering one by one.
+#
+# It tells the agent to stop, not to decide: the user asked to be asked, and
+# an agent that "used its best judgement and proceeded" had already acted by
+# the time they came back to answer. The opening words are what the
+# compactor matches to keep this from being quoted as a user answer.
 TIMEOUT_RESPONSE = (
-    "The user did not provide a response within the time limit. "
-    "Use your best judgement to make the choice and proceed."
+    "The user did not provide a response within the time limit; they have "
+    "not answered yet. Do not choose for them and do not continue the task: "
+    "end your turn now, restating the question briefly, and wait for their "
+    "reply in their next message."
 )
 
 # Suffix appended to the first choice so the user can see, at a glance, which
@@ -273,6 +280,7 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool) -> str
     result: Dict[str, object] = {"responses": responses}
     if timed_out:
         result["timed_out"] = True
+        result["note"] = TIMEOUT_RESPONSE
     return json.dumps(result, ensure_ascii=False)
 
 

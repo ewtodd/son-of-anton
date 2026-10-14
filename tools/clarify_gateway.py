@@ -32,6 +32,7 @@ Two delivery paths from the adapter:
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -515,42 +516,69 @@ def resolve_clarify_timeout(config: dict) -> int:
 
     1. legacy top-level ``clarify.timeout`` if a user explicitly set it,
     2. else the canonical ``agent.clarify_timeout``,
-    3. else 3600 (1 hour).
+    3. else 0 — no timeout.
 
-    ``<= 0`` is preserved verbatim and means *unlimited* to callers (never
-    auto-skip while the user is still deciding); the waiting loops translate
-    that into a null deadline.  A non-numeric value falls back to 3600.
+    ``<= 0`` is preserved verbatim and means *unlimited* to callers: the agent
+    does nothing until the user answers, and the waiting loops translate it
+    into a null deadline.  A non-numeric value falls back to unlimited too.
     """
     raw = (config.get("clarify") or {}).get("timeout")
     if raw is None:
-        raw = (config.get("agent") or {}).get("clarify_timeout", 3600)
+        raw = (config.get("agent") or {}).get("clarify_timeout", 0)
     try:
         return int(raw)
     except (TypeError, ValueError):
-        return 3600
+        return 0
+
+
+def resolve_clarify_notify_after(config: dict) -> int:
+    """Seconds an unanswered clarify waits before a desktop nudge (<= 0: never)."""
+    raw = (config.get("agent") or {}).get("clarify_notify_after", 120)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 120
+
+
+def notify_unanswered(question: str) -> None:
+    """Nudge the user with a desktop notification that a question is waiting.
+
+    Best effort: with no ``notify-send`` or no notification daemon the agent
+    simply keeps waiting, which is the contract either way.
+    """
+    body = " ".join(str(question).split())
+    if len(body) > 200:
+        body = body[:199] + "…"
+    try:
+        subprocess.run(
+            ["notify-send", "--app-name=Son of Anton", "Son of Anton is waiting for your answer", body],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("clarify: desktop notification failed", exc_info=True)
 
 
 def get_clarify_timeout() -> int:
     """Read the clarify response timeout (seconds) from config.
 
-    Defaults to 3600 (1 hour) — long enough that a user who steps away
-    (meeting, AFK, slow to read) still finds a live entry when they tap
-    the button, short enough that a genuinely abandoned prompt eventually
-    unblocks the agent thread instead of pinning the running-agent guard
-    forever.  The old 600s default evicted the entry mid-think, so a late
-    tap landed on a dead entry and the agent hung on ``running: clarify``
-    (#32762).
+    Defaults to 0 — no timeout: the agent never acts on a question the user
+    has not answered (it used to "use its best judgement and proceed" after a
+    deadline, and had already acted by the time they replied). A pending
+    question can still be ended by the user (/stop, /new).
 
     Reads ``agent.clarify_timeout`` from config.toml (see
-    :func:`resolve_clarify_timeout` for the full resolution order).  Set to
-    ``0`` (or negative) for an unlimited wait — never auto-skip while the user
-    is still deciding.
+    :func:`resolve_clarify_timeout` for the full resolution order); a
+    positive value opts back into a deadline, after which the agent is told
+    to end its turn and wait for the user's next message.
     """
     try:
         from son_of_anton_cli.config import load_config
         return resolve_clarify_timeout(load_config() or {})
     except Exception:
-        return 3600
+        return 0
 
 
 # =========================================================================

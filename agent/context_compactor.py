@@ -634,8 +634,9 @@ _PRUNE_MIN_CHARS = 200
 # Non-response sentinels the clarify callbacks embed as ``user_response`` when
 # the user never actually answered (timeout / no-user contexts). These must
 # not be quoted as a user answer during compaction. Sources:
-#   cli.py timeout callback, gateway/run.py timeout + delivery-failure paths,
-#   son_of_anton_cli/oneshot.py no-user callback.
+#   tools.clarify_tool.TIMEOUT_RESPONSE (every surface's timeout), the
+#   gateway's older "[user did not respond" (still in stored history), the
+#   gateway/run.py delivery failure, son_of_anton_cli/oneshot.py no-user callback.
 _CLARIFY_NON_RESPONSE_PREFIXES = (
     "The user did not provide a response",
     "[user did not respond",
@@ -1859,10 +1860,11 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             and all(isinstance(item, str) and item for item in response)
         )
         # Timeout / no-user paths embed sentinel prose as user_response
-        # (gateway "[user did not respond within Nm]", oneshot
-        # "[oneshot mode: ...]", CLI "The user did not provide a
-        # response..."). Quoting those as a user answer would be false
-        # attribution — keep them on the generic path.
+        # (every surface's timeout "The user did not provide a response...",
+        # oneshot "[oneshot mode: ...]", and the gateway's older "[user did
+        # not respond within Nm]" in stored history). Quoting those as a
+        # user answer would be false attribution — keep them on the generic
+        # path.
         resolved = is_answer_shaped and not _is_clarify_non_response_sentinel(
             response
         )

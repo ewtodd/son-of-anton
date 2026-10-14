@@ -707,6 +707,35 @@ def test_backend_prompts_block_until_answered_from_another_thread(backend) -> No
     assert "refresh" in rec.kinds()
 
 
+def test_clarify_waits_for_the_answer_and_nudges_after_the_delay(backend, monkeypatch) -> None:
+    """No answer, no action: the question blocks until answered, with a nudge.
+
+    It used to give up after 120s and tell the agent to decide for itself.
+    """
+    import cli as _cli
+    from tools import clarify_gateway
+
+    b, _rec = backend
+    agent_cfg = dict(_cli.CLI_CONFIG.get("agent") or {}, clarify_notify_after=1)
+    monkeypatch.setitem(_cli.CLI_CONFIG, "agent", agent_cfg)
+    nudges: list = []
+    monkeypatch.setattr(clarify_gateway, "notify_unanswered", nudges.append)
+
+    result: dict = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault("answer", b._clarify_callback("Which flavour?", ["vanilla", "chocolate"])),
+        daemon=True,
+    )
+    worker.start()
+    time.sleep(2.5)
+    assert worker.is_alive(), f"clarify returned without an answer: {result}"
+    assert nudges == ["Which flavour?"], "expected exactly one desktop nudge"
+
+    b._clarify_state["response_queue"].put("chocolate")
+    worker.join(5)
+    assert result.get("answer") == "chocolate"
+
+
 def test_backend_cancel_pending_prompts_unblocks_everything(backend) -> None:
     b, rec = backend
     q: "queue.Queue" = queue.Queue()

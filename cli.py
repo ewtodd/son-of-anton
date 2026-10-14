@@ -458,9 +458,6 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
-        "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
-        },
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
@@ -11403,14 +11400,20 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         import time as _time
 
-        from tools.clarify_gateway import resolve_clarify_timeout
+        from tools.clarify_gateway import (
+            notify_unanswered,
+            resolve_clarify_notify_after,
+            resolve_clarify_timeout,
+        )
 
         if questions:
             return self._clarify_callback_batch(questions)
 
         # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
-        # means unlimited (never auto-skip mid-think) → a null deadline.
+        # (the default) means unlimited: the agent waits for the answer.
         timeout = resolve_clarify_timeout(CLI_CONFIG)
+        notify_after = resolve_clarify_notify_after(CLI_CONFIG)
+        notify_at = None if notify_after <= 0 else _time.monotonic() + notify_after
         response_queue = queue.Queue()
         is_open_ended = not choices
         # multi-select support: only active when multi_select is True and choices exist
@@ -11453,21 +11456,23 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if remaining <= 0:
                         break
                 now = _time.monotonic()
+                if notify_at is not None and now >= notify_at:
+                    notify_at = None
+                    notify_unanswered(question)
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
                     self._paint_now()
 
-        # Timed out — tear down the UI and let the agent decide
+        # Timed out — tear down the UI; the agent ends its turn and waits
+        from tools.clarify_tool import TIMEOUT_RESPONSE
+
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = None
         self._clarify_multi_base = None
         self._paint_now()
-        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
-        return (
-            "The user did not provide a response within the time limit. "
-            "Use your best judgement to make the choice and proceed."
-        )
+        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — the agent will wait for your reply){_RST}")
+        return TIMEOUT_RESPONSE
 
     # --- Batch clarify (multi-question, issue #18450) -----------------------
 
@@ -11557,9 +11562,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         import time as _time
 
-        from tools.clarify_gateway import resolve_clarify_timeout
+        from tools.clarify_gateway import (
+            notify_unanswered,
+            resolve_clarify_notify_after,
+            resolve_clarify_timeout,
+        )
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
+        notify_after = resolve_clarify_notify_after(CLI_CONFIG)
+        notify_at = None if notify_after <= 0 else _time.monotonic() + notify_after
         response_queue = queue.Queue()
 
         state = {
@@ -11597,6 +11608,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if remaining <= 0:
                         break
                 now = _time.monotonic()
+                if notify_at is not None and now >= notify_at:
+                    notify_at = None
+                    first = (questions[0] or {}).get("question", "") if isinstance(questions[0], dict) else ""
+                    notify_unanswered(f"{len(questions)} questions — {first}" if first else f"{len(questions)} questions")
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
                     self._paint_now()
@@ -11608,7 +11623,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_deadline = None
         self._clarify_multi_base = None
         self._paint_now()
-        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — locked answers returned){_RST}")
+        _cprint(
+            f"\n{_DIM}(clarify timed out after {timeout}s — locked answers returned; "
+            f"the agent will wait for your reply){_RST}"
+        )
         return {"answers": partial, "timed_out": True}
 
     def _sudo_password_callback(self) -> str:

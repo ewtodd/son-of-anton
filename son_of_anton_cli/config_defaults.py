@@ -262,18 +262,18 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
-        # Maximum time (seconds) the gateway will block an agent waiting for
-        # a clarify-tool response from the user.  Hit this and the agent
-        # unblocks with "[user did not respond within Xm]" so it can adapt
-        # rather than pinning the running-agent guard forever.  CLI clarify
-        # blocks indefinitely (input() is synchronous) and ignores this.
-        # Default 3600 (1h): real users step away (meetings, AFK) and the
-        # old 600s default evicted the entry mid-think, so a later button
-        # tap landed on a dead entry (#32762).  Tradeoff: a higher value
-        # holds the gateway's running-agent guard longer for a genuinely
-        # abandoned prompt — lower it if a single session must free up the
-        # guard sooner.
-        "clarify_timeout": 3600,
+        # Clarify questions wait for the user's answer, on every surface:
+        # 0 = no timeout, and the agent does nothing until they answer (it
+        # used to "use its best judgement and proceed" after a deadline and
+        # had already acted by the time they replied).  A positive value
+        # opts into a deadline in seconds, after which the agent is told the
+        # user has not answered and ends its turn to wait for their reply.
+        # The user can always end a pending question with /stop or /new.
+        "clarify_timeout": 0,
+        # Seconds an unanswered clarify waits before a desktop notification
+        # (notify-send) reminds the user it is blocked on them; CLI/TUI only.
+        # 0 = no notification.
+        "clarify_notify_after": 120,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.

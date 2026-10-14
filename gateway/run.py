@@ -892,8 +892,11 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     if response is None or response == "":
-        # Timeout or session-boundary cancellation
-        return f"[user did not respond within {int(timeout / 60)}m]"
+        # Timeout or session-boundary cancellation. The shared sentinel, so
+        # the agent waits instead of deciding, and a batch stops asking.
+        from tools.clarify_tool import TIMEOUT_RESPONSE
+
+        return TIMEOUT_RESPONSE
     return response
 
 
