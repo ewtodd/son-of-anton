@@ -38,8 +38,9 @@ fields, and package health checks. It does not render documents itself
 
 ## Prerequisites
 
-- Python 3.10+ with `python-docx` installed:
-  `pip install python-docx` (import name is `docx`; lxml comes with it).
+- `python-docx` (import name `docx`, with lxml) ships with Son of Anton's
+  Nix build. Run the scripts with that interpreter, `"$SON_OF_ANTON_PYTHON"`:
+  a bare `python` is whatever is on PATH and lacks it. Never pip-install it.
 - Comments `add` uses the native API on python-docx >= 1.2 and an XML
   fallback on older versions — both are automatic.
 - For image blocks: the image files must exist locally (PNG/JPEG).
@@ -50,13 +51,13 @@ All helpers live in `scripts/` next to this file. Run them with the
 `terminal` tool; each supports `--help` and prints JSON to stdout.
 
 ```bash
-python scripts/docx_create.py spec.json out.docx
-python scripts/docx_read.py out.docx --text
-python scripts/docx_edit.py replace out.docx --find old --replace new
-python scripts/docx_template.py tpl.docx values.json filled.docx
-python scripts/docx_revisions.py list out.docx
-python scripts/docx_comments.py list out.docx
-python scripts/docx_validate.py out.docx
+"$SON_OF_ANTON_PYTHON" scripts/docx_create.py spec.json out.docx
+"$SON_OF_ANTON_PYTHON" scripts/docx_read.py out.docx --text
+"$SON_OF_ANTON_PYTHON" scripts/docx_edit.py replace out.docx --find old --replace new
+"$SON_OF_ANTON_PYTHON" scripts/docx_template.py tpl.docx values.json filled.docx
+"$SON_OF_ANTON_PYTHON" scripts/docx_revisions.py list out.docx
+"$SON_OF_ANTON_PYTHON" scripts/docx_comments.py list out.docx
+"$SON_OF_ANTON_PYTHON" scripts/docx_validate.py out.docx
 ```
 
 ## Quick Reference

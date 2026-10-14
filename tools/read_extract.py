@@ -299,9 +299,7 @@ def _coverage_note_for(texts: list[str], shown: str) -> str:
         "Decide which gaps you actually need — do NOT OCR or render "
         "everything. For the gaps that matter, render just that range with "
         f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{shown}' /tmp/page` "
-        "and inspect each image with the vision_analyze tool, or use the "
-        "ocr-and-documents skill (marker-pdf) for bulk OCR of large "
-        "ranges.]\n"
+        "and inspect each image with the vision_analyze tool.]\n"
     )
 
 

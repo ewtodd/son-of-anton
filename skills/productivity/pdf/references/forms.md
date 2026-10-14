@@ -76,7 +76,7 @@ JSON is cheaper than debugging a rendered PDF.
 ## Visual review loop
 
 ```bash
-python3 scripts/pdf_form_layout.py spec.json --render-overlay overlay.png [--pdf built.pdf]
+"$SON_OF_ANTON_PYTHON" scripts/pdf_form_layout.py spec.json --render-overlay overlay.png [--pdf built.pdf]
 ```
 
 Red rectangles = entry boxes (with field names), blue = label boxes.

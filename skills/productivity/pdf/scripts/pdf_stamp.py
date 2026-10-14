@@ -103,7 +103,7 @@ def main() -> int:
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
-        print("Missing dependency: install with 'python3 -m pip install pypdf reportlab'",
+        print("Missing dependency: pypdf reportlab. It ships with the Son of Anton build: run this script with $SON_OF_ANTON_PYTHON, not a bare python.",
               file=sys.stderr)
         return 2
 

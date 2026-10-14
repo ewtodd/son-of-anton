@@ -24,10 +24,10 @@ def available_backends() -> list[str]:
 
 
 def missing_hints() -> list[str]:
-    """Install hints for when no backend is available."""
+    """What to fix when no backend is available (both ship with the build)."""
     return [
-        "python3 -m pip install pypdfium2",
-        "poppler-utils (provides pdftoppm), e.g. apt-get install poppler-utils",
+        "pypdfium2: run this script with $SON_OF_ANTON_PYTHON, not a bare python",
+        "pdftoppm: poppler is on the Son of Anton package's PATH",
     ]
 
 

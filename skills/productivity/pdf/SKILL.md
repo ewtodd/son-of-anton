@@ -11,12 +11,12 @@ platforms = ["linux", "macos", "windows"]
 [metadata.son-of-anton]
 tags = ["pdf", "documents", "forms", "reportlab", "pypdf", "pdfplumber"]
 category = "productivity"
-related_skills = ["docx", "xlsx", "powerpoint", "ocr-and-documents"]
+related_skills = ["docx", "xlsx", "powerpoint"]
 ---
 
 # PDF Skill
 
-Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Scanned (image-only) PDFs contain no text layer: OCR is explicitly out of scope here — when a page is image-only, stop and use the `ocr-and-documents` skill instead of pretending to extract text.
+Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Scanned (image-only) PDFs contain no text layer: OCR is out of scope here — when a page is image-only, render it with `pdf_page_image.py` and read the image with `vision_analyze` instead of pretending to extract text.
 
 ## When to Use
 
@@ -24,43 +24,42 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 - Build a fillable AcroForm (text/checkbox/radio/dropdown) from a JSON spec, linting the layout first.
 - Pull text, tables (JSON/CSV), metadata, or form-field values out of a PDF.
 - Merge, split, rotate, extract page subsets, watermark, stamp text/images at coordinates, bookmark, or compress PDFs.
-- Export pages as PNGs for visual review or for OCR hand-off; set/clear document metadata; add/extract file attachments.
+- Export pages as PNGs for visual review or for a vision model to read; set/clear document metadata; add/extract file attachments.
 - Fill or flatten AcroForm forms; encrypt or decrypt with passwords.
-- NOT for scanned/image-only PDFs (use `ocr-and-documents`) and NOT for pixel-perfect HTML-to-PDF rendering (use a headless browser).
+- NOT for reading scanned/image-only pages as text (render them and use `vision_analyze`) and NOT for pixel-perfect HTML-to-PDF rendering (use a headless browser).
 
 ## Prerequisites
 
-- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`:
-  `python -m pip install pypdf reportlab pdfplumber`
-- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `python -m pip install pypdfium2`, or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
-- Each helper script checks imports lazily and prints an install hint if a dependency is missing.
+- `pypdf`, `reportlab`, `pdfplumber` and `pypdfium2` ship with Son of Anton's Nix build. Run every script with that interpreter, `"$SON_OF_ANTON_PYTHON"`: a bare `python` is whatever happens to be on PATH and lacks them. Never pip-install them.
+- Page rasterization (`pdf_page_image.py`, overlay rendering) uses pypdfium2 and falls back to poppler's `pdftoppm`, which is also on the package's PATH; scripts report `{"rendered": false, "missing": [...]}` (exit 0) when neither works.
+- Each helper script checks imports lazily and names a missing dependency.
 
 ## How to Run
 
 All helpers live in `scripts/` and are argparse CLIs — run them with the `terminal` tool; every one supports `--help`. They read/write JSON strictly as UTF-8, print JSON results to stdout, and exit non-zero on failure.
 
 ```bash
-python scripts/pdf_create.py spec.json -o out.pdf         # build PDF from JSON spec
-python scripts/pdf_make_form.py formspec.json -o form.pdf # build fillable AcroForm from JSON spec
-python scripts/pdf_form_layout.py formspec.json           # lint form layout BEFORE building
-python scripts/pdf_form_layout.py formspec.json --render-overlay boxes.png [--pdf form.pdf]
-python scripts/pdf_read.py doc.pdf --text                 # per-page text (JSON)
-python scripts/pdf_read.py doc.pdf --tables --csv-dir t/  # tables to JSON + CSV files
-python scripts/pdf_read.py doc.pdf --meta                 # metadata, page sizes, encrypted/scanned flags
-python scripts/pdf_read.py form.pdf --fields              # form fields: name, type, value
-python scripts/pdf_merge.py a.pdf b.pdf -o merged.pdf [--bookmarks]
-python scripts/pdf_split.py doc.pdf --pages 1-3,7 -o part.pdf [--rotate 90]
-python scripts/pdf_fill_form.py form.pdf --fields-json values.json -o filled.pdf [--flatten]
-python scripts/pdf_secure.py doc.pdf --encrypt -o enc.pdf --user-password your-password
-python scripts/pdf_secure.py enc.pdf --decrypt -o dec.pdf --password your-password
-python scripts/pdf_watermark.py doc.pdf --stamp mark.pdf -o stamped.pdf [--under]
-python scripts/pdf_stamp.py doc.pdf -o out.pdf --text "DRAFT" --x 150 --y 400 \
+"$SON_OF_ANTON_PYTHON" scripts/pdf_create.py spec.json -o out.pdf         # build PDF from JSON spec
+"$SON_OF_ANTON_PYTHON" scripts/pdf_make_form.py formspec.json -o form.pdf # build fillable AcroForm from JSON spec
+"$SON_OF_ANTON_PYTHON" scripts/pdf_form_layout.py formspec.json           # lint form layout BEFORE building
+"$SON_OF_ANTON_PYTHON" scripts/pdf_form_layout.py formspec.json --render-overlay boxes.png [--pdf form.pdf]
+"$SON_OF_ANTON_PYTHON" scripts/pdf_read.py doc.pdf --text                 # per-page text (JSON)
+"$SON_OF_ANTON_PYTHON" scripts/pdf_read.py doc.pdf --tables --csv-dir t/  # tables to JSON + CSV files
+"$SON_OF_ANTON_PYTHON" scripts/pdf_read.py doc.pdf --meta                 # metadata, page sizes, encrypted/scanned flags
+"$SON_OF_ANTON_PYTHON" scripts/pdf_read.py form.pdf --fields              # form fields: name, type, value
+"$SON_OF_ANTON_PYTHON" scripts/pdf_merge.py a.pdf b.pdf -o merged.pdf [--bookmarks]
+"$SON_OF_ANTON_PYTHON" scripts/pdf_split.py doc.pdf --pages 1-3,7 -o part.pdf [--rotate 90]
+"$SON_OF_ANTON_PYTHON" scripts/pdf_fill_form.py form.pdf --fields-json values.json -o filled.pdf [--flatten]
+"$SON_OF_ANTON_PYTHON" scripts/pdf_secure.py doc.pdf --encrypt -o enc.pdf --user-password your-password
+"$SON_OF_ANTON_PYTHON" scripts/pdf_secure.py enc.pdf --decrypt -o dec.pdf --password your-password
+"$SON_OF_ANTON_PYTHON" scripts/pdf_watermark.py doc.pdf --stamp mark.pdf -o stamped.pdf [--under]
+"$SON_OF_ANTON_PYTHON" scripts/pdf_stamp.py doc.pdf -o out.pdf --text "DRAFT" --x 150 --y 400 \
     --font-size 60 --rotation 45 --opacity 0.3 --color "#cc0000" [--pages 1-3]
-python scripts/pdf_stamp.py doc.pdf -o out.pdf --image sig.png --x 400 --y 60 --width 120
-python scripts/pdf_page_image.py doc.pdf --pages 1-3 --dpi 150 --out-dir imgs/
-python scripts/pdf_meta.py doc.pdf --set-meta --title "T" --author "A" -o out.pdf
-python scripts/pdf_meta.py doc.pdf --attach data.csv -o out.pdf
-python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments dir/
+"$SON_OF_ANTON_PYTHON" scripts/pdf_stamp.py doc.pdf -o out.pdf --image sig.png --x 400 --y 60 --width 120
+"$SON_OF_ANTON_PYTHON" scripts/pdf_page_image.py doc.pdf --pages 1-3 --dpi 150 --out-dir imgs/
+"$SON_OF_ANTON_PYTHON" scripts/pdf_meta.py doc.pdf --set-meta --title "T" --author "A" -o out.pdf
+"$SON_OF_ANTON_PYTHON" scripts/pdf_meta.py doc.pdf --attach data.csv -o out.pdf
+"$SON_OF_ANTON_PYTHON" scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments dir/
 ```
 
 ## Quick Reference
@@ -85,7 +84,7 @@ python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments di
 
 ## Procedure
 
-1. **Inspect first.** Run `pdf_read.py file.pdf --meta`. Check `encrypted` (if true, decrypt first with `pdf_secure.py --decrypt`) and `likely_scanned_pages`. If pages are image-only, export them with `pdf_page_image.py --pages <scanned> --dpi 300 --out-dir imgs/` and hand the PNGs to the `ocr-and-documents` skill — do not report empty text as "no content".
+1. **Inspect first.** Run `pdf_read.py file.pdf --meta`. Check `encrypted` (if true, decrypt first with `pdf_secure.py --decrypt`) and `likely_scanned_pages`. If pages are image-only, export them with `pdf_page_image.py --pages <scanned> --dpi 300 --out-dir imgs/` and read the PNGs with `vision_analyze` — do not report empty text as "no content".
 2. **Create.** Write a JSON spec with `write_file` (elements: `heading`, `paragraph`, `table`, `image`, `pagebreak`; optional `title`/`author` metadata; page numbers are added automatically), then run `pdf_create.py`. Verify visually with `vision_analyze` on a rendered page image if layout matters.
 3. **Extract.** `--text` gives a JSON list of per-page strings; `--tables` gives row arrays per page and can also emit CSV files. Read results with `read_file`; never eyeball a binary PDF directly.
 4. **Manipulate.** `pdf_merge.py` concatenates and can add one bookmark per source file; `pdf_split.py` handles page ranges (1-based, e.g. `1-3,5,9-`), rotation in 90° steps, and `--compress`. Watermark by preparing a single-page stamp PDF (e.g. via `pdf_create.py`) and overlaying it with `pdf_watermark.py`; for one-liner stamps ("sign here", diagonal DRAFT, corner labels) use `pdf_stamp.py` with text or an image at explicit coordinates.
@@ -97,7 +96,7 @@ python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments di
 
 ## Pitfalls
 
-- **Scanned PDFs**: empty `extract_text()` plus page images means there is no text layer. Route to `ocr-and-documents`; do not fabricate text.
+- **Scanned PDFs**: empty `extract_text()` plus page images means there is no text layer. Render those pages with `pdf_page_image.py` and read them with `vision_analyze`; do not fabricate text.
 - **Flattening limits**: `pdf_fill_form.py --flatten` uses pypdf's flatten support, which converts widget appearances into page content. It is reliable for plain text fields and checkboxes but can drop or misrender exotic widgets (rich text, custom appearance streams, some radio groups). Verify the flattened output visually with `vision_analyze`; for bulletproof flattening use an external renderer (e.g. Ghostscript or `pdftoppm`+reassembly) as a fallback.
 - **NeedAppearances**: after filling, viewers only render values if appearance streams exist. The fill script sets the AcroForm `NeedAppearances` flag so conforming viewers regenerate them; some minimal viewers ignore it — flatten if display fidelity matters.
 - **Non-Latin form values**: values are stored correctly (UTF-16), but the field's default font may lack glyphs, so a viewer can show blanks even though the data round-trips. Verify with `--fields`, not just visually.

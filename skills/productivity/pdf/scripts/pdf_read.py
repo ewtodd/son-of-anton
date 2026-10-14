@@ -21,7 +21,7 @@ def _need(module: str, package: str):
     try:
         return __import__(module)
     except ImportError:
-        print(f"Missing dependency: install with 'python3 -m pip install {package}'", file=sys.stderr)
+        print(f"Missing dependency: {package}. It ships with the Son of Anton build: run this script with $SON_OF_ANTON_PYTHON, not a bare python.", file=sys.stderr)
         raise SystemExit(2)
 
 
@@ -96,7 +96,7 @@ def read_meta(path: str, password: str | None) -> dict:
     }
     if likely_scanned:
         out["note"] = ("Image-only pages detected: no text layer to extract. "
-                       "Use the ocr-and-documents skill for OCR.")
+                       "Render them with pdf_page_image.py and read them with vision_analyze.")
     return out
 
 

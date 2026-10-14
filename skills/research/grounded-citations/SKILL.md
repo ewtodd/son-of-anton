@@ -11,7 +11,7 @@ platforms = ["linux", "macos", "windows"]
 [metadata.son-of-anton]
 tags = ["Research", "Citations", "Grounding", "Sources", "Web", "Reports"]
 category = "research"
-related_skills = ["research-paper-writing", "arxiv", "ocr-and-documents"]
+related_skills = ["research-paper-writing", "arxiv"]
 ---
 
 # Grounded Citations

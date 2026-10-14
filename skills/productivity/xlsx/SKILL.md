@@ -40,8 +40,9 @@ scripts are argparse CLIs that print JSON and use explicit UTF-8 I/O.
 
 ## Prerequisites
 
-- Python 3.10+ with `openpyxl` (`pip install openpyxl`). No other
-  third-party packages are needed; everything else is stdlib.
+- `openpyxl` ships with Son of Anton's Nix build; everything else is stdlib.
+  Run the scripts with that interpreter, `"$SON_OF_ANTON_PYTHON"`: a bare
+  `python` is whatever is on PATH and lacks it. Never pip-install it.
 - Optional: LibreOffice (`soffice`) for headless recalculation or
   format conversion.
 
@@ -51,15 +52,15 @@ Run the helper scripts with the `terminal` tool from this skill's
 `scripts/` directory (every script supports `--help`):
 
 ```bash
-python scripts/xlsx_create.py spec.json report.xlsx   # build from JSON spec
-python scripts/xlsx_read.py report.xlsx --sheets      # inventory
-python scripts/xlsx_read.py report.xlsx --json --sheet Data
-python scripts/xlsx_read.py report.xlsx --formulas
-python scripts/xlsx_edit.py report.xlsx --sheet Data --set B2=42 --recalc
-python scripts/xlsx_restructure.py report.xlsx --sheet Data --insert-rows 3:2
-python scripts/xlsx_recalc.py report.xlsx
-python scripts/csv_to_xlsx.py data.csv out.xlsx --encoding utf-8
-python scripts/xlsx_to_csv.py report.xlsx out.csv --sheet Data
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_create.py spec.json report.xlsx   # build from JSON spec
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_read.py report.xlsx --sheets      # inventory
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_read.py report.xlsx --json --sheet Data
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_read.py report.xlsx --formulas
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_edit.py report.xlsx --sheet Data --set B2=42 --recalc
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_restructure.py report.xlsx --sheet Data --insert-rows 3:2
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_recalc.py report.xlsx
+"$SON_OF_ANTON_PYTHON" scripts/csv_to_xlsx.py data.csv out.xlsx --encoding utf-8
+"$SON_OF_ANTON_PYTHON" scripts/xlsx_to_csv.py report.xlsx out.csv --sheet Data
 ```
 
 Author the JSON spec with `write_file`, inspect script JSON output with

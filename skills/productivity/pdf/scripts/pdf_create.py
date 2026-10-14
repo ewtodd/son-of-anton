@@ -47,7 +47,7 @@ def build_pdf(spec: dict, out_path: str) -> int:
             TableStyle,
         )
     except ImportError:
-        print("Missing dependency: install with 'python3 -m pip install reportlab'", file=sys.stderr)
+        print("Missing dependency: reportlab. It ships with the Son of Anton build: run this script with $SON_OF_ANTON_PYTHON, not a bare python.", file=sys.stderr)
         return 2
 
     page_size = letter if str(spec.get("page_size", "A4")).lower() == "letter" else A4
