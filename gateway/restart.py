@@ -154,29 +154,3 @@ def resolve_cron_drain_budget(
     return max(drain, min(floor, ceiling))
 
 
-def resolve_restart_exit_wait_budget(
-    drain_timeout: float,
-    after_turn_timeout: float,
-    *,
-    headroom: float = 15.0,
-) -> float:
-    """Seconds a CLI should wait for the gateway PID to exit after SIGUSR1.
-
-    In-band restart may defer ``stop()`` until active turns finish
-    (``after_turn_timeout``) and then spend up to ``drain_timeout`` inside
-    ``stop()``. Callers that fall back to a hard kill on wait expiry must
-    cover both phases or they reintroduce #77184.
-    """
-    try:
-        drain = max(float(drain_timeout), 0.0)
-    except (TypeError, ValueError):
-        drain = 0.0
-    try:
-        after_turn = max(float(after_turn_timeout), 0.0)
-    except (TypeError, ValueError):
-        after_turn = 0.0
-    try:
-        margin = max(float(headroom), 0.0)
-    except (TypeError, ValueError):
-        margin = 0.0
-    return drain + after_turn + margin

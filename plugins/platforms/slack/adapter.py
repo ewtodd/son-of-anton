@@ -9304,125 +9304,6 @@ async def _standalone_send(
         return {"error": f"Slack send failed: {e}"}
 
 
-def interactive_setup() -> None:
-    """Guide the user through Slack bot setup.
-
-    Mirrors Discord's ``interactive_setup`` shape: lazy-imports CLI helpers so
-    the plugin's import surface stays small, generates and writes the Slack app
-    manifest, prompts for the bot + app tokens, captures an allowlist, and
-    offers to set a home channel. Replaces ``son_of_anton_cli/setup.py::_setup_slack``.
-    """
-    from pathlib import Path
-    from son_of_anton_cli.config import get_env_value, remove_env_value, save_env_value
-    from son_of_anton_cli.cli_output import (
-        prompt,
-        prompt_yes_no,
-        print_header,
-        print_info,
-        print_success,
-        print_warning,
-    )
-
-    def _write_slack_manifest_and_instruct() -> None:
-        """Generate the Slack manifest, write it under SON_OF_ANTON_HOME, and print
-        paste-into-Slack instructions. Failures are non-fatal."""
-        try:
-            from son_of_anton_cli.slack_cli import _build_full_manifest
-            from son_of_anton_constants import get_son_of_anton_home
-            import json as _json
-
-            manifest = _build_full_manifest(
-                bot_name="Son of Anton",
-                bot_description="Your Son of Anton agent on Slack",
-            )
-            target = Path(get_son_of_anton_home()) / "slack-manifest.json"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                _json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            print_success(f"Slack app manifest written to: {target}")
-            print_info(
-                "   Paste it into https://api.slack.com/apps → your app → Features "
-                "→ App Manifest → Edit, then Save.  Slack will prompt to "
-                "reinstall if scopes or slash commands changed."
-            )
-            print_info(
-                "   Re-run `son-of-anton slack manifest --write` anytime to refresh after "
-                "Son of Anton adds new commands."
-            )
-        except Exception as e:
-            print_warning(f"Could not write Slack manifest: {e}")
-
-    print_header("Slack")
-    existing = get_env_value("SLACK_BOT_TOKEN")
-    if existing:
-        print_info("Slack: already configured")
-        if not prompt_yes_no("Reconfigure Slack?", False):
-            # Even without reconfiguring, offer to refresh the manifest so
-            # new commands (e.g. /btw, /stop, ...) get registered in Slack.
-            if prompt_yes_no(
-                "Regenerate the Slack app manifest with the latest command "
-                "list? (recommended after `son-of-anton update`)",
-                True,
-            ):
-                _write_slack_manifest_and_instruct()
-            return
-
-    print_info("Steps to create a Slack app:")
-    print_info("   1. Go to https://api.slack.com/apps → Create New App")
-    print_info("      Pick 'From an app manifest' — we'll generate one for you below.")
-    print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
-    print_info("      • Create an App-Level Token with 'connections:write' scope")
-    print_info("   3. Install to Workspace: Settings → Install App")
-    print_info("   4. After installing, invite the bot to channels: /invite @YourBot")
-    print()
-    print_info("   Full guide: https://son-of-anton.nousresearch.com/docs/user-guide/messaging/slack/")
-    print()
-
-    # Generate and write manifest up-front so the user can paste it into
-    # the "Create from manifest" flow instead of clicking through scopes /
-    # events / slash commands one at a time.
-    _write_slack_manifest_and_instruct()
-
-    print()
-    bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
-    if not bot_token:
-        return
-    save_env_value("SLACK_BOT_TOKEN", bot_token)
-    app_token = prompt("Slack App Token (xapp-...)", password=True)
-    if app_token:
-        save_env_value("SLACK_APP_TOKEN", app_token)
-    print_success("Slack tokens saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
-    print()
-    allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
-    )
-    if allowed_users:
-        save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Slack allowlist configured")
-    else:
-        print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
-        print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
-
-    print()
-    print_info("📬 Home Channel: where Son of Anton delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   To get a channel ID: open the channel in Slack, then right-click")
-    print_info("   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).")
-    print_info("   You can also set this later by typing /set-home in a Slack channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
-    if home_channel:
-        save_env_value("SLACK_HOME_CHANNEL", home_channel)
-    else:
-        if remove_env_value("SLACK_HOME_CHANNEL"):
-            print_info("Home channel cleared.")
-
-
 def _apply_toml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     """Translate ``config.toml`` ``slack:`` keys into ``SLACK_*`` env vars.
 
@@ -9522,7 +9403,6 @@ def register(ctx) -> None:
         install_hint=missing_dependency_message("slack-bolt", "slack"),
         # Interactive setup wizard — replaces son_of_anton_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in son_of_anton_cli/gateway.py.
-        setup_fn=interactive_setup,
         # TOML→env config bridge — owns the translation of config.toml slack:
         # keys (require_mention, strict_mention, ignore_other_user_mentions,
         # thread_require_mention, allow_bots, free_response_channels,

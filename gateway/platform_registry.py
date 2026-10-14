@@ -98,12 +98,6 @@ class PlatformEntry:
     # packages into the Nix build.
     install_hint: str = ""
 
-    # Optional setup function for interactive configuration.
-    # Signature: () -> None (prompts user, saves env vars).
-    # If None, falls back to _setup_standard_platform (needs token_var + vars)
-    # or a generic "set these env vars" display.
-    setup_fn: Optional[Callable[[], None]] = None
-
     # "builtin" or "plugin"
     source: str = "plugin"
 

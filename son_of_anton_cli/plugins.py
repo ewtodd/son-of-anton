@@ -2767,7 +2767,7 @@ class PluginContext:
         packages into the Nix build.
 
         Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
-        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        ``emoji``, ``allowed_users_env``, ``platform_hint``).
         Unknown keys raise TypeError from the dataclass constructor.
 
         Example::
@@ -2778,7 +2778,6 @@ class PluginContext:
                 adapter_factory=lambda cfg: ExampleAdapter(cfg),
                 check_fn=lambda: True,
                 emoji="💬",
-                setup_fn=example_interactive_setup,
             )
         """
         from gateway.platform_registry import platform_registry, PlatformEntry
