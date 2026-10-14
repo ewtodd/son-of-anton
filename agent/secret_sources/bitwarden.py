@@ -6,10 +6,9 @@ so they don't have to live in plaintext in ``~/.son-of-anton/.env``.
 Design summary
 --------------
 
-* The ``bws`` binary is auto-installed into ``<son_of_anton_home>/bin/bws`` on
-  first use.  Son of Anton pins one version (``_BWS_VERSION``) and downloads
-  the matching asset from the official GitHub Releases page, verifying
-  the SHA-256 against the release's published checksum file.
+* The ``bws`` binary comes from PATH: the Nix build provides it (``pkgs.bws``
+  in the son-of-anton package's ``extraPackages``).  Nothing is downloaded
+  at runtime.
 * The access token is stored in ``~/.son-of-anton/.env`` as
   ``BWS_ACCESS_TOKEN`` (or whatever name the user picked in
   ``secrets.bitwarden.access_token_env``).  This is the one
@@ -23,8 +22,8 @@ Design summary
   whatever credentials ``.env`` already had.
 
 The module is intentionally subprocess-driven rather than going through
-the ``bitwarden-sdk-secrets`` Python package: one cross-platform binary
-is easier to lazy-install than a wheels-with-Rust-extension dependency.
+the ``bitwarden-sdk-secrets`` Python package: one binary from the build
+is simpler than a wheels-with-Rust-extension dependency.
 """
 
 from __future__ import annotations
@@ -34,16 +33,11 @@ import hashlib
 import json
 import logging
 import os
-import platform
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
-import urllib.error
-import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -63,19 +57,13 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 # ---------------------------------------------------------------------------
 
-# Pinned upstream version.  Bump in a follow-up PR — never auto-resolve
-# "latest" because upstream release shape (asset names, CLI flags) is
-# allowed to change between majors and we want updates to be deliberate.
-_BWS_VERSION = "2.0.0"
-
-_BWS_RELEASE_BASE = (
-    f"https://github.com/bitwarden/sdk-sm/releases/download/bws-v{_BWS_VERSION}"
-)
-_BWS_CHECKSUM_NAME = f"bws-sha256-checksums-{_BWS_VERSION}.txt"
-
-# How long to wait for bws subprocesses and HTTP downloads, in seconds.
-_BWS_DOWNLOAD_TIMEOUT = 60
+# How long to wait for bws subprocesses, in seconds.
 _BWS_RUN_TIMEOUT = 30
+
+_BWS_MISSING = (
+    "bws is not on PATH. It comes from the Nix build: add pkgs.bws to the "
+    "son-of-anton package's extraPackages (nothing is downloaded at runtime)."
+)
 
 # In-process cache so repeated load_son_of_anton_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
@@ -127,224 +115,18 @@ def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Binary discovery + lazy install
+# Binary discovery
 # ---------------------------------------------------------------------------
 
 
-def _son_of_anton_bin_dir() -> Path:
-    """Where Son of Anton stores its managed binaries.  Profile-aware."""
-    from son_of_anton_constants import get_son_of_anton_home
+def find_bws() -> Optional[Path]:
+    """Return the ``bws`` on PATH, or None.
 
-    return get_son_of_anton_home() / "bin"
-
-
-def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Return a path to a usable ``bws`` binary, or None.
-
-    Resolution order:
-      1. ``<son_of_anton_home>/bin/bws``  (our managed copy — preferred)
-      2. ``shutil.which("bws")``    (system PATH)
-
-    When ``install_if_missing`` is True and neither resolves, this calls
-    :func:`install_bws` to download and verify the pinned version.
+    It comes from the Nix build (``pkgs.bws`` in the son-of-anton package's
+    ``extraPackages``); nothing is downloaded at runtime.
     """
-    managed = _son_of_anton_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
-        return managed
-
     system = shutil.which("bws")
-    if system:
-        return Path(system)
-
-    if install_if_missing:
-        try:
-            return install_bws()
-        except Exception as exc:  # noqa: BLE001 — never block startup
-            logger.warning("bws auto-install failed: %s", exc)
-            return None
-    return None
-
-
-def _platform_binary_name() -> str:
-    return "bws"
-
-
-def _platform_asset_name() -> str:
-    """Map (uname, arch, libc) → the upstream asset filename.
-
-    Asset names follow Rust's target triple convention.  Linux defaults
-    to gnu (glibc); we switch to musl only if ldd --version says so.
-    """
-    system = platform.system()
-    machine = platform.machine().lower()
-
-    if system == "Darwin":
-        # Universal binary works on both Intel and Apple Silicon — no
-        # need to pick a per-arch asset.
-        return f"bws-macos-universal-{_BWS_VERSION}.zip"
-
-    if system == "Linux":
-        arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-        libc = "gnu"
-        # ldd --version writes to stderr on glibc, stdout on musl.  We
-        # don't need bullet-proof detection — getting it wrong falls
-        # back to a clear error from the binary loader, which we catch.
-        try:
-            res = subprocess.run(
-                ["ldd", "--version"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=2,
-                stdin=subprocess.DEVNULL,
-            )
-            if "musl" in (res.stdout + res.stderr).lower():
-                libc = "musl"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return f"bws-{arch}-unknown-linux-{libc}-{_BWS_VERSION}.zip"
-
-    raise RuntimeError(
-        f"Unsupported platform for bws auto-install: {system} {machine}"
-    )
-
-
-def install_bws(*, force: bool = False) -> Path:
-    """Download, verify, and install the pinned ``bws`` binary.
-
-    Returns the path to the installed executable.  Raises on any
-    failure (network, checksum, extraction) — callers in the auto-install
-    path catch these; the user-facing ``son-of-anton secrets bitwarden setup``
-    surface lets them propagate so the wizard can show a clear error.
-    """
-    bin_dir = _son_of_anton_bin_dir()
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
-
-    if target.exists() and not force:
-        return target
-
-    asset_name = _platform_asset_name()
-    asset_url = f"{_BWS_RELEASE_BASE}/{asset_name}"
-    checksum_url = f"{_BWS_RELEASE_BASE}/{_BWS_CHECKSUM_NAME}"
-
-    with tempfile.TemporaryDirectory(prefix="son-of-anton-bws-") as tmpdir:
-        tmp = Path(tmpdir)
-        zip_path = tmp / asset_name
-        checksum_path = tmp / _BWS_CHECKSUM_NAME
-
-        logger.info("Downloading %s", asset_url)
-        _http_download(asset_url, zip_path)
-        _http_download(checksum_url, checksum_path)
-
-        expected = _expected_sha256(checksum_path, asset_name)
-        actual = _sha256_file(zip_path)
-        if expected.lower() != actual.lower():
-            raise RuntimeError(
-                f"Checksum mismatch for {asset_name}: "
-                f"expected {expected}, got {actual}"
-            )
-
-        with zipfile.ZipFile(zip_path) as zf:
-            member = _pick_zip_member(zf, _platform_binary_name())
-            # Zip-slip guard: a malicious archive can carry member names like
-            # ``../../etc/cron.d/x`` or absolute paths.  ``ZipFile.extract``
-            # joins the member onto ``tmp`` without verifying the result stays
-            # inside it, so validate containment before touching the disk.
-            extracted = _safe_extract_member(zf, member, tmp)
-
-        # Move into place atomically.  We write to a sibling tempfile in
-        # the final directory so the rename can't cross filesystems.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".bws_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(
-            staged,
-            stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-            | stat.S_IRGRP | stat.S_IXGRP
-            | stat.S_IROTH | stat.S_IXOTH,
-        )
-        os.replace(staged, target)
-
-    logger.info("Installed bws %s at %s", _BWS_VERSION, target)
-    return target
-
-
-def _http_download(url: str, dest: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "son-of-anton"})
-    try:
-        with urllib.request.urlopen(req, timeout=_BWS_DOWNLOAD_TIMEOUT) as resp:  # noqa: S310
-            with open(dest, "wb") as f:
-                shutil.copyfileobj(resp, f)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
-
-
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse the upstream ``bws-sha256-checksums-X.Y.Z.txt`` file.
-
-    Format is the standard ``sha256sum`` output: ``<hex>  <filename>``,
-    one per line.
-    """
-    text = checksum_file.read_text(encoding="utf-8", errors="replace")
-    for line in text.splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(
-        f"No checksum entry for {asset_name} in {checksum_file.name}"
-    )
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
-    """Find the binary inside the upstream zip.
-
-    Historically the archive has been flat (``bws`` at the root) but we
-    tolerate a top-level directory just in case upstream changes.
-    """
-    candidates = [n for n in zf.namelist() if n.split("/")[-1] == binary_name]
-    if not candidates:
-        raise RuntimeError(
-            f"Could not find {binary_name} inside downloaded archive "
-            f"(members: {zf.namelist()[:5]}...)"
-        )
-    # Prefer the shortest path (i.e. root over nested) for determinism.
-    candidates.sort(key=len)
-    return candidates[0]
-
-
-def _safe_extract_member(
-    zf: zipfile.ZipFile, member: str, dest_dir: Path
-) -> Path:
-    """Extract a single archive member, refusing path traversal.
-
-    ``ZipFile.extract`` will happily honour member names containing
-    ``../`` or absolute paths, letting a malicious archive write outside
-    ``dest_dir`` (a "zip-slip").  We resolve the would-be target and
-    confirm it stays within ``dest_dir`` before extracting.
-    """
-    dest_root = os.path.realpath(dest_dir)
-    target = os.path.realpath(os.path.join(dest_root, member))
-    # ``commonpath`` raises ValueError for disjoint roots; treat that as an
-    # escape too.
-    try:
-        contained = os.path.commonpath([dest_root, target]) == dest_root
-    except ValueError:
-        contained = False
-    if not contained or target == dest_root:
-        raise RuntimeError(
-            f"Refusing to extract unsafe archive member {member!r}: "
-            f"it escapes the extraction directory"
-        )
-    zf.extract(member, dest_root)
-    return Path(target)
+    return Path(system) if system else None
 
 
 # ---------------------------------------------------------------------------
@@ -556,14 +338,9 @@ def fetch_bitwarden_secrets(
             _CACHE[cache_key] = disk_cached
             return disk_cached.secrets, []
 
-    bws = binary or find_bws(install_if_missing=True)
+    bws = binary or find_bws()
     if bws is None:
-        raise RuntimeError(
-            "bws binary not available — auto-install failed and `bws` is "
-            "not on PATH.  Install manually from "
-            "https://github.com/bitwarden/sdk-sm/releases or re-run "
-            "`son-of-anton secrets bitwarden setup`."
-        )
+        raise RuntimeError(_BWS_MISSING)
 
     try:
         secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
@@ -812,10 +589,6 @@ class BitwardenSource(SecretSource):
                 "description": "BSM values overwrite .env/shell values",
                 "default": True,
             },
-            "auto_install": {
-                "description": "Auto-download the pinned bws binary",
-                "default": True,
-            },
             "server_url": {
                 "description": "Region / self-hosted endpoint (empty = US Cloud)",
                 "default": "",
@@ -845,14 +618,10 @@ class BitwardenSource(SecretSource):
             result.error_kind = ErrorKind.NOT_CONFIGURED
             return result
 
-        auto_install = bool(cfg.get("auto_install", True))
-        binary = find_bws(install_if_missing=auto_install)
+        binary = find_bws()
         result.binary_path = binary
         if binary is None:
-            result.error = (
-                "bws binary not available and auto-install is disabled.  "
-                "Run `son-of-anton secrets bitwarden setup` to install."
-            )
+            result.error = _BWS_MISSING
             result.error_kind = ErrorKind.BINARY_MISSING
             return result
 

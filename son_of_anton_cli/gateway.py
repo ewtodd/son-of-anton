@@ -2318,15 +2318,7 @@ def _detect_venv_dir() -> Path | None:
 def get_python_path() -> str:
     venv = _detect_venv_dir()
     if venv is not None:
-        try:
-            from son_of_anton_constants import venv_python_path
-        except ImportError:
-            # Update-boundary: a gateway restarted mid-update can hold a
-            # son_of_anton_constants cached from before this symbol existed. See
-            # _reload_son_of_anton_constants() in son_of_anton_cli/managed_uv.py.
-            from son_of_anton_cli.managed_uv import _reload_son_of_anton_constants
-
-            venv_python_path = _reload_son_of_anton_constants().venv_python_path
+        from son_of_anton_constants import venv_python_path
 
         venv_python = venv_python_path(venv)
         if venv_python.exists():
@@ -2510,61 +2502,22 @@ def _systemd_watchdog_service_fields(
     return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
 
 
-def _append_node_dir_for_service(
-    path_entries: list[str], son_of_anton_root: Path | None = None
-) -> None:
-    """Add the Node directory a generated service unit should use to *path_entries*.
+def _append_node_dir_for_service(path_entries: list[str]) -> None:
+    """Add the directory of the ``node`` on PATH to a generated unit's *path_entries*.
 
-    The Son of Anton-managed Node under ``$SON_OF_ANTON_HOME/node`` goes first when it
-    exists. A bare ``shutil.which("node")`` cannot be trusted on its own here:
-    a service unit is written once and then survives reboots, so resolving a
-    system Node that happens to be ahead on the installing shell's PATH bakes
-    the wrong interpreter in permanently — the exact failure the desktop
-    backend spawn was fixed for. Managed dirs are profile-scoped, so each
-    profile's unit still names its own Node.
-
-    *son_of_anton_root* is the Son of Anton home the unit will run against. System units
-    installed via sudo MUST pass the **target user's** home: probing the
-    default (the calling user's — root's — tree) would bake root's Node into
-    the target user's unit. The probe swallows OSError: an unreadable
-    candidate dir (hardened home) means "skip the rung", not "crash the
-    generator".
-
-    PATH lookup remains the fallback rung for installs with no managed Node.
+    Node comes from the system (Nix) like every other tool; nothing provisions
+    a private copy at runtime.
     """
-    from son_of_anton_constants import (
-        son_of_anton_managed_node_tree_present,
-        iter_son_of_anton_node_dirs,
-    )
-
-    managed_node_present = son_of_anton_managed_node_tree_present(son_of_anton_root)
-    for directory in iter_son_of_anton_node_dirs(son_of_anton_root) if managed_node_present else ():
-        entry = str(directory)
-        try:
-            present = directory.is_dir()
-        except OSError:
-            present = False
-        if present and entry not in path_entries:
-            path_entries.append(entry)
-
-    # Ambient PATH lookup is a fallback, not an additional rung. Once the
-    # target Son of Anton home provides managed Node, consulting the invoker's PATH
-    # makes a system unit differ between sudo/root and its service user.
-    if managed_node_present:
-        return
-
     resolved_node = shutil.which("node")
     if not resolved_node:
         return
 
     # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
     # resolved target. ``~/.local/bin/node`` is often a symlink into a
-    # specific profile's node install (e.g. profiles/jarvis/node/bin/node);
-    # calling .resolve() here would chase that symlink and bake one profile's
-    # node path into *every* profile's service unit. That cross-profile leak
-    # makes systemd_unit_is_current() perpetually false, so each gateway
-    # rewrites its unit + daemon-reload on every boot. Using the symlink's own
-    # parent keeps the generated unit profile-agnostic.
+    # specific install; calling .resolve() here would chase that symlink and
+    # bake one install's node path into the unit, which makes
+    # systemd_unit_is_current() perpetually false, so each gateway rewrites
+    # its unit + daemon-reload on every boot.
     resolved_node_dir = str(Path(resolved_node).parent)
     if resolved_node_dir not in path_entries:
         path_entries.append(resolved_node_dir)
@@ -2578,9 +2531,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     path_entries = _build_service_path_dirs()
     if not system:
-        # System units append the managed Node dirs later, once the TARGET
-        # user's Son of Anton home is known — probing here would stat the calling
-        # (sudo → root's) tree and bake the wrong user's Node into the unit.
+        # System units add Node later, ahead of the target user's remapped
+        # PATH entries.
         _append_node_dir_for_service(path_entries)
 
     common_bin_paths = [
@@ -2615,14 +2567,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         working_dir = str(son_of_anton_home) if son_of_anton_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
-        # Managed Node for the TARGET user's tree (see the skip above): probe
-        # the remapped son_of_anton_home, not the calling user's. Prepend — the
-        # managed Node must outrank remapped shell-PATH entries, matching the
+        # Node first, outranking remapped shell-PATH entries, matching the
         # user-unit ordering where it's appended before PATH capture.
         _target_node_entries: list[str] = []
-        _append_node_dir_for_service(
-            _target_node_entries, Path(son_of_anton_home) if son_of_anton_home else None
-        )
+        _append_node_dir_for_service(_target_node_entries)
         path_entries = [
             e for e in _target_node_entries if e not in path_entries
         ] + path_entries

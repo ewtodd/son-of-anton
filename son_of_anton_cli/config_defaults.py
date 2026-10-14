@@ -2773,10 +2773,8 @@ DEFAULT_CONFIG = {
             # if .env had the final say, rotating in Bitwarden wouldn't
             # take effect until you also cleared the matching .env line.
             "override_existing": True,
-            # When True, the bws binary is auto-downloaded into
-            # ~/.son-of-anton/bin/ on first use.  When False you must install
-            # bws yourself and have it on PATH.
-            "auto_install": True,
+            # bws must be on PATH: add pkgs.bws to the son-of-anton
+            # package's extraPackages. Nothing is downloaded at runtime.
             # Bitwarden region / self-hosted endpoint.  Empty string
             # means use the bws CLI default (US Cloud,
             # https://vault.bitwarden.com).  Set to

@@ -18,7 +18,29 @@ REMOVED_MODULES = (
     "tools.lazy_deps",
     "son_of_anton_cli._install_repair",
     "son_of_anton_cli._early_recovery",
+    "son_of_anton_cli.managed_uv",
+    "son_of_anton_cli.npm_engine",
+    "agent.lsp.install",
 )
+
+
+def test_no_private_node_toolchain_is_provisioned() -> None:
+    """Node comes from the system like every other tool."""
+    import son_of_anton_constants
+
+    for name in ("bootstrap_son_of_anton_managed_node", "heal_son_of_anton_managed_node",
+                 "find_node_executable"):
+        assert not hasattr(son_of_anton_constants, name), f"{name} is back"
+
+
+def test_bitwarden_takes_bws_from_path_only(tmp_path, monkeypatch) -> None:
+    """With bws absent, the source reports it and downloads nothing."""
+    from agent.secret_sources import bitwarden
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert bitwarden.find_bws() is None
+    assert not hasattr(bitwarden, "install_bws")
+    assert not any(tmp_path.iterdir()), "something was written while looking for bws"
 
 
 @pytest.mark.parametrize("module", REMOVED_MODULES)
