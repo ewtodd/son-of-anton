@@ -15,8 +15,9 @@ from tools import approval
 from tools import write_approval as wa
 
 
-def _answer_when_staged(choice: str, timeout: float = 5.0) -> threading.Thread:
+def _answer_when_staged(choice: str, timeout: float = 5.0, after: float = 0.0) -> threading.Thread:
     def _worker() -> None:
+        time.sleep(after)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             pending = [r for r in wa.list_pending(wa.EXEC) if not r.get("decision")]
@@ -58,21 +59,37 @@ def test_terminal_gate_relays_a_denial(monkeypatch) -> None:
     worker.join(timeout=5)
     assert result["approved"] is False
     assert "denied by user" in result["message"]
+    assert "End your turn" in result["message"], "a denial must stop the agent, not reroute it"
 
 
 def test_durable_timeout_fails_closed(monkeypatch) -> None:
+    """A configured (positive) timeout still fails closed, and stops the agent."""
     _durable_env(monkeypatch)
-    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0)
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0.2)
     result = approval.check_all_command_guards(
         "rm -rf /tmp/durable-approval-timeout", "local"
     )
     assert result["approved"] is False
     assert "Silence is not consent" in result["message"]
+    assert "End your turn" in result["message"]
+
+
+def test_durable_wait_has_no_deadline_by_default(monkeypatch) -> None:
+    """With no timeout (the default) a late answer is still the one honoured."""
+    _durable_env(monkeypatch)
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0)
+    worker = _answer_when_staged("session", after=1.5)
+    result = approval.check_all_command_guards(
+        "rm -rf /tmp/durable-approval-late", "local"
+    )
+    worker.join(timeout=5)
+    assert result["approved"] is True
+    assert result.get("user_approved") is True
 
 
 def test_durable_request_is_consumed_exactly_once(monkeypatch) -> None:
     _durable_env(monkeypatch)
-    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0)
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0.2)
     approval.check_all_command_guards(
         "rm -rf /tmp/durable-approval-consumed", "local"
     )

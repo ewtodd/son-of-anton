@@ -129,8 +129,9 @@ _START_ORDER_GATE_TIMEOUT_S = 120.0
 # serialization lock before running its prompt unserialized. The effective
 # bound is derived from ``approvals.timeout`` plus a margin (see
 # _authorization_gate_lock_timeout): a legitimate holder is at worst a human
-# answering an approval prompt, which self-terminates at approvals.timeout —
-# so a holder that overstays it is wedged and must not starve the batch.
+# answering an approval prompt. With a positive approvals.timeout that prompt
+# self-terminates there, so a holder that overstays it is wedged; with none
+# (the default) the bound is unbounded and the lock waits for the human.
 _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
@@ -484,7 +485,11 @@ class _ConcurrentToolAuthorizationGate:
             return 0.0
 
     def run(self, callback):
-        acquired = self._serialization_lock.acquire(timeout=self._lock_timeout)
+        # An unbounded bound (approvals with no timeout) waits as long as the
+        # holder's human does; Lock.acquire spells that -1, not inf.
+        acquired = self._serialization_lock.acquire(
+            timeout=-1 if self._lock_timeout == float("inf") else self._lock_timeout
+        )
         if not acquired:
             logger.warning(
                 "authorization gate lock not acquired after %.1fs "

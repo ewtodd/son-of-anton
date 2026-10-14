@@ -8447,7 +8447,7 @@ def _define_discord_view_classes() -> None:
                     embed = msg.embeds[0] if msg.embeds else None
                     if embed:
                         embed.color = discord.Color.greyple()
-                        embed.set_footer(text="⏱ Prompt expired — no action taken")
+                        embed.set_footer(text="⏱ Buttons expired — still waiting: reply /approve or /deny")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass  # message deleted or too old to edit

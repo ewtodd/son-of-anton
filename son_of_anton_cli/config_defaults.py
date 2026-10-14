@@ -1912,14 +1912,15 @@ DEFAULT_CONFIG = {
     #             safe; mirrors cron_mode deny)
     #   approve — auto-approve all dangerous commands in single-query mode
     #
-    # timeout — seconds to wait for the user's approve/deny before failing
-    # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
-    # Messaging approvals arrive as a push notification the user may not see
-    # immediately — 60s proved too tight on Discord/Slack (the prompt
-    # expired before the user reached their phone), so the default is 300.
+    # timeout — seconds to wait for the user's approve/deny. 0 (the default)
+    # waits however long it takes: a timed-out approval failed closed for the
+    # command, but the agent then carried on and tried another way to the
+    # same outcome. A positive value opts into a deadline; on expiry the
+    # command is denied and the agent is told to stop and ask. Shared by the
+    # CLI prompt and gateway/messaging waits.
     "approvals": {
         "mode": "smart",
-        "timeout": 300,
+        "timeout": 0,
         "cron_mode": "deny",
         "single_query_mode": "deny",
         # Operator-customizable policy text for smart approvals. When

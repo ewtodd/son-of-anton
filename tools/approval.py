@@ -2316,15 +2316,17 @@ HUMAN_WAIT_MARGIN_S = 60.0
 def human_wait_ceiling() -> float:
     """Max seconds a single window may contribute: approvals.timeout + margin.
 
-    Every legitimate human wait self-terminates at ``approvals.timeout`` (the
-    CLI prompt join and the gateway poll loop both enforce it), so a window
-    that overstays this ceiling is itself wedged and must not keep extending
-    a batch deadline. Also used by agent/tool_executor.py as the bound on the
+    With a positive ``approvals.timeout`` every legitimate human wait
+    self-terminates there (the CLI prompt join and the gateway poll loop both
+    enforce it), so a window that overstays this ceiling is itself wedged and
+    must not keep extending a batch deadline. With no timeout (the default)
+    the user may take as long as they like, so the ceiling is unbounded. Also used by agent/tool_executor.py as the bound on the
     authorization gate's serialization-lock acquire, so the two bounds cannot
     drift. Never call while holding ``_human_wait_lock`` — it reads the
     config cache.
     """
-    return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+    timeout = float(_get_approval_timeout())
+    return float("inf") if timeout <= 0 else timeout + HUMAN_WAIT_MARGIN_S
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:
@@ -2474,6 +2476,33 @@ def _reset_denials(session_key: str) -> None:
     """Clear the session's consecutive-denial tally (an approval happened)."""
     with _lock:
         _denial_tally.pop(session_key, None)
+
+
+# Every result where the user refused an action, never answered, or could
+# not be reached ends with this: the agent stops and asks instead of finding
+# another way to the same outcome.
+_STOP_AND_ASK = (
+    " End your turn now: tell the user what you were trying to do and ask how "
+    "they want to proceed. Take no further action until they answer."
+)
+
+
+def _approval_deadline(timeout) -> float | None:
+    """Monotonic deadline for a human approval wait; None waits indefinitely.
+
+    ``approvals.timeout <= 0`` (the default) waits for the user's answer
+    however long it takes: an approval that timed out used to let the agent
+    carry on and look for another way to do what was never approved.
+    """
+    try:
+        seconds = float(timeout)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return None if seconds <= 0 else time.monotonic() + seconds
+
+
+def _seconds_left(deadline: float | None) -> float:
+    return float("inf") if deadline is None else deadline - time.monotonic()
 
 
 def _denial_breaker_addendum(session_key: str) -> str:
@@ -3016,7 +3045,7 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
 
             thread = threading.Thread(target=get_input, daemon=True)
             thread.start()
-            thread.join(timeout=timeout_seconds)
+            thread.join(timeout=timeout_seconds if timeout_seconds and timeout_seconds > 0 else None)
 
             if thread.is_alive():
                 print("\n" + t("approval.timeout"))
@@ -3164,18 +3193,17 @@ def is_approval_bypass_active_for_session(session_key: str) -> bool:
     )
 
 
-def _get_approval_timeout() -> int:
-    """Read the approval timeout from config. Defaults to 300 seconds.
+def _get_approval_timeout() -> float:
+    """Seconds an approval waits for the user; ``<= 0`` (the default) waits indefinitely.
 
-    The default matches DEFAULT_CONFIG["approvals"]["timeout"]. Gateway
-    approvals arrive as push notifications the user may not see for a couple
-    of minutes; 60s proved too tight in practice (Telegram taps landed after
-    the wait had already failed closed).
+    The default matches DEFAULT_CONFIG["approvals"]["timeout"]. A timed-out
+    approval was safe for the command itself (fail-closed) but not for what
+    came next: the agent went on and tried another way to the same outcome.
     """
     try:
-        return int(_get_approval_config().get("timeout", 300))
+        return float(_get_approval_config().get("timeout", 0))
     except (ValueError, TypeError):
-        return 300
+        return 0.0
 
 
 def _get_cron_approval_mode() -> str:
@@ -3372,7 +3400,7 @@ def _apply_approval_decision(
     if decision.get("notify_failed"):
         return {
             "approved": False,
-            "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+            "message": "BLOCKED: Failed to send approval request to user. Do NOT retry." + _STOP_AND_ASK,
             "pattern_key": pattern_key,
             "description": description,
         }
@@ -3396,7 +3424,7 @@ def _apply_approval_decision(
                 f"BLOCKED: Action {reason}.{reason_addendum} The user "
                 f"has NOT consented to this action. Do NOT retry it, "
                 f"do NOT rephrase it, and do NOT attempt the same "
-                f"outcome via a different path.{timeout_addendum}"
+                f"outcome via a different path.{timeout_addendum}{_STOP_AND_ASK}"
             ),
             "pattern_key": pattern_key,
             "description": description,
@@ -3473,7 +3501,7 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
         },
         summary=summary,
         origin=wa.current_origin(),
-        expires_at=time.time() + max(int(timeout), 0),
+        expires_at=(time.time() + float(timeout)) if float(timeout) > 0 else None,
         chat_key=chat_key,
     )
 
@@ -3487,7 +3515,7 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
         surface="durable",
     )
 
-    deadline = time.monotonic() + max(int(timeout), 0)
+    deadline = _approval_deadline(timeout)
     decision: dict = {"resolved": False, "choice": None}
     try:
         while True:
@@ -3502,7 +3530,7 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
                     "reason": current.get("decision_reason") or None,
                 }
                 break
-            if wa.pending_expired(current) or time.monotonic() >= deadline:
+            if wa.pending_expired(current) or _seconds_left(deadline) <= 0:
                 break
             time.sleep(_DURABLE_APPROVAL_POLL_SECONDS)
     finally:
@@ -3760,7 +3788,7 @@ def _run_approval_gate(
                 f"BLOCKED: Action timed out without user response. The user "
                 f"has NOT consented to this action. Do NOT retry it, do NOT "
                 f"rephrase it, and do NOT attempt the same outcome via a "
-                f"different path. Silence is not consent."
+                f"different path. Silence is not consent.{_STOP_AND_ASK}"
             ),
             "pattern_key": pattern_key,
             "description": description,
@@ -3773,8 +3801,9 @@ def _run_approval_gate(
             "approved": False,
             "message": (
                 f"BLOCKED: User denied this potentially dangerous action "
-                f"(matched '{description}'). Do NOT retry — the user has "
-                "explicitly rejected it."
+                f"(matched '{description}'). Do NOT retry it, rephrase it, or "
+                "attempt the same outcome via a different path — the user has "
+                f"explicitly rejected it.{_STOP_AND_ASK}"
             ),
             "pattern_key": pattern_key,
             "description": description,
@@ -4068,7 +4097,7 @@ def _transport_denied_result(
             f"BLOCKED: Selected approval transport failed ({failure}); the user "
             "has NOT consented to this action. Do NOT retry this command or "
             "attempt the same outcome through another route."
-            f"{breaker_addendum}"
+            f"{_STOP_AND_ASK}{breaker_addendum}"
         ),
         "pattern_key": pattern_key,
         "description": description,
@@ -4121,7 +4150,7 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
         touch_activity_if_due = None
 
     _now = time.monotonic()
-    _deadline = _now + max(timeout, 0)
+    _deadline = _approval_deadline(timeout)
     _activity_state = {"last_touch": _now, "start": _now}
     resolved = False
     with human_wait_window(session_key):
@@ -4137,7 +4166,7 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
                 choice = "deny"
                 resolved = True
                 break
-            _remaining = _deadline - time.monotonic()
+            _remaining = _seconds_left(_deadline)
             if _remaining <= 0:
                 choice = None
                 break
@@ -4285,7 +4314,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         touch_activity_if_due = None
 
     _now = time.monotonic()
-    _deadline = _now + max(timeout, 0)
+    _deadline = _approval_deadline(timeout)
     _activity_state = {"last_touch": _now, "start": _now}
     resolved = False
     # The poll loop below is verifiably blocked on a human answer (the user
@@ -4311,7 +4340,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 entry.event.set()
                 resolved = True
                 break
-            _remaining = _deadline - time.monotonic()
+            _remaining = _seconds_left(_deadline)
             if _remaining <= 0:
                 break
             if entry.event.wait(timeout=min(1.0, _remaining)):
@@ -4967,10 +4996,8 @@ def check_all_command_guards(command: str, env_type: str,
                 "BLOCKED: Command timed out without user response. The user "
                 "has NOT consented to this action. Do NOT retry this "
                 "command, do NOT rephrase it, and do NOT attempt the same "
-                "outcome via a different command. Stop the current workflow "
-                "and wait for the user to respond before taking any further "
-                "destructive or irreversible action. Silence is not "
-                f"consent.{breaker_addendum}"
+                "outcome via a different command. Silence is not "
+                f"consent.{_STOP_AND_ASK}{breaker_addendum}"
             ),
             "pattern_key": primary_key,
             "description": combined_desc,
@@ -4986,9 +5013,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "BLOCKED: User denied this command. The user has NOT consented "
                 "to this action. Do NOT retry this command, do NOT rephrase "
                 "it, and do NOT attempt the same outcome via a different "
-                "command. Stop the current workflow and wait for the user "
-                f"to respond before taking any further destructive or "
-                f"irreversible action.{breaker_addendum}"
+                f"command.{_STOP_AND_ASK}{breaker_addendum}"
             ),
             "pattern_key": primary_key,
             "description": combined_desc,
@@ -5292,7 +5317,7 @@ def check_execute_code_guard(code: str, env_type: str,
                         "user has NOT consented to this action. Do NOT retry "
                         "it, do NOT rephrase it, and do NOT attempt the same "
                         "outcome via a different path. Silence is not "
-                        f"consent.{breaker_addendum}"
+                        f"consent.{_STOP_AND_ASK}{breaker_addendum}"
                     ),
                     "pattern_key": pattern_key,
                     "description": description,
@@ -5311,8 +5336,10 @@ def check_execute_code_guard(code: str, env_type: str,
                     "approved": False,
                     "message": (
                         "BLOCKED: User denied execute_code script execution "
-                        f"(matched '{description}'). Do NOT retry — the user "
-                        f"has explicitly rejected it.{breaker_addendum}"
+                        f"(matched '{description}'). Do NOT retry it, rephrase "
+                        "it, or attempt the same outcome via a different path — "
+                        f"the user has explicitly rejected it.{_STOP_AND_ASK}"
+                        f"{breaker_addendum}"
                     ),
                     "pattern_key": pattern_key,
                     "description": description,

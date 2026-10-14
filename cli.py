@@ -11698,7 +11698,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         from tools.clarify_gateway import notify_waiting, resolve_prompt_notify_after
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
+            # <= 0 (the default) waits for the user however long it takes.
+            try:
+                timeout = float(CLI_CONFIG.get("approvals", {}).get("timeout", 0) or 0)
+            except (TypeError, ValueError):
+                timeout = 0.0
             notify_after = resolve_prompt_notify_after(CLI_CONFIG)
             notify_at = None if notify_after <= 0 else _time.monotonic() + notify_after
             response_queue = queue.Queue()
@@ -11714,7 +11718,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "selected": 0,
                 "response_queue": response_queue,
             }
-            self._approval_deadline = _time.monotonic() + timeout
+            deadline = None if timeout <= 0 else _time.monotonic() + timeout
+            self._approval_deadline = deadline or 0  # 0: no countdown
 
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
@@ -11742,8 +11747,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                     return result
                 except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
+                    if deadline is not None and deadline - _time.monotonic() <= 0:
                         break
                     now = _time.monotonic()
                     if notify_at is not None and now >= notify_at:
