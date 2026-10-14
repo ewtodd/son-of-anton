@@ -83,12 +83,13 @@ def _pad(strips: list[Strip], columns: int) -> list[Strip]:
 class FeedStyle:
     """Rich style tokens for the transcript, resolved from the active skin."""
 
-    __slots__ = ("primary", "secondary", "muted", "code", "link", "error", "panel")
+    __slots__ = ("primary", "secondary", "tool", "muted", "code", "link", "error", "panel")
 
     def __init__(
         self,
         primary: str = "",
         secondary: str = "",
+        tool: str = "",
         muted: str = "dim",
         code: str = "dim",
         link: str = "underline",
@@ -97,6 +98,7 @@ class FeedStyle:
     ) -> None:
         self.primary = primary
         self.secondary = secondary
+        self.tool = tool
         self.muted = muted
         self.code = code
         self.link = link
@@ -445,9 +447,12 @@ class _ToolBlock(_Block):
 
     def render(self, width: int, styles: FeedStyle) -> None:
         lead = ("✗" if self.is_error else self.icon) if self.done else self.frame
+        # The widget feed's ToolLine: a finished row recedes (muted) so the
+        # answer stands out, the running one stays at full text colour, and
+        # a failure is the error colour. The icon carries the tool colour.
         row = Text()
-        row.append(lead.ljust(TOOL_ICON_WIDTH))
-        row.append(self.label)
+        row.append(lead.ljust(TOOL_ICON_WIDTH), style=styles.tool or None)
+        row.append(self.label, style=(styles.muted if self.done else None))
         if self.done and self.duration:
             row.append(f"  {self.duration:.1f}s", style=styles.muted)
         elif not self.done:

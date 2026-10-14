@@ -118,10 +118,16 @@ def _to_ansi(value: str, default: str) -> str:
     Named ANSI colours (``yellow``, ``dim cyan``…) become ``ansi_<name>`` so
     the terminal's own palette decides the hue; ``default`` becomes
     ``ansi_default``; a genuine hex from a custom skin passes through.
+
+    Idempotent: an ``ansi_<name>`` token is already mapped. ``_rich_color``
+    feeds ``_skin_accent``'s output back through here, and rejecting that
+    token blanked every transcript colour (reasoning, errors, headings).
     """
     v = (value or "").strip().lower()
     if not v:
         return default
+    if v.startswith("ansi_"):
+        return v
     for word in v.replace(",", " ").split():
         if word in {"black", "red", "green", "yellow", "blue", "magenta", "cyan",
                     "white", "gray", "grey"}:
@@ -1041,6 +1047,7 @@ if _TEXTUAL_AVAILABLE:
             return FeedStyle(
                 primary=_rich_color(_skin_accent("ui_accent", "ansi_yellow")),
                 secondary=_rich_color(_skin_accent("ui_thinking", "ansi_cyan")),
+                tool=_rich_color(_skin_accent("ui_tool", "ansi_yellow")),
                 error=_rich_color(_skin_accent("ui_error", "ansi_red")),
                 panel=self._surfaces.get("panel", ""),
             )

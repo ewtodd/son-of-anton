@@ -316,6 +316,57 @@ def test_selecting_in_the_feed_copies_and_keeps_the_prompt_focused() -> None:
     asyncio.run(run())
 
 
+def test_skin_colour_mapping_is_idempotent_for_every_builtin_skin() -> None:
+    """``_rich_color`` re-maps ``_skin_accent``'s output, so mapping must be stable.
+
+    ``_to_ansi`` rejected its own ``ansi_<name>`` tokens, so every transcript
+    colour came out empty and reasoning, tool rows and text all rendered in
+    the default foreground.
+    """
+    from son_of_anton_cli.skin_engine import list_skins, load_skin
+
+    for entry in list_skins():
+        skin = load_skin(entry["name"])
+        for key in ("ui_accent", "ui_thinking", "ui_tool", "ui_error"):
+            once = _tui._to_ansi(skin.get_color(key, ""), "ansi_default")
+            assert _tui._to_ansi(once, "") == once, (entry["name"], key, once)
+            assert _tui._rich_color(once), f"{entry['name']}.{key} lost its colour"
+
+
+def test_reasoning_tool_rows_and_answers_render_in_distinct_styles() -> None:
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause(0.2)
+            feed = app.query_one("#feed")
+            reasoning = feed.open_reasoning()
+            reasoning.append("thinking")
+            reasoning.finish()
+            feed.changed(reasoning)
+            tool = feed.open_tool("read_file")
+            tool.finish("→", "Reading foo.py", False, 0.1)
+            feed.changed(tool)
+            answer = feed.open_markdown()
+            answer.append("The answer.")
+            feed.flush()
+            await pilot.pause(0.2)
+
+            def style_of(block, text: str):
+                return next(seg.style for seg in block.lines[0] if text in seg.text)
+
+            reasoning_style = style_of(reasoning, "reasoning")
+            tool_label_style = style_of(tool, "Reading")
+            answer_style = style_of(answer, "answer")
+            assert reasoning_style and reasoning_style.color is not None, "reasoning lost its colour"
+            assert len({str(reasoning_style), str(tool_label_style), str(answer_style)}) == 3, (
+                reasoning_style, tool_label_style, answer_style,
+            )
+
+    asyncio.run(run())
+
+
 def test_reasoning_folds_and_a_click_reopens_it() -> None:
     """Reasoning keeps the old Collapsible affordance in the virtual feed.
 
