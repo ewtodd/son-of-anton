@@ -1516,16 +1516,21 @@ def test_wordmark_never_outgrows_its_column_across_resizes() -> None:
 
 
 def test_transcript_rows_fit_the_feed_across_resizes(backend) -> None:
-    """No transcript row is wider than the feed, and CLI output never re-wraps.
+    """No transcript row is wider than the feed, text keeps clear of the
+    scrollbar, and CLI output never re-wraps.
 
     Indented blocks (paragraphs, headings, notes, reasoning) wrapped at the
     full feed width and were indented afterwards, so every full line ran past
-    the viewport and lost its last few characters to the crop. The backend
-    console the classic CLI output wraps to was sized from the app's resize,
-    which fires before layout, so it trailed one resize behind.
+    the viewport and lost its last few characters to the crop. Once they fit,
+    text still ran flush against the scrollbar; only frames (rules, the
+    user-turn panel fill) may reach the right edge. The backend console the
+    classic CLI output wraps to was sized from the app's resize, which fires
+    before layout, so it trailed one resize behind.
     """
     _textual()
     from rich.text import Text
+
+    from son_of_anton_tui import feed as _feed
 
     b, _rec = backend
     b.detach()
@@ -1537,7 +1542,12 @@ def test_transcript_rows_fit_the_feed_across_resizes(backend) -> None:
             await pilot.pause(0.3)
             feed = app.query_one("#feed")
             feed.add_user(words)
-            feed.add_markdown(f"# {words}\n\n{words}\n\n- {words}\n\n> {words}\n")
+            feed.add_markdown(
+                f"# {words}\n\n{words}\n\n- {words}\n\n> {words}\n\n---\n\n"
+                f"| a | b |\n|---|---|\n| {words} | x |\n\n```\n{words}\n```\n"
+            )
+            tool = feed.open_tool("terminal")
+            tool.label, tool.dirty = words, True
             feed.add_note(Text(words))
             feed.add_rich(Text(words))
             feed.open_reasoning().append(words)
@@ -1551,6 +1561,13 @@ def test_transcript_rows_fit_the_feed_across_resizes(backend) -> None:
                         assert strip.cell_length <= feed._width, (
                             f"{block.kind} row is {strip.cell_length} cells in a "
                             f"{feed._width}-cell feed at term width {width}"
+                        )
+                        text = "".join(seg.text for seg in strip if not seg.control).rstrip()
+                        if block.kind == "wordmark" or set(text.strip()) == {"─"}:
+                            continue
+                        assert len(text) <= feed._width - _feed._TEXT_MARGIN, (
+                            f"{block.kind} text runs to column {len(text)} of a "
+                            f"{feed._width}-cell feed at term width {width}: {text[-20:]!r}"
                         )
 
                 # A console line already wrapped by the backend must land as

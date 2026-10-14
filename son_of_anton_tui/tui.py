@@ -56,7 +56,7 @@ try:
     )
     from textual.widgets.option_list import Option
 
-    from son_of_anton_tui.feed import NOTE_INDENT, FeedStyle, VirtualFeed
+    from son_of_anton_tui.feed import FeedStyle, VirtualFeed, note_width
 
     _TEXTUAL_AVAILABLE = True
 except Exception:  # pragma: no cover - import-time guard
@@ -961,7 +961,7 @@ if _TEXTUAL_AVAILABLE:
             self._stderr_buf = ""
             self._redirect_log_handlers()
             if self.backend is not None:
-                self.backend.attach(_AppSink(self), feed_width=self._feed_inner_width() - NOTE_INDENT)
+                self.backend.attach(_AppSink(self), feed_width=note_width(self._feed_inner_width()))
                 self._render_resumed_history()
             self.set_interval(0.12, self._tick_spinner)
             self.set_interval(1.0, self._tick_chrome)
@@ -991,7 +991,7 @@ if _TEXTUAL_AVAILABLE:
             # indented note blocks. Measuring here, not from the app's resize:
             # that fires before layout, so the backend lagged one resize behind.
             if self.backend is not None:
-                self.backend.set_feed_width(event.width - NOTE_INDENT)
+                self.backend.set_feed_width(note_width(event.width))
 
         def _wide(self, width: Optional[int] = None) -> bool:
             return (self.size.width if width is None else width) > SIDEBAR_THRESHOLD

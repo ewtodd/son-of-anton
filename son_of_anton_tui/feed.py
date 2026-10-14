@@ -54,9 +54,16 @@ TOOL_ICON_WIDTH = 2
 # Consecutive ANSI lines merge into one note block; the cap keeps a flood of
 # output re-rendering a bounded block.
 _NOTE_MERGE_MAX_LINES = 100
-# Notes and chrome sit this many columns in from the feed's edge, so text
-# printed for them must wrap this much narrower than the feed.
+# Notes and chrome sit this many columns in from the feed's left edge, and
+# text stops this many short of its right edge, clear of the scrollbar.
+# Frames (rules, the user-turn panel) still run the full width.
 NOTE_INDENT = 3
+_TEXT_MARGIN = 3
+
+
+def note_width(feed_width: int) -> int:
+    """Columns a note's text gets in a feed ``feed_width`` cells wide."""
+    return max(1, feed_width - NOTE_INDENT - _TEXT_MARGIN)
 
 
 def _to_strips(renderable: Any, width: int) -> list[Strip]:
@@ -160,12 +167,12 @@ def _render_inline_children(children: list, styles: FeedStyle, base: str = "") -
 
 
 def _block_strips(body: Any, width: int, pad: int) -> list[Strip]:
-    """Wrap ``body`` to fit beside a ``pad``-column indent, then indent it.
+    """Wrap ``body`` between a ``pad``-column indent and the right margin.
 
     The indent is part of the row: wrapping at the full width and indenting
     afterwards pushed every full line past the viewport, where it was cropped.
     """
-    return _pad(_to_strips(body, max(1, width - pad)), pad)
+    return _pad(_to_strips(body, max(1, width - pad - _TEXT_MARGIN)), pad)
 
 
 # ---------------------------------------------------------------------------
@@ -203,16 +210,16 @@ def render_markdown_lines(source: str, width: int, styles: FeedStyle) -> list[St
         elif token_type == "fence":
             for line in token.content.rstrip("\n").split("\n"):
                 strips.extend(
-                    _to_strips(Text("▎" + line, style=styles.code, overflow="crop"), width)
+                    _to_strips(Text("▎" + line, style=styles.code, overflow="crop"), width - _TEXT_MARGIN)
                 )
             i += 1
 
         elif token_type == "table_open":
             start, end = token.map
             raw = "\n".join(source.splitlines()[start:end])
-            aligned = realign_markdown_tables(raw, width - 3)
+            aligned = realign_markdown_tables(raw, width - 3 - _TEXT_MARGIN)
             for line in aligned.split("\n"):
-                strips.extend(_to_strips(Text(line, overflow="crop"), width - 3))
+                strips.extend(_to_strips(Text(line, overflow="crop"), width - 3 - _TEXT_MARGIN))
                 strips[-1] = _pad([strips[-1]], 3)[0]
             i += 1
             while i < n and tokens[i].type != "table_close":
@@ -238,7 +245,7 @@ def render_markdown_lines(source: str, width: int, styles: FeedStyle) -> list[St
                 marker = f"{counter}. " if ordered else "• "
                 counter += 1
                 body = Text("\n\n".join(parts))
-                item_strips = _to_strips(body, max(1, width - 3 - len(marker)))
+                item_strips = _to_strips(body, max(1, width - 3 - len(marker) - _TEXT_MARGIN))
                 for k, strip in enumerate(item_strips):
                     lead = marker if k == 0 else " " * len(marker)
                     lead_strip = _to_strips(Text(lead, style=styles.secondary), len(marker))[0]
@@ -254,7 +261,7 @@ def render_markdown_lines(source: str, width: int, styles: FeedStyle) -> list[St
                     parts.append(_render_inline_children(tokens[j].children or [], styles).plain)
                 j += 1
             body = Text("\n\n".join(parts))
-            for strip in _to_strips(body, max(1, width - 5)):
+            for strip in _to_strips(body, max(1, width - 5 - _TEXT_MARGIN)):
                 strips.append(_pad([Strip.join([_to_strips(Text("▎", style=styles.secondary), 1)[0], strip])], 3)[0])
             i = j + 1
 
@@ -264,7 +271,7 @@ def render_markdown_lines(source: str, width: int, styles: FeedStyle) -> list[St
 
         elif token_type == "html_block":
             for line in token.content.rstrip("\n").split("\n"):
-                strips.extend(_to_strips(Text(line, overflow="crop"), width))
+                strips.extend(_to_strips(Text(line, overflow="crop"), width - _TEXT_MARGIN))
             i += 1
 
         else:
@@ -321,7 +328,8 @@ class _UserBlock(_Block):
     The widget feed's UserTurn carried ``padding: 1 0 1 2`` and a ``border-left``
     that ran the full height, so every wrapped or multi-line message kept the
     rail. Rendering the message as one rich Text only prefixed the first line;
-    this wraps the body at ``width - 3`` and prefixes every rendered strip.
+    this wraps the body inside the rail and the right margin and prefixes
+    every rendered strip; the panel fill still runs the full width.
     """
 
     __slots__ = ("text",)
@@ -343,7 +351,7 @@ class _UserBlock(_Block):
             self.text,
             style=_combine("bold", f"on {styles.panel}" if styles.panel else ""),
         )
-        body_width = max(1, width - self.RAIL_WIDTH)
+        body_width = max(1, width - self.RAIL_WIDTH - _TEXT_MARGIN)
 
         def _row(body_strip: Optional[Strip] = None) -> Strip:
             row = Strip.join([gutter, body_strip]) if body_strip is not None else gutter
@@ -450,7 +458,7 @@ class _ToolBlock(_Block):
         row.overflow = "ellipsis"
         if self.is_error:
             row.stylize(styles.error)
-        self.lines = _to_strips(row, width)
+        self.lines = _to_strips(row, width - _TEXT_MARGIN)
         self.height = len(self.lines)
         self.dirty = False
 

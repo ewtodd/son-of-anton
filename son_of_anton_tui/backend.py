@@ -199,7 +199,7 @@ class TextualBackend(SonOfAntonCLI):
             force_terminal=True,
             color_system="standard",
             highlight=False,
-            width=max(40, self._tui_feed_width or 100),
+            width=max(20, self._tui_feed_width or 100),
         )
 
     def run_with_terminal(self, fn: Callable[[], Any]) -> Any:
@@ -234,7 +234,7 @@ class TextualBackend(SonOfAntonCLI):
         """Keep the Rich console and box helpers in step with the feed column."""
         self._tui_feed_width = max(20, int(width or 0))
         try:
-            self.console.width = max(40, self._tui_feed_width)
+            self.console.width = self._tui_feed_width
         except Exception:
             pass
 
