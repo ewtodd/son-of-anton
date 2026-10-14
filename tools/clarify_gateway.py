@@ -531,34 +531,37 @@ def resolve_clarify_timeout(config: dict) -> int:
         return 0
 
 
-def resolve_clarify_notify_after(config: dict) -> int:
-    """Seconds an unanswered clarify waits before a desktop nudge (<= 0: never)."""
-    raw = (config.get("agent") or {}).get("clarify_notify_after", 120)
+def resolve_prompt_notify_after(config: dict) -> int:
+    """Seconds an unanswered question or approval waits before a desktop nudge.
+
+    ``<= 0`` disables the nudge.
+    """
+    raw = (config.get("agent") or {}).get("prompt_notify_after", 120)
     try:
         return int(raw)
     except (TypeError, ValueError):
         return 120
 
 
-def notify_unanswered(question: str) -> None:
-    """Nudge the user with a desktop notification that a question is waiting.
+def notify_waiting(body: str, title: str = "Son of Anton is waiting for your answer") -> None:
+    """Nudge the user with a desktop notification that a prompt is waiting.
 
     Best effort: with no ``notify-send`` or no notification daemon the agent
     simply keeps waiting, which is the contract either way.
     """
-    body = " ".join(str(question).split())
+    body = " ".join(str(body).split())
     if len(body) > 200:
         body = body[:199] + "…"
     try:
         subprocess.run(
-            ["notify-send", "--app-name=Son of Anton", "Son of Anton is waiting for your answer", body],
+            ["notify-send", "--app-name=Son of Anton", title, body],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        logger.debug("clarify: desktop notification failed", exc_info=True)
+        logger.debug("desktop notification failed", exc_info=True)
 
 
 def get_clarify_timeout() -> int:

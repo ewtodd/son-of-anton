@@ -11400,8 +11400,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         import time as _time
 
         from tools.clarify_gateway import (
-            notify_unanswered,
-            resolve_clarify_notify_after,
+            notify_waiting,
+            resolve_prompt_notify_after,
             resolve_clarify_timeout,
         )
 
@@ -11411,7 +11411,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
         # (the default) means unlimited: the agent waits for the answer.
         timeout = resolve_clarify_timeout(CLI_CONFIG)
-        notify_after = resolve_clarify_notify_after(CLI_CONFIG)
+        notify_after = resolve_prompt_notify_after(CLI_CONFIG)
         notify_at = None if notify_after <= 0 else _time.monotonic() + notify_after
         response_queue = queue.Queue()
         is_open_ended = not choices
@@ -11457,7 +11457,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 now = _time.monotonic()
                 if notify_at is not None and now >= notify_at:
                     notify_at = None
-                    notify_unanswered(question)
+                    notify_waiting(question)
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
                     self._paint_now()
@@ -11562,13 +11562,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         import time as _time
 
         from tools.clarify_gateway import (
-            notify_unanswered,
-            resolve_clarify_notify_after,
+            notify_waiting,
+            resolve_prompt_notify_after,
             resolve_clarify_timeout,
         )
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
-        notify_after = resolve_clarify_notify_after(CLI_CONFIG)
+        notify_after = resolve_prompt_notify_after(CLI_CONFIG)
         notify_at = None if notify_after <= 0 else _time.monotonic() + notify_after
         response_queue = queue.Queue()
 
@@ -11610,7 +11610,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if notify_at is not None and now >= notify_at:
                     notify_at = None
                     first = (questions[0] or {}).get("question", "") if isinstance(questions[0], dict) else ""
-                    notify_unanswered(f"{len(questions)} questions — {first}" if first else f"{len(questions)} questions")
+                    notify_waiting(f"{len(questions)} questions — {first}" if first else f"{len(questions)} questions")
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
                     self._paint_now()
@@ -11695,8 +11695,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         import time as _time
 
+        from tools.clarify_gateway import notify_waiting, resolve_prompt_notify_after
+
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
+            notify_after = resolve_prompt_notify_after(CLI_CONFIG)
+            notify_at = None if notify_after <= 0 else _time.monotonic() + notify_after
             response_queue = queue.Queue()
 
             self._approval_state = {
@@ -11742,6 +11746,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if remaining <= 0:
                         break
                     now = _time.monotonic()
+                    if notify_at is not None and now >= notify_at:
+                        notify_at = None
+                        notify_waiting(command, title="Son of Anton needs approval to run a command")
                     if now - _last_countdown_refresh >= 1.0:
                         _last_countdown_refresh = now
                         self._paint_now()

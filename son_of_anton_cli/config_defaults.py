@@ -270,10 +270,10 @@ DEFAULT_CONFIG = {
         # user has not answered and ends its turn to wait for their reply.
         # The user can always end a pending question with /stop or /new.
         "clarify_timeout": 0,
-        # Seconds an unanswered clarify waits before a desktop notification
-        # (notify-send) reminds the user it is blocked on them; CLI/TUI only.
-        # 0 = no notification.
-        "clarify_notify_after": 120,
+        # Seconds an unanswered clarify question or command approval waits
+        # before a desktop notification (notify-send) reminds the user the
+        # agent is blocked on them; CLI/TUI only. 0 = no notification.
+        "prompt_notify_after": 120,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
