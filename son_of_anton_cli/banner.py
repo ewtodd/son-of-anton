@@ -1030,7 +1030,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         # is wrong and how to fix it.
         left_lines.append(
             f"[bold red]no model configured "
-            f"[{dim}]— run /model or son-of-anton setup"
+            f"[{dim}]— run /model or declare one in config.toml"
         )
     else:
         model_short = model.split("/")[-1] if "/" in model else model

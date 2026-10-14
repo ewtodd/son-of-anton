@@ -1773,7 +1773,7 @@ def _validate_base_url(base_url: str) -> None:
     except ValueError as exc:
         raise RuntimeError(
             f"Malformed custom endpoint URL: {candidate!r}. "
-            "Run `son-of-anton setup` or `son-of-anton model` and enter a valid http(s) base URL."
+            "Set a valid http(s) base URL in config.toml or with `son-of-anton model`."
         ) from exc
 
 
@@ -6360,7 +6360,7 @@ def _call_llm_impl(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: son-of-anton setup"
+                "Declare one in config.toml (the Nix module's settings)."
             )
         resolved_provider = effective_provider or resolved_provider
     else:
@@ -6414,7 +6414,7 @@ def _call_llm_impl(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: son-of-anton setup")
+                "Declare one in config.toml (the Nix module's settings).")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
@@ -7039,7 +7039,7 @@ async def _async_call_llm_impl(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: son-of-anton setup"
+                "Declare one in config.toml (the Nix module's settings)."
             )
         resolved_provider = effective_provider or resolved_provider
     else:
@@ -7089,7 +7089,7 @@ async def _async_call_llm_impl(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: son-of-anton setup")
+                "Declare one in config.toml (the Nix module's settings).")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider

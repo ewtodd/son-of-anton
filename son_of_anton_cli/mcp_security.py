@@ -18,10 +18,9 @@ blocks two high-signal abuse shapes seen in the wild:
    command/args/env carry an IOC is refused outright, regardless of shape, so a
    pre-planted ``config.toml`` cannot spawn it.
 
-These checks run BOTH at save time (``_save_mcp_server`` — dashboard API + CLI)
-and at spawn time (``tools.mcp_tool._filter_suspicious_mcp_servers`` — discovery
-/ cron / startup), so a hand-edited or pre-planted entry is also caught before
-it can execute.
+These checks run at spawn time (``tools.mcp_tool._filter_suspicious_mcp_servers``
+— discovery / cron / startup) and when ``son-of-anton mcp`` probes a declared
+server, so a hand-edited or pre-planted entry is caught before it can execute.
 """
 from __future__ import annotations
 

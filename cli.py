@@ -6642,7 +6642,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if len(item["tools"]) > 2:
                         tools_str += f", +{len(item['tools'])-2} more"
                     self._console_print(f"   [dim]• {item['name']} [dim italic]({', '.join(item['missing_vars'])})")
-                self._console_print("[dim]   Run 'son-of-anton setup' to configure")
+                self._console_print("[dim]   Declare them in config.toml / .env (the Nix module's settings)")
         except Exception:
             pass  # Don't crash on import errors
     

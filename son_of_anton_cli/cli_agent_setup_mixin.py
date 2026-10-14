@@ -138,12 +138,12 @@ class CLIAgentSetupMixin:
                     print(f"\n⚠️  No API key found for provider '{_prov}'.")
                 else:
                     print("\n⚠️  No inference provider is configured.")
-                print("   Run 'son-of-anton model' to choose a provider, or "
-                      "'son-of-anton setup' for first-time setup.")
+                print("   Declare a provider under model in config.toml, or run "
+                      "'son-of-anton model'.")
                 return False
         if not isinstance(base_url, str) or not base_url:
             print("\n⚠️  Provider resolver returned an empty base URL. "
-                  "Check your provider config or run: son-of-anton setup")
+                  "Check the provider declared under model in config.toml.")
             return False
 
         credentials_changed = api_key != self.api_key or base_url != self.base_url

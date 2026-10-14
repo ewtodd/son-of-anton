@@ -383,6 +383,5 @@ def show_status(args):
 
     print()
     print(color("─" * 60, Colors.DIM))
-    print(color("  Run 'son-of-anton doctor' for detailed diagnostics", Colors.DIM))
-    print(color("  Run 'son-of-anton setup' to configure", Colors.DIM))
+    print(color("  Configuration is declared in config.toml (the Nix module's settings)", Colors.DIM))
     print()

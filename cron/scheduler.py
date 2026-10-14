@@ -4220,7 +4220,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     except AuthError as exc:
         return (
             f"provider credential missing: {exc}. "
-            "Set the provider API key in .env (or `son-of-anton setup`), or pin a "
+            "Set the provider API key in .env, or pin a "
             "working provider via `son-of-anton cron edit "
             f"{job.get('id')} --provider <p>`."
         )
@@ -4280,8 +4280,8 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
         if platform_name.lower() not in connected:
             return (
                 f"delivery platform '{platform_name}' has no gateway "
-                "credentials configured (not connected). Configure it via "
-                "`son-of-anton setup` or change the job's `deliver` target."
+                "credentials configured (not connected). Declare it in config.toml "
+                "or change the job's `deliver` target."
             )
     return None
 

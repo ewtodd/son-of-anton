@@ -995,9 +995,9 @@ def init_agent(
             if not getattr(agent, "_fallback_activated", False):
                 # No provider configured — reject with a clear message.
                 raise RuntimeError(
-                    "No LLM provider configured. Run `son-of-anton model` to "
-                    "select a provider, or run `son-of-anton setup` for first-time "
-                    "configuration."
+                    "No LLM provider configured. Declare one under model in "
+                    "config.toml (the Nix module's settings), or run "
+                    "`son-of-anton model`."
                 )
     
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt

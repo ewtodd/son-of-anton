@@ -2939,8 +2939,8 @@ class MCPServerTask:
         if not _ensure_mcp_sdk():
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                "it is not installed. Run `son-of-anton setup` to install MCP support, "
-                "then retry."
+                "it is not in this build. Add the \"mcp\" dependency group to the "
+                "Nix build (extraDependencyGroups), then retry."
             )
 
         command = config.get("command")

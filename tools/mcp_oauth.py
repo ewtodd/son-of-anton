@@ -605,8 +605,8 @@ class SonOfAntonTokenStorage:
         Without a durable marker the in-memory fallback in
         ``mcp_oauth_manager`` only holds for the current process, so every
         restart re-presents a client_id the server has already fetched and
-        refused. Cleared by ``remove()``, i.e. by ``son-of-anton mcp login`` /
-        ``son-of-anton mcp remove``, so a fixed document gets another chance.
+        refused. Cleared by ``remove()``, i.e. by ``son-of-anton mcp login``,
+        so a fixed document gets another chance.
         """
         path = self._cimd_rejected_path()
         try:

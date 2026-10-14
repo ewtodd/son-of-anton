@@ -52,7 +52,7 @@ from son_of_anton_cli.config import (
 
 # display_son_of_anton_home is imported lazily at call sites to avoid ImportError
 # when son_of_anton_constants is cached from a pre-update version during `son-of-anton update`.
-from son_of_anton_cli.setup import (
+from son_of_anton_cli.cli_output import (
     print_header,
     print_info,
     print_success,

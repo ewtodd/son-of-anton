@@ -1700,7 +1700,7 @@ def check_compaction_model_feasibility(agent: Any) -> None:
                 msg = (
                     "⚠ No auxiliary LLM provider configured — context "
                     "compaction will drop middle turns without a summary. "
-                    "Run `son-of-anton setup` or set OPENROUTER_API_KEY."
+                    "Declare an auxiliary provider in config.toml or set OPENROUTER_API_KEY."
                 )
             agent._compaction_warning = msg
             agent._emit_status(msg)

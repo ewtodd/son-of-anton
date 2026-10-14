@@ -1,8 +1,8 @@
 """
 MCP Server Management CLI — ``son-of-anton mcp`` subcommand.
 
-Implements ``son-of-anton mcp add/remove/list/test/configure`` for interactive
-MCP server lifecycle management (issue #690 Phase 2).
+Implements ``son-of-anton mcp list/test/login/reauth`` for MCP servers declared
+in config.toml; servers are never installed or added from here.
 
 Relies on tools/mcp_tool.py for connection/discovery and keeps
 configuration in ~/.son-of-anton/config.toml under the ``mcp_servers`` key.
@@ -11,34 +11,18 @@ configuration in ~/.son-of-anton/config.toml under the ``mcp_servers`` key.
 import asyncio
 import logging
 import os
-import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from son_of_anton_cli.config import (
-    cfg_get,
     load_config,
-    save_config,
-    get_env_value,
-    save_env_value,
     get_son_of_anton_home,  # noqa: F401 — used by test mocks
 )
 from son_of_anton_cli.colors import Colors, color
-from son_of_anton_constants import display_son_of_anton_home
 from son_of_anton_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 
 logger = logging.getLogger(__name__)
-
-_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
-    "codex": {
-        "command": "codex",
-        "args": ["mcp-server"],
-    },
-}
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -56,23 +40,6 @@ def _error(text: str):
     print(color(f"  ✗ {text}", Colors.RED))
 
 
-def _confirm(question: str, default: bool = True) -> bool:
-    default_str = "Y/n" if default else "y/N"
-    try:
-        val = input(color(f"  {question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return default
-    if not val:
-        return default
-    return val in {"y", "yes"}
-
-
-def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
-    from son_of_anton_cli.cli_output import prompt as _shared_prompt
-    return _shared_prompt(question, default=default, password=password)
-
-
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
@@ -83,137 +50,6 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     if not servers or not isinstance(servers, dict):
         return {}
     return servers
-
-
-def _save_mcp_server(name: str, server_config: dict) -> bool:
-    """Add or update a server entry in config.toml.
-
-    Returns False when a high-signal exfiltration-shaped stdio command is
-    rejected. MCP stdio servers are user-chosen local commands, so this blocks
-    shell+egress payloads rather than whitelisting command families.
-    """
-    issues = validate_mcp_server_entry(name, server_config)
-    if issues:
-        for issue in issues:
-            _warning(issue)
-        _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
-        return False
-    config = load_config()
-    config.setdefault("mcp_servers", {})[name] = server_config
-    save_config(config)
-    return True
-
-
-def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.toml.  Returns True if it existed."""
-    config = load_config()
-    servers = config.get("mcp_servers", {})
-    if name not in servers:
-        return False
-    del servers[name]
-    if not servers:
-        config.pop("mcp_servers", None)
-    save_config(config)
-    return True
-
-
-def _env_key_for_server(name: str) -> str:
-    """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
-    suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
-    return f"MCP_{suffix}_API_KEY"
-
-
-def _strip_bearer_prefix(token: str) -> str:
-    """Strip a leading ``Bearer `` from a pasted token.
-
-    The header template stores ``Authorization: Bearer ${MCP_X_API_KEY}``, so
-    if a user pastes a token that already includes the ``Bearer `` prefix the
-    server receives ``Bearer Bearer <jwt>`` → 401. Normalize on save. (#37792)
-    """
-    if not isinstance(token, str):
-        return token
-    stripped = token.strip()
-    if stripped[:7].lower() == "bearer ":
-        return stripped[7:].strip()
-    return stripped
-
-
-def _bearer_auth_headers(name: str) -> Dict[str, str]:
-    """Build the persisted Authorization header for a named MCP server.
-
-    The secret itself lives in the active profile's ``.env`` file. Keeping
-    this template construction beside ``_env_key_for_server`` ensures the CLI
-    and Dashboard produce byte-equivalent MCP configuration.
-    """
-    env_key = _env_key_for_server(name)
-    return {"Authorization": f"Bearer ${{{env_key}}}"}
-
-
-def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
-    """Persist a Bearer token in the active profile and return safe headers.
-
-    ``token`` is a one-time provisioning value. It is normalized and written
-    only to ``.env``; callers persist the returned interpolation template in
-    ``config.toml``.
-    """
-    normalized = _strip_bearer_prefix(token)
-    if not normalized or normalized.lower() == "bearer":
-        raise ValueError("Bearer token is required")
-    save_env_value(_env_key_for_server(name), normalized)
-    return _bearer_auth_headers(name)
-
-
-def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
-    """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
-    parsed: Dict[str, str] = {}
-    for item in raw_env or []:
-        text = str(item or "").strip()
-        if not text:
-            continue
-        if "=" not in text:
-            raise ValueError(f"Invalid --env value '{text}' (expected KEY=VALUE)")
-        key, value = text.split("=", 1)
-        key = key.strip()
-        if not key:
-            raise ValueError(f"Invalid --env value '{text}' (missing variable name)")
-        if not _ENV_VAR_NAME_RE.match(key):
-            raise ValueError(f"Invalid --env variable name '{key}'")
-        parsed[key] = value
-    return parsed
-
-
-def _apply_mcp_preset(
-    name: str,
-    *,
-    preset_name: Optional[str],
-    url: Optional[str],
-    command: Optional[str],
-    cmd_args: List[str],
-    server_config: Dict[str, Any],
-) -> tuple[Optional[str], Optional[str], List[str], bool]:
-    """Apply a known MCP preset when transport details were omitted."""
-    if not preset_name:
-        return url, command, cmd_args, False
-
-    preset = _MCP_PRESETS.get(preset_name)
-    if not preset:
-        raise ValueError(f"Unknown MCP preset: {preset_name}")
-
-    if url or command:
-        return url, command, cmd_args, False
-
-    url = preset.get("url")
-    command = preset.get("command")
-    cmd_args = list(preset.get("args") or [])
-
-    if url:
-        server_config["url"] = url
-    if command:
-        server_config["command"] = command
-    if cmd_args:
-        server_config["args"] = cmd_args
-
-    return url, command, cmd_args, True
 
 
 # ─── Discovery (temporary connect) ───────────────────────────────────────────
@@ -397,245 +233,6 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     return RuntimeError(str(exc))
 
 
-# ─── son-of-anton mcp add ──────────────────────────────────────────────────────────
-
-def cmd_mcp_add(args):
-    """Add a new MCP server with discovery-first tool selection."""
-    name = args.name
-    url = getattr(args, "url", None)
-    # Read from `mcp_command` (set by --command via explicit dest) — see
-    # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
-    # son_of_anton_cli/main.py for why the dest is renamed.
-    command = getattr(args, "mcp_command", None)
-    cmd_args = getattr(args, "args", None) or []
-    if cmd_args and cmd_args[0] == "--":
-        cmd_args = cmd_args[1:]
-    auth_type = getattr(args, "auth", None)
-    preset_name = getattr(args, "preset", None)
-    raw_env = getattr(args, "env", None)
-    raw_connect_timeout = getattr(args, "connect_timeout", None)
-
-    server_config: Dict[str, Any] = {}
-    try:
-        explicit_env = _parse_env_assignments(raw_env)
-        url, command, cmd_args, _preset_applied = _apply_mcp_preset(
-            name,
-            preset_name=preset_name,
-            url=url,
-            command=command,
-            cmd_args=list(cmd_args),
-            server_config=server_config,
-        )
-    except ValueError as exc:
-        _error(str(exc))
-        return
-
-    if url and explicit_env:
-        _error("--env is only supported for stdio MCP servers (--command or stdio presets)")
-        return
-
-    # Validate transport
-    if not url and not command:
-        _error("Must specify --url <endpoint>, --command <cmd>, or --preset <name>")
-        _info("Examples:")
-        _info('  son-of-anton mcp add ink --url "https://mcp.ml.ink/mcp"')
-        _info('  son-of-anton mcp add github --command npx --args @modelcontextprotocol/server-github')
-        _info('  son-of-anton mcp add myserver --preset mypreset')
-        return
-
-    # Check if server already exists
-    existing = _get_mcp_servers()
-    if name in existing:
-        if not _confirm(f"Server '{name}' already exists. Overwrite?", default=False):
-            _info("Cancelled.")
-            return
-
-    # Build initial config
-    if url:
-        server_config["url"] = url
-    else:
-        server_config["command"] = command
-        if cmd_args:
-            server_config["args"] = cmd_args
-        if explicit_env:
-            server_config["env"] = explicit_env
-    if raw_connect_timeout is not None:
-        server_config["connect_timeout"] = raw_connect_timeout
-
-    issues = validate_mcp_server_entry(name, server_config)
-    if issues:
-        for issue in issues:
-            _warning(issue)
-        _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
-        return
-
-    # ── Authentication ────────────────────────────────────────────────
-
-    if url and auth_type == "oauth":
-        print()
-        _info(f"Starting OAuth flow for '{name}'...")
-        oauth_ok = False
-        try:
-            from tools.mcp_oauth_manager import get_manager
-            oauth_auth = get_manager().get_or_build_provider(
-                name, url, server_config.get("oauth")
-            )
-            if oauth_auth:
-                server_config["auth"] = "oauth"
-                _success("OAuth configured (tokens will be acquired on first connection)")
-                oauth_ok=True
-            else:
-                _warning("OAuth setup failed — MCP SDK auth module not available")
-        except Exception as exc:
-            _warning(f"OAuth error: {exc}")
-
-        if not oauth_ok:
-            _info("This server may not support OAuth.")
-            if _confirm("Continue without authentication?", default=True):
-                # Don't store auth: oauth — server doesn't support it
-                pass
-            else:
-                _info("Cancelled.")
-                return
-
-    elif url:
-        # Prompt for API key / Bearer token for HTTP servers
-        print()
-        _info(f"Connecting to {url}")
-        needs_auth = _confirm("Does this server require authentication?", default=True)
-        if needs_auth:
-            if auth_type == "header" or not auth_type:
-                env_key = _env_key_for_server(name)
-                existing_key = get_env_value(env_key)
-                if existing_key:
-                    _success(f"{env_key}: already configured")
-                else:
-                    api_key = _prompt("API key / Bearer token", password=True)
-                    if api_key:
-                        server_config["headers"] = _save_bearer_auth_token(
-                            name, api_key
-                        )
-                        _success(f"Saved to {display_son_of_anton_home()}/.env as {env_key}")
-
-                # Set header with env var interpolation
-                if existing_key:
-                    server_config["headers"] = _bearer_auth_headers(name)
-
-    # ── Discovery: connect and list tools ─────────────────────────────
-
-    print()
-    print(color(f"  Connecting to '{name}'...", Colors.CYAN))
-
-    try:
-        tools = _probe_single_server(name, server_config)
-    except Exception as exc:
-        _error(f"Failed to connect: {exc}")
-        if _confirm("Save config anyway (you can test later)?", default=False):
-            server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
-                _success(f"Saved '{name}' to config (disabled)")
-                _info("Fix the issue, then: son-of-anton mcp test " + name)
-        return
-
-    if not tools:
-        _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True):
-            if _save_mcp_server(name, server_config):
-                _success(f"Saved '{name}' to config")
-        return
-
-    # ── Tool selection ────────────────────────────────────────────────
-
-    print()
-    _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
-    print()
-    for tool_name, desc in tools:
-        short = desc[:60] + "..." if len(desc) > 60 else desc
-        print(f"    {color(tool_name, Colors.GREEN):40s} {short}")
-    print()
-
-    # Ask: enable all, select, or cancel
-    try:
-        choice = input(
-            color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
-        ).strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        _info("Cancelled.")
-        return
-
-    if choice in {"n", "no"}:
-        _info("Cancelled — server not saved.")
-        return
-
-    if choice in {"s", "select"}:
-        # Interactive tool selection
-        from son_of_anton_cli.curses_ui import curses_checklist
-
-        labels = [f"{t[0]}  —  {t[1]}" for t in tools]
-        pre_selected = set(range(len(tools)))
-
-        chosen = curses_checklist(
-            f"Select tools for '{name}'",
-            labels,
-            pre_selected,
-        )
-
-        if not chosen:
-            _info("No tools selected — server not saved.")
-            return
-
-        chosen_names = [tools[i][0] for i in sorted(chosen)]
-        server_config.setdefault("tools", {})["include"] = chosen_names
-
-        tool_count = len(chosen_names)
-        total = len(tools)
-    else:
-        # Enable all (no filter needed — default behaviour)
-        tool_count = len(tools)
-        total = len(tools)
-
-    # ── Save ──────────────────────────────────────────────────────────
-
-    server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
-        print()
-        _success(f"Saved '{name}' to {display_son_of_anton_home()}/config.toml ({tool_count}/{total} tools enabled)")
-        _info("Start a new session to use these tools.")
-
-
-# ─── son-of-anton mcp remove ───────────────────────────────────────────────────────
-
-def cmd_mcp_remove(args):
-    """Remove an MCP server from config."""
-    name = args.name
-    existing = _get_mcp_servers()
-
-    if name not in existing:
-        _error(f"Server '{name}' not found in config.")
-        servers = list(existing.keys())
-        if servers:
-            _info(f"Available servers: {', '.join(servers)}")
-        return
-
-    if not _confirm(f"Remove server '{name}'?", default=True):
-        _info("Cancelled.")
-        return
-
-    _remove_mcp_server(name)
-    _success(f"Removed '{name}' from config")
-
-    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
-    # any provider instance cached in the current process (e.g. from an
-    # earlier `son-of-anton mcp test` in the same session) is evicted too.
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
-        _success("Cleaned up OAuth tokens")
-    except Exception:
-        pass
-
-
 # ─── son-of-anton mcp list ──────────────────────────────────────────────────────────
 
 def cmd_mcp_list(args=None):
@@ -646,9 +243,7 @@ def cmd_mcp_list(args=None):
         print()
         _info("No MCP servers configured.")
         print()
-        _info("Add one with:")
-        _info('  son-of-anton mcp add <name> --url <endpoint>')
-        _info('  son-of-anton mcp add <name> --command <cmd> --args <args...>')
+        _info("Declare MCP servers under mcp_servers in config.toml (e.g. your Nix module's settings).")
         print()
         return
 
@@ -785,7 +380,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         return False
     if server_config.get("auth") != "oauth":
         _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
-        _info("Use `son-of-anton mcp remove` + `son-of-anton mcp add` to reconfigure auth.")
+        _info("Set auth = \"oauth\" on its mcp_servers entry in config.toml.")
         return False
 
     # Wipe both disk and in-memory cache so the next probe forces a fresh
@@ -946,119 +541,15 @@ def cmd_mcp_reauth(args):
     _reauth_oauth_server(name, servers[name])
 
 
-# ─── son-of-anton mcp configure ────────────────────────────────────────────────────
-
-def cmd_mcp_configure(args):
-    """Reconfigure which tools are enabled for an existing MCP server."""
-    import sys as _sys
-    if not _sys.stdin.isatty():
-        print("Error: 'son-of-anton mcp configure' requires an interactive terminal.", file=_sys.stderr)
-        _sys.exit(1)
-    name = args.name
-    servers = _get_mcp_servers()
-
-    if name not in servers:
-        _error(f"Server '{name}' not found in config.")
-        available = list(servers.keys())
-        if available:
-            _info(f"Available: {', '.join(available)}")
-        return
-
-    cfg = servers[name]
-
-    # Discover all available tools
-    print()
-    print(color(f"  Connecting to '{name}' to discover tools...", Colors.CYAN))
-
-    try:
-        all_tools = _probe_single_server(name, cfg)
-    except Exception as exc:
-        _error(f"Failed to connect: {exc}")
-        return
-
-    if not all_tools:
-        _warning("Server reports no tools.")
-        return
-
-    # Determine which are currently enabled
-    tools_cfg = cfg.get("tools", {})
-    if isinstance(tools_cfg, dict):
-        include = tools_cfg.get("include")
-        exclude = tools_cfg.get("exclude")
-    else:
-        include = None
-        exclude = None
-
-    tool_names = [t[0] for t in all_tools]
-
-    # Same matching semantics as runtime registration (tools/mcp_tool.py):
-    # exact names or fnmatch globs.
-    try:
-        from tools.mcp_tool import matches_name_filter
-    except ImportError:  # pragma: no cover — defensive fallback
-        def matches_name_filter(tool_name, patterns):
-            return tool_name in patterns
-
-    if include and isinstance(include, list):
-        include_set = {str(p) for p in include}
-        pre_selected = {
-            i for i, tn in enumerate(tool_names)
-            if matches_name_filter(tn, include_set)
-        }
-    elif exclude and isinstance(exclude, list):
-        exclude_set = {str(p) for p in exclude}
-        pre_selected = {
-            i for i, tn in enumerate(tool_names)
-            if not matches_name_filter(tn, exclude_set)
-        }
-    else:
-        pre_selected = set(range(len(all_tools)))
-
-    currently = len(pre_selected)
-    total = len(all_tools)
-    _info(f"Currently {currently}/{total} tools enabled for '{name}'.")
-    print()
-
-    # Interactive checklist
-    from son_of_anton_cli.curses_ui import curses_checklist
-
-    labels = [f"{t[0]}  —  {t[1]}" for t in all_tools]
-
-    chosen = curses_checklist(
-        f"Select tools for '{name}'",
-        labels,
-        pre_selected,
-    )
-
-    if chosen == pre_selected:
-        _info("No changes made.")
-        return
-
-    # Update config
-    config = load_config()
-    server_entry = cfg_get(config, "mcp_servers", name, default={})
-
-    if len(chosen) == total:
-        # All selected → remove include/exclude (register all)
-        server_entry.pop("tools", None)
-    else:
-        chosen_names = [tool_names[i] for i in sorted(chosen)]
-        server_entry.setdefault("tools", {})
-        server_entry["tools"]["include"] = chosen_names
-        server_entry["tools"].pop("exclude", None)
-
-    config.setdefault("mcp_servers", {})[name] = server_entry
-    save_config(config)
-
-    new_count = len(chosen)
-    _success(f"Updated config: {new_count}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
-
-
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
-    """Main dispatcher for ``son-of-anton mcp`` subcommands."""
+    """Main dispatcher for ``son-of-anton mcp`` subcommands.
+
+    MCP servers are declared in config.toml (``mcp_servers``), e.g. by the
+    Nix module's settings. Son of Anton never installs or adds one itself, so
+    these commands only inspect, test and authenticate declared servers.
+    """
     action = getattr(args, "mcp_action", None)
 
     if action == "serve":
@@ -1066,33 +557,10 @@ def mcp_command(args):
         run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 
-    # Catalog subcommands live in mcp_picker / mcp_catalog. Import lazily so
-    # the original `mcp_config` module stays import-cheap.
-    if action == "picker":
-        from son_of_anton_cli.mcp_picker import run_picker
-        run_picker()
-        return
-    if action == "catalog":
-        from son_of_anton_cli.mcp_picker import show_catalog
-        show_catalog()
-        return
-    if action == "install":
-        from son_of_anton_cli.mcp_picker import install_by_name
-        import sys as _sys
-        rc = install_by_name(getattr(args, "identifier", "") or "")
-        if rc:
-            _sys.exit(rc)
-        return
-
     handlers = {
-        "add": cmd_mcp_add,
-        "remove": cmd_mcp_remove,
-        "rm": cmd_mcp_remove,
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
         "test": cmd_mcp_test,
-        "configure": cmd_mcp_configure,
-        "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
         "reauth": cmd_mcp_reauth,
     }
@@ -1100,23 +568,14 @@ def mcp_command(args):
     handler = handlers.get(action)
     if handler:
         handler(args)
-    else:
-        # No subcommand — drop the user into the catalog picker. This is the
-        # "try enabling and it flows you into setup" UX matching `son-of-anton plugin`.
-        from son_of_anton_cli.mcp_picker import run_picker
-        run_picker()
-        print(color("  Commands:", Colors.CYAN))
-        _info("son-of-anton mcp                                    Open the catalog picker (default)")
-        _info("son-of-anton mcp catalog                            List Nous-approved MCPs")
-        _info("son-of-anton mcp install <name>                     Install a catalog MCP")
-        _info("son-of-anton mcp serve                              Run as MCP server")
-        _info("son-of-anton mcp add <name> --url <endpoint>        Add a custom MCP server")
-        _info("son-of-anton mcp add <name> --command <cmd>         Add a stdio server")
-        _info("son-of-anton mcp add <name> --preset <preset>       Add from a known preset")
-        _info("son-of-anton mcp remove <name>                      Remove a server")
-        _info("son-of-anton mcp list                               List configured servers")
-        _info("son-of-anton mcp test <name>                        Test connection")
-        _info("son-of-anton mcp configure <name>                   Toggle tools")
-        _info("son-of-anton mcp login <name>                       Re-authenticate OAuth")
-        _info("son-of-anton mcp reauth <name> | --all              Re-auth one or all OAuth servers")
-        print()
+        return
+
+    cmd_mcp_list(args)
+    print(color("  Commands:", Colors.CYAN))
+    _info("son-of-anton mcp serve                              Run as MCP server")
+    _info("son-of-anton mcp list                               List declared servers")
+    _info("son-of-anton mcp test <name>                        Test connection")
+    _info("son-of-anton mcp login <name>                       Re-authenticate OAuth")
+    _info("son-of-anton mcp reauth <name> | --all              Re-auth one or all OAuth servers")
+    _info("Servers are declared under mcp_servers in config.toml (e.g. your Nix module).")
+    print()

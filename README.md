@@ -674,8 +674,9 @@ declared by the NixOS or Home Manager module, `systemctl` runs the service, and
 that module's `settings` owns `config.toml`. `gateway` has two actions, `run`
 and `status`.
 <!---->
-(`mcp install` and `skills install` stay — those add content the agent manages
-at runtime, not the install itself.)
+(`skills install` stays — it adds content the agent manages at runtime, not
+the install itself. MCP servers are declared under `mcp_servers` in that same
+`settings`; nothing installs or adds one at runtime.)
 <!---->
 ## Commands
 <!---->

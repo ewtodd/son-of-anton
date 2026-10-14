@@ -129,7 +129,7 @@ def build_top_level_parser():
         help=(
             "Provider override for this invocation (e.g. openai-api, custom). "
             "Applies to -z/--oneshot. The persistent provider lives in config.toml "
-            "under model.provider — use `son-of-anton setup` or edit the file to change it."
+            "under model.provider (declared by the Nix module's settings)."
         ),
     )
     _inherited_flag(

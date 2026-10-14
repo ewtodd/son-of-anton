@@ -1882,7 +1882,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
         try:
             config = load_config()
         except Exception:
-            return [ConfigIssue("error", "Could not load config.toml", "Run 'son-of-anton setup' to create a valid config")]
+            return [ConfigIssue("error", "Could not load config.toml", "Fix it, or regenerate it from the Nix module's settings")]
 
     issues: List[ConfigIssue] = []
 
@@ -4462,7 +4462,6 @@ def show_config():
     print(color("─" * 60, Colors.DIM))
     print(color("  son-of-anton config edit     # Edit config file", Colors.DIM))
     print(color("  son-of-anton config set <key> <value>", Colors.DIM))
-    print(color("  son-of-anton setup           # Run setup wizard", Colors.DIM))
     print()
 
 

@@ -4,9 +4,7 @@ Son of Anton CLI - Unified command-line interface for Son of Anton Agent.
 Provides subcommands for:
 - son-of-anton chat          - Interactive chat (same as ./son-of-anton)
 - son-of-anton gateway       - Run gateway in foreground
-- son-of-anton gateway start - Start gateway service
-- son-of-anton gateway stop  - Stop gateway service
-- son-of-anton setup         - Interactive setup wizard
+- son-of-anton gateway status - Show gateway status
 - son-of-anton status        - Show status of all components
 - son-of-anton cron          - Manage cron jobs
 """

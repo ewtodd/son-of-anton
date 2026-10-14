@@ -270,8 +270,8 @@ def _sanitize_loaded_credentials() -> None:
             "rich-text editor, or web page that substituted lookalike\n"
             "  Unicode glyphs for ASCII letters. If authentication fails "
             "(e.g. \"API key not valid\"), re-copy the key from the\n"
-            "  provider's dashboard and run `son-of-anton setup` (or edit the "
-            ".env file in a plain-text editor).",
+            "  provider's dashboard into the .env file with a plain-text "
+            "editor.",
             file=sys.stderr,
         )
 

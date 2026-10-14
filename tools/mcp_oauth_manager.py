@@ -717,8 +717,8 @@ class MCPOAuthManager:
     ) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk.
 
-        Called by ``son-of-anton mcp remove <name>`` and (indirectly) by
-        ``son-of-anton mcp login <name>`` during forced re-auth.
+        Called (indirectly) by ``son-of-anton mcp login <name>`` during
+        forced re-auth.
         """
         with self._entries_lock:
             entry = self._entries.pop(self._key(server_name, son_of_anton_home), None)

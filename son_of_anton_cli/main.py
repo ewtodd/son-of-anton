@@ -1375,30 +1375,11 @@ def cmd_chat(args):
             "It looks like Son of Anton isn't configured yet -- no API keys or providers found."
         )
         print()
-        print("  Run:  son-of-anton config   (or answer Y below to start the setup wizard)")
-        print()
-
-        from son_of_anton_cli.setup import (
-            is_interactive_stdin,
-            print_noninteractive_setup_guidance,
-            run_setup_wizard,
+        print(
+            "  Declare a provider under model in config.toml (the Nix module's\n"
+            "  settings), with its key in .env, then start again."
         )
-
-        if not is_interactive_stdin():
-            print_noninteractive_setup_guidance(
-                "No interactive TTY detected for the first-run setup prompt."
-            )
-            sys.exit(1)
-
-        try:
-            reply = input("Run setup now? [Y/n] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            reply = "n"
-        if reply in {"", "y", "yes"}:
-            run_setup_wizard(args)
-            return
         print()
-        print("You can run 'son-of-anton config' at any time to configure.")
         sys.exit(1)
 
     # Start update check in background (runs while other init happens).
@@ -2496,7 +2477,7 @@ def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     if the user cancels.
     """
     try:
-        from son_of_anton_cli.setup import _curses_prompt_choice
+        from son_of_anton_cli.cli_output import _curses_prompt_choice
 
         idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
@@ -2922,7 +2903,7 @@ def _prompt_api_key(
     if choice.startswith("c") and not pool_backed:
         save_env_value(key_env, "")
         print(
-            f"  API key cleared.  Re-run `son-of-anton setup` to configure {pconfig.name} again."
+            f"  API key cleared.  Run `son-of-anton model` to configure {pconfig.name} again."
         )
         return "", True
 
@@ -4552,7 +4533,7 @@ def main():
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
     # so introspection/management commands (son-of-anton hooks list, cron
-    # list, gateway status, mcp add, ...) don't pay discovery cost or
+    # list, gateway status, mcp list, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
 

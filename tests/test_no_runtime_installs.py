@@ -21,7 +21,22 @@ REMOVED_MODULES = (
     "son_of_anton_cli.managed_uv",
     "son_of_anton_cli.npm_engine",
     "agent.lsp.install",
+    # Installation is declarative only: no setup wizard, no MCP catalog.
+    "son_of_anton_cli.setup",
+    "son_of_anton_cli.mcp_catalog",
+    "son_of_anton_cli.mcp_picker",
 )
+
+
+@pytest.mark.parametrize("action", ["add", "install", "catalog", "picker", "remove", "configure"])
+def test_mcp_servers_cannot_be_added_imperatively(action, monkeypatch) -> None:
+    """MCP servers are declared in config.toml; the CLI only inspects them."""
+    from son_of_anton_cli.main import main
+
+    monkeypatch.setattr(sys, "argv", ["son-of-anton", "mcp", action, "example"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2, f"`mcp {action}` was accepted"
 
 
 def test_no_private_node_toolchain_is_provisioned() -> None:

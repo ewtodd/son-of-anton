@@ -60,8 +60,8 @@ def support_floor_message() -> str:
     return (
         f"This config predates version {SUPPORT_FLOOR_VERSION} (~2 years old) "
         "and can no longer be auto-migrated. Back up "
-        f"{display_son_of_anton_home()}/config.toml and run `son-of-anton setup` to "
-        f"regenerate, or manually set _config_version: {SUPPORT_FLOOR_VERSION} "
+        f"{display_son_of_anton_home()}/config.toml and regenerate it from the Nix "
+        f"module, or manually set _config_version: {SUPPORT_FLOOR_VERSION} "
         "after reviewing the changelog."
     )
 
