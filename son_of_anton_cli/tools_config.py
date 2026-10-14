@@ -11,8 +11,6 @@ the `platform_toolsets` key.
 
 import json as _json
 import logging
-import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -27,16 +25,6 @@ from utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 
-
-def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
-    """Return 0 — the Win32 console-flash guard is obsolete on Nix platforms.
-
-    Historically this returned ``CREATE_NO_WINDOW`` so console-less GUI-spawned
-    post-setup children (npm, npx, pip) didn't flash a console window on
-    Windows. Nix platforms have no console flash, so the flag is always 0;
-    callers pass it unconditionally and it is inert.
-    """
-    return 0
 
 # Platforms already warned about an all-invalid platform_toolsets list, so the
 # runtime check in _get_platform_tools warns once per platform instead of on
@@ -264,127 +252,29 @@ TOOLSET_ENV_REQUIREMENTS = {
 }
 
 
-def _pip_install(
-    args: List[str],
-    *,
-    timeout: int = 300,
-    capture_output: bool = True,
-):
-    """Install Python packages from a post-setup hook.
-
-    Strategy (in order):
-    1. ``uv pip install`` if uv is on PATH — fast, doesn't need pip in the venv.
-    2. ``python -m pip install`` — works on stdlib venvs.
-    3. ``python -m ensurepip --upgrade`` then retry pip — covers ``uv venv``
-       which creates a venv WITHOUT pip.
-
-    Why this exists: a ``uv venv``-created environment does not seed pip.
-    Post-setup hooks that shelled out to ``[sys.executable, '-m', 'pip',
-    'install', ...]`` failed with ``No module named pip`` on every fresh
-    install. uv-first sidesteps that.
-
-    Returns the ``subprocess.CompletedProcess`` from whichever tier succeeded
-    (or the last failure for the caller to inspect).
-    """
-    venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
-
-    # Managed uv first: $SON_OF_ANTON_HOME/bin is never on PATH, so a bare which()
-    # misses the uv Son of Anton installed and prefers a system one when both exist.
-    # ensure_uv() rather than a pure lookup because this runs during setup,
-    # where installing uv is in scope — and tier 2 is a pip that a
-    # ``uv venv`` does not seed, so failing to find uv here is the
-    # difference between a working post-setup hook and "No module named pip".
-    from son_of_anton_cli.managed_uv import ensure_uv
-
-    uv_bin = ensure_uv()
-    if uv_bin:
-        try:
-            result = subprocess.run(
-                [uv_bin, "pip", "install", *args],
-                capture_output=capture_output, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                env=uv_env,
-                creationflags=_post_setup_no_window_flags(
-                    streams_to_console=not capture_output
-                ),
-            )
-            if result.returncode == 0:
-                return result
-            # Fall through to pip — uv may have failed for an unrelated reason
-            # (resolution conflict, network), and pip might handle it.
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    pip_cmd = [sys.executable, "-m", "pip"]
-    try:
-        # Probe for pip; bootstrap via ensurepip if missing (uv venv lacks it).
-        probe = subprocess.run(
-            pip_cmd + ["--version"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-            creationflags=_post_setup_no_window_flags(),
-        )
-        if probe.returncode != 0:
-            raise FileNotFoundError("pip not in venv")
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=True,
-                creationflags=_post_setup_no_window_flags(),
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            # Synthesize a result so callers see a clean failure path.
-            return subprocess.CompletedProcess(
-                pip_cmd, returncode=1, stdout="",
-                stderr=f"pip not available and ensurepip failed: {e}",
-            )
-
-    return subprocess.run(
-        pip_cmd + ["install", *args],
-        capture_output=capture_output, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-        creationflags=_post_setup_no_window_flags(
-            streams_to_console=not capture_output
-        ),
-    )
-
 def _run_post_setup(post_setup_key: str):
-    """Run post-setup hooks for tools that need extra installation steps."""
+    """Run post-setup hooks: check the tool's packages are in the build."""
+    from son_of_anton_constants import missing_dependency_message
 
     if post_setup_key == "ddgs":
         try:
             __import__("ddgs")
-            _print_success("    ddgs is already installed")
+            _print_success("    ddgs is in this build")
         except ImportError:
-            _print_info("    Installing ddgs (DuckDuckGo search package)...")
-            try:
-                result = _pip_install(["-U", "ddgs", "--quiet"], timeout=300)
-                if result.returncode == 0:
-                    _print_success("    ddgs installed")
-                else:
-                    _print_warning("    ddgs install failed:")
-                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                    _print_info("    Run manually: uv pip install -U ddgs")
-                    return
-            except subprocess.TimeoutExpired:
-                _print_warning("    ddgs install timed out (>5min)")
-                _print_info("    Run manually: uv pip install -U ddgs")
-                return
+            _print_warning(f"    {missing_dependency_message('ddgs')}")
+            _print_info("    Add ddgs through the Nix module's extraPythonPackages.")
+            return
         _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
         _print_info("    Pair with an extract provider if you also need web_extract.")
 
 
     elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
         try:
             __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
+            _print_success("    langfuse SDK is in this build")
         except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
-                _print_success("    langfuse SDK installed")
-            else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+            _print_warning(f"    {missing_dependency_message('The langfuse SDK')}")
+            _print_info("    Add langfuse through the Nix module's extraPythonPackages.")
         # Opt the bundled observability/langfuse plugin into plugins.enabled.
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).

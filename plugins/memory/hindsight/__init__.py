@@ -70,7 +70,7 @@ class _RecallResult:
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-# Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.toml.
+# Keep in sync with pyproject's `hindsight` dependency group and plugin.toml.
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
@@ -190,25 +190,16 @@ def _local_runtime_hint(reason: str | None) -> str:
     text = (reason or "").lower()
     if "no module named" in text and ("hindsight'" in text or 'hindsight"' in text
                                       or "hindsight_embed" in text):
+        from son_of_anton_constants import missing_dependency_message
+
         return (
-            f" Install the embedded runtime with: uv pip install --python "
-            f"{sys.executable} hindsight-all — or run 'son-of-anton memory setup'. "
-            "(local_embedded needs the 'hindsight-all' package, which provides the "
-            "top-level 'hindsight' module; 'hindsight-client' alone only covers "
-            "cloud / local_external.)"
+            f" {missing_dependency_message('The local_embedded runtime (hindsight-all)')} "
+            "Add hindsight-all through the Nix module's extraPythonPackages, or use "
+            "cloud / local_external mode, which the 'hindsight' dependency group "
+            "covers. (local_embedded needs the 'hindsight-all' package, which "
+            "provides the top-level 'hindsight' module.)"
         )
     return ""
-
-
-def _ensure_cloud_client_dependency() -> None:
-    """Install the Hindsight cloud client lazily before importing it."""
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.hindsight", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:
-        raise ImportError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -960,15 +951,8 @@ class HindsightMemoryProvider(MemoryProvider):
         provider_config["mode"] = mode
         env_writes: dict = {}
 
-        # Step 2: Install/upgrade deps for selected mode
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
-        local_dep = "hindsight-all"
-        if mode == "local_embedded":
-            deps_to_install = [local_dep]
-        elif mode == "local_external":
-            deps_to_install = [cloud_dep]
-        else:
-            deps_to_install = [cloud_dep]
+        # Step 2: the selected mode's package must be in the build
+        needed = "hindsight-all" if mode == "local_embedded" else "hindsight-client"
 
         llm_provider = ""
         if mode == "local_embedded":
@@ -992,18 +976,18 @@ class HindsightMemoryProvider(MemoryProvider):
             provider_config["llm_provider"] = llm_provider
 
         print("\n  Checking dependencies...")
-        # Environment-aware install: sealed hosted venvs redirect to the durable
-        # data-volume target instead of writing to /opt/son-of-anton (NS-605).
-        from tools.lazy_deps import install_specs
+        from importlib import metadata as _metadata
 
-        outcome = install_specs(deps_to_install, timeout=120)
-        if outcome.ok:
-            print("  ✓ Dependencies up to date")
-        elif outcome.blocked:
-            print(f"  ⚠ Cannot install dependencies: {outcome.reason}")
-        else:
-            print(f"  ⚠ Install failed:\n{(outcome.stderr or '').strip()}")
-            print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
+        from son_of_anton_constants import missing_dependency_message
+
+        try:
+            _metadata.distribution(needed)
+            print("  ✓ Dependencies present")
+        except _metadata.PackageNotFoundError:
+            if needed == "hindsight-client":
+                print(f"  ⚠ {missing_dependency_message(needed, 'hindsight')}")
+            else:
+                print(f"  ⚠{_local_runtime_hint('No module named hindsight_embed')}")
 
         # Step 3: Mode-specific config
         if mode == "cloud":
@@ -1219,13 +1203,6 @@ class HindsightMemoryProvider(MemoryProvider):
                         "Hindsight local runtime is unavailable"
                         + (f": {reason}" if reason else "")
                     )
-                try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
-                except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
@@ -1251,8 +1228,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
-                _ensure_cloud_client_dependency()
-                from hindsight_client import Hindsight
+                from son_of_anton_constants import import_optional
+
+                Hindsight = import_optional("hindsight_client", "hindsight").Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
                 if self._api_key:
@@ -1579,28 +1557,19 @@ class HindsightMemoryProvider(MemoryProvider):
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
 
-        # Check client version and auto-upgrade if needed
+        # The client comes from the Nix build; an outdated one needs a rebuild.
         try:
             from importlib.metadata import version as pkg_version
             from packaging.version import Version
             installed = pkg_version("hindsight-client")
             if Version(installed) < Version(_MIN_CLIENT_VERSION):
-                logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
-                               installed, _MIN_CLIENT_VERSION)
-                # Environment-aware install: sealed hosted venvs redirect to the
-                # durable data-volume target instead of /opt/son-of-anton (NS-605).
-                from tools.lazy_deps import install_specs
-                outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
-                if outcome.ok:
-                    logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-                elif outcome.blocked:
-                    logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                   outcome.reason, _MIN_CLIENT_VERSION)
-                else:
-                    logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                   (outcome.stderr or "").strip() or "install error", _MIN_CLIENT_VERSION)
+                logger.warning(
+                    "hindsight-client %s in this build is older than the required %s; "
+                    "rebuild son-of-anton with a newer one (bump it in uv.lock).",
+                    installed, _MIN_CLIENT_VERSION,
+                )
         except Exception:
-            pass  # packaging not available or other issue — proceed anyway
+            pass  # not in the build, or packaging unavailable — proceed anyway
 
         self._config = _load_config()
         self._platform = str(kwargs.get("platform") or "").strip()

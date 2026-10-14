@@ -2340,7 +2340,9 @@ else:
 def run_app(backend: Any) -> None:
     """Launch the Textual front-end around a prepared ``TextualBackend``."""
     if not _TEXTUAL_AVAILABLE or SonOfAntonTUIApp is None:
-        print("Textual is not installed. Install the `tui` extra: pip install -e '.[tui]'")
+        from son_of_anton_constants import missing_dependency_message
+
+        print(missing_dependency_message("Textual (a core dependency)"))
         return
     if not backend.prepare_interactive_state():
         return
@@ -2373,7 +2375,9 @@ def run_app(backend: Any) -> None:
 def _run_demo() -> None:
     """Standalone frame with no agent (``python -m son_of_anton_tui.tui``)."""
     if not _TEXTUAL_AVAILABLE:
-        print("Textual is not installed. Install the `tui` extra: pip install -e '.[tui]'")
+        from son_of_anton_constants import missing_dependency_message
+
+        print(missing_dependency_message("Textual (a core dependency)"))
         return
     SonOfAntonTUIApp().run()
 

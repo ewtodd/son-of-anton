@@ -43,22 +43,11 @@ logger = logging.getLogger(__name__)
 # :func:`_get_sync_client` / :func:`_get_async_client`).
 
 
-def _ensure_parallel_sdk_installed() -> None:
-    """Trigger lazy install of the parallel SDK if it isn't present.
+def _parallel_sdk() -> Any:
+    """The parallel SDK module; ImportError names the dependency group."""
+    from son_of_anton_constants import import_optional
 
-    Mirrors the lazy-deps pattern used by the legacy implementation.
-    Swallows benign ImportError from the lazy_deps helper itself; if the
-    SDK is genuinely missing the subsequent ``from parallel import ...``
-    raises ImportError that the caller can handle.
-    """
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-
-        _lazy_ensure("search.parallel", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
-        raise ImportError(str(exc))
+    return import_optional("parallel", "parallel-web")
 
 
 def _get_sync_client() -> Any:
@@ -82,10 +71,7 @@ def _get_sync_client() -> Any:
             "Get your API key at https://parallel.ai"
         )
 
-    _ensure_parallel_sdk_installed()
-    from parallel import Parallel  # noqa: WPS433 — deliberately lazy
-
-    client = Parallel(api_key=api_key)
+    client = _parallel_sdk().Parallel(api_key=api_key)
     _wt._parallel_client = client
     return client
 
@@ -110,10 +96,7 @@ def _get_async_client() -> Any:
             "Get your API key at https://parallel.ai"
         )
 
-    _ensure_parallel_sdk_installed()
-    from parallel import AsyncParallel  # noqa: WPS433 — deliberately lazy
-
-    client = AsyncParallel(api_key=api_key)
+    client = _parallel_sdk().AsyncParallel(api_key=api_key)
     _wt._async_parallel_client = client
     return client
 

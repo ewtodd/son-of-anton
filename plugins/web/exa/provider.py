@@ -1,9 +1,8 @@
 """Exa web search + content extraction — plugin form.
 
 Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Uses the
-official Exa SDK (``exa-py``) which is lazy-loaded via
-:func:`tools.lazy_deps.ensure` so that cold-start CLI users don't pay the
-SDK import cost when Exa isn't configured.
+official Exa SDK (``exa-py``, the ``exa`` dependency group), imported only
+when Exa is used so cold-start CLI users don't pay the SDK import cost.
 
 Config keys this provider responds to::
 
@@ -59,16 +58,9 @@ def _get_exa_client() -> Any:
             "Get your API key at https://exa.ai"
         )
 
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
+    from son_of_anton_constants import import_optional
 
-        _lazy_ensure("search.exa", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
-        raise ImportError(str(exc))
-
-    from exa_py import Exa  # noqa: WPS433 — deliberately lazy
+    Exa = import_optional("exa_py", "exa").Exa
 
     client = Exa(api_key=api_key)
     client.headers["x-exa-integration"] = "son-of-anton"

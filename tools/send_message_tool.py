@@ -966,7 +966,9 @@ async def _resolve_slack_user_target(token, chat_id):
     try:
         import aiohttp
     except ImportError:
-        return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        from son_of_anton_constants import missing_dependency_message
+
+        return None, {"error": missing_dependency_message("aiohttp", "messaging")}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url()

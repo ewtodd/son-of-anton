@@ -12,14 +12,13 @@ Usage:
     python cli.py --list-tools             # List available tools and exit
 """
 
-# IMPORTANT: son_of_anton_bootstrap must be the very first import — it hardens
-# sys.path and activates the durable lazy-install target.  No-op on POSIX.
+# IMPORTANT: son_of_anton_bootstrap must be the very first import.  No-op on
+# POSIX.
 try:
     import son_of_anton_bootstrap  # noqa: F401
 except ModuleNotFoundError:
-    # Graceful fallback when son_of_anton_bootstrap isn't registered in the venv
-    # yet — happens during partial ``son-of-anton update`` where git-reset landed
-    # new code but ``uv pip install -e .`` didn't finish.
+    # Graceful fallback when son_of_anton_bootstrap isn't registered in an
+    # editable dev venv built before it existed.
     pass
 
 import logging

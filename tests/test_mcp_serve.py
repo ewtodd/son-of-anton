@@ -1004,7 +1004,8 @@ class TestServerCreation:
     def test_create_without_mcp_sdk(self, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", False)
-        with pytest.raises(ImportError, match="MCP server requires"):
+        # The error names the Nix dependency group to add, never pip.
+        with pytest.raises(ImportError, match=r'extraDependencyGroups.*"mcp"'):
             mcp_serve.create_mcp_server()
 
 

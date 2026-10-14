@@ -147,6 +147,7 @@ from gateway.platforms.helpers import (
     ThreadParticipationTracker,
     convert_table_to_bullets,
 )
+from son_of_anton_constants import missing_dependency_message
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -426,44 +427,8 @@ def _scoped_gate_env(name: str, default: str = "") -> str:
 
 
 def discord_deps_present() -> bool:
-    """PASSIVE probe: is discord.py importable right now?
-
-    Registry ``check_fn`` — called from status displays and config loading,
-    so it must never install anything.  The ACTIVE lazy-installer
-    (``check_discord_requirements``) is registered as ``ensure_deps_fn``
-    and runs from ``create_adapter()`` when this returns False (#79812).
-    """
+    """Registry ``check_fn``: is discord.py in the build?"""
     return DISCORD_AVAILABLE
-
-
-def check_discord_requirements() -> bool:
-    """Check if Discord dependencies are available.
-
-    Lazy-installs discord.py via ``tools.lazy_deps.ensure("platform.discord")``
-    on first call if not present. After successful install, re-binds module
-    globals so ``DISCORD_AVAILABLE`` becomes True.
-    """
-    global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
-    if DISCORD_AVAILABLE:
-        return True
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.discord", prompt=False)
-    except Exception:
-        return False
-    try:
-        import discord as _discord
-        from discord import Message as _DM, Intents as _Intents
-        from discord.ext import commands as _commands
-    except ImportError:
-        return False
-    discord = _discord
-    DiscordMessage = _DM
-    Intents = _Intents
-    commands = _commands
-    DISCORD_AVAILABLE = True
-    _define_discord_view_classes()
-    return True
 
 
 def _build_allowed_mentions():
@@ -1185,7 +1150,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
-            logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
+            logger.error("[%s] %s", self.name, missing_dependency_message("discord.py", "messaging"))
             self._set_fatal_error("missing_dependency", "discord.py not installed", retryable=False)
             return False
 
@@ -5039,7 +5004,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except ImportError:
             logger.warning(
-                "[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp",
+                "[%s] aiohttp is not in this build (the messaging dependency group), falling back to URL",
                 self.name,
                 exc_info=True,
             )
@@ -5111,7 +5076,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except ImportError:
             logger.warning(
-                "[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp",
+                "[%s] aiohttp is not in this build (the messaging dependency group), falling back to URL",
                 self.name,
                 exc_info=True,
             )
@@ -8319,12 +8284,8 @@ def _resolve_exec_approval_admin_gate(
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
-    Called at module load (when discord.py is pre-installed) and also from
-    check_discord_requirements() after a lazy install, so view classes are
-    always defined whenever DISCORD_AVAILABLE is True.  Without this,
-    ExecApprovalView and siblings are only defined at import time; a later
-    lazy install sets DISCORD_AVAILABLE=True but leaves the classes
-    undefined, causing NameError on the first button interaction.
+    Called at module load when discord.py is in the build; the classes
+    subclass ``discord.ui.View``, so they cannot be defined without it.
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
 
@@ -9519,7 +9480,7 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return {"error": missing_dependency_message("aiohttp", "messaging")}
 
     token = (getattr(pconfig, "token", None) or "").strip()
     if not token:
@@ -10074,10 +10035,9 @@ def register(ctx) -> None:
         label="Discord",
         adapter_factory=_build_adapter,
         check_fn=discord_deps_present,
-        ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
-        install_hint="Run `son-of-anton setup` to install Discord support.",
+        install_hint=missing_dependency_message("discord.py", "messaging"),
         # Interactive setup wizard — replaces the central
         # son_of_anton_cli/setup.py::_setup_discord function.
         setup_fn=interactive_setup,

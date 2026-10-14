@@ -377,8 +377,8 @@ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
             return {"connector": connector}
         except ImportError:
             logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                "Run: pip install aiohttp-socks",
+                "aiohttp-socks is not part of this build — SOCKS proxy %s ignored. "
+                "Add aiohttp-socks to the Nix build (extraPythonPackages) to use it.",
                 proxy_url,
             )
             return {}
@@ -415,8 +415,8 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning(
-                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                "Run: pip install aiohttp-socks",
+                "aiohttp-socks is not part of this build — SOCKS proxy %s ignored. "
+                "Add aiohttp-socks to the Nix build (extraPythonPackages) to use it.",
                 proxy_url,
             )
             return {}, {}

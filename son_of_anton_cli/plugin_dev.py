@@ -250,11 +250,10 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
         )
     if missing:
         report.warning(
-            "declared python_dependencies not installed: "
+            "declared python_dependencies not in this build: "
             + ", ".join(missing)
-            + " — Son of Anton never auto-installs plugin dependencies; "
-            + "install manually: pip install "
-            + " ".join(f"'{m}'" for m in missing)
+            + " — Son of Anton never installs packages at runtime; "
+            + "add them through the Nix module's extraPythonPackages"
         )
 
     schema = getattr(manifest, "config_schema", {}) or {}

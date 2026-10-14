@@ -300,7 +300,9 @@ class _VikingClient:
         self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
         self._httpx = _get_httpx()
         if self._httpx is None:
-            raise ImportError("httpx is required for OpenViking: pip install httpx")
+            from son_of_anton_constants import missing_dependency_message
+
+            raise ImportError(missing_dependency_message("httpx (a core dependency)"))
 
     def _headers(self, *, include_tenant: bool | None = None) -> dict:
         if include_tenant is None:

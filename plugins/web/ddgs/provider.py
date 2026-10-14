@@ -310,9 +310,14 @@ class DDGSWebSearchProvider(WebSearchProvider):
         try:
             import ddgs  # type: ignore  # noqa: F401 — availability probe
         except ImportError:
+            from son_of_anton_constants import missing_dependency_message
+
             return {
                 "success": False,
-                "error": "ddgs package is not installed — run `pip install ddgs`",
+                "error": (
+                    f"{missing_dependency_message('DuckDuckGo search (ddgs)')} "
+                    "Add ddgs through the Nix module's extraPythonPackages."
+                ),
             }
 
         # DDGS().text yields at most `max_results` items; we cap defensively

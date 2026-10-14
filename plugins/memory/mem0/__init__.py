@@ -265,19 +265,11 @@ class Mem0MemoryProvider(MemoryProvider):
         post_setup(son_of_anton_home, config)
 
     def _create_backend(self):
-        # Lazy-install the mem0 SDK on demand before either backend imports
-        # it. ensure() honors security.allow_lazy_installs (default true) and,
-        # on a sealed Docker venv, redirects the install to the durable
-        # target. On failure we fall through so the import inside the backend
-        # produces the canonical error, captured below.
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("memory.mem0", prompt=False)
-        except ImportError:
-            pass
-        except Exception:
-            pass
-        try:
+            from son_of_anton_constants import import_optional
+
+            # Both backends import the SDK; a missing one names the Nix group.
+            import_optional("mem0", "mem0")
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))

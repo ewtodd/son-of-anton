@@ -81,17 +81,9 @@ def _load_firecrawl_cls() -> type:
     """Import and cache ``firecrawl.Firecrawl``."""
     global _FIRECRAWL_CLS_CACHE
     if _FIRECRAWL_CLS_CACHE is None:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
+        from son_of_anton_constants import import_optional
 
-            _lazy_ensure("search.firecrawl", prompt=False)
-        except ImportError:
-            pass
-        except Exception as exc:  # noqa: BLE001 — surface install hint
-            raise ImportError(str(exc))
-        from firecrawl import Firecrawl as _cls  # noqa: WPS433 — deliberately lazy
-
-        _FIRECRAWL_CLS_CACHE = _cls
+        _FIRECRAWL_CLS_CACHE = import_optional("firecrawl", "firecrawl").Firecrawl
     return _FIRECRAWL_CLS_CACHE
 
 

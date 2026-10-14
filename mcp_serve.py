@@ -623,10 +623,9 @@ class EventBridge:
 def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
     """Create and return the Son of Anton MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
-        raise ImportError(
-            "MCP server requires the 'mcp' package. "
-            f"Install with: {sys.executable} -m pip install 'mcp'"
-        )
+        from son_of_anton_constants import missing_dependency_message
+
+        raise ImportError(missing_dependency_message("The MCP server (mcp)", "mcp"))
 
     mcp = MCPServer(
         "son-of-anton",
@@ -1101,9 +1100,10 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
 def run_mcp_server(verbose: bool = False) -> None:
     """Start the Son of Anton MCP server on stdio."""
     if not _MCP_SERVER_AVAILABLE:
+        from son_of_anton_constants import missing_dependency_message
+
         print(
-            "Error: MCP server requires the 'mcp' package.\n"
-            f"Install with: {sys.executable} -m pip install 'mcp'",
+            f"Error: {missing_dependency_message('The MCP server (mcp)', 'mcp')}",
             file=sys.stderr,
         )
         sys.exit(1)

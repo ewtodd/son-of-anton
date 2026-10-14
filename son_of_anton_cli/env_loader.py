@@ -429,7 +429,6 @@ def load_son_of_anton_dotenv(
     *,
     son_of_anton_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
-    load_external_secrets: bool = True,
 ) -> list[Path]:
     """Load Son of Anton environment files with user config taking precedence.
 
@@ -438,9 +437,6 @@ def load_son_of_anton_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
-    - callers that only maintain the installation can set
-      ``load_external_secrets=False`` to avoid loading optional secret-manager
-      dependencies into the process that replaces that same environment.
     """
     loaded: list[Path] = []
 
@@ -479,21 +475,7 @@ def load_son_of_anton_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    # External secret sources are skipped in two updater situations:
-    # 1. ``load_external_secrets=False`` — the caller is an ``update``
-    #    invocation that must not import optional secret-manager libraries
-    #    (Bitwarden → cryptography → ``_rust.pyd``) into the process that
-    #    replaces that same environment on Windows (#73381, #86735).
-    # 2. A fresh ``son-of-anton update`` retry just completed a deferred dependency
-    #    install before importing this module.  Do not remap native
-    #    secret-source dependencies in that same updater process or the
-    #    self-lock preflight will recreate the marker and exit 2 again.
-    # Dotenv and managed env still load in both cases; only external source
-    # resolution is unnecessary for the updater.
-    from son_of_anton_cli import _early_recovery
-
-    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
-        _apply_external_secret_sources(home_path)
+    _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.toml is the documented source of truth for terminal.* settings,

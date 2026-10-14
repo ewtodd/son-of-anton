@@ -2760,18 +2760,15 @@ class PluginContext:
         The adapter_factory receives a ``PlatformConfig`` and returns a
         ``BasePlatformAdapter`` subclass instance.
 
-        ``check_fn`` is a PASSIVE dependency probe — "are deps importable
-        right now?".  It must never install anything: status displays and
-        config loading call it freely.  If your platform's SDK is
-        lazy-installable, pass the ACTIVE installer separately as
-        ``ensure_deps_fn`` (forwarded via ``entry_kwargs``); the gateway
-        calls it from ``create_adapter()`` when ``check_fn`` is False,
-        right before connecting the platform.
+        ``check_fn`` is a side-effect-free dependency probe — "are deps
+        importable?".  Status displays and config loading call it freely.
+        Nothing is installed at runtime: when it returns False the gateway
+        shows ``install_hint``, which should say how to get the platform's
+        packages into the Nix build.
 
         Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
-        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``,
-        ``ensure_deps_fn``).  Unknown keys raise TypeError from the
-        dataclass constructor.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        Unknown keys raise TypeError from the dataclass constructor.
 
         Example::
 
@@ -4673,11 +4670,10 @@ class PluginManager:
                 continue
         if missing:
             logger.warning(
-                "Plugin %s declares Python dependencies that are not "
-                "installed: %s. Son of Anton does not install plugin dependencies "
-                "automatically; install them yourself, e.g.: pip install %s",
+                "Plugin %s declares Python dependencies that are not in this "
+                "build: %s. Son of Anton does not install packages at runtime; "
+                "add them through the Nix module's extraPythonPackages.",
                 key, ", ".join(missing),
-                " ".join(f"'{m}'" for m in missing),
             )
         else:
             logger.debug(

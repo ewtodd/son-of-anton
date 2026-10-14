@@ -365,34 +365,14 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 
 
 def _ensure_sdk_installed() -> bool:
-    """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
+    """True when honcho-ai is in the build; otherwise say how to add it."""
     try:
         import honcho  # noqa: F401
         return True
     except ImportError:
-        pass
+        from son_of_anton_constants import missing_dependency_message
 
-    print("  honcho-ai is not installed.")
-    answer = _prompt("Install it now? (honcho-ai==2.2.0)", default="y")
-    if answer.lower() not in {"y", "yes"}:
-        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
-        return False
-
-    print("  Installing honcho-ai...", flush=True)
-    # Environment-aware install: sealed hosted venvs redirect to the durable
-    # data-volume target instead of writing to /opt/son_of_anton (NS-605).
-    from tools.lazy_deps import install_specs
-
-    result = install_specs(["honcho-ai==2.2.0"])
-    if result.ok:
-        print("  Installed.\n")
-        return True
-    elif result.blocked:
-        print(f"  Cannot install: {result.reason}\n")
-        return False
-    else:
-        print(f"  Install failed:\n{(result.stderr or '').strip()}")
-        print("  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
+        print(f"  {missing_dependency_message('honcho-ai', 'honcho')}\n")
         return False
 
 

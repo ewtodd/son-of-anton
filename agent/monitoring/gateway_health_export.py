@@ -181,13 +181,7 @@ def _enabled(config: Dict[str, Any]) -> bool:
     return bool(gh.get("enabled") and otlp.get("enabled") and otlp.get("endpoint"))
 
 
-def _require_metrics_sdk(*, auto_install: bool = True, prompt: bool = False) -> Dict[str, Any]:
-    if auto_install:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("export.otlp", prompt=prompt)
-        except Exception:
-            pass
+def _require_metrics_sdk() -> Dict[str, Any]:
     try:
         from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
@@ -216,7 +210,11 @@ def _require_metrics_sdk(*, auto_install: bool = True, prompt: bool = False) -> 
             "Resource": Resource,
         }
     except Exception as exc:
-        raise RuntimeError(f"OTLP metrics SDK unavailable: {exc}") from exc
+        from son_of_anton_constants import missing_dependency_message
+
+        raise RuntimeError(
+            f"{missing_dependency_message('OTLP metrics export', 'otlp')} (import error: {exc})"
+        ) from exc
 
 
 def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -587,7 +585,7 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
 
     if gh.get("metrics_enabled", True) or gh.get("diagnostic_events_enabled", True):
         try:
-            sdk = _require_metrics_sdk(prompt=False)
+            sdk = _require_metrics_sdk()
         except Exception:
             logger.warning(
                 "monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; "

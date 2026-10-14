@@ -9,8 +9,8 @@ Notes:
   * The destination is operator-configured; this module only sends to that
     endpoint. No default destination ships.
   * ``opentelemetry-sdk`` + ``opentelemetry-exporter-otlp-proto-http`` are an
-    optional extra (``pip install son-of-anton[otlp]``), imported lazily so the
-    dependency is only required when OTLP export is actually used.
+    optional dependency group (``otlp``, added to the Nix build through
+    ``extraDependencyGroups``), imported only when OTLP export is used.
   * ``headers_env`` maps a header name to an environment variable name; values
     are read from the environment at export time and never logged or stored.
   * The continuous subscriber runs in the emitter's dispatcher thread and is
@@ -34,29 +34,8 @@ class OTLPUnavailable(RuntimeError):
     """Raised when the optional OpenTelemetry SDK isn't installed."""
 
 
-def _require_sdk(*, auto_install: bool = True, prompt: bool = True):
-    """Import the OTel SDK, lazily installing it on first use if needed.
-
-    Routes through tools.lazy_deps (feature 'export.otlp') so a missing SDK
-    triggers the standard venv install flow — same as every other optional
-    backend — gated by security.allow_lazy_installs and TTY-prompted. Falls back
-    to OTLPUnavailable (with a manual install hint) when the SDK can't be made
-    importable (lazy installs disabled, install failed, or auto_install=False).
-
-    ``auto_install``: attempt the lazy install when missing (default True).
-    ``prompt``: ask before installing when interactive (default True); pass
-    False from non-interactive contexts like the continuous streamer.
-    """
-    if auto_install:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("export.otlp", prompt=prompt)
-        except ImportError:
-            pass  # lazy_deps unavailable — fall through to the import attempt
-        except Exception:
-            # FeatureUnavailable (lazy installs disabled / declined / failed) —
-            # fall through; the import below raises OTLPUnavailable with the hint.
-            pass
+def _require_sdk():
+    """Import the OTel SDK, or raise OTLPUnavailable naming the Nix group."""
     try:
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -72,11 +51,11 @@ def _require_sdk(*, auto_install: bool = True, prompt: bool = True):
             "OTLPSpanExporter": OTLPSpanExporter,
             "SpanKind": SpanKind,
         }
-    except Exception as e:  # ImportError or partial install
+    except Exception as e:  # ImportError or a partial build
+        from son_of_anton_constants import missing_dependency_message
+
         raise OTLPUnavailable(
-            "OTLP export requires the optional dependency. Install with:\n"
-            "    pip install 'son-of-anton[otlp]'\n"
-            f"(import error: {e})"
+            f"{missing_dependency_message('OTLP export', 'otlp')} (import error: {e})"
         )
 
 
@@ -216,10 +195,9 @@ class OTLPStreamer:
 
 
 def is_available() -> bool:
-    """True when the OTel SDK is already importable. Does NOT auto-install —
-    this is a pure check (e.g. for status display)."""
+    """True when the OTel SDK is importable (e.g. for status display)."""
     try:
-        _require_sdk(auto_install=False)
+        _require_sdk()
         return True
     except OTLPUnavailable:
         return False
@@ -240,18 +218,15 @@ def start_streaming(
     ``event_filter`` scopes the exporter to its plane, e.g. gateway-health
     export, so enabling one plane cannot silently export unrelated events.
 
-    Non-interactive context (startup): attempts a lazy install with prompt=False
-    so a configured-but-missing SDK is installed once (gated by
-    security.allow_lazy_installs), then streams. If it still can't load, logs and
+    Runs at startup: if the SDK is not in the build it logs how to add it and
     no-ops — never blocks or raises into startup.
     """
     if not is_enabled(config):
         return None
     try:
-        _require_sdk(prompt=False)
-    except OTLPUnavailable:
-        logger.warning("monitoring.export.otlp.enabled but the OTel SDK could not "
-                       "be installed/imported; install 'son-of-anton[otlp]'")
+        _require_sdk()
+    except OTLPUnavailable as exc:
+        logger.warning("monitoring.export.otlp.enabled but %s", exc)
         return None
     from agent.monitoring.emitter import get_emitter
     streamer = OTLPStreamer(config, event_filter=event_filter)

@@ -19,7 +19,7 @@ The one legitimate consumer of ``build_wheel`` is uv2nix, which calls
 build sandbox. ``nix/python.nix`` sets ``SON_OF_ANTON_NIX_BUILD=1`` on the
 Son of Anton package derivation, so only that build may create an artifact.
 
-Editable installs (``uv sync``, ``pip install -e .``, ``nix develop``)
+Editable installs (``nix develop``)
 use ``build_editable``, which does NOT call ``bdist_wheel`` — it calls
 ``build_ext`` in editable mode. So the guard does not affect development.
 """
@@ -33,11 +33,10 @@ _IN_NIX_BUILD = os.environ.get("SON_OF_ANTON_NIX_BUILD") == "1"
 
 _BLOCK_MESSAGE = (
     "Building wheels or sdists for son-of-anton is not supported.\n"
-    "Son of Anton is distributed via the shell installer, Docker image, or Nix.\n"
-    "See: https://son-of-anton.nousresearch.com/docs/getting-started/installation\n"
+    "Son of Anton is distributed via Nix only.\n"
     "\n"
-    "If you are developing, use an editable install instead:\n"
-    "  uv sync          # or: uv pip install -e .\n"
+    "If you are developing, use the editable dev shell instead:\n"
+    "  nix develop\n"
     "\n"
     "If you are building with Nix (uv2nix), this error should not fire —\n"
     "the Son of Anton Nix derivation sets SON_OF_ANTON_NIX_BUILD=1. If it does, file a bug."

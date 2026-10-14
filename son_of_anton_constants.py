@@ -16,8 +16,8 @@ from pathlib import Path
 # ``son_of_anton_tui.backend``). Anything tempted to call ``input()`` or draw
 # on the tty from a worker thread must check this first: a full-screen app
 # holds stdin, so a bare prompt would block forever with nothing on screen.
-# Lives here because the low-level callers (tools.approval, tools.lazy_deps)
-# must not import the CLI.
+# Lives here because low-level callers (tools.approval) must not import the
+# CLI.
 _FRONTEND_ACTIVE: bool = False
 
 
@@ -30,6 +30,39 @@ def set_frontend_active(active: bool) -> None:
 def is_frontend_active() -> bool:
     """True when a full-screen front-end owns the terminal and stdin."""
     return _FRONTEND_ACTIVE
+
+
+# Son of Anton never installs Python packages at runtime: every dependency
+# comes from the Nix build. Optional integrations are pyproject extras the
+# build includes through ``extraDependencyGroups``; these say how to add one.
+
+
+def missing_dependency_message(what: str, extra: str | None = None) -> str:
+    """Why ``what`` is unavailable, and the Nix change that provides it."""
+    if extra is None:
+        return (
+            f"{what} is not part of this build. Son of Anton does not install "
+            "Python packages at runtime; its dependencies come from the Nix build."
+        )
+    return (
+        f'{what} is not in this build. Add "{extra}" to extraDependencyGroups '
+        "in the son-of-anton Nix module (or pkgs.son-of-anton.override "
+        f'{{ extraDependencyGroups = [ "{extra}" ]; }}) and rebuild.'
+    )
+
+
+def import_optional(module: str, extra: str):
+    """Import a module from an optional dependency group, or say how to add it.
+
+    Raises ImportError carrying :func:`missing_dependency_message` when the
+    group is not in the build.
+    """
+    import importlib
+
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:
+        raise ImportError(missing_dependency_message(module, extra)) from exc
 
 
 _profile_fallback_warned: bool = False

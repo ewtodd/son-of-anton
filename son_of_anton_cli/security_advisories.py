@@ -113,7 +113,8 @@ ADVISORIES: tuple[Advisory, ...] = (
             ("mistralai", frozenset({"2.4.6"})),
         ),
         remediation=(
-            "Run: pip uninstall -y mistralai  (or: uv pip uninstall mistralai)",
+            "Remove mistralai 2.4.6 from the build: drop it from uv.lock (or the "
+            "extraPythonPackages that brought it in) and rebuild son-of-anton.",
             "Rotate API keys in ~/.son-of-anton/.env (OpenRouter, Anthropic, OpenAI, "
             "Nous, GitHub, AWS, Google, Mistral, etc.).",
             "Audit ~/.npmrc, ~/.pypirc, ~/.aws/credentials, ~/.config/gh/hosts.yml, "

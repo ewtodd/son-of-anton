@@ -711,7 +711,11 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
         if not _ensure_croniter():
-            raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
+            from son_of_anton_constants import missing_dependency_message
+
+            raise ValueError(
+                f"Cron expressions require croniter. {missing_dependency_message('croniter')}"
+            )
         # Validate cron expression
         try:
             croniter(schedule)
@@ -1038,12 +1042,12 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         if not expr:
             return None
         if not _ensure_croniter():
+            from son_of_anton_constants import missing_dependency_message
+
             logger.warning(
-                "Cannot compute next run for cron schedule %r: 'croniter' is "
-                "not installed. croniter is a core dependency as of v0.9.x; "
-                "reinstall son-of-anton or run 'pip install croniter' in your "
-                "runtime env.",
+                "Cannot compute next run for cron schedule %r: %s",
                 expr,
+                missing_dependency_message("croniter (a core dependency)"),
             )
             return None
         # Use last_run_at as the croniter base when available, consistent

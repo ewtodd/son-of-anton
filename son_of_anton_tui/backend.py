@@ -147,7 +147,7 @@ class TextualBackend(SonOfAntonCLI):
 
         _cli._cprint = _tui_cprint  # type: ignore[assignment]
         _cli._CPRINT_ROUTED = True
-        # Tell the low-level layers (approval, lazy installs) that a
+        # Tell the low-level layers (approval) that a
         # full-screen app owns stdin, so nothing tries to prompt on the tty.
         from son_of_anton_constants import set_frontend_active
 

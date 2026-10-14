@@ -1706,9 +1706,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
     # blocks above.  A plugin platform is enabled when its credentials are
-    # configured (``is_connected``) and its dependencies are either present
-    # (passive ``check_fn``) or installable on demand (``ensure_deps_fn``,
-    # run later by ``create_adapter()`` — never here).  Plugins that need to
+    # configured (``is_connected``) and its dependencies are in the build
+    # (``check_fn``; nothing is installed at runtime).  Plugins that need to
     # seed ``PlatformConfig.extra`` from env vars can supply
     # ``env_enablement_fn`` on their PlatformEntry — called here BEFORE
     # adapter construction.
@@ -1813,25 +1812,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         )
                         continue
             # Verify dependencies LAST — only for platforms that are already
-            # enabled or passed the credential gate above.  ``check_fn`` is a
-            # PASSIVE probe (never installs); a platform whose deps are
-            # missing but which registered ``ensure_deps_fn`` still gets
-            # enabled here — the registry's ``create_adapter()`` runs the
-            # active installer at gateway start, when the user actually
-            # wants the platform up.  Historically the ACTIVE installer was
-            # wired as ``check_fn`` and this sweep pip-installed
-            # Discord/Slack SDKs on every ``load_gateway_config()`` call —
-            # including the desktop/dashboard readiness probe
-            # (``GET /api/status``) — blocking startup until every install
-            # finished and boot-looping the desktop app at 94%.
-            # The check_fn/ensure_deps_fn split (#79812) makes that
-            # impossible by construction.
+            # enabled or passed the credential gate above, so the warning
+            # below reaches only users who configured the platform.
+            # ``check_fn`` is a passive probe; nothing is installed.
             try:
                 deps_ok = bool(entry.check_fn())
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 deps_ok = False
-            if not deps_ok and entry.ensure_deps_fn is None:
+            if not deps_ok:
+                # A plugin without ``is_connected`` reaches here unconfigured;
+                # only warn users who enabled or configured the platform.
+                if (existing_cfg is not None and existing_cfg.enabled) or entry.is_connected is not None:
+                    logger.warning(
+                        "Platform '%s' is configured but its dependencies are not "
+                        "in this build%s",
+                        entry.name,
+                        f": {entry.install_hint}" if entry.install_hint else "",
+                    )
                 continue
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()

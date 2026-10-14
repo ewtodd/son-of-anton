@@ -40,6 +40,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.secret_scope import get_secret
+from son_of_anton_constants import missing_dependency_message
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -299,13 +300,7 @@ class _ThreadContextCache:
 
 
 def slack_deps_present() -> bool:
-    """PASSIVE probe: are slack-bolt/slack-sdk importable right now?
-
-    Registry ``check_fn`` — called from status displays and config loading,
-    so it must never install anything.  The ACTIVE lazy-installer
-    (``check_slack_requirements``) is registered as ``ensure_deps_fn``
-    and runs from ``create_adapter()`` when this returns False (#79812).
-    """
+    """Registry ``check_fn``: are slack-bolt/slack-sdk in the build?"""
     return SLACK_AVAILABLE
 
 
@@ -319,34 +314,6 @@ class _NativeTaskCardStream:
     stream_ts: str = ""
     stopped: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
-def check_slack_requirements() -> bool:
-    """Check if Slack dependencies are available.
-
-    Lazy-installs slack-bolt/slack-sdk via ``tools.lazy_deps.ensure("platform.slack")``
-    on first call if not present. Rebinds all module-level globals on success.
-    """
-    if SLACK_AVAILABLE:
-        return True
-
-    def _import():
-        from slack_bolt.async_app import AsyncApp
-        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-        from slack_sdk.web.async_client import AsyncWebClient
-        import aiohttp
-
-        return {
-            "AsyncApp": AsyncApp,
-            "AsyncSocketModeHandler": AsyncSocketModeHandler,
-            "AsyncWebClient": AsyncWebClient,
-            "aiohttp": aiohttp,
-            "SLACK_AVAILABLE": True,
-        }
-
-    from tools.lazy_deps import ensure_and_bind
-
-    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
 def _collect_slack_block_mentions(blocks: list) -> list:
@@ -1809,9 +1776,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
-            logger.error(
-                "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
-            )
+            logger.error("[Slack] %s", missing_dependency_message("slack-bolt", "slack"))
             self._set_fatal_error("missing_dependency", "slack-bolt not installed", retryable=False)
             return False
 
@@ -9181,7 +9146,7 @@ async def _standalone_send(
         except ImportError:
             return {
                 "error": (
-                    "slack_sdk not installed. Run: pip install 'slack-sdk' "
+                    f"{missing_dependency_message('slack-sdk', 'slack')} "
                     "(required for Slack MEDIA delivery via send_message)"
                 )
             }
@@ -9290,7 +9255,7 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return {"error": missing_dependency_message("aiohttp", "slack")}
 
     try:
         from gateway.platforms.base import proxy_kwargs_for_aiohttp
@@ -9552,10 +9517,9 @@ def register(ctx) -> None:
         label="Slack",
         adapter_factory=_build_adapter,
         check_fn=slack_deps_present,
-        ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
-        install_hint="Run `son-of-anton setup` to install Slack support.",
+        install_hint=missing_dependency_message("slack-bolt", "slack"),
         # Interactive setup wizard — replaces son_of_anton_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in son_of_anton_cli/gateway.py.
         setup_fn=interactive_setup,

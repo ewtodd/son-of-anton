@@ -55,7 +55,6 @@ def _pdf(pages: list[str]) -> bytes:
 
 @pytest.fixture
 def read_pdf(tmp_path, monkeypatch):
-    import tools.lazy_deps as lazy_deps
     import tools.read_extract as read_extract
     from tools.file_tools import read_file_tool
     from tools.terminal_tool import cleanup_vm
@@ -63,16 +62,12 @@ def read_pdf(tmp_path, monkeypatch):
     # A build without anydoc, loaded fresh through the real _anydoc().
     monkeypatch.setitem(sys.modules, "anydoc", None)
     monkeypatch.setattr(read_extract, "_anydoc_module", read_extract._ANYDOC_UNSET)
-    installs: list = []
-    monkeypatch.setattr(lazy_deps, "ensure", lambda *a, **kw: installs.append(a))
     task_id = "read-file-pdf"
 
     def read(pages: list[str]) -> dict:
         path = tmp_path / "doc.pdf"
         path.write_bytes(_pdf(pages))
-        result = json.loads(read_file_tool(str(path), task_id=task_id))
-        assert not installs, f"read_file reached for a runtime installer: {installs}"
-        return result
+        return json.loads(read_file_tool(str(path), task_id=task_id))
 
     try:
         yield read

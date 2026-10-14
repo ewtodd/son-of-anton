@@ -1240,26 +1240,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
     # Build inside the singleton factory so racing callers share one client.
     def _build() -> "Honcho":
-        # Lazy dependency failures fall through to the canonical import error.
-        try:
-            from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
-            _lazy_ensure("memory.honcho", prompt=False)
-        except ImportError:
-            # lazy_deps module missing — fall through to the raw import below.
-            pass
-        except Exception:
-            # FeatureUnavailable or unexpected error. Don't crash here; let the
-            # actual import attempt produce the canonical error message.
-            pass
+        from son_of_anton_constants import import_optional
 
-        try:
-            from honcho import Honcho
-        except ImportError:
-            raise ImportError(
-                "honcho-ai is required for Honcho integration. "
-                "Install it with: pip install honcho-ai  "
-                "(or run `son-of-anton honcho setup` to configure)."
-            )
+        Honcho = import_optional("honcho", "honcho").Honcho
 
         # Allow config.toml honcho.base_url to override the SDK's environment
         # mapping, enabling remote self-hosted Honcho deployments without

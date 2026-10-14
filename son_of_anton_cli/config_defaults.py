@@ -2057,14 +2057,6 @@ DEFAULT_CONFIG = {
         # <id>`; remove by editing the list directly. See
         # ``son_of_anton_cli/security_advisories.py`` for the catalog.
         "acked_advisories": [],
-        # Allow Son of Anton to lazy-install opt-in backend packages from PyPI
-        # the first time the user enables a backend that needs them
-        # (e.g. installing ``elevenlabs`` when the user picks ElevenLabs as
-        # their TTS provider). Set to false to require explicit
-        # ``pip install`` for everything beyond the base set — appropriate
-        # for restricted networks, audited environments, or air-gapped
-        # systems where any runtime install is unacceptable.
-        "allow_lazy_installs": True,
     },
 
     "cron": {

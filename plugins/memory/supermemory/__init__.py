@@ -271,19 +271,9 @@ def _clean_text_for_capture(text: str) -> str:
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
-        # Lazy-install the supermemory SDK on demand. ensure() honors
-        # security.allow_lazy_installs (default true) and, on a sealed Docker
-        # venv, redirects the install to the durable target. On failure we
-        # fall through so the raw import below produces the canonical
-        # ImportError message.
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("memory.supermemory", prompt=False)
-        except ImportError:
-            pass
-        except Exception:
-            pass
-        from supermemory import Supermemory
+        from son_of_anton_constants import import_optional
+
+        Supermemory = import_optional("supermemory", "supermemory").Supermemory
 
         self._api_key = api_key
         self._container_tag = container_tag
@@ -558,12 +548,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         # Key presence only — no SDK import check. The supermemory SDK is
-        # lazy-installed when the client is first constructed in initialize()
-        # (see _SupermemoryClient.__init__). Gating availability on the SDK
-        # being importable here would be a chicken-and-egg trap: on a sealed
-        # Docker venv the package isn't present until ensure() runs, but
-        # ensure() only runs once the provider is loaded — which this gates.
-        # Mirrors honcho/mem0, which check config only. No network calls.
+        # imported when the client is first constructed in initialize()
+        # (see _SupermemoryClient.__init__), which reports the Nix dependency
+        # group to add when it is missing — a clearer failure than the
+        # provider silently not loading. Mirrors honcho/mem0, which check
+        # config only. No network calls.
         return bool(get_secret("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):

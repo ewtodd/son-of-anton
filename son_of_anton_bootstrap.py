@@ -9,15 +9,11 @@ This module keeps the two platform-neutral helpers entry points rely on:
 
 - :func:`harden_import_path` — stop a package in the current directory from
   shadowing Son of Anton modules (``utils``, ``proxy``, ``ui``).
-- :func:`activate_durable_lazy_target` — wire the durable lazy-install dir
-  onto ``sys.path`` when one is configured.
 
 Idempotent: safe to import multiple times.
 """
 
 from __future__ import annotations
-
-import os
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -35,37 +31,8 @@ def suppress_platform_ver_console() -> None:
     return None
 
 
-def activate_durable_lazy_target() -> None:
-    """Put the durable lazy-install dir on ``sys.path`` if one is configured.
-
-    When ``SON_OF_ANTON_LAZY_INSTALL_TARGET`` is set (immutable deployments
-    that seal the agent venv and redirect lazy installs to a writable dir on
-    the data volume), packages installed there on a previous run must be
-    importable on this run, so we activate the dir here — at the very first
-    import, before any backend module imports its SDK.
-
-    The activation appends to the END of ``sys.path`` so the core venv
-    always wins name collisions (see ``tools.lazy_deps`` for the full
-    security rationale). Never raises; a missing/empty target is a no-op.
-    """
-    if not os.environ.get("SON_OF_ANTON_LAZY_INSTALL_TARGET", "").strip():
-        return
-    try:
-        from tools import lazy_deps
-        lazy_deps.activate_durable_lazy_target()
-    except Exception:
-        # Bootstrap must never crash an entry point. If activation fails the
-        # backend simply reports itself unavailable, exactly as before.
-        pass
-
-
 # Apply on import — entry points just need ``import son_of_anton_bootstrap``
 # at the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
-
-# Activate the durable lazy-install target (immutable deployments) so
-# packages installed into the data volume on a previous run are importable
-# this run, before any backend module imports its SDK. No-op when unset.
-activate_durable_lazy_target()

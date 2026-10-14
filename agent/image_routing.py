@@ -597,7 +597,7 @@ _UNIVERSALLY_SUPPORTED_MIMES = frozenset({
 def _transcode_to_png(raw: bytes) -> Optional[bytes]:
     """Decode arbitrary image bytes with Pillow and re-encode as PNG.
 
-    Returns None if Pillow isn't installed or can't decode the input
+    Returns None if Pillow (a core dependency) can't decode the input
     (rare formats, corrupted bytes, missing optional decoder plugin for
     HEIC/AVIF, or vector formats like SVG). Caller falls back to skipping
     the image so the rest of the turn still works.
@@ -606,15 +606,8 @@ def _transcode_to_png(raw: bytes) -> Optional[bytes]:
     them on demand and swallow ImportError so a missing plugin just
     looks like 'Pillow can't decode this' rather than crashing.
     """
-    try:
-        from PIL import Image
-    except ImportError:
-        logger.info(
-            "image_routing: Pillow not installed; cannot transcode "
-            "non-standard image format to PNG. Install with `pip install Pillow` "
-            "(and `pillow-heif` / `pillow-avif-plugin` for those formats)."
-        )
-        return None
+    from PIL import Image
+
     # Optional plugin registration. Silent on failure: an unsupported
     # format will just fall through to Image.open raising below.
     try:

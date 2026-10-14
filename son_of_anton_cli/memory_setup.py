@@ -104,15 +104,11 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
-    """Install pip dependencies declared in ``plugin.toml``.
+def _check_dependencies(provider_name: str) -> None:
+    """Report Python packages from ``plugin.toml`` that the build lacks.
 
-    When ``force`` is true, every declared dependency is handed to the
-    installer even if its import currently succeeds — the resolver then
-    reinstalls anything missing or version-drifted and no-ops on satisfied
-    ranges. This is how ``son-of-anton update`` heals the active memory provider
-    after a venv rebuild/sync removed or downgraded its bridge packages
-    (#53272, #70636).
+    Nothing is installed: the packages come from the Nix build, through the
+    provider's dependency group when pyproject declares one.
     """
     import subprocess
     from plugins.memory import find_provider_dir
@@ -143,12 +139,9 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages need installation.
+    # Check which packages the build lacks.
     missing = []
     for dep in pip_deps:
-        if force:
-            missing.append(dep)
-            continue
         dep_name = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*", dep)
         base = dep_name.group(0) if dep_name else dep
         import_name = _IMPORT_NAMES.get(base, base.replace("-", "_").split("[")[0])
@@ -157,33 +150,20 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
         except ImportError:
             missing.append(dep)
 
-    if not missing:
-        return
+    if missing:
+        from importlib import metadata
 
-    print(f"\n  Installing dependencies: {', '.join(missing)}")
+        from son_of_anton_constants import missing_dependency_message
 
-    # Environment-aware install: on immutable hosted images the agent venv
-    # is sealed read-only and installs must go to the durable target on the
-    # data volume (SON_OF_ANTON_LAZY_INSTALL_TARGET). install_specs handles the
-    # routing/gating; on normal installs it is venv-scoped as before (NS-605).
-    from tools.lazy_deps import install_specs
-
-    manual_cmd = f"uv pip install {' '.join(missing)}"
-    try:
-        outcome = install_specs(missing, timeout=120)
-        if outcome.ok:
-            print(f"  ✓ Installed {', '.join(missing)}")
-        elif outcome.blocked:
-            print(f"  ⚠ Cannot install {', '.join(missing)}: {outcome.reason}")
-        else:
-            print(f"  ⚠ Failed to install {', '.join(missing)}")
-            stderr = (outcome.stderr or "")[:200]
-            if stderr:
-                print(f"    {stderr}")
-            print(f"  Run manually: {manual_cmd}")
-    except Exception as e:
-        print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: {manual_cmd}")
+        try:
+            extras = set(metadata.metadata("son-of-anton").get_all("Provides-Extra") or [])
+        except metadata.PackageNotFoundError:
+            extras = set()
+        extra = provider_name if provider_name in extras else None
+        hint = missing_dependency_message(", ".join(missing), extra)
+        if extra is None:
+            hint += " Add them through the Nix module's extraPythonPackages."
+        print(f"\n  ⚠ {hint}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -262,7 +242,7 @@ def cmd_setup_provider(provider_name: str) -> None:
 
     _clear_interactive_transition()
 
-    _install_dependencies(name)
+    _check_dependencies(name)
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
@@ -319,8 +299,8 @@ def cmd_setup(args) -> None:
 
     _clear_interactive_transition()
 
-    # Install pip dependencies if declared in plugin.toml
-    _install_dependencies(name)
+    # Report packages declared in plugin.toml that the build lacks
+    _check_dependencies(name)
 
     # If the provider has a post_setup hook, delegate entirely to it.
     # The hook handles its own config, connection test, and activation.

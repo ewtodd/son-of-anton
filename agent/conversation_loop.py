@@ -5376,7 +5376,7 @@ def run_conversation(
                             force=True,
                         )
                         agent._vprint(
-                            f"{agent.log_prefix}        pip install --upgrade certifi   (macOS: run 'Install Certificates.command')",
+                            f"{agent.log_prefix}        certifi ships with the Nix build: update the son-of-anton flake input and rebuild",
                             force=True,
                         )
                         agent._vprint(

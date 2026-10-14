@@ -18,9 +18,8 @@ Usage:
 try:
     import son_of_anton_bootstrap  # noqa: F401
 except ModuleNotFoundError:
-    # Graceful fallback when son_of_anton_bootstrap isn't registered in the venv
-    # yet — happens during partial ``son-of-anton update`` where git-reset landed
-    # new code but ``uv pip install -e .`` didn't finish.
+    # Graceful fallback when son_of_anton_bootstrap isn't registered in an
+    # editable dev venv built before it existed.
     pass
 
 import asyncio

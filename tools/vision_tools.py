@@ -344,8 +344,7 @@ def _normalize_to_supported_image(
             "This is an SVG, which vision models cannot read directly, and no "
             "SVG rasterizer is installed (tried cairosvg, svglib, rsvg-convert, "
             "inkscape). Convert the SVG to PNG first — e.g. open it in a browser "
-            "and screenshot it, or install a rasterizer "
-            "(`pip install cairosvg`) — then re-run vision_analyze on the PNG.",
+            "and screenshot it — then re-run vision_analyze on the PNG.",
         )
 
     # Other non-supported raster formats (BMP, TIFF, ...): re-encode via Pillow.
@@ -687,13 +686,7 @@ def _crop_image_region(
         (cropped_temp_path, out_mime, None) on success — the caller owns
         cleanup of the temp file — or (None, None, error_message) on failure.
     """
-    try:
-        from PIL import Image
-    except ImportError:
-        return None, None, (
-            "region cropping requires Pillow (`pip install Pillow`); "
-            "retry without the region parameter."
-        )
+    from PIL import Image
 
     if (
         not isinstance(region, (list, tuple))
@@ -826,29 +819,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     else:
         data_url = None  # defer full encode; try Pillow resize first
 
-    # Attempt auto-resize with Pillow (soft dependency)
-    try:
-        from PIL import Image
-        import io as _io
-    except ImportError:
-        # Pillow is a lazy-installable soft dependency. Try a best-effort
-        # install (respects security.allow_lazy_installs; no-op if disabled or
-        # offline), then re-import. If it still isn't importable, fall back to
-        # the raw bytes and let the caller raise the size error.
-        try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session.
-            # Under the interactive CLI prompt_toolkit owns stdin, so a bare
-            # input() deadlocks the terminal (#40490). The install is already
-            # gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
-            from PIL import Image
-            import io as _io
-        except Exception:
-            logger.info("Pillow not installed — cannot auto-resize oversized image")
-            if data_url is None:
-                data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-            return data_url  # caller will raise the size error
+    # Auto-resize with Pillow (a core dependency).
+    from PIL import Image
+    import io as _io
 
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
@@ -1238,9 +1211,7 @@ async def _vision_analyze_native(
                     f"Image too large for vision API: base64 payload is "
                     f"{len(image_data_url) / (1024 * 1024):.1f} MB "
                     f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
-                    f"even after resizing. Install Pillow "
-                    f"(`pip install Pillow`) for better auto-resize, "
-                    f"or compress the image manually.",
+                    f"even after resizing. Compress or crop the image manually.",
                     success=False,
                 )
 
@@ -1420,9 +1391,7 @@ async def vision_analyze_tool(
                     f"Image too large for vision API: base64 payload is "
                     f"{len(image_data_url) / (1024 * 1024):.1f} MB "
                     f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
-                    f"even after resizing. "
-                    f"Install Pillow (`pip install Pillow`) for better auto-resize, "
-                    f"or compress the image manually."
+                    f"even after resizing. Compress or crop the image manually."
                 )
 
         debug_call_data["image_size_bytes"] = image_size_bytes

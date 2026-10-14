@@ -842,7 +842,12 @@ def _setup_oss_interactive(son_of_anton_home: str, config: dict) -> None:
 
 
 def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> None:
-    """Install all optional pip deps for selected providers."""
+    """Warn about selected providers' packages the build does not include."""
+    import re
+    from importlib import metadata
+
+    from son_of_anton_constants import missing_dependency_message
+
     deps: set[str] = set()
     for registry, pid in [(LLM_PROVIDERS, llm_id), (EMBEDDER_PROVIDERS, embedder_id),
                           (VECTOR_PROVIDERS, vector_id)]:
@@ -850,24 +855,14 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
         if dep:
             deps.add(dep)
     for dep in sorted(deps):
+        name = re.split(r"[\[<>=!~; ]", dep, maxsplit=1)[0]
         try:
-            print(f"  Installing {dep}...")
-            # Environment-aware install: sealed hosted venvs redirect to the
-            # durable data-volume target instead of /opt/son-of-anton (NS-605).
-            from tools.lazy_deps import install_specs
-
-            outcome = install_specs([dep], timeout=60)
-            if outcome.ok:
-                print(f"  ✓ Installed {dep}")
-            elif outcome.blocked:
-                print(f"  Warning: cannot install {dep}: {outcome.reason}")
-            else:
-                print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
-        except Exception:
-            print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
-    if deps:
-        import importlib
-        importlib.invalidate_caches()
+            metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            print(
+                f"  Warning: {missing_dependency_message(name)} "
+                "Add it through the Nix module's extraPythonPackages."
+            )
 
 
 def _check_qdrant_path(path: str) -> tuple[bool, str]:
@@ -942,8 +937,8 @@ def _check_min_dep_version() -> None:
         required_parts = (2, 0, 7)
         if installed_parts < required_parts:
             req_str = ".".join(str(x) for x in required_parts)
-            print(f"\n  ⚠ mem0ai {installed_ver} installed but >={req_str} required.")
-            print(f"  Run: uv pip install --python {sys.executable} 'mem0ai>={req_str}'")
+            print(f"\n  ⚠ mem0ai {installed_ver} is in this build but >={req_str} is required.")
+            print("  Rebuild son-of-anton with a newer mem0ai (bump it in uv.lock).")
     except ImportError:
         pass
     except Exception:
