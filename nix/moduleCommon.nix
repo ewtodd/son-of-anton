@@ -531,12 +531,16 @@ let
     };
 
   # ── Package resolution ──────────────────────────────────────────────────
+  # extraPackages go into the wrapper too, not just the service PATH, so the
+  # instance's `son-of-anton` CLI sees the same tools (language servers…).
   effectivePackage =
     cfg:
-    if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] then
+    if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] && cfg.extraPackages == [ ] then
       cfg.package
     else
-      cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      cfg.package.override {
+        inherit (cfg) extraPythonPackages extraDependencyGroups extraPackages;
+      };
 
   # ── The rendered config.toml ────────────────────────────────────────────
   # TOML is not a JSON superset, so the settings are rendered through

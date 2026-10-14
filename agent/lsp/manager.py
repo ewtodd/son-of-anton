@@ -28,7 +28,7 @@ Design choices:
 The service is **off by default** — call :meth:`is_active` to check
 whether it's actually doing anything.  When LSP is disabled in
 config, when no git workspace can be detected, when all configured
-servers are missing binaries and auto-install is off, ``is_active``
+servers are missing binaries, ``is_active``
 returns False and the file_operations layer falls through to the
 in-process syntax check.
 """
@@ -150,7 +150,6 @@ class LSPService:
         enabled: bool,
         wait_mode: str,
         wait_timeout: float,
-        install_strategy: str,
         binary_overrides: Optional[Dict[str, List[str]]] = None,
         env_overrides: Optional[Dict[str, Dict[str, str]]] = None,
         init_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -160,7 +159,6 @@ class LSPService:
         self._enabled = enabled
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
         self._wait_timeout = wait_timeout
-        self._install_strategy = install_strategy
         self._binary_overrides = binary_overrides or {}
         self._env_overrides = env_overrides or {}
         self._init_overrides = init_overrides or {}
@@ -209,7 +207,6 @@ class LSPService:
         enabled = bool(lsp_cfg.get("enabled", True))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
-        install_strategy = lsp_cfg.get("install_strategy", "auto")
         try:
             idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
         except (TypeError, ValueError):
@@ -245,7 +242,6 @@ class LSPService:
             enabled=enabled,
             wait_mode=wait_mode,
             wait_timeout=wait_timeout,
-            install_strategy=install_strategy,
             binary_overrides=binary_overrides,
             env_overrides=env_overrides,
             init_overrides=init_overrides,
@@ -574,17 +570,15 @@ class LSPService:
         try:
             ctx = ServerContext(
                 workspace_root=per_server_root,
-                install_strategy=self._install_strategy,
                 binary_overrides=self._binary_overrides,
                 env_overrides=self._env_overrides,
                 init_overrides=self._init_overrides,
             )
             spec = srv.build_spawn(per_server_root, ctx)
             if spec is None:
-                # ``build_spawn`` returns None when the binary can't be
-                # located (auto-install disabled, manual-only server,
-                # or install attempt failed).  Surface this once via
-                # the structured logger so the user can act on it.
+                # ``build_spawn`` returns None when the binary isn't on
+                # PATH.  Surface this once via the structured logger so
+                # the user can act on it.
                 eventlog.log_server_unavailable(srv.server_id, srv.server_id)
                 self._broken.add(key)
                 spawn_future.set_result(None)
@@ -703,7 +697,6 @@ class LSPService:
             "enabled": self._enabled,
             "wait_mode": self._wait_mode,
             "wait_timeout": self._wait_timeout,
-            "install_strategy": self._install_strategy,
             "clients": clients,
             "broken": broken,
             "disabled_servers": sorted(self._disabled_servers),

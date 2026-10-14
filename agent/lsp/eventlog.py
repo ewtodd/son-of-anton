@@ -148,7 +148,7 @@ def log_server_unavailable(server_id: str, binary_or_pkg: str) -> None:
             server_id,
             logging.WARNING,
             f"server unavailable: {binary_or_pkg} not found "
-            "(install via `son-of-anton lsp install <id>` or set lsp.servers.<id>.command)",
+            "(add it to the Nix build's extraPackages or set lsp.servers.<id>.command)",
         )
     else:
         _emit(server_id, logging.DEBUG, f"server still unavailable: {binary_or_pkg}")

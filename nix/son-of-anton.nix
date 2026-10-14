@@ -37,6 +37,9 @@
   # Overridable parameters
   extraPythonPackages ? [ ],
   extraDependencyGroups ? [ ],
+  # More tools on the wrapper's PATH (and the dev shell's), e.g. the language
+  # servers an editor config enables: the agent's LSP uses whatever is here.
+  extraPackages ? [ ],
 }:
 let
   # Filtered Python source — keeps skills/plugins/nix/JS edits from
@@ -119,7 +122,8 @@ let
     xclip
     # notify-send: an unanswered clarify question nudges the user.
     libnotify
-  ];
+  ]
+  ++ extraPackages;
 
   runtimePath = lib.makeBinPath runtimeDeps;
 

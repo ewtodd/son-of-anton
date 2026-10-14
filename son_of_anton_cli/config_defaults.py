@@ -2707,12 +2707,11 @@ DEFAULT_CONFIG = {
         "wait_mode": "document",
         "wait_timeout": 5.0,
 
-        # How to handle missing server binaries.
-        # ``"auto"`` — try to install via npm/go/pip into
-        #              ``<SON_OF_ANTON_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
-        # ``"off"`` — alias for ``manual``.
-        "install_strategy": "auto",
+        # Servers come from PATH only; nothing is installed at runtime. The
+        # Nix package puts its ``extraPackages`` on its PATH (e.g. the
+        # language servers your editor config enables); a server whose
+        # binary is absent is skipped.  ``servers.<id>.command`` points at
+        # a binary explicitly.
 
         # Idle language servers are shut down automatically after this
         # many seconds with no file activity, then respawned on demand.

@@ -9,9 +9,10 @@ Each :class:`ServerDef` knows how to:
 - assemble the spawn command (binary, args, env, cwd),
 - compute LSP ``initializationOptions``.
 
-Auto-installation is a separate concern handled by
-:mod:`agent.lsp.install`.  This module describes WHAT to spawn; the
-install module makes the binary appear on PATH if it isn't there.
+Servers come only from PATH (or a configured ``lsp.servers.<id>.command``);
+nothing is installed at runtime.  The Nix package puts whatever servers it
+is given (its ``extraPackages``, e.g. the language servers an editor
+config enables) on its PATH; a server whose binary is absent is skipped.
 
 The full set of servers ships with the package, but most are only
 *invoked* when the user actually edits a file in that language.  This
@@ -114,8 +115,8 @@ class SpawnSpec:
 
     Returned by :meth:`ServerDef.resolve` when a server is applicable
     to a file.  ``None`` is returned instead when the server should
-    be skipped (binary missing and auto-install disabled, project
-    marker not found, exclude marker hit, etc.).
+    be skipped (binary not on PATH, project marker not found, exclude
+    marker hit, etc.).
     """
 
     command: List[str]
@@ -136,8 +137,8 @@ class ServerDef:
     containing ``pyproject.toml``) or ``None`` to skip.
 
     The :func:`build_spawn` callable receives the resolved root and
-    returns a :class:`SpawnSpec` (or ``None`` if the binary can't be
-    found and auto-install isn't configured).
+    returns a :class:`SpawnSpec` (or ``None`` if the binary isn't on
+    PATH).
     """
 
     server_id: str
@@ -157,13 +158,11 @@ class ServerDef:
 class ServerContext:
     """Context passed into :meth:`ServerDef.build_spawn`.
 
-    Carries the user's auto-install policy, any user-overridden
-    binary paths, and helpers the spawn builder needs.  All fields
-    are optional; defaults yield "auto-install allowed, no overrides".
+    Carries any user-overridden binary paths, environment and
+    initialization options.  All but the workspace root are optional.
     """
 
     workspace_root: str
-    install_strategy: str = "auto"  # "auto" | "manual" | "off"
     binary_overrides: Dict[str, List[str]] = field(default_factory=dict)
     env_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
     init_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -230,18 +229,18 @@ def _root_or_workspace(file_path: str, workspace: str, markers: Sequence[str], e
 
 
 def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    # basedpyright (the fork editors such as nixvim ship) first: same
+    # protocol and options, so it serves under the "pyright" id.
     bin_path = _resolve_override(ctx, "pyright") or _which(
-        "pyright-langserver", "pyright"
+        "basedpyright-langserver", "pyright-langserver", "basedpyright", "pyright"
     )
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("pyright", ctx.install_strategy)
-        if bin_path is None:
-            return None
-    # If we got the cli ``pyright``, the langserver is its sibling.
+        return None
+    # If we got the cli, the langserver is its sibling.
     base = os.path.basename(bin_path)
-    if base in {"pyright", "pyright.exe"}:
-        sibling = os.path.join(os.path.dirname(bin_path), "pyright-langserver")
+    stem = base[:-4] if base.endswith(".exe") else base
+    if stem in {"pyright", "basedpyright"}:
+        sibling = os.path.join(os.path.dirname(bin_path), f"{stem}-langserver")
         if os.path.exists(sibling):
             bin_path = sibling
     init: Dict[str, Any] = {}
@@ -277,10 +276,7 @@ def _detect_python(root: str) -> Optional[str]:
 def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "typescript") or _which("typescript-language-server")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("typescript-language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--stdio"],
         workspace_root=root,
@@ -294,10 +290,7 @@ def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_gopls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "gopls") or _which("gopls")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("gopls", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path],
         workspace_root=root,
@@ -310,10 +303,7 @@ def _spawn_gopls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_rust_analyzer(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "rust-analyzer") or _which("rust-analyzer")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("rust-analyzer", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path],
         workspace_root=root,
@@ -326,10 +316,7 @@ def _spawn_rust_analyzer(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_clangd(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "clangd") or _which("clangd")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("clangd", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--background-index", "--clang-tidy"],
         workspace_root=root,
@@ -345,10 +332,7 @@ _BASH_SHELLCHECK_WARNED = False
 def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "bash-language-server") or _which("bash-language-server")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("bash-language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     # bash-language-server delegates diagnostics to ``shellcheck``.  Without
     # it on PATH the server starts and accepts requests but never reports
     # any problems — to the user it looks like a working integration that
@@ -373,10 +357,7 @@ def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_yaml_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "yaml-language-server") or _which("yaml-language-server")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("yaml-language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--stdio"],
         workspace_root=root,
@@ -389,10 +370,7 @@ def _spawn_yaml_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_lua_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "lua-language-server") or _which("lua-language-server")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("lua-language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path],
         workspace_root=root,
@@ -405,10 +383,7 @@ def _spawn_lua_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_intelephense(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "intelephense") or _which("intelephense")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("intelephense", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     init = {"telemetry": {"enabled": False}}
     init.update(ctx.init_overrides.get("intelephense", {}))
     return SpawnSpec(
@@ -436,10 +411,7 @@ def _spawn_ocamllsp(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_dockerfile_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "dockerfile-ls") or _which("docker-langserver")
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("dockerfile-language-server-nodejs", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--stdio"],
         workspace_root=root,
@@ -452,7 +424,7 @@ def _spawn_dockerfile_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _spawn_terraform_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "terraform-ls") or _which("terraform-ls")
     if bin_path is None:
-        return None  # terraform-ls is heavy to auto-install; require user
+        return None
     init = {
         "experimentalFeatures": {
             "prefillRequiredFields": True,
@@ -539,6 +511,34 @@ def _spawn_nixd(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         cwd=root,
         env=ctx.env_overrides.get("nixd", {}),
         initialization_options=ctx.init_overrides.get("nixd", {}),
+    )
+
+
+def _spawn_texlab(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    bin_path = _resolve_override(ctx, "texlab") or _which("texlab")
+    if bin_path is None:
+        return None
+    return SpawnSpec(
+        command=[bin_path],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("texlab", {}),
+        initialization_options=ctx.init_overrides.get("texlab", {}),
+    )
+
+
+def _spawn_json_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    bin_path = _resolve_override(ctx, "json-language-server") or _which(
+        "vscode-json-language-server", "vscode-json-languageserver"
+    )
+    if bin_path is None:
+        return None
+    return SpawnSpec(
+        command=[bin_path, "--stdio"],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("json-language-server", {}),
+        initialization_options=ctx.init_overrides.get("json-language-server", {}),
     )
 
 
@@ -630,10 +630,7 @@ def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         "vue-language-server"
     )
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("@vue/language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--stdio"],
         workspace_root=root,
@@ -648,10 +645,7 @@ def _spawn_svelte(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         "svelteserver", "svelte-language-server"
     )
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("svelte-language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--stdio"],
         workspace_root=root,
@@ -666,10 +660,7 @@ def _spawn_astro(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         "astro-ls", "astro-language-server"
     )
     if bin_path is None:
-        from agent.lsp.install import try_install
-        bin_path = try_install("@astrojs/language-server", ctx.install_strategy)
-        if bin_path is None:
-            return None
+        return None
     return SpawnSpec(
         command=[bin_path, "--stdio"],
         workspace_root=root,
@@ -912,6 +903,10 @@ def _root_clojure(file_path: str, workspace: str) -> Optional[str]:
     )
 
 
+def _root_workspace(file_path: str, workspace: str) -> str:
+    return workspace
+
+
 def _root_nix(file_path: str, workspace: str) -> str:
     found = nearest_root(file_path, ["flake.nix"])
     return found or workspace
@@ -1105,6 +1100,20 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_nix,
         build_spawn=_spawn_nixd,
         description="Nix — nixd",
+    ),
+    ServerDef(
+        server_id="texlab",
+        extensions=(".tex", ".bib"),
+        resolve_root=_root_workspace,
+        build_spawn=_spawn_texlab,
+        description="LaTeX / BibTeX — texlab",
+    ),
+    ServerDef(
+        server_id="json-language-server",
+        extensions=(".json", ".jsonc"),
+        resolve_root=_root_workspace,
+        build_spawn=_spawn_json_ls,
+        description="JSON — vscode-json-language-server",
     ),
     ServerDef(
         server_id="zls",
