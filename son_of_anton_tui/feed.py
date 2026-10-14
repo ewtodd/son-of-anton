@@ -639,6 +639,25 @@ class VirtualFeed(ScrollView):
         width = max(1, width - (0 if self.show_vertical_scrollbar else 1))
         self.set_width(width)
 
+    # ---------------- follow mode ----------------
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        # ScrollView's watcher drops the anchor check Widget's does, so wheeling
+        # or paging back to the bottom never resumed following new output.
+        self._check_anchor()
+
+    def _scroll_to(self, *args: Any, **kwargs: Any) -> bool:
+        # Textual releases the anchor on every scroll request, even one that
+        # cannot move (wheel-up on a transcript that fits, PgDn at the bottom),
+        # and an animated PgDn lands on the bottom as it was when pressed, short
+        # of whatever streamed in meanwhile: either way the feed stayed parked.
+        # A scroll aimed at the bottom resumes following now, not on arrival.
+        scrolled = super()._scroll_to(*args, **kwargs)
+        if self._anchored and self.scroll_target_y >= self.max_scroll_y:
+            self._anchor_released = False
+        return scrolled
+
     # ---------------- geometry ----------------
 
     def _sync(self, first: int) -> None:

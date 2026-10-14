@@ -1571,6 +1571,86 @@ def test_transcript_rows_fit_the_feed_across_resizes(backend) -> None:
     asyncio.run(run())
 
 
+def test_feed_follows_output_whenever_the_view_returns_to_the_bottom() -> None:
+    """Auto-follow resumes on every way back to the bottom, and only there.
+
+    ScrollView's scroll_y watcher drops the anchor check Widget's has, so
+    wheeling back down never resumed following; a scroll that could not move
+    (PgUp on a transcript that fits, PgDn at the bottom) released it for good;
+    an animated PgDn landed on the bottom as it was when pressed; and a fold
+    that dropped the view onto the bottom left it parked there.
+    """
+    _textual()
+    from textual import events
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(100, 50)) as pilot:
+            await pilot.pause(0.3)
+            feed = app.query_one("#feed")
+            count = 0
+
+            async def output(lines: int = 5, settle: float = 0.3) -> None:
+                nonlocal count
+                for _ in range(lines):
+                    app.post_message(_tui.TuiEvent("ansi", {"text": f"line {count}"}))
+                    count += 1
+                await pilot.pause(settle)
+
+            def wheel(down: bool) -> None:
+                cls = events.MouseScrollDown if down else events.MouseScrollUp
+                x, y = feed.region.x + 5, feed.region.y + 5
+                feed.post_message(cls(feed, 5, 5, 0, 1 if down else -1, 0, False, False, False, screen_x=x, screen_y=y))
+
+            def following() -> bool:
+                return feed.scroll_y >= feed.max_scroll_y
+
+            assert feed.max_scroll_y == 0, "the fixture must start with a transcript that fits"
+            await pilot.press("pageup")
+            await pilot.pause(0.2)
+            await output(80)
+            assert following(), "PgUp on a transcript that fits stopped the follow"
+
+            wheel(down=False)
+            await pilot.pause(0.2)
+            parked = feed.scroll_y
+            await output()
+            assert feed.scroll_y == parked and not following(), "output yanked a scrolled-up view"
+
+            for _ in range(10):
+                wheel(down=True)
+            await pilot.pause(0.3)
+            await output()
+            assert following(), "wheeling back to the bottom did not resume following"
+
+            await pilot.press("pagedown")
+            await pilot.pause(0.2)
+            await output()
+            assert following(), "PgDn at the bottom stopped the follow"
+
+            await pilot.press("pageup")
+            await pilot.pause(1.0)
+            assert feed.scroll_y + feed.scrollable_content_region.height == feed.max_scroll_y
+            feed.scroll_page_down()  # animated; output lands before it arrives
+            await output(settle=1.0)
+            assert following(), "PgDn to the bottom parked short of output that streamed in"
+
+            reasoning = feed.open_reasoning()
+            reasoning.append("thinking\n" * 30)
+            feed.flush()
+            await pilot.pause(0.3)
+            wheel(down=False)
+            await pilot.pause(0.2)
+            assert not following()
+            reasoning.finish()  # folds 30 lines to one, dropping the view onto the bottom
+            feed.changed(reasoning)
+            await pilot.pause(0.3)
+            await output()
+            assert following(), "a fold onto the bottom left the view parked"
+
+    asyncio.run(run())
+
+
 def test_blocks_are_separated_the_way_opencode_separates_them() -> None:
     """A row after a block gets a blank line; consecutive tool rows stay tight."""
     _textual()
