@@ -1,11 +1,13 @@
 """Stdlib document-to-text extraction for ``read_file``.
 
-Supports Jupyter notebooks, DOCX, and XLSX without adding hard dependencies.
-When the optional ``firecrawl-anydoc`` package is installed (``pip install
-firecrawl-anydoc``, imports as ``anydoc``), coverage widens to legacy Office
-(.doc/.ppt/.xls), OpenDocument, RTF, EPUB, and PDF — converted to Markdown by
-its Rust core. The stdlib extractors remain authoritative for their three
-formats so behavior is identical whether or not anydoc is present.
+Supports Jupyter notebooks, DOCX, and XLSX without adding hard dependencies,
+and PDF through poppler's ``pdftotext``, which the Nix package puts on PATH.
+Nothing is installed at runtime. When the build includes the optional
+``firecrawl-anydoc`` package (imports as ``anydoc``), coverage widens to
+legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB, and PDF goes
+through it too — converted to Markdown by its Rust core. The stdlib
+extractors remain authoritative for their three formats so behavior is
+identical whether or not anydoc is present.
 Malformed documents raise :class:`ExtractionError`; callers can then fall back to
 normal text/binary handling.
 """
@@ -20,8 +22,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
-import time
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
@@ -36,7 +36,8 @@ __all__ = [
 ]
 
 EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
-# Formats handled only when the optional anydoc converter is installed.
+# Formats handled only when the build includes the optional anydoc converter
+# (PDF also converts without it, through pdftotext).
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm",
     ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
@@ -66,54 +67,28 @@ def _extension(path: str) -> str:
     ext = Path(path).suffix.lower()
     if ext in EXTRACTABLE_EXTENSIONS:
         return ext
-    if ext in ANYDOC_EXTENSIONS and _anydoc() is not None:
+    if ext in ANYDOC_EXTENSIONS and (_anydoc() is not None or _pdftotext_fallback(ext)):
         return ext
     return ""
 
 
 _ANYDOC_UNSET = object()
 _anydoc_module: Any = _ANYDOC_UNSET
-_anydoc_lock = threading.Lock()
-# After a failed first load, wait this long before trying again. The attempt
-# can shell out to pip, so retrying on every call would hammer the network
-# in environments where the install can never succeed.
-ANYDOC_RETRY_SECONDS = 300.0
-_anydoc_failed_at: Optional[float] = None
 
 
 def _anydoc() -> Optional[Any]:
-    """Lazily import the optional anydoc converter; None when unavailable.
+    """The optional anydoc converter if the build includes it, else None.
 
-    A failed load is retried after :data:`ANYDOC_RETRY_SECONDS` rather than
-    disabling extraction for the rest of the process, so one transient
-    failure (network blip, pip race) does not stick in long-lived workers.
+    Never installed at runtime: every dependency comes from the Nix build
+    (add anydoc through the package's ``extraPythonPackages`` override).
     """
-    global _anydoc_module, _anydoc_failed_at
-    if _anydoc_module is not _ANYDOC_UNSET:
-        return _anydoc_module
-    with _anydoc_lock:
-        if _anydoc_module is not _ANYDOC_UNSET:
-            return _anydoc_module
-        if (
-            _anydoc_failed_at is not None
-            and time.monotonic() - _anydoc_failed_at < ANYDOC_RETRY_SECONDS
-        ):
-            return None
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-
-            # prompt=False: read_file must never block on an install prompt.
-            _lazy_ensure("tool.doc_extract", prompt=False)
-        except Exception:
-            _anydoc_failed_at = time.monotonic()
-            return None
+    global _anydoc_module
+    if _anydoc_module is _ANYDOC_UNSET:
         try:
             _anydoc_module = importlib.import_module("anydoc")
         except Exception:  # ImportError or a broken native binding
-            _anydoc_failed_at = time.monotonic()
-            return None
-        _anydoc_failed_at = None
-    return _anydoc_module  # type: ignore[return-value]
+            _anydoc_module = None
+    return _anydoc_module
 
 
 def is_extractable_document(path: str) -> bool:
@@ -164,6 +139,8 @@ def extract_document_bytes(data: bytes, path: str) -> str:
 def _extract_anydoc(path: str) -> str:
     mod = _anydoc()
     if mod is None:
+        if _pdftotext_fallback(Path(path).suffix.lower()):
+            return _extract_pdftotext(path)
         raise ExtractionError(f"Unsupported document type: {path!r}")
     try:
         size = os.path.getsize(path)
@@ -214,24 +191,33 @@ PDF_COVERAGE_ABSOLUTE_EMPTY = 10
 PDF_PAGE_SCAN_TIMEOUT = 20.0
 
 
-def _pdf_page_texts(path: str) -> Optional[list[str]]:
-    """Per-page extracted text, or None when undeterminable."""
-    if shutil.which("pdftotext") is None:
-        return None
+def _run_pdftotext(path: str) -> list[str]:
+    """Per-page text from poppler's pdftotext; raises ExtractionError."""
     try:
         proc = subprocess.run(
             ["pdftotext", path, "-"],
             capture_output=True,
             timeout=PDF_PAGE_SCAN_TIMEOUT,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ExtractionError(f"pdftotext failed: {exc}") from exc
     if proc.returncode != 0:
-        return None
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise ExtractionError(f"pdftotext failed: {detail or f'exit {proc.returncode}'}")
     pages = proc.stdout.decode("utf-8", errors="replace").split("\f")
     if pages and not pages[-1].strip():
         pages.pop()  # trailing form-feed artifact
-    return pages or None
+    return pages
+
+
+def _pdf_page_texts(path: str) -> Optional[list[str]]:
+    """Per-page extracted text, or None when undeterminable."""
+    if shutil.which("pdftotext") is None:
+        return None
+    try:
+        return _run_pdftotext(path) or None
+    except ExtractionError:
+        return None
 
 
 def _group_ranges(pages: list[int]) -> list[list[int]]:
@@ -285,7 +271,12 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
     the recovery command — the one the agent's terminal can actually see.
     """
     texts = _pdf_page_texts(path)
-    if not texts or len(texts) < 2:
+    return _coverage_note_for(texts, display_path or path) if texts else ""
+
+
+def _coverage_note_for(texts: list[str], shown: str) -> str:
+    """The coverage warning for already-extracted page texts, else ''."""
+    if len(texts) < 2:
         return ""
     counts = [len(page.strip()) for page in texts]
     empty = [i + 1 for i, n in enumerate(counts) if n < PDF_EMPTY_PAGE_CHARS]
@@ -297,7 +288,6 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         and len(empty) < PDF_COVERAGE_ABSOLUTE_EMPTY
     ):
         return ""
-    shown = display_path or path
     return (
         "[EXTRACTION COVERAGE WARNING: "
         f"{len(empty)} of {total} pages in this PDF yielded no text. "
@@ -318,6 +308,8 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
 def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     mod = _anydoc()
     if mod is None:
+        if _pdftotext_fallback(Path(path).suffix.lower()):
+            return _extract_pdftotext_bytes(data, path)
         raise ExtractionError(f"Unsupported document type: {path!r}")
     if len(data) > MAX_ANYDOC_BYTES:
         raise ExtractionError(
@@ -354,6 +346,62 @@ def _pdf_coverage_note_from_bytes(data: bytes, display_path: str) -> str:
         return _pdf_coverage_note(temp_path, display_path=display_path)
     except OSError:
         return ""
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+# ── PDF without anydoc ──────────────────────────────────────────────
+#
+# anydoc is not in the sealed Nix venv, so every PDF read fell through to the
+# binary-file error and the agent spent a turn rediscovering pdftotext.
+# poppler ships with the package, so PDFs convert through it instead.
+
+
+def _pdftotext_fallback(ext: str) -> bool:
+    return ext == ".pdf" and shutil.which("pdftotext") is not None
+
+
+def _extract_pdftotext(path: str, display_path: Optional[str] = None) -> str:
+    """PDF text in reading order, one marked section per page.
+
+    Reading order (not ``-layout``) keeps a two-column paper one column at a
+    time; the page markers are what the coverage warning's page numbers mean.
+    """
+    shown = display_path or path
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+    if size > MAX_DOCUMENT_BYTES:
+        raise ExtractionError(
+            f"Document too large to convert ({size:,} bytes, limit is {MAX_DOCUMENT_BYTES:,})"
+        )
+    texts = _run_pdftotext(path)
+    if not any(page.strip() for page in texts):
+        raise ExtractionError(
+            "the PDF has no text layer (likely scanned). Render the pages you "
+            f"need with `pdftoppm -jpeg -r 150 -f <first> -l <last> '{shown}' "
+            "/tmp/page` and inspect them with the vision_analyze tool"
+        )
+    body = "\n".join(f"--- page {i} ---\n{page.strip()}" for i, page in enumerate(texts, 1))
+    # Prepended for the same reason as the anydoc path: read_file paginates.
+    return _coverage_note_for(texts, shown) + body + "\n"
+
+
+def _extract_pdftotext_bytes(data: bytes, display_path: str) -> str:
+    """pdftotext for backend-transferred bytes, via a private host temp file."""
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            fh.write(data)
+            temp_path = fh.name
+        return _extract_pdftotext(temp_path, display_path=display_path)
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
     finally:
         if temp_path:
             try:

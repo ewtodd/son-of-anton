@@ -17,6 +17,7 @@
   git,
   openssh,
   ffmpeg,
+  poppler-utils,
   tirith,
   bubblewrap,
 
@@ -105,6 +106,9 @@ let
     git
     openssh
     ffmpeg
+    # read_file converts PDFs with pdftotext, and its scanned-page warning
+    # points at pdftoppm; nothing is pip-installed at runtime.
+    poppler-utils
     tirith
   ]
   ++ lib.optionals stdenv.isLinux [
