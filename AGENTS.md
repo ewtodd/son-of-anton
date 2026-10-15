@@ -109,6 +109,10 @@ nix run .# --            # start the CLI
 nix develop              # python dev shell with the editable venv
 ```
 
+The sealed build sees only files in the git index: `git add` a new file before `nix build`
+or `nix flake check`, or it is silently missing from the sealed venv while the editable
+venv (and so the test suite) still finds it.
+
 Ad-hoc Python checks against the working tree can run in the sealed venv:
 
 ```bash
