@@ -1886,6 +1886,13 @@ class CLICommandsMixin:
         extra = parts[1] if len(parts) > 1 else ""
         self._pending_agent_seed = self.build_commit_prompt(extra)
 
+    def _handle_plan_command(self, cmd_original: str) -> None:
+        """Handle /plan — queue the planning task as the next turn, like /commit."""
+        from son_of_anton_cli.plan_command import build_plan_prompt
+
+        parts = (cmd_original or "").strip().split(None, 1)
+        self._pending_agent_seed = build_plan_prompt(parts[1] if len(parts) > 1 else "")
+
     def _handle_focus_command(self, cmd_original: str) -> None:
         """Toggle or inspect focus view — the reduced-output display mode.
 

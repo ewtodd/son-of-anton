@@ -2452,6 +2452,32 @@ def test_commit_reaches_the_agent_through_the_app(backend) -> None:
 
 
 
+def test_plan_reaches_the_agent_through_the_app(backend) -> None:
+    """/plan, like /commit, queues a planning turn rather than doing anything itself."""
+    _textual()
+    b, _rec = backend
+    b.detach()
+    sent: dict = {}
+    b.chat = lambda message, images=None: sent.setdefault("msg", message) and "ok"
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(130, 32)) as pilot:
+            await pilot.pause(0.3)
+            app.query_one("#input").focus()
+            app._prompt.text = "/plan split the gateway module"
+            await pilot.press("enter")
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and "msg" not in sent:
+                await pilot.pause(0.1)
+            assert "msg" in sent, "/plan never reached the agent"
+            assert sent["msg"].startswith("Plan only")
+            assert "The task to plan: split the gateway module" in sent["msg"]
+            assert b._pending_agent_seed is None, "the one-shot seed was not consumed"
+
+    asyncio.run(run())
+
+
 def test_backend_compaction_summary_is_a_typed_event(backend) -> None:
     b, rec = backend
     b._render_compaction_summary(

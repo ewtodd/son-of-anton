@@ -103,6 +103,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("commit", "Review uncommitted changes, write a message in the repo's style, and commit", "Session",
                cli_only=True, args_hint="[extra instructions]"),
+    CommandDef("plan", "Write a plan to .son-of-anton/plans/ instead of doing the work", "Session",
+               args_hint="[task]"),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",

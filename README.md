@@ -687,12 +687,15 @@ the install itself. MCP servers are declared under `mcp_servers` in that same
 | `/model auto\|NAME` | pin a model for the session, or drop the pin |
 | `/perm default\|ask\|lockdown\|yolo` | set the permission mode (shift+tab cycles it for the session) |
 | `/commit` | review the uncommitted diff, write a message in the repo's style, commit |
+| `/plan [task]` | write a plan to `.son-of-anton/plans/` in the project instead of doing the work (also on Signal) |
+| `/cancel` | pick messages queued behind the running turn to drop before they are sent |
 | `/sessions` | list sessions, including ones started on Signal |
 | `/q`, `:q`, `/exit` | quit the CLI |
 <!---->
-`/commit` hands the work to the agent as an ordinary turn, so it reads the diff
-with the tools it already has and commits under your normal approvals. By
-default it commits with whatever identity the repository or your global git
+`/commit` and `/plan` hand the work to the agent as an ordinary turn, so it reads
+the diff or the project with the tools it already has, under your normal
+approvals. `/plan` with no task plans what the conversation is heading toward.
+By default `/commit` commits with whatever identity the repository or your global git
 config already sets. To author commits under a dedicated account instead —
 while keeping *you* as the committer, so the log reads "authored by the
 account, committed by you" — set both:

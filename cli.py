@@ -9249,6 +9249,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_input.put(retry_msg)
         elif canonical == "commit":
             self._handle_commit_command(cmd_original)
+        elif canonical == "plan":
+            self._handle_plan_command(cmd_original)
         elif canonical == "undo":
             # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
             _undo_n = 1

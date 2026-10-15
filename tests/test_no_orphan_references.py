@@ -140,6 +140,119 @@ def test_no_import_names_a_symbol_that_is_gone() -> None:
     )
 
 
+def _imported_modules(tree: ast.AST):
+    """Yield ``(lineno, dotted module)`` for every absolute import in ``tree``.
+
+    Covers ``import x.y``, ``from x.y import z`` and a constant-string
+    ``importlib.import_module("x.y")`` / ``import_module("x.y")`` call.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield node.lineno, alias.name
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            yield node.lineno, node.module
+        elif isinstance(node, ast.Call) and node.args:
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            first = node.args[0]
+            if name == "import_module" and isinstance(first, ast.Constant) and isinstance(first.value, str):
+                if not first.value.startswith("."):
+                    yield node.lineno, first.value
+
+
+# Guard tests import a removed module on purpose, to prove it stays gone.
+_INTENTIONALLY_MISSING = frozenset({
+    ("tests/test_lsp_servers_from_path.py", "agent.lsp.install"),
+    ("tests/test_no_auto_router.py", "son_of_anton_cli.router"),
+})
+
+# Imports of modules deleted by earlier removals, still sitting inert in
+# try/except branches when this check was added (2026-10-15). A ratchet: the
+# list may only shrink. Fix an import, then delete its entry here —
+# test_known_missing_imports_are_still_missing fails until you do.
+_KNOWN_MISSING = frozenset({
+    ("agent/agent_runtime_helpers.py", "agent.moa_loop"),
+    ("agent/agent_runtime_helpers.py", "son_of_anton_cli.moa_config"),
+    ("agent/agent_runtime_helpers.py", "tools.read_preview_tool"),
+    ("agent/agent_runtime_helpers.py", "tools.read_terminal_tool"),
+    ("agent/agent_runtime_helpers.py", "tools.read_window_tool"),
+    ("agent/agent_runtime_helpers.py", "tools.setup_mcp_tool"),
+    ("agent/agent_runtime_helpers.py", "tools.tour_tool"),
+    ("agent/auxiliary_client.py", "son_of_anton_cli.moa_config"),
+    ("agent/chat_completion_helpers.py", "tools.browser_tool"),
+    ("agent/conversation_loop.py", "agent.moa_loop"),
+    ("agent/conversation_loop.py", "agent.nous_rate_guard"),
+    ("agent/conversation_loop.py", "son_of_anton_cli.moa_config"),
+    ("agent/model_metadata.py", "son_of_anton_cli.moa_config"),
+    ("agent/tool_executor.py", "tools.read_preview_tool"),
+    ("agent/tool_executor.py", "tools.read_terminal_tool"),
+    ("agent/tool_executor.py", "tools.read_window_tool"),
+    ("agent/tool_executor.py", "tools.setup_mcp_tool"),
+    ("agent/tool_executor.py", "tools.tour_tool"),
+    ("agent/verification_stop.py", "agent.verify.environment"),
+    ("agent/verification_stop.py", "agent.verify.recipes"),
+    ("cron/scheduler_provider.py", "plugins.cron_providers"),
+    ("gateway/run.py", "tools.transcription_tools"),
+    ("plugins/platforms/discord/adapter.py", "tools.transcription_tools"),
+    ("plugins/platforms/discord/adapter.py", "tools.tts_tool"),
+    ("plugins/platforms/discord/adapter.py", "tools.voice_mode"),
+    ("plugins/platforms/discord/ffmpeg_utils.py", "tools.transcription_tools"),
+    ("son_of_anton_cli/plugins.py", "agent.browser_provider"),
+    ("son_of_anton_cli/plugins.py", "agent.browser_registry"),
+    ("son_of_anton_cli/plugins.py", "agent.transcription_provider"),
+    ("son_of_anton_cli/plugins.py", "agent.transcription_registry"),
+    ("son_of_anton_cli/plugins.py", "agent.tts_provider"),
+    ("son_of_anton_cli/plugins.py", "agent.tts_registry"),
+    ("son_of_anton_cli/plugins.py", "son_of_anton_cli.dashboard_auth"),
+    ("son_of_anton_cli/plugins.py", "son_of_anton_cli.dashboard_auth.registry"),
+    ("tools/approval.py", "tools.computer_use"),
+})
+
+
+def _missing_module_imports() -> set[tuple[str, str]]:
+    files = _first_party_files()
+    modules = {_dotted(p.relative_to(ROOT)) for p in files}
+    modules.discard("")
+    packages = {".".join(m.split(".")[:i]) for m in modules for i in range(1, m.count(".") + 1)}
+    first_party = {m.split(".")[0] for m in modules}
+    missing = set()
+    for path in files:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue  # reported by the compile test
+        for _lineno, module in _imported_modules(tree):
+            if module.split(".")[0] not in first_party:
+                continue
+            if module in modules or module in packages:
+                continue
+            missing.add((str(path.relative_to(ROOT)), module))
+    return missing
+
+
+def test_no_import_names_a_module_that_is_gone() -> None:
+    """The symbol check above skips imports whose module no longer exists.
+
+    That made deleting a whole module the one removal it could not see: a
+    lazy ``from agent.curator import maybe_run_curator`` left inside a
+    try/except would pass it silently. Any import whose top-level package is
+    first-party must name a module (or package directory) that still exists.
+    """
+    new = sorted(_missing_module_imports() - _KNOWN_MISSING - _INTENTIONALLY_MISSING)
+    assert not new, "imports of first-party modules that no longer exist:\n  " + "\n  ".join(
+        f"{path}: {module}" for path, module in new
+    )
+
+
+def test_known_missing_imports_are_still_missing() -> None:
+    """Keeps _KNOWN_MISSING honest: a fixed import must leave the list."""
+    fixed = sorted(_KNOWN_MISSING - _missing_module_imports())
+    assert not fixed, "no longer dangling; delete from _KNOWN_MISSING:\n  " + "\n  ".join(
+        f"{path}: {module}" for path, module in fixed
+    )
+
+
 # Symbols deleted when their subsystem was removed. The import test above
 # cannot see these: they were reached as ``self._foo(...)`` /
 # ``agent._foo(...)``, which no static import check inspects. Four of them

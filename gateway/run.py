@@ -15157,6 +15157,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             event.text = _init_prompt
             # fall through to agent processing
 
+        if canonical == "plan":
+            # /plan: rewrite the turn to the planning prompt and fall through
+            # to normal agent processing, as /init does.
+            from son_of_anton_cli.plan_command import build_plan_prompt
+
+            event.text = build_plan_prompt(event.get_command_args().strip())
+
 
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
