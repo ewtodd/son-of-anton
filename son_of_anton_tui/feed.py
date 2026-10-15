@@ -423,9 +423,13 @@ class _NoteBlock(_Block):
 
 
 class _ToolBlock(_Block):
-    """One tool row: icon column, label, live elapsed / final duration."""
+    """One tool row: icon column, label, live elapsed / final duration.
 
-    __slots__ = ("label", "icon", "done", "is_error", "duration", "started", "frame")
+    The row is one line, cut to the feed width; a click unfolds it to the
+    whole call, wrapped under the label, and a second click folds it again.
+    """
+
+    __slots__ = ("label", "icon", "done", "is_error", "duration", "started", "frame", "expanded")
 
     def __init__(self, name: str) -> None:
         super().__init__("tool")
@@ -436,6 +440,12 @@ class _ToolBlock(_Block):
         self.duration = 0.0
         self.started = time.monotonic()
         self.frame = " "
+        self.expanded = False
+
+    def toggle(self) -> None:
+        """Unfold or fold the row in place (a click on it)."""
+        self.expanded = not self.expanded
+        self.dirty = True
 
     def finish(self, icon: str, label: str, is_error: bool, duration: float) -> None:
         self.done = True
@@ -450,20 +460,29 @@ class _ToolBlock(_Block):
         # The widget feed's ToolLine: a finished row recedes (muted) so the
         # answer stands out, the running one stays at full text colour, and
         # a failure is the error colour. The icon carries the tool colour.
-        row = Text()
-        row.append(lead.ljust(TOOL_ICON_WIDTH), style=styles.tool or None)
-        row.append(self.label, style=(styles.muted if self.done else None))
+        icon = Text(lead.ljust(TOOL_ICON_WIDTH), style=styles.tool or None)
+        body = Text()
+        body.append(self.label, style=(styles.muted if self.done else None))
         if self.done and self.duration:
-            row.append(f"  {self.duration:.1f}s", style=styles.muted)
+            body.append(f"  {self.duration:.1f}s", style=styles.muted)
         elif not self.done:
             elapsed = time.monotonic() - self.started
             if elapsed >= 1:
-                row.append(f"  {elapsed:.0f}s", style=styles.muted)
-        row.no_wrap = True
-        row.overflow = "ellipsis"
+                body.append(f"  {elapsed:.0f}s", style=styles.muted)
         if self.is_error:
-            row.stylize(styles.error)
-        self.lines = _to_strips(row, width - _TEXT_MARGIN)
+            icon.stylize(styles.error)
+            body.stylize(styles.error)
+        if self.expanded:
+            # Continuation lines hang under the label, clear of the icon.
+            indent = cell_len(icon.plain)
+            wrapped = _to_strips(body, width - _TEXT_MARGIN - indent) or [Strip([])]
+            head = Strip.join([_to_strips(icon, indent)[0], wrapped[0]])
+            self.lines = [head] + _pad(wrapped[1:], indent)
+        else:
+            row = Text.assemble(icon, body)
+            row.no_wrap = True
+            row.overflow = "ellipsis"
+            self.lines = _to_strips(row, width - _TEXT_MARGIN)
         self.height = len(self.lines)
         self.dirty = False
 
@@ -953,29 +972,33 @@ class VirtualFeed(ScrollView):
             self.refresh()
             self.post_message(self.TextCopied(text))
             return
-        # A plain click (no drag) on a reasoning header folds/unfolds it — the
-        # interaction the old Collapsible widget provided.
+        # A plain click (no drag) on a reasoning header or a tool row folds/
+        # unfolds it — the interaction the old Collapsible widget provided.
         if (
             selection is not None
             and selection[0] == selection[2]
             and selection[1] == selection[3]
         ):
-            if self._toggle_reasoning_at(selection[0]):
+            if self._toggle_at(selection[0]):
                 return
         self.refresh()
 
-    def _toggle_reasoning_at(self, y: int) -> bool:
-        """Toggle the reasoning block whose header row is at ``y``."""
+    def _toggle_at(self, y: int) -> bool:
+        """Toggle the reasoning block whose header is at ``y``, or the tool row there."""
         if not self._blocks or y < 0:
             return False
         idx = bisect.bisect_right(self._starts, y) - 1
         if idx < 0:
             return False
         block = self._blocks[idx]
-        if not isinstance(block, _ReasoningBlock):
+        if isinstance(block, _ReasoningBlock):
+            if y != self._starts[idx]:
+                return False  # body lines select, only the header toggles
+        elif isinstance(block, _ToolBlock):
+            if y >= self._starts[idx] + block.height:
+                return False  # the gap below the row
+        else:
             return False
-        if y != self._starts[idx]:
-            return False  # body lines select, only the header toggles
         block.toggle()
         self.changed(block)
         return True

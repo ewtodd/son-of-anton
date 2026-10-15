@@ -407,6 +407,47 @@ def test_reasoning_folds_and_a_click_reopens_it() -> None:
     asyncio.run(run())
 
 
+def test_a_click_unfolds_a_tool_row_cut_by_a_narrow_window() -> None:
+    """A tool row is one line cut to the window; a click shows the whole call.
+
+    In a narrow window a long command ended in ``…`` and there was no way to
+    read the rest without resizing. A click must unfold the row to the full
+    call, wrapped under the label clear of the icon, and a second click fold it.
+    """
+    _textual()
+    command = "cd /home/e-work/Remix-MUSIC-Sim && ./run37Cl.sh && ./run87Rb.sh && echo batch-finished"
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(60, 30)) as pilot:
+            await pilot.pause(0.2)
+            post = lambda kind, **p: app.post_message(_tui.TuiEvent(kind, p))  # noqa: E731
+            post("tool_start", name="terminal", label=command)
+            post("tool_done", name="terminal", label=command, duration=1.5)
+            await pilot.pause(0.3)
+
+            feed = app.query_one("#feed")
+            block = next(b for b in feed._blocks if b.kind == "tool")
+            assert len(block.lines) == 1
+            folded = block.lines[0].text
+            assert folded.rstrip().endswith("…") and "batch-finished" not in folded, folded
+
+            y = feed._starts[block.idx]
+            await pilot.click(feed, offset=(5, y))
+            await pilot.pause(0.3)
+            assert len(block.lines) > 1, "a click on the row must unfold it"
+            unfolded = [s.text for s in block.lines]
+            # Wrapping turns spaces into line breaks; the call itself is all there.
+            assert command.replace(" ", "") in "".join(unfolded).replace(" ", ""), unfolded
+            assert all(line.startswith("  ") for line in unfolded[1:]), "continuation must hang under the label"
+
+            await pilot.click(feed, offset=(5, y))
+            await pilot.pause(0.3)
+            assert len(block.lines) == 1, "a second click must fold it again"
+
+    asyncio.run(run())
+
+
 def test_transcript_paints_from_the_scroll_offset() -> None:
     """A Line API widget gets viewport rows and must add scroll_y itself.
 
