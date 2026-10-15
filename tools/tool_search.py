@@ -9,10 +9,10 @@ for the full rationale):
 
 * Core tools defined in ``toolsets._SON_OF_ANTON_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
-* Session-gated GUI toolsets (``desktop_ui``, ``project``) are also never
-  deferred. They stay off the core list so CLI and messaging never pay for
-  their schemas, but once a session enables them they stay in the
-  model-facing array. Tool Search is for MCP/plugin catalog bloat, not for
+* Session-gated surface toolsets (``desktop_ui``, ``project``, and the
+  single_user gateway's ``relay``) are also never deferred. They stay off the
+  core list so other clients never pay for their schemas, but once a session
+  has them they stay in the model-facing array. Tool Search is for MCP/plugin catalog bloat, not for
   hiding the tools that define this session's surface.
 * Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
   tools are present, they hide behind the bridge. What scales with catalog
@@ -205,9 +205,11 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-# Session-gated GUI toolsets. Off ``_SON_OF_ANTON_CORE_TOOLS`` so non-GUI clients
-# never pay their schema; once a session enables them they stay direct.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
+# Session-gated surface toolsets. Off ``_SON_OF_ANTON_CORE_TOOLS`` so other
+# clients never pay their schema; once a session has them they stay direct.
+# ``relay``'s schema is the relay chat's whole instruction set (no skill
+# carries it), so hiding it behind tool_search would hide the instructions.
+_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "relay"})
 
 
 def _departed_mcp_message(name: str) -> Optional[str]:

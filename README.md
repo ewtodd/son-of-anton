@@ -96,9 +96,31 @@ a session id) is the escape hatch for anything else, and `--resume latest`
 takes the global most-recently-used session. Resuming restores the session's
 working directory.
 <!---->
-For scripts and the gateway relay, `son-of-anton sessions list --json --here`
+For scripts, `son-of-anton sessions list --json --here`
 prints this workspace's sessions, most recently active first, with id, title,
 preview, cwd, branch and message count.
+<!---->
+### Coding from Signal: the relay
+<!---->
+On an instance with `gateway.single_user = true` (one person, sharing their
+`SON_OF_ANTON_HOME` with the terminal), the chat is a relay to your terminal
+sessions rather than a place where code gets written. Ask it to work on
+something and it hands the request to a terminal session — an existing one
+or a new one in a directory you name; it asks which — and runs that session
+headless (`son-of-anton chat -Q`) in the session's own directory, with the
+same prompt and tools the TUI would give it. A message sent while the session
+is busy waits and runs as its next turn. When a turn finishes, the chat tells
+you the result. It can also list your sessions, report what one is doing,
+and stop it.
+<!---->
+A dangerous command in that session asks you in the chat, with its id:
+answer `/approve <id>` (or `/deny <id> reason`). Nobody is at the terminal,
+so a question the session would have asked there comes back as its reply
+instead, and your answer goes to it as the next message.
+<!---->
+`/resume <session>` of a terminal session attaches it to the chat for this
+relaying; it does not move the conversation into the chat. Resuming a chat
+session, or any `/resume` on a shared instance, switches the chat as before.
 <!---->
 ### The journal
 <!---->

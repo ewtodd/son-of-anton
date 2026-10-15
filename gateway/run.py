@@ -11445,12 +11445,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
         )
 
-        # Start background handoff watcher — picks up CLI sessions marked
-        # handoff_state='pending' in state.db and re-binds them to the
-        # destination platform's home channel, then forges a synthetic user
-        # turn so the agent kicks off the new chat.
-        self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
-
         # Start background async-delegation watcher — drains completion events
         # from delegate_task(background=true) subagents and injects each
         # result back into its originating session as a new turn, covering the
@@ -11466,6 +11460,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # by headless coder sessions (spawned from a chat) back into the chat
         # that spawned them, so the answer can come from /approve <id>.
         self._spawn_supervised(self._durable_approval_watcher, "durable_approval_watcher")
+
+        # Relay workers outlive a gateway restart (each is its own process):
+        # once this gateway is up, finish the relay side of any run the last
+        # one left behind — start its queued messages or mark it idle.
+        from gateway.relay_workers import reconcile_at_startup as _relay_reconcile
+
+        self._spawn_supervised(
+            lambda: _relay_reconcile(self), "relay_reconcile", restart=False,
+        )
 
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" SON_OF_ANTON_SCALE_TO_ZERO stamp), messaging is
@@ -11510,7 +11513,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # ``_MAX_SUPERVISED_RESTARTS``. Without this, a long-lived launchd daemon
     # whose watcher crashes a handful of times over days would hit the cap and
     # be permanently abandoned (NS: silent loss of platform-reconnect /
-    # handoff for the rest of the process life).
+    # approval delivery for the rest of the process life).
     _SUPERVISED_HEALTHY_SECS = 300
 
     def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0, on_spawn=None):
@@ -11614,247 +11617,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         task.add_done_callback(_done)
         return task
-
-    async def _handoff_watcher(self, interval: float = 2.0) -> None:
-        """Background task that processes pending CLI→gateway session handoffs.
-
-        Polls ``state.db`` for sessions in ``handoff_state='pending'`` and,
-        for each one:
-
-        1. Atomically claims it (pending → running).
-        2. Resolves the destination platform's configured home channel.
-        3. Re-binds the gateway's session_key for that home channel to the
-           CLI's existing session_id via ``session_store.switch_session`` so
-           the full role-aware transcript replays on the next agent turn.
-        4. Forges a synthetic ``MessageEvent`` (``internal=True``) with a
-           handoff-notice text and dispatches through the normal gateway
-           message pipeline so the agent runs and replies on the platform.
-        5. Marks the row ``completed`` (or ``failed`` with ``handoff_error``).
-
-        The CLI process is poll-blocked on the row's terminal state and
-        prints the result to the user.
-        """
-        # Initial delay so the gateway is fully connected to its platforms
-        # before we try to dispatch handoffs through them.
-        await asyncio.sleep(5)
-        while self._running:
-            try:
-                if self._session_db is None:
-                    await asyncio.sleep(interval)
-                    continue
-                pending = await self._session_db.list_pending_handoffs()
-                for row in pending:
-                    session_id = row.get("id")
-                    if not session_id:
-                        continue
-                    if not await self._session_db.claim_handoff(session_id):
-                        # Another tick or another gateway already claimed it.
-                        continue
-                    try:
-                        await self._process_handoff(row)
-                        await self._session_db.complete_handoff(session_id)
-                    except Exception as exc:
-                        logger.warning(
-                            "Handoff for session %s failed: %s",
-                            session_id, exc, exc_info=True,
-                        )
-                        await self._session_db.fail_handoff(session_id, str(exc))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
-            await asyncio.sleep(interval)
-
-    async def _process_handoff(self, row: Dict[str, Any]) -> None:
-        """Execute one handoff row. Raises on failure (caller marks failed)."""
-        from gateway.config import Platform
-        from gateway.session import SessionSource, build_session_key
-        from gateway.platforms.base import MessageEvent
-
-        cli_session_id = row["id"]
-        platform_name = (row.get("handoff_platform") or "").strip().lower()
-        if not platform_name:
-            raise RuntimeError("handoff_platform is empty")
-
-        # Resolve platform enum
-        try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            raise RuntimeError(f"unknown platform '{platform_name}'")
-
-        # Adapter must be live. A relay-fronted gateway registers ONE adapter
-        # under Platform.RELAY that fronts N logical platforms — so a literal
-        # adapters.get(discord) misses even though "discord" is deliverable.
-        # resolve_delivery_transport is the shared alias-aware resolver (native
-        # adapter wins; relay eligible only when its authenticated transport
-        # advertises it fronts the logical platform).
-        transport = resolve_delivery_transport(platform, self.config, self.adapters)
-        if not transport:
-            raise RuntimeError(
-                f"platform '{platform_name}' is not active in this gateway"
-            )
-        adapter = transport.adapter
-
-        # Home channel must be configured
-        home = self.config.get_home_channel(platform)
-        if not home or not home.chat_id:
-            raise RuntimeError(
-                f"no home channel configured for {platform_name}; "
-                f"run /sethome on the desired chat first"
-            )
-
-        cli_title = row.get("title") or cli_session_id[:8]
-
-        # Try to create a fresh thread on the destination so the handoff
-        # has its own scrollback. Adapter returns None if threading isn't
-        # supported (e.g. Signal) or if creation failed
-        # (no permission, topics-mode off, parent is a DM, etc.). When
-        # None we fall through to using the home channel directly — the
-        # synthetic turn still lands; just without thread isolation.
-        thread_name = f"Son of Anton — {cli_title}"
-        try:
-            new_thread_id = await adapter.create_handoff_thread(
-                str(home.chat_id), thread_name,
-            )
-        except Exception as exc:
-            logger.debug(
-                "Handoff: create_handoff_thread raised on %s: %s",
-                platform_name, exc, exc_info=True,
-            )
-            new_thread_id = None
-
-        # Use the new thread if the adapter created one; otherwise fall
-        # back to whatever thread (if any) the home channel was configured
-        # with.
-        effective_thread_id = new_thread_id or (
-            str(home.thread_id) if home.thread_id else None
-        )
-
-        # Determine chat_type/user_id for the destination source.
-        home_chat_id = str(home.chat_id)
-
-        if new_thread_id:
-            dest_chat_type = "thread"
-            dest_user_id = "system:handoff"
-        else:
-            # No thread — assume DM-style for the home channel.
-            dest_chat_type = "dm"
-            dest_user_id = "system:handoff"
-
-        # Discord thread destinations must key on the thread's OWN id, not the
-        # parent channel's, because the Discord adapter builds organic in-thread
-        # messages with ``chat_id == thread id`` — so ``build_session_key``
-        # yields ``…:thread:{thread}:{thread}``. If the handoff keys on the
-        # parent channel (``…:thread:{parent}:{thread}``) the next real user
-        # reply in the thread resolves to a DIFFERENT session_key and spawns a
-        # fresh session instead of continuing the handed-off one.
-        #
-        # This is Discord-specific: Slack adapters key organic
-        # thread messages with ``chat_id == parent_channel`` and the thread
-        #/topic id only in ``thread_id``, so for those platforms the parent
-        # channel is correct (and the deeper chat_type normalization — handoff
-        # uses "thread" but Slack organic uses "group" — is a separate issue).
-        if platform == Platform.DISCORD and dest_chat_type == "thread" and effective_thread_id:
-            dest_chat_id = str(effective_thread_id)
-        else:
-            dest_chat_id = home_chat_id
-        dest_source = SessionSource(
-            platform=platform,
-            chat_id=dest_chat_id,
-            chat_name=home.name,
-            chat_type=dest_chat_type,
-            user_id=dest_user_id,
-            user_name="Handoff",
-            thread_id=effective_thread_id,
-        )
-
-        # Compute the gateway's session_key for that destination using the
-        # same rules its adapters use, so switch_session targets the right
-        # entry. For thread destinations build_session_key keys without
-        # user_id (thread_sessions_per_user defaults to False) — so the
-        # next real user message in the thread shares this same session.
-        platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
-        session_key = build_session_key(
-            dest_source,
-            group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-        )
-
-        # Make sure there's an entry in the session_store for this key. If
-        # the home channel has never been used, get_or_create_session
-        # creates one; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(dest_source)
-
-        # Re-bind the destination key to the CLI session_id. switch_session
-        # ends the prior session in SQLite and reopens the CLI session under
-        # the new key. The CLI's transcript becomes the active one for the
-        # gateway from this moment on.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
-        if switched is None:
-            raise RuntimeError(
-                f"could not switch session key {session_key} → {cli_session_id}"
-            )
-
-        # Evict any cached AIAgent for this session_key so the next dispatch
-        # rebuilds it against the CLI session_id (mirrors /resume / /branch).
-        self._evict_cached_agent(session_key)
-
-        # Cancel any in-flight running-agent state for the destination key
-        # so the synthetic turn isn't queued behind a stale running flag.
-        self._release_running_agent_state(session_key)
-
-        synthetic_text = (
-            f"[Session was just handed off from CLI (\"{cli_title}\") to this "
-            f"channel. The full prior conversation history is loaded above. "
-            f"Briefly confirm you're working here and summarize what we were "
-            f"working on, so the user can continue from this device.]"
-        )
-
-        synthetic_event = MessageEvent(
-            text=synthetic_text,
-            source=dest_source,
-            internal=True,
-        )
-
-        logger.info(
-            "Handoff: dispatching synthetic turn for CLI session %s → %s "
-            "(home=%s, thread=%s, session_key=%s)",
-            cli_session_id, platform_name, home.chat_id, effective_thread_id,
-            session_key,
-        )
-
-        # Dispatch through the runner directly. Going through
-        # adapter.handle_message would spawn a background task and we'd
-        # lose synchronous error visibility; calling _handle_message inline
-        # keeps the success/failure path observable for the watcher.
-        response_text = await self._handle_message(synthetic_event)
-        if not response_text:
-            # Streaming may have already delivered the response inline.
-            # Either way, agent ran without raising — count as success.
-            return
-
-        # Send the agent's reply to the destination. Route to the new
-        # thread if we created one; otherwise the configured home channel
-        # (which may itself carry a thread_id). Send through the resolved
-        # transport (not adapter.send directly) so a relay-fronted logical
-        # platform is stamped on the outbound frame (send_for_platform).
-        send_metadata: Dict[str, Any] = {}
-        if effective_thread_id:
-            send_metadata["thread_id"] = effective_thread_id
-        try:
-            result = await transport.send(
-                platform,
-                str(home.chat_id),
-                response_text,
-                send_metadata or None,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"adapter.send failed: {exc}") from exc
-
-        if not getattr(result, "success", True):
-            err = getattr(result, "error", "send returned success=False")
-            raise RuntimeError(f"adapter.send failed: {err}")
 
     async def _durable_approval_watcher(self, interval: float = 5.0) -> None:
         """Deliver pending headless-coder approvals to their relay chats.
@@ -21439,6 +21201,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return
 
         last_output_len = 0
+        # A relay worker's exit starts its queued messages (or idles it) once,
+        # before the completion is delivered — the delivery loop below may
+        # retry, the queue step must not.
+        relay_exit: Optional[dict] = None
+        relay_exit_done = not watcher.get("relay_session_id")
         while True:
             await asyncio.sleep(interval)
 
@@ -21451,6 +21218,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             last_output_len = current_output_len
 
             if session.exited:
+                if not relay_exit_done:
+                    relay_exit_done = True
+                    from gateway.relay_workers import on_worker_exit
+
+                    relay_exit = await on_worker_exit(self, watcher)
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/log.
                 # poll() is read-only and intentionally does NOT mark consumed
@@ -21504,6 +21276,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         ),
                     }
                     synth_text = format_process_notification(completion_evt)
+                    if relay_exit is not None:
+                        from gateway.relay_workers import format_completion
+
+                        synth_text = format_completion(completion_evt, relay_exit)
                     if not synth_text:
                         break
                     delivered = await self._enqueue_process_completion_notification(

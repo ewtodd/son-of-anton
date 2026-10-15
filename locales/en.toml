@@ -247,6 +247,8 @@ switch_failed = "Failed to switch session."
 resumed_one = "Resumed session **{title}** ({count} message). Conversation restored."
 resumed_many = "Resumed session **{title}** ({count} messages). Conversation restored."
 resumed_no_count = "Resumed session **{title}**. Conversation restored."
+relaying = "Relaying terminal session **{title}** ({cwd}). Its work runs there, in its own directory; this chat passes your messages to it and reports back."
+relay_failed = "Could not attach terminal session **{name}**: {error}"
 
 [gateway.retry]
 no_previous = "No previous message to retry."

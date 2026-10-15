@@ -2425,7 +2425,7 @@ def _repair_state_db_schema_locked(
 
     # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ──
     # PRAGMA integrity_check can report "wrong # of entries in index" when a
-    # B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
+    # B-tree index on a sessions column falls out of sync with its
     # base table. REINDEX rewrites the index b-tree from the canonical table
     # rows using the existing index definition, fixing the mismatch without
     # touching data or FTS schema.
@@ -11545,67 +11545,334 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return result
 
-    # ── Handoff (cross-platform session transfer) ──────────────────────────
+    # ── Relay: a messaging chat drives terminal sessions ──────────────────
     #
-    # State machine:
-    #   None       — no handoff in flight
-    #   "pending"  — CLI requested handoff, gateway hasn't picked it up yet
-    #   "running"  — gateway is processing (session switch + synthetic turn)
-    #   "completed"— gateway successfully delivered the synthetic turn
-    #   "failed"   — gateway hit an error; reason in handoff_error
+    # ``relay_bindings`` says which chat relays a session and who runs its
+    # turns right now (``host``: 'headless' for a worker the gateway spawned;
+    # NULL when idle). ``relay_inbox`` holds messages that arrived while the
+    # host was busy. Every method keys by the session's compaction-lineage
+    # root — the same key the turn lease uses — so a worker that compacts
+    # mid-run stays bound under the id the chat knows.
     #
-    # The CLI writes "pending" then poll-waits for terminal state. The gateway
-    # watcher transitions pending→running→{completed,failed}.
+    # The two decisions a race could double — "start a run or queue behind
+    # the one in flight" and "a run ended: start the next or go idle" — are
+    # each one write transaction, so no message is lost or run twice.
 
+    # A host claimed for a spawn that has not reported its pid yet counts as
+    # live this long; past it the claim is stale (the spawner died).
+    RELAY_HOST_PENDING_GRACE_S = 120.0
 
-    def list_pending_handoffs(self) -> List[Dict[str, Any]]:
-        """Return all sessions in handoff_state='pending', oldest first.
-
-        Used by the gateway's handoff watcher.
-        """
+    @staticmethod
+    def _relay_pid_alive(pid: Optional[int]) -> bool:
+        """True when ``pid`` names a running (non-zombie) local process."""
         try:
-            cur = self._conn.execute(
-                "SELECT s.*, "
-                "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
-                "FROM sessions s "
-                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.handoff_state = 'pending' "
-                "ORDER BY s.started_at ASC"
-            )
-            return [self._session_row_dict(r) for r in cur.fetchall()]
-        except Exception:
-            return []
+            pid = int(pid or 0)
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0:
+            return False
+        if psutil is not None:
+            try:
+                return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            except Exception:
+                return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError, OverflowError):
+            return True
+        return True
 
-    def claim_handoff(self, session_id: str) -> bool:
-        """Atomically transition pending → running. Returns True if claimed."""
-        def _do(conn):
-            cur = conn.execute(
-                "UPDATE sessions SET handoff_state = 'running' "
-                "WHERE id = ? AND handoff_state = 'pending'",
-                (session_id,),
+    @classmethod
+    def _relay_host_live(cls, row: Optional[Dict[str, Any]], now: float) -> bool:
+        if not row or not row.get("host"):
+            return False
+        if row.get("host_pid"):
+            return cls._relay_pid_alive(row["host_pid"])
+        heartbeat = float(row.get("host_heartbeat") or 0.0)
+        return now - heartbeat < cls.RELAY_HOST_PENDING_GRACE_S
+
+    @classmethod
+    def _relay_row(cls, row, now: float) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        out = dict(row)
+        out["live"] = cls._relay_host_live(out, now)
+        return out
+
+    def relay_session_root(self, session_id: str) -> str:
+        """The compaction-lineage root relay state is keyed by."""
+        if not session_id:
+            return session_id
+        with self._read_ctx() as conn:
+            return self._session_turn_lease_key_on_conn(conn, session_id)
+
+    @staticmethod
+    def _relay_unconsumed(conn, root: str) -> List[Dict[str, Any]]:
+        return [
+            dict(r) for r in conn.execute(
+                "SELECT id, session_id, text, mode, created_at FROM relay_inbox "
+                "WHERE session_id = ? AND consumed_at IS NULL ORDER BY id",
+                (root,),
+            ).fetchall()
+        ]
+
+    @classmethod
+    def _relay_claim_on_conn(cls, conn, root: str, now: float) -> List[Dict[str, Any]]:
+        rows = cls._relay_unconsumed(conn, root)
+        if rows:
+            conn.execute(
+                "UPDATE relay_inbox SET consumed_at = ? "
+                "WHERE session_id = ? AND consumed_at IS NULL AND id <= ?",
+                (now, root, rows[-1]["id"]),
             )
-            return cur.rowcount > 0
+        # Consumed rows are only kept for a failed spawn to release them.
+        conn.execute(
+            "DELETE FROM relay_inbox WHERE consumed_at IS NOT NULL AND consumed_at < ?",
+            (now - 7 * 86400,),
+        )
+        return rows
+
+    def bind_relay_session(self, session_id: str, chat_key: str) -> Dict[str, Any]:
+        """Relay ``session_id`` through ``chat_key`` (moves it from any other chat)."""
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            conn.execute(
+                "INSERT INTO relay_bindings (session_id, chat_key, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+                "chat_key = excluded.chat_key, updated_at = excluded.updated_at",
+                (root, chat_key, now, now),
+            )
+            return conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+
+        return self._relay_row(self._execute_write(_do), now)
+
+    def get_relay_binding(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The binding for ``session_id`` (any id in its lineage), with ``live``."""
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+        return self._relay_row(row, time.time())
+
+    def list_relay_bindings(self, chat_key: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Bindings (of one chat, or all), most recently used first."""
+        with self._read_ctx() as conn:
+            if chat_key is None:
+                rows = conn.execute(
+                    "SELECT * FROM relay_bindings ORDER BY updated_at DESC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM relay_bindings WHERE chat_key = ? "
+                    "ORDER BY updated_at DESC",
+                    (chat_key,),
+                ).fetchall()
+        now = time.time()
+        return [self._relay_row(r, now) for r in rows]
+
+    def unbind_relay_session(self, session_id: str) -> Dict[str, Any]:
+        """Unbind a session from its chat; refused while a run is live.
+
+        Queued messages go with the binding (they were for this chat's relay).
+        Returns ``{"unbound": bool, "dropped": n}`` or, while a run is live,
+        ``{"unbound": False, "running": True}``.
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+            if row is None:
+                return {"unbound": False, "dropped": 0}
+            if self._relay_host_live(dict(row), now):
+                return {"unbound": False, "running": True}
+            dropped = conn.execute(
+                "DELETE FROM relay_inbox WHERE session_id = ? AND consumed_at IS NULL",
+                (root,),
+            ).rowcount
+            conn.execute("DELETE FROM relay_bindings WHERE session_id = ?", (root,))
+            return {"unbound": True, "dropped": dropped}
+
         return self._execute_write(_do)
 
-    def complete_handoff(self, session_id: str) -> None:
-        """Mark a handoff as completed."""
-        def _do(conn):
-            conn.execute(
-                "UPDATE sessions SET handoff_state = 'completed', "
-                "handoff_error = NULL WHERE id = ?",
-                (session_id,),
-            )
-        self._execute_write(_do)
+    def enqueue_relay_message(self, session_id: str, text: str, mode: str = "queue") -> int:
+        """Append a message to a session's relay inbox; returns its id."""
+        now = time.time()
 
-    def fail_handoff(self, session_id: str, error: str) -> None:
-        """Mark a handoff as failed and record the reason."""
         def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            return conn.execute(
+                "INSERT INTO relay_inbox (session_id, text, mode, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (root, text, mode, now),
+            ).lastrowid
+
+        return int(self._execute_write(_do))
+
+    def list_relay_inbox(self, session_id: str) -> List[Dict[str, Any]]:
+        """Unconsumed inbox messages for a session, oldest first."""
+        with self._read_ctx() as conn:
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            return self._relay_unconsumed(conn, root)
+
+    def claim_relay_inbox(self, session_id: str) -> List[Dict[str, Any]]:
+        """Atomically take every unconsumed inbox message, oldest first."""
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            return self._relay_claim_on_conn(conn, root, now)
+
+        return self._execute_write(_do)
+
+    def release_relay_inbox(self, message_ids: List[int]) -> int:
+        """Put claimed messages back (their run never started)."""
+        ids = [int(i) for i in message_ids or []]
+        if not ids:
+            return 0
+
+        def _do(conn):
+            marks = ",".join("?" for _ in ids)
+            return conn.execute(
+                f"UPDATE relay_inbox SET consumed_at = NULL WHERE id IN ({marks})",
+                ids,
+            ).rowcount
+
+        return int(self._execute_write(_do))
+
+    def relay_start_or_enqueue(
+        self, session_id: str, chat_key: str, text: str, *, host: str = "headless",
+    ) -> Dict[str, Any]:
+        """Bind, queue ``text``, and decide in one transaction who runs it.
+
+        No live host: claim the host (pid unknown until the spawn reports
+        it) and take every queued message, this one last —
+        ``{"action": "start", "messages": [...]}``. A live host: the message
+        waits — ``{"action": "queued", "position": n}`` (1 = next).
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
             conn.execute(
-                "UPDATE sessions SET handoff_state = 'failed', "
-                "handoff_error = ? WHERE id = ?",
-                (error[:500], session_id),
+                "INSERT INTO relay_bindings (session_id, chat_key, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+                "chat_key = excluded.chat_key, updated_at = excluded.updated_at",
+                (root, chat_key, now, now),
             )
-        self._execute_write(_do)
+            conn.execute(
+                "INSERT INTO relay_inbox (session_id, text, mode, created_at) "
+                "VALUES (?, ?, 'queue', ?)",
+                (root, text, now),
+            )
+            row = dict(conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone())
+            if self._relay_host_live(row, now):
+                position = conn.execute(
+                    "SELECT COUNT(*) FROM relay_inbox "
+                    "WHERE session_id = ? AND consumed_at IS NULL",
+                    (root,),
+                ).fetchone()[0]
+                return {"action": "queued", "session_id": root, "position": int(position)}
+            conn.execute(
+                "UPDATE relay_bindings SET host = ?, host_pid = NULL, "
+                "host_heartbeat = ?, updated_at = ? WHERE session_id = ?",
+                (host, now, now, root),
+            )
+            return {
+                "action": "start",
+                "session_id": root,
+                "messages": self._relay_claim_on_conn(conn, root, now),
+            }
+
+        return self._execute_write(_do)
+
+    def set_relay_host_pid(self, session_id: str, host_pid: int) -> bool:
+        """Record the pid of a run this caller claimed with no pid yet.
+
+        False means the claim was cleared meanwhile (a stop): the caller owns
+        a process nobody wants and must end it.
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            return conn.execute(
+                "UPDATE relay_bindings SET host_pid = ?, host_heartbeat = ?, "
+                "updated_at = ? WHERE session_id = ? AND host IS NOT NULL "
+                "AND host_pid IS NULL",
+                (int(host_pid), now, now, root),
+            ).rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def relay_finish_run(self, session_id: str, host_pid: int) -> Dict[str, Any]:
+        """A run whose process was ``host_pid`` ended: start the next or go idle.
+
+        Fenced on the pid, so only the first caller for a given run acts:
+        ``{"action": "start", "messages": [...]}`` (the host stays claimed for
+        the next spawn), ``{"action": "idle"}``, or ``{"action": "none"}``
+        when this run no longer owns the host (stopped, or already handled).
+        ``chat_key`` is the chat the session is bound to now.
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT chat_key, host, host_pid FROM relay_bindings WHERE session_id = ?",
+                (root,),
+            ).fetchone()
+            if row is None or not row["host"] or row["host_pid"] != int(host_pid):
+                return {"action": "none", "session_id": root}
+            out = {"session_id": root, "chat_key": row["chat_key"]}
+            messages = self._relay_claim_on_conn(conn, root, now)
+            if messages:
+                conn.execute(
+                    "UPDATE relay_bindings SET host_pid = NULL, host_heartbeat = ?, "
+                    "updated_at = ? WHERE session_id = ?",
+                    (now, now, root),
+                )
+                return {**out, "action": "start", "messages": messages}
+            conn.execute(
+                "UPDATE relay_bindings SET host = NULL, host_pid = NULL, "
+                "host_heartbeat = NULL, updated_at = ? WHERE session_id = ?",
+                (now, root),
+            )
+            return {**out, "action": "idle"}
+
+        return self._execute_write(_do)
+
+    def clear_relay_host(self, session_id: str, host_pid: Optional[int] = None) -> bool:
+        """Mark the session idle. With ``host_pid``, only if that run owns it."""
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            sql = (
+                "UPDATE relay_bindings SET host = NULL, host_pid = NULL, "
+                "host_heartbeat = NULL, updated_at = ? WHERE session_id = ? "
+                "AND host IS NOT NULL"
+            )
+            params: List[Any] = [now, root]
+            if host_pid is not None:
+                sql += " AND host_pid = ?"
+                params.append(int(host_pid))
+            return conn.execute(sql, params).rowcount > 0
+
+        return bool(self._execute_write(_do))
 
 
 class AsyncSessionDB:

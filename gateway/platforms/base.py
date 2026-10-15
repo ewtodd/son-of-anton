@@ -3455,17 +3455,16 @@ class BasePlatformAdapter(ABC):
         parent_chat_id: str,
         name: str,
     ) -> Optional[str]:
-        """Create a fresh thread under ``parent_chat_id`` for a session handoff.
+        """Create a fresh thread under ``parent_chat_id`` for a new conversation.
 
-        Used by the gateway's handoff watcher when transferring a CLI
-        session to a thread-capable platform — the new thread isolates the
-        handed-off conversation from any pre-existing chat in the home
-        channel and gives users a clean per-handoff scrollback.
+        Used by cron to give a continuable job's brief its own thread on a
+        thread-capable platform — the new thread isolates it from any
+        pre-existing chat in the channel and gives a clean scrollback.
 
         Returns the new thread/topic id (as a string) on success, or
         ``None`` if the platform doesn't support threading or the
         attempt failed (permissions, topics-mode off, etc.). When ``None``
-        is returned the watcher falls back to using ``parent_chat_id``
+        is returned the caller falls back to using ``parent_chat_id``
         directly.
 
         Default implementation returns ``None`` — adapters that support

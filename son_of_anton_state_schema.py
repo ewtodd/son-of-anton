@@ -1146,6 +1146,24 @@ class SessionSchemaMixin:
                     "REPLACE(last_activity_provenance, 'agent.compression', 'agent.compaction') "
                     "WHERE last_activity_provenance LIKE 'agent.compression%'"
                 )
+            if current_version < 28:
+                # v28: the CLI→gateway handoff state machine is gone (nothing
+                # ever wrote 'pending'); the relay tables in SCHEMA_SQL replace
+                # it. Drop its index, then its columns. DROP COLUMN needs
+                # SQLite >= 3.35 and refuses an indexed column, hence the
+                # order; on an older runtime the columns just stay, unread.
+                # Idempotent, like v27, for a re-run after a deferred bump.
+                cursor.execute("DROP INDEX IF EXISTS idx_sessions_handoff_state")
+                live = {
+                    r[1] for r in cursor.execute("PRAGMA table_info(sessions)").fetchall()
+                }
+                for column in ("handoff_state", "handoff_platform", "handoff_error"):
+                    if column not in live:
+                        continue
+                    try:
+                        cursor.execute(f"ALTER TABLE sessions DROP COLUMN {column}")
+                    except sqlite3.OperationalError as exc:
+                        logger.debug("v28 drop of sessions.%s skipped: %s", column, exc)
             if (
                 current_version < SCHEMA_VERSION
                 and fts_migrations_complete

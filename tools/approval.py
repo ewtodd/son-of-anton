@@ -3460,11 +3460,20 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
             chat_key = str(get_session_env("SON_OF_ANTON_SESSION_KEY", "") or "").strip()
         except Exception:
             chat_key = os.environ.get("SON_OF_ANTON_SESSION_KEY", "").strip()
+    # The conversation that is blocked, so a relay can tell which of the
+    # sessions it drives is waiting (``session_id`` above is the approval key).
+    try:
+        from gateway.session_context import get_session_env
+
+        agent_session_id = str(get_session_env("SON_OF_ANTON_SESSION_ID", "") or "").strip()
+    except Exception:
+        agent_session_id = os.environ.get("SON_OF_ANTON_SESSION_ID", "").strip()
     record = wa.stage_write(
         wa.EXEC,
         {
             "action": "exec_approval",
             "session_id": session_key,
+            "agent_session_id": agent_session_id,
             "pattern_key": approval_data.get("pattern_key", ""),
             "pattern_keys": list(approval_data.get("pattern_keys") or []),
             "command": approval_data.get("command", ""),
@@ -3491,6 +3500,16 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
     decision: dict = {"resolved": False, "choice": None}
     try:
         while True:
+            # An interrupt (/stop, a relay stopping its worker, the signal
+            # handler of a headless run) must end the wait like it ends the
+            # in-process gateway wait: as a denial the agent loop unwinds
+            # from. Without it a stopped worker blocked here never exits.
+            if is_interrupted():
+                logger.info(
+                    "Durable approval wait interrupted — denying %s", record["id"]
+                )
+                decision = {"resolved": True, "choice": "deny", "reason": None}
+                break
             current = wa.get_pending(wa.EXEC, record["id"])
             if current is None:
                 break

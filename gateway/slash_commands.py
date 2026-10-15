@@ -3784,6 +3784,15 @@ class GatewaySlashCommandsMixin:
             # can't attach to another's persisted transcript.
             return t("gateway.resume.blocked_not_owner", name=name)
 
+        # A single_user chat is a relay for terminal sessions: switching it
+        # onto one would run that work here — in the gateway's directory,
+        # under this chat's prompt. Bind the session instead; the relay runs
+        # it where it lives (gateway/relay_workers.py).
+        if self._single_user_instance():
+            target_row = await self._session_db.get_session(target_id)
+            if target_row is not None and target_row.get("source") == "cli":
+                return await self._attach_relay_session(session_key, target_row, name)
+
         # Check if already on that session
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
@@ -3823,6 +3832,20 @@ class GatewaySlashCommandsMixin:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    async def _attach_relay_session(self, session_key: str, target_row: dict, name: str) -> str:
+        """``/resume`` of a terminal session on a single_user instance."""
+        from gateway.relay_workers import RelayError, attach_terminal_session
+
+        try:
+            await attach_terminal_session(self, session_key, target_row)
+        except RelayError as exc:
+            return t("gateway.resume.relay_failed", name=name, error=exc)
+        return t(
+            "gateway.resume.relaying",
+            title=target_row.get("title") or target_row["id"],
+            cwd=target_row.get("cwd") or "?",
+        )
 
     async def _handle_sessions_command(self, event: MessageEvent) -> str:
         """Handle /sessions — list previous sessions for gateway chats."""

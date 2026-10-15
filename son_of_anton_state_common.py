@@ -311,7 +311,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -396,9 +396,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity_provenance TEXT,
     api_call_count INTEGER DEFAULT 0,
     last_prompt_tokens INTEGER DEFAULT 0,
-    handoff_state TEXT,
-    handoff_platform TEXT,
-    handoff_error TEXT,
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
@@ -512,6 +509,32 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+-- Relay: a messaging chat drives terminal (source=cli) sessions. A binding
+-- says which chat relays a session and who runs its turns right now (host:
+-- 'headless' for a gateway-spawned worker, NULL when idle). Keyed by the
+-- session's compaction-lineage root, so a compaction does not unbind it. No
+-- foreign key: a new session is bound before its worker writes its row.
+CREATE TABLE IF NOT EXISTS relay_bindings (
+    session_id TEXT PRIMARY KEY,
+    chat_key TEXT NOT NULL,
+    host TEXT,
+    host_pid INTEGER,
+    host_heartbeat REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+-- Messages for a relayed session that arrived while its worker was busy,
+-- run in id order as the next user turn once it finishes.
+CREATE TABLE IF NOT EXISTS relay_inbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'queue',
+    created_at REAL NOT NULL,
+    consumed_at REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -532,6 +555,10 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_relay_bindings_chat
+    ON relay_bindings(chat_key, updated_at);
+CREATE INDEX IF NOT EXISTS idx_relay_inbox_session
+    ON relay_inbox(session_id, consumed_at, id);
 """
 
 
@@ -548,8 +575,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
-    ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
 """

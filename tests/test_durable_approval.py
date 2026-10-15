@@ -125,3 +125,38 @@ def test_chat_key_falls_back_to_the_bridged_session_key(monkeypatch) -> None:
     )
     worker.join(timeout=5)
     assert seen["chat_key"] == "agent:main:signal:group:G"
+
+
+def test_an_interrupt_ends_the_durable_wait(monkeypatch) -> None:
+    """A stopped worker blocked on an approval must unwind, not hang.
+
+    The wait runs on the agent's tool thread, the thread an interrupt flags;
+    it resolves as a denial and consumes the request.
+    """
+    from tools.interrupt import set_interrupt
+
+    _durable_env(monkeypatch)
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0)  # no deadline
+    outcome = {}
+
+    def _wait() -> None:
+        outcome["decision"] = approval._await_durable_decision(
+            "session-key",
+            {"command": "rm -rf /tmp/durable-stop", "description": "dangerous rm",
+             "pattern_key": "rm -rf", "pattern_keys": ["rm -rf"]},
+        )
+
+    waiter = threading.Thread(target=_wait, daemon=True)
+    waiter.start()
+    deadline = time.monotonic() + 5
+    while not wa.list_pending(wa.EXEC) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert wa.list_pending(wa.EXEC), "the request was staged"
+    set_interrupt(True, waiter.ident)
+    try:
+        waiter.join(timeout=5)
+        assert not waiter.is_alive(), "the durable wait ignored the interrupt"
+    finally:
+        set_interrupt(False, waiter.ident)
+    assert outcome["decision"]["choice"] == "deny"
+    assert wa.list_pending(wa.EXEC) == []

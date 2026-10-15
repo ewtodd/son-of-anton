@@ -1,6 +1,6 @@
 # Son of Anton — Status
 
-_Last updated 2026-10-12. History lives in git; this file is only current
+_Last updated 2026-10-15. History lives in git; this file is only current
 state, known future work, and the operational facts a fresh session needs._
 
 ## What this is
@@ -38,8 +38,9 @@ All of the following is merged to `main` and deployed on e-desktop:
 - **Sessions.** Rows record cwd + git root/branch. Bare `-c` resumes the
   current workspace only — no breadcrumb, no global fallback. Bare
   `son-of-anton "prompt"` routes to `chat -q`. `sessions list --json --here`
-  is the relay's session picker. One session can be driven from two surfaces
-  (the TUI and Signal on a `single_user` instance): the agent records
+  lists this workspace's sessions for scripts. One session can be driven
+  from two surfaces (the TUI and a relay worker on a `single_user`
+  instance): the agent records
   `SessionDB.get_transcript_mark()` after each turn (the CLI also at each
   load), and when another process wrote to the session in between, the next
   turn reloads the transcript instead of running on stale in-memory history.
@@ -48,12 +49,23 @@ All of the following is merged to `main` and deployed on e-desktop:
   the reasoning and tool detail the transcript clips. Never read back
   directly (RAG embeds it); deleted when the user deletes its session, kept
   through retention auto-prune and other automatic cleanup.
-- **Relay coding.** Removed, pending a code-based replacement. It was the
-  `relay-coding` skill, reachable only as `/relay-coding`, and went with skill
-  slash commands (2026-10-15). The plumbing it drove stays: a headless CLI
-  coder run with `SON_OF_ANTON_DURABLE_APPROVALS=1` stages dangerous commands
-  as durable approvals, a gateway watcher messages the originating chat, and
-  `/approve <id>` / `/deny <id>` unblocks the coder. Timeouts fail closed.
+- **Relay coding (R1, 2026-10-15).** On a `gateway.single_user` instance the
+  messaging chat is a relay; it replaces the removed `relay-coding` skill with
+  code. The `relay` tool (tools/relay_tool.py; service-gated, never in the
+  CLI) lists terminal sessions and sends work to one: the gateway spawns
+  `son-of-anton chat -Q --resume <id>` (or `--in DIR` with a preassigned id
+  for a new session) in the session's own directory — the worker's prompt and
+  tools are a TUI session's. A send while it runs queues; the next run takes
+  the queue. State is `relay_bindings` / `relay_inbox` in state.db
+  (gateway/relay_workers.py). The completion arrives in the chat as the usual
+  internal process event. Dangerous commands in the worker become durable
+  approvals in the chat (`/approve <id>` / `/deny <id>`, timeouts fail
+  closed); clarify answers at once ("put your question in the reply"); `stop`
+  kills the worker, and the durable wait now honors interrupts. `/resume` of
+  a terminal session binds it instead of switching the chat onto it. The old
+  CLI→gateway handoff (watcher, SessionDB methods, `sessions.handoff_*`
+  columns) is deleted (schema v28). R2 (TUI `/handoff`) and R3
+  (yield/`/pickup`) are next.
 - **RAG (optional).** `memory.rag` embeds journals and
   `notes/<scope>/**/*.md` through an OpenAI-compatible `/v1/embeddings`
   endpoint (Bifrost → bge-m3 on oracle) and injects the closest chunks into
@@ -129,15 +141,17 @@ Ordered by importance. Each item is independently scoped.
      previous turn can still abort the next turn's lease wait (results now
      survive it). Tests in `tests/test_delegation_outcomes.py` and
      `tests/test_delegation_delivery.py`.
-2. **Live-validate the relay round trip.** Blocked on the code-based
-   replacement for the removed `relay-coding` skill. The approval plumbing is
-   unit-tested, but no real Signal coding request has gone through the whole
-   path: request → background coder → dangerous command → watcher prompt in
-   the chat → `/approve` → coder resumes → completion summary. Do this before
-   building anything on top of the relay.
-3. **One coder per workspace is not enforced.** The removed `relay-coding`
-   skill's instruction was the only thing that kept two concurrent coders out
-   of the same directory; the replacement should enforce it in code (a
+2. **Live-validate the relay round trip.** The relay is built (R1) and
+   E2E-tested against a fake model with a real GatewayRunner and real worker
+   subprocesses: send → headless worker in its own cwd → completion as an
+   internal event; a second send queued and run after; clarify answered at
+   once; a dangerous command staged as a durable approval, visible in
+   `status`, and `stop` ending the worker and its wait. Still owed: one real
+   Signal request through the whole path, including `/approve` from the
+   phone, before building R2/R3 on top.
+3. **One coder per workspace is not enforced.** Nothing keeps two workers
+   (or a worker and a TUI on another session) out of the same directory; the
+   relay checks per session, not per workspace. Enforce it in code (a
    workspace-keyed lease).
 4. **`session_search` is not scope-filtered.** _Resolved._ The tool gained a
    `sources` filter (comma-separated, e.g. `sources="cli"`) threaded through

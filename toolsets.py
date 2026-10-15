@@ -137,6 +137,16 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # A messaging chat relaying work to terminal sessions. Listed in the
+    # gateway platform composites; its check_fn shows it only in a gateway
+    # whose config has single_user (tools/relay_tool.py), so the CLI never
+    # carries it and a chat's tool list never changes mid-session.
+    "relay": {
+        "description": "Relay a chat's work to terminal coding sessions (single_user gateways)",
+        "tools": ["relay"],
+        "includes": [],
+    },
+
     # Scenario-specific toolsets
 
     "debugging": {
@@ -198,20 +208,20 @@ TOOLSETS = {
     "son-of-anton-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
         "tools": _SON_OF_ANTON_CORE_TOOLS + [
-            "discord",
+            "discord", "relay",
         ],
         "includes": []
     },
 
     "son-of-anton-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _SON_OF_ANTON_CORE_TOOLS,
+        "tools": _SON_OF_ANTON_CORE_TOOLS + ["relay"],
         "includes": []
     },
 
     "son-of-anton-signal": {
         "description": "Signal bot toolset - encrypted messaging platform (full access)",
-        "tools": _SON_OF_ANTON_CORE_TOOLS,
+        "tools": _SON_OF_ANTON_CORE_TOOLS + ["relay"],
         "includes": []
     },
 

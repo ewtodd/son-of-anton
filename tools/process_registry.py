@@ -941,6 +941,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        login_shell: bool = True,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -951,6 +952,11 @@ class ProcessRegistry:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
+            login_shell: True (the default) runs the command in the user's
+                     interactive login shell, as a typed command would. False
+                     runs it with plain ``-c``: no rc files, so their noise
+                     never lands in the output. For programs launched by
+                     absolute path that inherit this process's environment.
         """
         # Guard against the `A && B &` subshell-wait trap (issue #68915).
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
@@ -978,7 +984,11 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+                pty_argv = (
+                    [user_shell, "-lic", f"set +m; {safe_command}"]
+                    if login_shell
+                    else [user_shell, "-c", safe_command]
+                )
 
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
@@ -1058,7 +1068,11 @@ class ProcessRegistry:
         # kills only the worker instead of taking down the whole gateway
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
-        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        shell_argv = (
+            [user_shell, "-lic", f"set +m; {safe_command}"]
+            if login_shell
+            else [user_shell, "-c", safe_command]
+        )
         in_supervised_gateway = _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()

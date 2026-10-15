@@ -4342,9 +4342,19 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_title: Optional[str] = None
         
         # Session ID: reuse existing one when resuming, otherwise generate fresh
+        # — or take the one a relay chat assigned, so it can track the run
+        # (son_of_anton_cli/relay_worker.py). The variable is consumed either
+        # way so nothing this process starts inherits it.
+        from son_of_anton_cli.relay_worker import take_preassigned_session_id
+
+        preassigned_id = take_preassigned_session_id()
         if resume:
             self.session_id = resume
             self._resumed = True
+        elif preassigned_id:
+            if self._session_db is not None and self._session_db.get_session(preassigned_id):
+                raise ValueError(f"session {preassigned_id} already exists; resume it instead")
+            self.session_id = preassigned_id
         else:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
@@ -12673,6 +12683,17 @@ def main(
                         # status lines).  The response is printed once below.
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
+                        # A relay run has no one at this terminal: clarify
+                        # must answer at once instead of blocking forever.
+                        # Only the callback changes — tools and prompt stay
+                        # the TUI's, so the session's prompt cache holds.
+                        from son_of_anton_cli.relay_worker import (
+                            relay_clarify_callback,
+                            take_relay_run_marker,
+                        )
+
+                        if take_relay_run_marker():
+                            cli.agent.clarify_callback = relay_clarify_callback
                         cli._seed_loaded_transcript_mark()
                         try:
                             result = cli.agent.run_conversation(

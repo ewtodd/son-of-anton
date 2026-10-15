@@ -622,12 +622,14 @@ _PRUNE_MIN_CHARS = 200
 # not be quoted as a user answer during compaction. Sources:
 #   tools.clarify_tool.TIMEOUT_RESPONSE (every surface's timeout), the
 #   gateway's older "[user did not respond" (still in stored history), the
-#   gateway/run.py delivery failure, son_of_anton_cli/oneshot.py no-user callback.
+#   gateway/run.py delivery failure, son_of_anton_cli/oneshot.py no-user callback,
+#   son_of_anton_cli/relay_worker.py (a relay run's headless terminal).
 _CLARIFY_NON_RESPONSE_PREFIXES = (
     "The user did not provide a response",
     "[user did not respond",
     "[clarify prompt could not be delivered",
     "[oneshot mode:",
+    "[relay mode:",
 )
 
 

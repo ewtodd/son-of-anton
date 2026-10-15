@@ -363,6 +363,28 @@ Cron deliveries are **not** mirrored into the target gateway session — they la
 own cron session with a header/footer frame so the main conversation's message-role
 alternation stays intact.
 
+### The relay (`gateway.single_user` only)
+
+On a single_user instance the messaging chat is a *relay*: project work goes to a
+*worker* — an ordinary terminal session (`source=cli`) run headless as
+`son-of-anton chat -Q --resume <id>` in that session's own directory, with its own
+stored prompt and tools — never into the chat. The chat agent drives it with one tool,
+`relay` (`list` / `send` / `status` / `stop` / `detach`; `tools/relay_tool.py`), whose
+schema description is the relay's whole instruction set. Gateway-side logic lives in
+`gateway/relay_workers.py`; state is `relay_bindings` / `relay_inbox` in state.db
+(a send while the worker runs queues; the next run takes the queue in one transaction).
+The completion returns as the ordinary internal process-completion event. `/resume` of
+a terminal session binds it to the chat instead of switching the chat onto it.
+
+Footprint: `relay` is a service-gated tool (rung 3). It sits in the gateway platform
+composites, and its `check_fn` is true only in a gateway process whose live runner has
+`config.single_user` — so the CLI/TUI never carries it, a shared gateway never does,
+and a chat's tool list is fixed by config for its whole life. It is exempt from tool
+search deferral (`_DIRECT_SURFACE_TOOLSETS`) and blocked for subagents. A worker's
+prompt and tool list stay byte-identical to a TUI session's; only its clarify callback
+differs (it answers at once — no one is at that terminal) and its dangerous commands
+become durable approvals answered in the chat with `/approve <id>`.
+
 ---
 
 ## Physics Mode (autophysicist/)

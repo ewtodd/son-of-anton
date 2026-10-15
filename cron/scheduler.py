@@ -1729,8 +1729,7 @@ def _open_continuable_cron_thread(
 
     Returns the new ``thread_id`` on success, or ``None`` when the platform has
     no thread primitive (Signal) or creation failed — the ``None``
-    return is the caller's signal to fall back to the origin-DM mirror, the same
-    open-thread-or-fallback shape as ``GatewayRunner._process_handoff``. Reuses
+    return is the caller's signal to fall back to the origin-DM mirror. Reuses
     the shipped ``adapter.create_handoff_thread``; no new adapter surface.
     """
     create_thread = getattr(adapter, "create_handoff_thread", None)
@@ -1792,8 +1791,7 @@ def _seed_cron_thread_session(
     threads). Same sibling-lane class as the flat seed's ``is_dm``
     (dcca9d8cfe).
 
-    Mirrors ``GatewayRunner._process_handoff``'s seed step, but standalone:
-    cron reaches the live ``SessionStore`` through the adapter's
+    Cron reaches the live ``SessionStore`` through the adapter's
     ``_session_store`` handle rather than the gateway object. Best-effort — a
     delivery that already succeeded is never failed by a seeding problem.
     """
@@ -1816,8 +1814,7 @@ def _seed_cron_thread_session(
                 # to match how the Discord adapter keys organic in-thread
                 # messages (chat_id == thread_id). Other platforms (Slack,
                 # Some adapters) use chat_id == parent_channel for thread messages,
-                # so the parent chat_id is correct for them. See the matching
-                # guard in GatewayRunner._process_handoff.
+                # so the parent chat_id is correct for them.
                 if platform_enum == Platform.DISCORD:
                     seed_chat_id = str(thread_id)
                 else:
@@ -2818,7 +2815,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # in their own scrollback; the thread-keyed session is seeded so a reply
         # continues with full context. On DM-only platforms (Signal)
         # create_handoff_thread returns None and we fall back to mirroring into
-        # the origin DM session (handled after delivery). Cf. _process_handoff.
+        # the origin DM session (handled after delivery).
         #
         # in_channel surface (D2): SKIP thread creation entirely — leave
         # thread_id=None so the delivery posts flat, then
