@@ -9199,7 +9199,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         rewound, or compacted the session in between, so the caller's in-memory
         history is stale. The max id catches appends and tail rewinds, the count
         catches deactivations below the tail, and the tip catches a compaction
-        that rotated the session to a continuation child. Returns ``None`` for an
+        that rotated the session to a continuation child. ``session_meta`` rows
+        are not conversation (every transcript projection strips them), so they
+        are not counted: the gateway appends one after a fresh session's first
+        turn, and counting it read as another writer on turn 2 of every new
+        chat. Returns ``None`` for an
         empty id.
         """
         if not session_id:
@@ -9208,7 +9212,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._read_ctx() as conn:
             row = conn.execute(
                 "SELECT COALESCE(MAX(id), 0), COUNT(*) FROM messages "
-                "WHERE session_id = ? AND active = 1",
+                "WHERE session_id = ? AND active = 1 AND role != 'session_meta'",
                 (session_id,),
             ).fetchone()
         max_id, count = (int(row[0]), int(row[1])) if row else (0, 0)

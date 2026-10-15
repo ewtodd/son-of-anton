@@ -49,6 +49,19 @@ def test_own_turns_never_read_as_movement(stores):
     assert not mine.transcript_moved_since(mark, "s1")
 
 
+def test_the_gateways_session_meta_row_is_not_movement(stores):
+    # The gateway appends a session_meta row (tool definitions) after a fresh
+    # session's first turn, after the agent took its mark. It is not
+    # conversation, so the next turn must not reload as if another process
+    # had written.
+    mine, _ = stores
+    mine.create_session("s1", "signal")
+    _turn(mine, "s1", "one")
+    mark = mine.get_transcript_mark("s1")
+    mine.append_message("s1", "session_meta", "")
+    assert not mine.transcript_moved_since(mark, "s1")
+
+
 def test_a_turn_from_another_process_is_movement(stores):
     mine, theirs = stores
     mine.create_session("s1", "cli")
